@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="fond" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7b4fd6"/>
+      <stop offset="1" stop-color="#2f6fdc"/>
+    </linearGradient>
+    <linearGradient id="onde" gradientUnits="userSpaceOnUse" x1="64" y1="0" x2="110" y2="0">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#ffd166"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="112" height="112" rx="26" fill="url(#fond)"/>
+  <!-- micro -->
+  <rect x="26" y="30" width="22" height="40" rx="11" fill="#ffffff"/>
+  <path d="M20 58 a17 17 0 0 0 34 0" fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round"/>
+  <path d="M37 75 v14 M28 90 h18" fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round"/>
+  <!-- la voix d'origine devient une autre voix -->
+  <g fill="none" stroke="url(#onde)" stroke-width="6" stroke-linecap="round">
+    <path d="M66 54 v20"/>
+    <path d="M77 44 v40"/>
+    <path d="M88 36 v56"/>
+    <path d="M99 48 v32"/>
+    <path d="M108 58 v12"/>
+  </g>
+</svg>

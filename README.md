@@ -232,6 +232,7 @@ doubler --config voix marie                     # choisir la voix par défaut
 | `donnees` | dossier des données (`voix/`, `sorties/`) | `~/Music/Voix-là` |
 | `moteur` | moteur de conversion du chant : `yingmusic` ou `seedvc` (`--moteur` l'emporte) | `yingmusic` |
 | `voix` | voix cible par défaut, un dossier de `<données>/voix/` (`--voix` l'emporte) | la seule voix présente |
+| `paroles` | paroles à chaque doublage : oui ou non (`--sans-paroles` l'emporte) | oui |
 
 Le fichier ressemble à ceci :
 
@@ -447,7 +448,7 @@ Les autres champs dépendent du type. Un champ sans valeur est absent.
 |---|---|---|
 | `etape` | `etape` (nom de l'étape), `etat` (`debut`, `fin` ou `erreur`), `message` (facultatif), `duree_s` (à `fin` et à `erreur`) | au début et à la fin de chaque étape |
 | `kaggle` | `statut` (`queued`, `running`, `complete`, `error`…, ou `injoignable` pendant une coupure), `depuis_s` (depuis l'envoi du noyau), `estimation_s` (durée probable de la session), `panne_s` (durée de la coupure en cours) | à chaque relevé de l'état du noyau, environ toutes les 20 s |
-| `sortie` | `mp4` (la vidéo doublée, quel que soit son conteneur), `mp3`, `rapport` (le `rapport.json`), `courbes` (le `courbes.json`, s'il existe), `comparaisons` (avec `--comparer-pas`) | quand une vidéo est finie |
+| `sortie` | `mp4` (la vidéo doublée, quel que soit son conteneur), `mp3`, `rapport` (le `rapport.json`), `courbes` (le `courbes.json`, s'il existe), `paroles` (le `paroles.json`), `srt` (liste des `.srt`), `lrc` (le `.lrc`), `comparaisons` (avec `--comparer-pas`) | quand une vidéo est finie |
 | `erreur` | `message` | une vidéo en échec (`video` renseigné) ; ou la commande entière (`video` à `null`) : configuration, interruption, bilan d'un lot avec des échecs |
 | `fin` | `code` : le code de sortie de `doubler`, 0 si tout a réussi | en dernier, sauf si `doubler` est tué par un signal (Ctrl+C donne `code` 130) |
 
@@ -486,6 +487,7 @@ Une étape en `erreur` est suivie d'un événement `erreur`. Les étapes commune
 | `--pas N` | pas de diffusion de la conversion ; 50 coûte environ 40 % de GPU de conversion en plus (au banc d'essai : aucun écart mesurable, oreille partagée) | `30` |
 | `--moteur yingmusic\|seedvc` | moteur de conversion du chant : YingMusic-SVC ou Seed-VC 44,1 kHz ; sans effet en parole | clé `moteur` de la configuration, sinon `yingmusic` |
 | `--sans-nettoyage` | en chant, convertir la voix isolée complète sans séparer voix principale et chœurs ni retirer la reverb : la chaîne d'avant, plus rapide | nettoyage |
+| `--sans-paroles` | ni transcription ni traduction des paroles, ni pistes de sous-titres, `.srt` ou `.lrc` ; avec `--remix`, la vidéo est refaite sans les paroles | clé `paroles` de la configuration, sinon oui |
 | `--voix-db N` | niveau de la voix convertie par rapport à la voix d'origine (dB) | `+4` en chant, `0` en parole |
 | `--reverb-db N` | niveau de la reverb sous la voix sèche (dB), en chant seulement | `-13` |
 | `--mix-v1` | ancien mixage : sans suivi des nuances de la voix d'origine ni dé-esseur | mixage v2 |
@@ -515,9 +517,12 @@ Tout va dans `<données>/sorties/<titre>/` (ou le dossier de `--sortie`). Un ext
 |---|---|
 | `<titre> - voix <Nom>.<ext>` | la vidéo doublée, dans le conteneur d'origine (mkv si l'extension n'est pas connue) |
 | `<titre> - voix <Nom>.mp3` | le son doublé, MP3 320 kb/s |
+| `<titre> - voix <Nom>.<langue>.srt` | les paroles dans la langue chantée, sur le temps de la vidéo doublée |
+| `<titre> - voix <Nom>.fr.srt` | leur traduction française, quand elles ne sont pas en français (`.traduction.fr.srt` si elles le sont déjà en partie) |
+| `<titre> - voix <Nom>.lrc` | les paroles synchronisées ligne à ligne, à côté du mp3, pour les lecteurs de musique |
 | `comparaison_<pas>pas.mp3`, `comparaison_<N>pas.mp3` | avec `--comparer-pas` : le même passage dans les deux réglages |
 | `travail/` | `original.wav` (son extrait), `voix_source.wav` (voix isolée), `instrumental.wav` (musique seule, recalculée à chaque mixage), `source.json` |
-| `travail/<voix>/` | `voix_convertie.flac`, `mix.wav`, `rapport.json`, `courbes.json`, journal Kaggle, fichiers intermédiaires du mixage |
+| `travail/<voix>/` | `voix_convertie.flac`, `mix.wav`, `rapport.json`, `courbes.json`, `paroles.json`, journal Kaggle, fichiers intermédiaires du mixage |
 
 À la racine du dossier des sorties, `.kaggle/` garde `outils.json` (`--preparer-outils`), le journal du dernier noyau
 et les fichiers d'envoi.
@@ -527,7 +532,11 @@ Dans la vidéo doublée :
 - l'image est copiée telle quelle, sans réencodage ;
 - le son est en AAC 256 kb/s (Opus 192 kb/s en webm), en stéréo ;
 - les sous-titres sont copiés si le conteneur les accepte (mov_text en mp4 et mov, texte et images en mkv, WebVTT en
-  webm), sinon laissés de côté avec un message. En mkv, les polices jointes sont copiées aussi.
+  webm), sinon laissés de côté avec un message. En mkv, les polices jointes sont copiées aussi ;
+- les paroles s'ajoutent en pistes de sous-titres après celles d'origine : « Paroles (espagnol) » (`spa`) et
+  « Paroles (français, traduction) » (`fre`), en mov_text (mp4, m4v, mov), SubRip (mkv) ou WebVTT (webm). En mkv elles
+  ne s'affichent pas d'office ; en mp4, le format active toujours la première piste de sous-titres. Si ffmpeg les
+  refuse, la vidéo est faite sans elles et les `.srt` et `.lrc` restent.
 
 `rapport.json` donne :
 
@@ -539,6 +548,11 @@ Dans la vidéo doublée :
   des chœurs et de la reverb retirée, durées) ;
 - pour chaque piste convertie (`variantes.*.pistes` : voix principale et chœurs, ou voix complète) : morceaux,
   secondes converties, durée, gain de mise au niveau ;
+- les passages repris par la piste de secours (`secours` : décision `secours`, `aucun` ou `voix_complete`, zones avec
+  début, fin, durée, écart en dB, niveaux, voisement, hauteur, pente, parties ouvertes ; candidates écartées avec leur
+  raison) ;
+- les paroles (`paroles` : piste transcrite, langue de chaque phrase et les trois plus probables, lignes, mots, retraits
+  des garde-fous, temps ; `paroles_sorties` : fichiers, pistes, décalage) ;
 - la ressemblance de timbre mesurée ;
 - les mesures du mixage (`mix` : nuances, dé-esseur, garde-fous de la musique seule, limite) ;
 - la durée de chaque étape (`temps` pour la vidéo, dont `nettoyage_s` et `conversion_s` ; `temps_local` pour la
@@ -558,6 +572,20 @@ Dans la vidéo doublée :
 - les trois listes ont la même longueur ; le temps 0 est le début de l'audio doublé, celui de l'extrait s'il y en a
   un ;
 - environ 200 ko pour 5 min.
+
+`paroles.json` donne les paroles synchronisées (l'interface les affiche sous le lecteur) :
+
+```json
+{"format": 1, "langue": "es", "source": "whisper-large-v3", "decalage_s": 0.0, "piste": "lead_sec",
+ "segments": [{"debut": 64.5, "fin": 66.0, "texte": "…", "langue": "es", "mots": [{"debut": 64.5, "fin": 64.8, "mot": "…"}]}],
+ "traductions": {"fr": {"source": "nllb-200-distilled-600M", "segments": [{"debut": 64.5, "fin": 66.0, "texte": "…"}]}}}
+```
+
+- temps en secondes de la vidéo doublée ; `decalage_s` est le décalage par rapport au son doublé (0 le plus souvent,
+  −0,13 s pour un extrait mkv ou webm) : le temps du mp3 vaut `debut − decalage_s` ;
+- chaque ligne garde sa langue (une chanson bilingue a les deux) ; `traductions.fr` a une entrée par ligne, les lignes
+  françaises recopiées ; elle est absente si tout est en français ;
+- sans paroles reconnues : `segments` vide, `langue` à `null`.
 
 `travail/` est volumineux : les fichiers y sont en WAV 32 bits flottant, soit plusieurs centaines de Mo pour une
 chanson entière. Il sert à `--remix` ; on peut l'effacer quand le résultat convient.
@@ -734,6 +762,14 @@ avant la conversion, sur le GPU :
    un passage où les chœurs se taisent n'est pas converti ;
 4. chaque piste convertie est ramenée au niveau de sa source, puis les deux sont additionnées : l'équilibre entre voix
    principale et chœurs reste celui de l'enregistrement.
+5. un passage que le nettoyage a perdu est repris de la voix complète : là où la voix isolée sonne fort (à moins de
+   20 dB de son haut) alors que voix principale et chœurs secs ensemble sont au moins 15 dB plus bas, pendant 0,4 s au
+   moins, avec une hauteur sur 30 % du passage et sans décroître de plus de 15 dB/s (une traîne de réverbération), une
+   piste « secours » convertit la voix complète, mêmes passages et mêmes décalages, et n'ouvre sa porte que là
+   (fondus de 80 ms ; fermée là où les pistes nettoyées sonnent déjà). C'est souvent un « oooh » de fond très
+   réverbéré, pris pour de la reverb par le dereverb. Au-delà de 40 % de voix perdue, le nettoyage est tenu pour raté
+   et la voix complète est convertie seule. `python3 kaggle/secours_local.py "<dossier de sortie>"` rejoue la
+   détection sur le PC.
 
 Le mode et l'octave restent décidés sur la voix isolée complète, sur laquelle leurs règles ont été réglées. La reverb
 d'origine n'est pas remise : le mixage ajoute la sienne.
@@ -774,6 +810,15 @@ la parole.
   la hauteur de parole de la voix cible ; `--octave`, `--moteur` et `--sans-nettoyage` n'ont pas d'effet.
 - Pas de reverb ; le fond sonore est gardé, et la voix est au niveau de la voix d'origine (`--voix-db 0`).
 
+### Paroles
+
+Whisper large-v3 (par transformers, sur le GPU) écoute la voix principale sèche, sinon la voix isolée, et seulement ses
+phrases chantées. La langue est détectée phrase par phrase. Les phrases de même langue sont transcrites par morceaux de
+25 s au plus, mot par mot, avec des garde-fous contre les mots inventés (silences rendus muets, pas de contexte d'un
+morceau à l'autre, seuils de non-parole et de répétition, mots hors du chant, boucles, génériques de sous-titres).
+NLLB-200 traduit ensuite en français, ligne par ligne, ce qui n'est pas en français. `--sans-paroles` (ou la clé
+`paroles`) s'en passe.
+
 ## Temps de traitement
 
 Temps mesurés de bout en bout, à 30 pas, avec les outils préparés (`--preparer-outils`).
@@ -809,7 +854,12 @@ Chaîne d'avant (`--moteur seedvc --sans-nettoyage`), une vidéo par session, av
 
 `doubler` annonce la durée probable de chaque session, estimée d'après les rapports des doublages passés (nettoyage et
 chœurs compris ; en mode `auto`, il suppose du chant). Mesuré : 10,9 min annoncées pour 11,2 min réelles.
-`--preparer-outils` prend environ 13 min de GPU, une fois.
+`--preparer-outils` prend environ 11 min de GPU, une fois (10,6 mesurées, Whisper et NLLB compris).
+
+- Paroles : 15 s de transcription pour 21 s chantées. Les modèles (5,6 Go) sont copiés sur le disque local pendant la
+  conversion : lu en direct sur le montage, Whisper mettait 5 min à se charger.
+- Piste de secours : elle convertit en entier les morceaux qui touchent une zone perdue, soit +40 s sur un extrait de
+  25 s et environ +1 min 40 à 30 pas sur une chanson de 3 min 30 (13 morceaux sur 38).
 
 ## Limites connues
 
@@ -834,6 +884,9 @@ chœurs compris ; en mode `auto`, il suppose du chant). Mesuré : 10,9 min annon
   creuses.
 - **Mode** : le critère du rap (voix presque continue sur un fond tonal) n'a pas encore été essayé sur un vrai rap.
   Un dialogue sur une musique très tonale peut encore passer en chant. `--mode` force le mode.
+- **Paroles** : la langue d'un passage chanté est souvent peu sûre. Une ligne qui mêle deux langues est transcrite dans
+  celle de la phrase, et l'autre s'y déforme. Les vocalises restent sans texte, et la traduction se fait ligne à ligne,
+  sans le contexte de la chanson.
 - **Extraits** : un extrait commence sur l'image clé qui précède `--debut`, donc souvent un peu plus tôt.
 - **Son** : la sortie est en stéréo, même si la vidéo était en 5.1.
 - **Kaggle** : il faut une connexion internet et le quota GPU gratuit du compte. Chaque appel à Kaggle a une limite
@@ -960,6 +1013,8 @@ inclus dans ce dépôt ; chacun garde sa propre licence.
 |---|---|---|
 | [YingMusic-SVC](https://github.com/GiantAILab/YingMusic-SVC) (GiantAILab) | conversion de voix chantée sans entraînement, moteur du chant par défaut, commit figé | code MIT ; [poids](https://huggingface.co/GiantAILab/YingMusic-SVC) **CC BY-NC 4.0 : usage non commercial** |
 | [Seed-VC](https://github.com/Plachtaa/seed-vc) (Plachtaa) | conversion de voix sans entraînement, V1, commit figé : parole, et chant avec `--moteur seedvc` | GPL-3.0 |
+| [Whisper large-v3](https://huggingface.co/openai/whisper-large-v3) (OpenAI), par [transformers](https://github.com/huggingface/transformers) | transcription des paroles, langue, horodatage par mot | poids Apache-2.0 ; transformers Apache-2.0 |
+| [NLLB-200 distillé 600M](https://huggingface.co/facebook/nllb-200-distilled-600M) (Meta) | traduction des paroles en français | poids **CC BY-NC 4.0 : usage non commercial** |
 | [audio-separator](https://github.com/nomadkaraoke/python-audio-separator) | séparation voix / musique et nettoyage (version 0.48.0) | MIT |
 | [MelBand-Roformer](https://huggingface.co/KimberleyJSN/melbandroformer) (Kimberley Jensen) | modèle de séparation `vocals_mel_band_roformer.ckpt` | voir la page du modèle |
 | [MelBand-Roformer karaoké](https://huggingface.co/becruily/mel-band-roformer-karaoke) (becruily) | voix principale / chœurs, `mel_band_roformer_karaoke_becruily.ckpt` | pas de licence indiquée sur la page du modèle |

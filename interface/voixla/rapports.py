@@ -19,6 +19,7 @@ EXT_VIDEO = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 NOMS_MODELES = {"yingmusic": "YingMusic-SVC", "chant44k": "Seed-VC 44 kHz", "parole22k": "Seed-VC 22 kHz (parole)"}
 NOMS_MOTEURS = {"yingmusic": "YingMusic-SVC", "seedvc": "Seed-VC"}
 VOIX_DANS_NOM = re.compile(r" - voix (.+)$")
+EXPORT_DANS_NOM = re.compile(r" \((?:beat|voix seule)\)$")   # même motif que voixla.pistes
 FRISE_LIGNE = re.compile(r"^(\d+):(\d+(?:\.\d+)?)–(\d+):(\d+(?:\.\d+)?)\s+(?:voix (\S+(?: \d)?))?\s*f0\s+(\d+) Hz\s+→\s+"
                          r"([+\-−]?\d+(?:\.\d+)?) dt\s+\((.*)\)$")
 
@@ -220,6 +221,8 @@ def _voix_des_medias(dossier):
         ext = f.suffix.lower()
         if ext not in EXT_VIDEO and ext != ".mp3":
             continue
+        if EXPORT_DANS_NOM.search(f.stem):
+            continue    # beat ou voix seule enregistrés par l'interface (« … - voix <Nom> (beat).mp3 »)
         m = VOIX_DANS_NOM.search(f.stem)
         nom = m.group(1) if m else ""
         medias.setdefault(nom, {})["mp3" if ext == ".mp3" else "video"] = f

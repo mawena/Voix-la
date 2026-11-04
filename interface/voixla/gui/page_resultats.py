@@ -1,17 +1,28 @@
-"""Page Résultats : la liste des doublages, et pour chacun un lecteur (vidéo ou MP3) avec bascule A/B original ⇄
-doublé à la même position, la frise d'octave, les durées par étape, un remix rapide, ouvrir le dossier, supprimer
-vers la corbeille."""
+"""Page Résultats : la liste des doublages, et pour chacun un lecteur (vidéo ou MP3) où l'on choisit ce qu'on écoute
+à la même position (doublage, original, beat seul, ma voix seule, voix d'origine seule ; touche B : doublage ⇄
+original), les paroles synchronisées, la frise d'octave, les durées par étape, un remix rapide, l'enregistrement du
+beat ou de la voix seule, ouvrir le dossier, supprimer vers la corbeille."""
 
 from pathlib import Path
 
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
-from .. import chemins, formats, moteur, rapports
+from .. import chemins, formats, moteur, pistes, rapports
 from . import commun
 from . import visualisations as vis
 from .analyses import analyses
 from .frise import Frise, legende as legende_frise
 from .lecteur import Lecteur
+from .vue_paroles import VueParoles
+
+PRODUITS_VIS = {"spectre": "spectre", "onde": "onde", "vumetre": "bandes"}
+
+
+def phrase(texte):
+    """Majuscule en tête, sauf devant un chemin (« travail/… »)."""
+    if not texte or texte.startswith("travail/"):
+        return texte or ""
+    return texte[:1].upper() + texte[1:]
 
 
 def sous_titre(res, maintenant=None):
@@ -39,6 +50,13 @@ class PageDetail(Adw.NavigationPage):
         self.page, self.fenetre, self.res = page, page.fenetre, res
         self.forme = "video" if res.video else "mp3"
         self.remix_en_cours = False
+        self.piste = "doublage"       # ce qu'on écoute (clé de voixla.pistes, ou « comparaison »)
+        self.voulue = None            # piste demandée qui se prépare encore (ma voix seule)
+        self._maj = False             # bascules mises à jour par le code (pas par un clic)
+        self._preparation = False
+        self._demandees = set()       # (fichier, produits) dont l'analyse a été demandée
+        self.vue_paroles = None
+        self.pistes_dispo = pistes.choisir_pistes(res, self.forme, self.source_choisie())
         vue = Adw.ToolbarView()
         entete = Adw.HeaderBar()
         entete.set_title_widget(Adw.WindowTitle(title=res.titre_court, subtitle=sous_titre(res)))
@@ -55,14 +73,18 @@ class PageDetail(Adw.NavigationPage):
         section = Gio.Menu()
         section.append("Mélodie en Hz (sinon en notes)", "win.melodie-hz")
         menu_vis.append_section(None, section)
+        section = Gio.Menu()
+        section.append("Paroles", "win.paroles")
+        menu_vis.append_section(None, section)
         entete.pack_end(Gtk.MenuButton(icon_name="view-reveal-symbolic", menu_model=menu_vis,
-                                       tooltip_text="Visualisations du son"))
+                                       tooltip_text="Visualisations du son et paroles"))
         vue.add_top_bar(entete)
 
         corps = commun.boite(espace=14, marges=16)
-        # Bascules : forme (vidéo / MP3) et A/B
+        self.corps = corps
+        # Bascules : forme (vidéo / MP3) et piste écoutée, à la même position
         barre = Gtk.Box(spacing=12)
-        forme = Gtk.Box(css_classes=["linked"])
+        forme = Gtk.Box(css_classes=["linked"], valign=Gtk.Align.CENTER)
         self.t_video = Gtk.ToggleButton(label="Vidéo", active=self.forme == "video", sensitive=bool(res.video))
         self.t_mp3 = Gtk.ToggleButton(label="MP3", group=self.t_video, active=self.forme == "mp3",
                                       sensitive=bool(res.mp3))
@@ -72,18 +94,21 @@ class PageDetail(Adw.NavigationPage):
         forme.append(self.t_mp3)
         barre.append(forme)
         barre.append(Gtk.Box(hexpand=True))
-        ab = Gtk.Box(css_classes=["linked"])
-        self.t_a = Gtk.ToggleButton(label="A · original", tooltip_text="Écouter l’original à la même position (touche B)")
-        self.t_b = Gtk.ToggleButton(label="B · doublé", group=self.t_a, active=True,
-                                    tooltip_text="Écouter le doublage à la même position (touche B)")
-        self.t_a.connect("toggled", lambda b: b.get_active() and (self.lecteur.basculer("A"), self._appliquer_pistes()))
-        self.t_b.connect("toggled", lambda b: b.get_active() and (self.lecteur.basculer("B"), self._appliquer_pistes()))
-        ab.append(self.t_a)
-        ab.append(self.t_b)
-        barre.append(ab)
+        groupe = Gtk.Box(css_classes=["linked"], valign=Gtk.Align.CENTER)
+        groupe.update_property([Gtk.AccessibleProperty.LABEL], ["Ce qu’on écoute"])
+        self.t_pistes, premier = {}, None
+        for cle in pistes.CLES:
+            # libellés qui se raccourcissent (…) dans une fenêtre étroite plutôt que d'élargir la page
+            t = Gtk.ToggleButton(child=Gtk.Label(label=pistes.LIBELLES[cle], ellipsize=Pango.EllipsizeMode.END),
+                                 group=premier, active=cle == "doublage")
+            premier = premier or t
+            t.connect("toggled", lambda b, c=cle: b.get_active() and self.choisir_piste(c))
+            groupe.append(t)
+            self.t_pistes[cle] = t
+        barre.append(groupe)
         corps.append(barre)
-        self.note_ab = commun.legende("")
-        corps.append(self.note_ab)
+        self.note_piste = commun.legende("")
+        corps.append(self.note_piste)
 
         self.lecteur = Lecteur(hauteur=320, sur_position=self._position)
         corps.append(self.lecteur)
@@ -117,6 +142,7 @@ class PageDetail(Adw.NavigationPage):
 
         # Informations
         corps.append(self._groupe_infos())
+        corps.append(self._groupe_pistes())
         corps.append(self._groupe_remix())
         corps.append(self._groupe_durees())
         if res.comparaisons:
@@ -138,38 +164,117 @@ class PageDetail(Adw.NavigationPage):
 
     # --- lecteur ---------------------------------------------------------------------------------------------------
 
-    def sources(self, forme):
-        r = self.res
-        if forme == "video":
-            b = r.video
-            a = r.video_source if r.source_presente else self.source_choisie()
-            return {"B": (b, 0.0, "doublé"), "A": (a, r.decalage_source_s, "original")} if b else {}
-        return {"B": (r.mp3, 0.0, "doublé"), "A": (r.original_wav, 0.0, "original")} if r.mp3 else {}
-
     def changer_forme(self, forme):
+        """Vidéo ou MP3 : recharge les pistes, garde la piste écoutée (si elle existe encore) et la position."""
         pos = self.lecteur.position_ref() if self.lecteur.media() else 0.0
         self.forme = forme
-        src = self.sources(forme)
-        self.lecteur.definir(src, "B", audio_seul=forme == "mp3")
+        self.pistes_dispo = pistes.choisir_pistes(self.res, forme, self.source_choisie())
+        sources = {c: (p.fichier, p.decalage, p.libelle) for c, p in self.pistes_dispo.items() if p.fichier}
+        sans_image = {c for c, p in self.pistes_dispo.items() if not p.image}
+        cle = pistes.piste_apres_changement(self.pistes_dispo, self.voulue or self.piste)
+        if cle is not None and self.pistes_dispo[cle].fichier is None:
+            # ma voix seule pas encore prête : on écoute le doublage pendant qu'elle se prépare
+            self.voulue = cle
+            cle = "doublage" if "doublage" in sources else next(iter(sources), None)
+        self.lecteur.definir(sources, cle, audio_seul=forme == "mp3", sans_image=sans_image)
         if pos:
             self.lecteur.aller_a(pos)
-        a_ok = "A" in self.lecteur.sources
-        self.t_a.set_sensitive(a_ok)
-        self.t_b.set_active(True)
-        if not a_ok:
-            if forme == "video":
-                v = self.res.video_source
-                self.note_ab.set_label(f"Bascule A/B indisponible : vidéo source introuvable ({v}) ; « Choisir… » "
-                                       "dans Doublage pour l’indiquer" if v else
-                                       "Bascule A/B indisponible : la vidéo source n’est pas indiquée dans "
-                                       "travail/source.json")
-            else:
-                self.note_ab.set_label("Bascule A/B indisponible : travail/original.wav manque")
+        self.piste = self.lecteur.cle or "doublage"
+        self._maj_bascules()
+        self._maj_groupe_pistes()
+        if self.voulue:
+            self._preparer_ma_voix()
+        self._appliquer_pistes()
+
+    def _maj_bascules(self):
+        """État des bascules de pistes : grisées (avec la raison en infobulle) si la piste manque."""
+        self._maj = True
+        try:
+            for c, t in self.t_pistes.items():
+                p = self.pistes_dispo.get(c)
+                ok = bool(p and p.disponible)
+                t.set_sensitive(ok)
+                t.set_tooltip_text(pistes.INFOBULLES[c] if ok else f"{p.libelle} indisponible : {p.explication}")
+                if c == (self.voulue or self.piste):
+                    t.set_active(True)
+                elif t.get_active():
+                    t.set_active(False)
+        finally:
+            self._maj = False
+        self._maj_note()
+
+    def _maj_note(self):
+        c = self.voulue or self.piste
+        p = self.pistes_dispo.get(c)
+        o = self.pistes_dispo.get("original")
+        if not any(x.fichier for x in self.pistes_dispo.values()):
+            texte = "Aucun fichier à lire : doublage inachevé."
+        elif p is None:
+            return
+        elif self.voulue:
+            texte = (f"Préparation de ma voix seule ({p.explication}), sous nice ; elle attend son tour si le poste "
+                     "est chargé. En attendant, le doublage continue.")
+        elif c == "doublage":
+            texte = ("Touche B : l’original à la même position." if o and o.fichier else
+                     f"Original indisponible : {o.explication}." if o else "")
+        elif c == "original":
+            texte = f"Original : {p.explication}. Touche B : retour au doublage."
         else:
-            self.note_ab.set_label("A = " + ("la vidéo d’origine" if forme == "video" else "le son d’origine extrait")
-                                   + ", à la même position ; touche B pour basculer.")
-        if not src:
-            self.note_ab.set_label("Aucun fichier à lire : doublage inachevé.")
+            texte = f"{p.libelle} : {p.explication}. Touche B : retour au doublage."
+        self.note_piste.set_label(texte)
+
+    def choisir_piste(self, cle):
+        """Clic sur une piste : on y passe à la même position (ma voix seule se prépare d'abord, au besoin)."""
+        if self._maj:
+            return
+        p = self.pistes_dispo.get(cle)
+        if p is None or not p.disponible:
+            self._maj_bascules()
+            return
+        if p.fichier is None:
+            self.voulue = cle
+            self._maj_note()
+            self._preparer_ma_voix()
+            return
+        self.voulue = None
+        if cle not in self.lecteur.sources:   # on écoutait un extrait de comparaison : retour aux pistes
+            self.piste = cle
+            t = self.t_video if self.forme == "video" else self.t_mp3
+            if t.get_active():
+                self.changer_forme(self.forme)
+            else:
+                t.set_active(True)            # qui recharge les pistes (changer_forme)
+            return
+        self.lecteur.basculer(cle)
+        self.piste = self.lecteur.cle or cle
+        self._maj_note()
+        self._appliquer_pistes()
+
+    def _preparer_ma_voix(self):
+        if self._preparation or not self.res.dossier_voix:
+            return
+        self._preparation = True
+
+        def pret(f, message):
+            if message == "attente":
+                return
+            self._preparation = False
+            p = self.pistes_dispo.get("ma_voix")
+            if f is None or p is None:
+                self.voulue = None
+                self.fenetre.toast(f"Ma voix seule : {message or 'indisponible'}")
+                self._maj_bascules()
+                return
+            p.fichier, p.a_preparer = Path(f), False
+            self.lecteur.ajouter("ma_voix", (p.fichier, 0.0, p.libelle), sans_image=True)
+            if self.voulue == "ma_voix":
+                self.voulue = None
+                self.lecteur.basculer("ma_voix")
+                self.piste = self.lecteur.cle or "ma_voix"
+            self._maj_bascules()
+            self._maj_groupe_pistes()
+            self._appliquer_pistes()
+        analyses().ma_voix(self.res.dossier_voix, pret, self.res.duree_s)
 
     def source_choisie(self):
         """Vidéo source choisie à la main (préférences de l'interface) quand celle de source.json est introuvable."""
@@ -202,9 +307,11 @@ class PageDetail(Adw.NavigationPage):
         d.open(self.fenetre, None, fini)
 
     def bascule_ab(self):
-        if not self.t_a.get_sensitive():
-            return
-        (self.t_b if self.t_a.get_active() else self.t_a).set_active(True)
+        """Touche B : doublage ⇄ original (et de toute autre piste au doublage)."""
+        cible = pistes.bascule_ab(self.piste)
+        p = self.pistes_dispo.get(cible)
+        if p is not None and p.fichier is not None:
+            self.t_pistes[cible].set_active(True)
 
     def lecture_pause(self):
         m = self.lecteur.media()
@@ -216,6 +323,8 @@ class PageDetail(Adw.NavigationPage):
             self.frise.placer(t)
         for w in self.vis.values():
             w.placer(t, lecture)
+        if self.vue_paroles is not None:
+            self.vue_paroles.placer(t, lecture)
         s = rapports.segment_a(self.segs, t)
         texte = formats.chrono_precis(t)
         if s:
@@ -235,13 +344,45 @@ class PageDetail(Adw.NavigationPage):
         return self.lecteur.position_ref(), bool(m and m.get_playing())
 
     def fichier_piste(self, cle):
-        """Le son analysé pour A (son d'origine extrait, même temps que le doublage) ou B (le doublage)."""
+        """Le son analysé pour une piste : le doublage (MP3 de préférence), le son d'origine extrait (même temps que
+        le doublage), le beat, ma voix seule une fois prête, la voix d'origine."""
         r = self.res
-        if cle == "A":
+        if cle == "original":
             return r.original_wav
-        return r.mp3 or r.video
+        if cle not in pistes.CLES or cle == "doublage":
+            return r.mp3 or r.video
+        p = self.pistes_dispo.get(cle)
+        return p.fichier if p else None
+
+    def _maj_paroles(self):
+        """Paroles allumées ou éteintes (menu « œil ») : sous le lecteur, chargées une fois."""
+        voulu = bool(self.fenetre.prefs.get("paroles"))
+        if voulu and self.vue_paroles is None:
+            w = VueParoles(sur_clic=self._clic_frise, langue=self.fenetre.prefs.get("paroles_langue") or "deux",
+                           sur_langue=self._langue_paroles)
+            w.suivre(self._fournisseur)
+            self.corps.insert_child_after(w, self.lecteur)
+            self.vue_paroles = w
+            r = self.res
+
+            def lu(p, message):
+                if p is not None:
+                    w.definir(p)
+                    w.placer(self.lecteur.position_ref())
+                elif message == "attente":
+                    w.dire("Lecture des sous-titres de la vidéo doublée (sous nice)…")
+                else:
+                    w.dire(f"Pas de paroles : {message}" if message else "Pas de paroles")
+            analyses().paroles(r.dossier_voix, r.video, lu)
+        elif not voulu and self.vue_paroles is not None:
+            self.corps.remove(self.vue_paroles)
+            self.vue_paroles = None
+
+    def _langue_paroles(self, valeur):
+        self.fenetre.prefs = chemins.modifier_preference("paroles_langue", valeur)
 
     def _maj_visualisations(self):
+        self._maj_paroles()
         if not vis.disponible():
             return
         p = self.fenetre.prefs
@@ -310,27 +451,39 @@ class PageDetail(Adw.NavigationPage):
         else:
             cible.append(boite)
 
-    def _charger_pistes(self):
-        produits = [p for nom, p in (("spectre", "spectre"), ("onde", "onde"), ("vumetre", "bandes")) if nom in self.vis]
+    def _produits(self):
+        return [p for nom, p in PRODUITS_VIS.items() if nom in self.vis]
+
+    def _cle_vis(self):
+        return self.piste if self.piste in pistes.CLES else "doublage"
+
+    def _charger_pistes(self, cles=None):
+        """Analyse (en cache, sinon sous nice) des pistes à visualiser : par défaut le doublage, l'original et la piste
+        écoutée ; les autres le seront quand on les écoutera."""
+        produits = self._produits()
         if not produits:
             return
-        fichiers = [f for f in (self.fichier_piste("A"), self.fichier_piste("B")) if f]
+        cles = cles or list(dict.fromkeys(["doublage", "original", self._cle_vis()]))
+        fichiers = [f for f in dict.fromkeys(self.fichier_piste(c) for c in cles) if f]
+        fichiers = [f for f in fichiers if (str(f), tuple(produits)) not in self._demandees]
         if not fichiers:
-            for nom in ("spectre", "onde", "vumetre"):
-                if nom in self.vis:
-                    self.vis[nom].dire("Pas de son à analyser (doublage inachevé)")
+            if self.fichier_piste(self._cle_vis()) is None:
+                for nom in PRODUITS_VIS:
+                    if nom in self.vis:
+                        self.vis[nom].dire("Pas de son à analyser pour cette piste")
             return
+        self._demandees.update((str(f), tuple(produits)) for f in fichiers)
 
         def lu(r, message):
             for f, d in r.items():
                 if d is not None:
                     self.pistes[str(f)] = {**self.pistes.get(str(f), {}), **d}
             if message == "attente":
-                for nom in ("spectre", "onde", "vumetre"):
-                    if nom in self.vis and not self._donnees(self.lecteur.cle or "B"):
+                for nom in PRODUITS_VIS:
+                    if nom in self.vis and not self._donnees(self._cle_vis()):
                         self.vis[nom].dire("Analyse du son (sous nice ; elle attend son tour si le poste est chargé)…")
             elif message:
-                for nom in ("spectre", "onde", "vumetre"):
+                for nom in PRODUITS_VIS:
                     if nom in self.vis:
                         self.vis[nom].dire(message)
             self._appliquer_pistes()
@@ -341,17 +494,25 @@ class PageDetail(Adw.NavigationPage):
         return self.pistes.get(str(f)) if f else None
 
     def _appliquer_pistes(self):
-        cle = self.lecteur.cle or "B"
-        if cle not in ("A", "B"):
-            cle = "B"
-        d = self._donnees(cle)
-        if d is None:
+        """Les visualisations montrent la piste écoutée (son analyse est demandée la première fois)."""
+        produits = self._produits()
+        if not produits:
             return
-        for nom, produit in (("spectre", "spectre"), ("onde", "onde"), ("vumetre", "bandes")):
+        cle = self._cle_vis()
+        d = self._donnees(cle)
+        if d is None or any(p not in d for p in produits):
+            f = self.fichier_piste(cle)
+            if f is not None and (str(f), tuple(produits)) not in self._demandees:
+                for nom in PRODUITS_VIS:
+                    if nom in self.vis:
+                        self.vis[nom].dire(f"Analyse de la piste « {pistes.LIBELLES[cle]} »…")
+                self._charger_pistes([cle])
+            return
+        for nom, produit in PRODUITS_VIS.items():
             if nom in self.vis and produit in d:
                 self.vis[nom].definir(d)
         if "spectre" in self.vis and hasattr(self, "l_spectre"):
-            self.l_spectre.set_label("Spectrogramme — " + ("A · son d’origine" if cle == "A" else "B · doublé"))
+            self.l_spectre.set_label(f"Spectrogramme — {pistes.LIBELLES[cle]}")
 
     # --- groupes ---------------------------------------------------------------------------------------------------
 
@@ -424,6 +585,76 @@ class PageDetail(Adw.NavigationPage):
                                        clic=lambda: commun.montrer_fichier(self.fenetre, r.video)))
             g.add(l)
         return g
+
+    def _groupe_pistes(self):
+        g = Adw.PreferencesGroup(title="Pistes séparées",
+                                 description="À écouter seules par les bascules au-dessus du lecteur, ou à enregistrer "
+                                             "en MP3 (ou FLAC) à côté des sorties. Les fichiers de doubler ne sont "
+                                             "pas modifiés.")
+        self.lignes_pistes = {}
+        for cle, libelle in (("beat", "Enregistrer le beat…"), ("ma_voix", "Enregistrer ma voix seule…"),
+                             ("voix_origine", None)):
+            ligne = Adw.ActionRow(title=pistes.LIBELLES[cle], subtitle_lines=3)
+            b = None
+            if libelle:
+                b = commun.bouton(libelle, valign=Gtk.Align.CENTER, clic=lambda c=cle: self.enregistrer(c))
+                ligne.add_suffix(b)
+            self.lignes_pistes[cle] = (ligne, b)
+            g.add(ligne)
+        self._maj_groupe_pistes()
+        return g
+
+    def _maj_groupe_pistes(self):
+        for cle, (ligne, b) in getattr(self, "lignes_pistes", {}).items():
+            p = self.pistes_dispo.get(cle)
+            if p is None:
+                continue
+            texte = phrase(p.explication)
+            if cle == "ma_voix" and p.a_preparer:
+                texte += " ; préparée en cache au premier usage."
+            ligne.set_subtitle(commun.echapper(texte))
+            if b is not None:
+                b.set_sensitive(p.disponible)
+                b.set_tooltip_text(None if p.disponible else f"Indisponible : {p.explication}")
+
+    def enregistrer(self, cle):
+        """« Enregistrer le beat… », « Enregistrer ma voix seule… » : sélecteur ouvert sur le dossier des sorties,
+        avec le nom des sorties (« <titre> - voix <Nom> (beat).mp3 ») ; .flac ou .wav si on change l'extension."""
+        p = self.pistes_dispo.get(cle)
+        if p is None or not p.disponible:
+            return
+        filtres = commun.liste_filtres(commun.filtre_fichiers("MP3 (320 kb/s)", ("audio/mpeg",), ("*.mp3",)),
+                                       commun.filtre_fichiers("FLAC (sans perte)", ("audio/flac",), ("*.flac",)))
+        d = Gtk.FileDialog(title=f"Enregistrer {'le beat' if cle == 'beat' else 'ma voix seule'}", modal=True,
+                           filters=filtres, initial_folder=Gio.File.new_for_path(str(self.res.dossier)),
+                           initial_name=pistes.nom_export(self.res, cle, ".mp3"))
+
+        def fini(dlg, r):
+            try:
+                f = commun.chemin_de(dlg.save_finish(r))
+            except GLib.Error:
+                return
+            if not f:
+                return
+            if f.suffix.lower() not in pistes.FORMATS_EXPORT:
+                f = f.with_name(f.name + ".mp3")
+            self._exporter(cle, f)
+        d.save(self.fenetre, None, fini)
+
+    def _exporter(self, cle, sortie):
+        p = self.pistes_dispo.get(cle)
+        self.fenetre.toast(f"Enregistrement de {sortie.name} (sous nice)…")
+
+        def fini(ok, message):
+            if ok:
+                self.fenetre.toast(f"Enregistré : {sortie.name}", "Montrer",
+                                   lambda: commun.montrer_fichier(self.fenetre, sortie), duree=6)
+            else:
+                commun.informer(self.fenetre, "Enregistrement impossible", message)
+        if cle == "ma_voix" and p.fichier is None:
+            analyses().exporter(self.res.dossier_voix, sortie, fini, self.res.duree_s, voix=True)
+        else:
+            analyses().exporter(p.fichier, sortie, fini, self.res.duree_s)
 
     def _groupe_remix(self):
         r, rap = self.res, self.res.rapport or {}
@@ -502,16 +733,36 @@ class PageDetail(Adw.NavigationPage):
         return g
 
     def _ecouter_fichier(self, f):
-        self.lecteur.definir({"B": (f, 0.0, f.stem)}, "B", audio_seul=True)
-        self.t_a.set_sensitive(False)
-        self.note_ab.set_label(f"Lecture de {f.name} (revenir avec Vidéo ou MP3).")
-        self.t_video.set_active(False)
+        self.voulue = None
+        self.lecteur.definir({"comparaison": (f, 0.0, f.stem)}, "comparaison", audio_seul=True)
+        self.piste = "comparaison"
+        self._maj = True
+        for t in (*self.t_pistes.values(), self.t_video, self.t_mp3):
+            t.set_active(False)
+        self._maj = False
+        self.note_piste.set_label(f"Lecture de {f.name} (revenir avec Vidéo, MP3 ou une piste).")
         m = self.lecteur.media()
         if m:
             m.play()
 
     def scenario(self, action):
-        """Essai : « ab » (lecture muette, puis bascule sur l'original à la même position), « aller-<s> »."""
+        """Essai : « ab » (lecture muette, puis bascule sur l'original à la même position), « aller-<s> »,
+        « piste-<clé> » (beat, ma_voix…), « lire » (lecture muette)."""
+        if action.startswith("piste-"):
+            # après « lire » (1,8 s) : la vidéo a déjà une image à figer
+            cle = action.split("-", 1)[1]
+            GLib.timeout_add(2600, lambda: (cle in self.t_pistes and self.t_pistes[cle].set_active(True), False)[1])
+        if action == "mp3" and self.t_mp3.get_sensitive():
+            self.t_mp3.set_active(True)
+        if action in ("lire", "ab") or action.startswith("piste-"):
+            self.lecteur.rendre_muet()     # essais : jamais de son, même sur une piste ouverte plus tard
+        if action == "lire":
+            def lire_muet():
+                m = self.lecteur.media()
+                if m:
+                    m.play()
+                return False
+            GLib.timeout_add(1800, lire_muet)
         if action == "durees" and getattr(self, "depliant_durees", None):
             self.depliant_durees.set_expanded(True)
         if action == "bas":
@@ -591,7 +842,8 @@ class PageDetail(Adw.NavigationPage):
         except OSError:
             pass
         if autres:
-            fichiers = [p for p in (r.video, r.mp3) if p] + ([r.dossier_voix] if r.dossier_voix else [])
+            fichiers = [p for p in (r.video, r.mp3) if p] + pistes.exports_existants(r) \
+                + ([r.dossier_voix] if r.dossier_voix else [])
             corps = (f"Le dossier contient aussi les voix {', '.join(autres)} : seuls les fichiers de la voix "
                      f"{r.voix_nom} vont à la corbeille ({', '.join(p.name for p in fichiers)}).")
         else:

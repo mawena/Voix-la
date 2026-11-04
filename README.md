@@ -2,8 +2,7 @@
 
 Voix-là : votre vidéo, avec une autre voix. Et voilà.
 
-> **État : en développement.** Le code (`doubler.py`, `kaggle/`, interface graphique) arrive dans la première
-> version, `v0.1.0`. Ce README décrit l'outil tel qu'il fonctionne sur la branche de travail.
+> **Version 0.1.0** (première version publique) : voir le [journal des modifications](CHANGELOG.md).
 
 `doubler` prend une vidéo (chanson d'une chanteuse ou d'un chanteur, duo, rap, ou vidéo parlée) et rend la même vidéo,
 avec son audio, où la voix est remplacée par une voix clonée. La mélodie, le phrasé et l'interprétation restent ceux de

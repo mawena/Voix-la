@@ -184,6 +184,25 @@ class Porte(unittest.TestCase):
         self.assertEqual(N.gain_secours(x, np.zeros(n), gain), 1.0)
 
 
+class OutilLocal(unittest.TestCase):
+    """kaggle/secours_local.py : la somme des pistes nettoyées reconstituée d'après la voix convertie sèche d'un doublage
+    déjà fait (muette là où rien n'a été converti) retrouve le passage perdu."""
+
+    def test_reconstitution_d_apres_la_voix_convertie(self):
+        import importlib.util
+        from commun import DEPOT
+        spec = importlib.util.spec_from_file_location('secours_local', DEPOT / 'kaggle' / 'secours_local.py')
+        S = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(S)
+        voix, lead, choeurs, f0 = scene()
+        seche = 0.5 * (lead + choeurs)            # la voix convertie : 6 dB plus bas, rien sur le « oooh »
+        x, nette, decal = S.reconstituer(N, voix, seche)
+        self.assertAlmostEqual(decal, 6.0, delta=1.5)
+        zones, info, decision, secondes, active = S.detecter(N, x, nette, f0)
+        self.assertEqual(decision, 'secours')
+        self.assertTrue(any(abs(z['debut_s'] - OOOH[0]) < 0.2 and abs(z['fin_s'] - OOOH[1]) < 0.25 for z in zones), zones)
+
+
 class Suites(unittest.TestCase):
     def test_suites(self):
         self.assertEqual(N.suites([]), [])

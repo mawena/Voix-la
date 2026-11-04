@@ -2021,18 +2021,20 @@ def etape_ying(travail):
 
 def depuis_hf(classe, sources, cache, demi=True, **options):
     """classe.from_pretrained sur la première source qui se charge (montage d'outils, puis Hugging Face par internet),
-    en float16 (dtype=, ou torch_dtype= des transformers d'avant la 4.56). Rend (objet, source utilisée, erreurs)."""
+    en float16 (dtype=, ou torch_dtype= des transformers d'avant la 4.56). Une option refusée (TypeError ou ValueError
+    qui la nomme : API changée) est retirée avant l'essai suivant. Rend (objet, source utilisée, erreurs)."""
     import torch
     erreurs = []
+    essais = [{**options, 'dtype': torch.float16}, {**options, 'torch_dtype': torch.float16}, {'dtype': torch.float16},
+              {'torch_dtype': torch.float16}, {}] if demi else [dict(options), {}]
     for src in [s for s in sources if s]:
-        for cle in (('dtype', 'torch_dtype') if demi else (None,)):
-            k = {**options, 'cache_dir': cache}
-            if cle:
-                k[cle] = torch.float16
+        for k in essais:
             try:
-                return classe.from_pretrained(src, **k), src, erreurs
-            except TypeError as e:
-                erreurs.append(f'{src} ({cle}) : {e!r}'[:300])
+                return classe.from_pretrained(src, **k, cache_dir=cache), src, erreurs
+            except (TypeError, ValueError) as e:
+                erreurs.append(f'{src} ({", ".join(k) or "sans option"}) : {e!r}'[:300])
+                if not any(o in str(e) for o in [*k, 'keyword', 'argument']):
+                    break   # pas une option refusée : source suivante
             except Exception as e:  # noqa: BLE001 — source suivante (montage incomplet : internet)
                 erreurs.append(f'{src} : {e!r}'[:300])
                 break
@@ -2055,8 +2057,9 @@ def etape_paroles(travail):
     t0 = time.time()
     try:
         proc, src_w, err = depuis_hf(WhisperProcessor, [travail.get('whisper'), WHISPER[0]], cache, demi=False)
+        # attention « eager » : les horodatages par mot lisent les poids d'attention croisée (sdpa ne les rend pas)
         modele, src_w, err2 = depuis_hf(WhisperForConditionalGeneration, [src_w, WHISPER[0]], cache,
-                                        attn_implementation='eager', low_cpu_mem_usage=True)
+                                        attn_implementation='eager')
         modele = modele.to('cuda').eval()
         pipe = pipeline('automatic-speech-recognition', model=modele, tokenizer=proc.tokenizer,
                         feature_extractor=proc.feature_extractor, device=modele.device)
@@ -2097,63 +2100,31 @@ def etape_paroles(travail):
                 erreurs.append(f'{mode} : {e!r}'[:300])
         return None, None, erreurs
 
+    def lot_nllb(lg, lignes):
+        """Traduction vers le français d'un lot de lignes d'une langue (NLLB-200) ; None si la langue manque à NLLB."""
+        code = NLLB.get(lg)
+        if not code:
+            return None
+        if code not in toks:
+            toks[code] = AutoTokenizer.from_pretrained(src_t, src_lang=code, cache_dir=cache)
+        tok = toks[code]
+        enc = tok(lignes, return_tensors='pt', padding=True, truncation=True, max_length=200).to(mt.device)
+        with torch.no_grad():
+            out = mt.generate(**enc, forced_bos_token_id=tok.convert_tokens_to_ids('fra_Latn'), max_new_tokens=160,
+                              num_beams=4)
+        return tok.batch_decode(out, skip_special_tokens=True)
+
+    def seize_khz(chemin_audio):
+        x = lire_mono(chemin_audio)
+        return torchaudio.functional.resample(torch.from_numpy(x).float(), SR, 16000).numpy().astype(np.float32)
+
     textes = {}
     for v in travail['videos']:
         t1 = time.time()
-        r = res['videos'][v['id']] = {'piste': v.get('piste'), 'phrases': len(v['phrases']),
-                                      'secondes_transcrites': round(sum(b - a for a, b in v['phrases']), 1),
-                                      'modes': {}, 'retraits': {'hors_chant': 0, 'boucles': 0, 'lignes': 0}}
+        r = res['videos'][v['id']] = {}
         try:
-            x = lire_mono(v['audio'])
-            x16 = torchaudio.functional.resample(torch.from_numpy(x).float(), SR, 16000).numpy().astype(np.float32)
-            del x
-            langues = []
-            for a, b in v['phrases']:
-                seg = x16[int(a * 16000):int(b * 16000)]
-                langues.append((*langue(seg), b - a) if len(seg) >= 1600 else (None, 0.0, b - a))
-            choisies = lisser_langues(langues)
-            r['langues_phrases'] = [[a, b, c, round(p, 2), lg] for (a, b), (c, p, _), lg in zip(v['phrases'], langues, choisies)]
-            r['temps_langue_s'] = round(time.time() - t1, 1)
-            mots = []
-            for a, b, lg, idx in grouper_morceaux(v['phrases'], choisies):
-                lo, hi = int(a * 16000), int(b * 16000)
-                audio = np.zeros(hi - lo, np.float32)
-                for i in idx:   # hors des phrases (bruits, fuites de musique) : muet, avec fondus de 20 ms
-                    pa, pb = max(int(v['phrases'][i][0] * 16000), lo), min(int(v['phrases'][i][1] * 16000), hi)
-                    w = np.ones(pb - pa, np.float32)
-                    f = min(320, len(w) // 2)
-                    if f:
-                        w[:f], w[-f:] = np.linspace(0, 1, f), np.linspace(1, 0, f)
-                    audio[pa - lo:pb - lo] = x16[pa:pb] * w
-                sortie, mode, erreurs = transcrire(audio, lg)
-                r['modes'][mode or 'échec'] = r['modes'].get(mode or 'échec', 0) + 1
-                if erreurs:
-                    r.setdefault('erreurs', []).extend(erreurs[:2])
-                if not sortie:
-                    continue
-                bruts = []
-                for c in sortie.get('chunks') or []:
-                    d, f = (list(c.get('timestamp') or (None, None)) + [None, None])[:2]
-                    if d is None:
-                        continue
-                    f = f if f is not None and f >= d else min(d + 0.5, b - a)
-                    if mode.startswith('mots'):
-                        bruts.append({'debut': a + d, 'fin': a + f, 'mot': c['text'].strip(), 'brut': c['text']})
-                    else:
-                        bruts += [{**m, 'debut': a + m['debut'], 'fin': a + m['fin']} for m in mots_proportionnels(c['text'], d, f)]
-                for m in bruts:
-                    m['langue'] = lg
-                garde, compte = nettoyer_mots(bruts, v['chant'], sortie.get('text') or '')
-                for cle, n in compte.items():
-                    r['retraits'][cle] += n
-                mots += garde
-            lignes, r['retraits']['lignes'] = filtrer_lignes(lignes_de_mots(sorted(mots, key=lambda m: m['debut'])))
-            textes[v['id']] = lignes
-            r.update({'lignes': len(lignes), 'mots': sum(len(l['mots']) for l in lignes), 'langue': langue_principale(lignes),
-                      'langues_s': {}, 'transcription_s': round(time.time() - t1, 1)})
-            for l in lignes:
-                r['langues_s'][l['langue']] = round(r['langues_s'].get(l['langue'], 0) + l['fin'] - l['debut'], 1)
-            log(f"PAROLES {v['id']} : {len(lignes)} lignes, langue {r['langue']} {r['langues_s']}, modes {r['modes']}, "
+            textes[v['id']] = transcrire_video(v, seize_khz(v['audio']), langue, transcrire, r)
+            log(f"PAROLES {v['id']} : {r['lignes']} lignes, langue {r['langue']} {r['langues_s']}, modes {r['modes']}, "
                 f"retraits {r['retraits']}, en {time.time() - t1:.0f} s")
         except Exception as e:  # noqa: BLE001 — une vidéo ratée n'empêche pas les suivantes
             import traceback
@@ -2161,65 +2132,131 @@ def etape_paroles(travail):
             r['erreur'] = f'transcription : {e!r}'[:500]
         ecrire_json(chemin, res)
     res['temps']['transcription_s'] = round(time.time() - t0 - res['chargements_s']['whisper'], 1)
-    del pipe, modele
+    pipe = modele = None   # mémoire du GPU rendue avant le traducteur
     import gc as ramasse
     ramasse.collect()
     torch.cuda.empty_cache()
 
     # Traduction vers le français : seulement les lignes qui ne sont pas en français
-    a_traduire = {}
-    for vid, lignes in textes.items():
-        for j, l in enumerate(lignes):
-            if l['langue'] != 'fr' or travail.get('traduire_toujours'):
-                a_traduire.setdefault(l['langue'], []).append((vid, j))
-    traductions = {vid: [l['texte'] for l in lignes] for vid, lignes in textes.items()}
-    if a_traduire:
+    traductions, toujours = None, bool(travail.get('traduire_toujours'))
+    if any(l['langue'] != 'fr' or toujours for lignes in textes.values() for l in lignes):
         t2 = time.time()
         try:
             from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
-            mt, src_t, err = depuis_hf(AutoModelForSeq2SeqLM, [travail.get('traducteur'), TRADUCTEUR[0]], cache,
-                                       low_cpu_mem_usage=True)
-            mt = mt.to('cuda').eval()
+            mt, src_t, err = depuis_hf(AutoModelForSeq2SeqLM, [travail.get('traducteur'), TRADUCTEUR[0]], cache)
+            res['erreurs_chargement_traducteur'] = err
+            mt, toks = mt.to('cuda').eval(), {}
             res['traducteur_origine'] = 'montage' if src_t != TRADUCTEUR[0] else 'Hugging Face'
             res['chargements_s']['traducteur'] = round(time.time() - t2, 1)
             log(f"PAROLES traducteur {TRADUCTEUR[1]} chargé en {time.time() - t2:.0f} s ({res['traducteur_origine']})")
             t3 = time.time()
-            for lg, places in a_traduire.items():
-                code = NLLB.get(lg)
-                if not code:
-                    res.setdefault('langues_sans_traduction', []).append(lg)
-                    continue
-                tok = AutoTokenizer.from_pretrained(src_t, src_lang=code, cache_dir=cache)
-                cible = tok.convert_tokens_to_ids('fra_Latn')
-                for d in range(0, len(places), 16):
-                    lot = places[d:d + 16]
-                    enc = tok([textes[vid][j]['texte'] for vid, j in lot], return_tensors='pt', padding=True,
-                              truncation=True, max_length=200).to(mt.device)
-                    with torch.no_grad():
-                        out = mt.generate(**enc, forced_bos_token_id=cible, max_new_tokens=160, num_beams=4)
-                    for (vid, j), t in zip(lot, tok.batch_decode(out, skip_special_tokens=True)):
-                        if t.strip():
-                            traductions[vid][j] = t.strip()
+            traductions, info = traduire_lignes(textes, lot_nllb, toujours)
+            res.update(info)
             res['temps']['traduction_s'] = round(time.time() - t3, 1)
-            res['lignes_traduites'] = sum(len(p) for p in a_traduire.values())
-            del mt
+            mt = None
             torch.cuda.empty_cache()
         except Exception as e:  # noqa: BLE001 — les paroles restent, sans traduction
             import traceback
             traceback.print_exc()
             res['erreur_traduction'] = f'traduction : {e!r}'[:500]
-            a_traduire = {}
+            traductions = None
     for v in travail['videos']:
         if v['id'] not in textes:
             continue
         lignes = textes[v['id']]
-        traduites = any(l['langue'] != 'fr' for l in lignes) or travail.get('traduire_toujours')
-        d = paroles_json(lignes, traductions[v['id']] if traduites and a_traduire else None, TRADUCTEUR[1], v.get('piste'))
+        traduites = traductions is not None and (any(l['langue'] != 'fr' for l in lignes) or toujours)
+        d = paroles_json(lignes, traductions[v['id']] if traduites else None, TRADUCTEUR[1], v.get('piste'))
         ecrire_json(v['sortie'], d)
-        res['videos'][v['id']]['fichier'] = os.path.basename(v['sortie'])
-        res['videos'][v['id']]['traduction'] = bool(d['traductions'])
+        res['videos'][v['id']].update({'fichier': os.path.basename(v['sortie']), 'traduction': bool(d['traductions'])})
     res['temps']['total_s'] = round(time.time() - t0, 1)
     ecrire_json(chemin, res)
+
+
+def transcrire_video(v, x16, detecter, transcrire_morceau, r):
+    """Paroles d'une vidéo (sans torch : les modèles sont passés en fonctions). v : {phrases, chant, piste} ; x16 : sa
+    piste à 16 kHz ; detecter(audio) -> (langue, probabilité) ; transcrire_morceau(audio, langue) -> (sortie du pipeline
+    {text, chunks: [{text, timestamp}]}, mode, erreurs). Langue de chaque phrase, morceaux de même langue (hors des
+    phrases : muet), mots horodatés, garde-fous, lignes. Remplit r (mesures) et rend les lignes."""
+    import numpy as np
+    t1 = time.time()
+    r.update({'piste': v.get('piste'), 'phrases': len(v['phrases']),
+              'secondes_transcrites': round(sum(b - a for a, b in v['phrases']), 1), 'modes': {},
+              'retraits': {'hors_chant': 0, 'boucles': 0, 'lignes': 0}})
+    langues = []
+    for a, b in v['phrases']:
+        seg = x16[int(a * 16000):int(b * 16000)]
+        langues.append((*detecter(seg), b - a) if len(seg) >= 1600 else (None, 0.0, b - a))
+    choisies = lisser_langues(langues)
+    r['langues_phrases'] = [[a, b, c, round(p, 2), lg] for (a, b), (c, p, _), lg in zip(v['phrases'], langues, choisies)]
+    r['temps_langue_s'] = round(time.time() - t1, 1)
+    mots = []
+    for a, b, lg, idx in grouper_morceaux(v['phrases'], choisies):
+        lo, hi = int(a * 16000), int(b * 16000)
+        audio = np.zeros(hi - lo, np.float32)
+        for i in idx:   # hors des phrases (bruits, fuites de musique) : muet, avec fondus de 20 ms
+            pa = max(int(v['phrases'][i][0] * 16000), lo)
+            pb = min(int(v['phrases'][i][1] * 16000), hi, len(x16))
+            if pb <= pa:
+                continue
+            w = np.ones(pb - pa, np.float32)
+            f = min(320, len(w) // 2)
+            if f:
+                w[:f], w[-f:] = np.linspace(0, 1, f), np.linspace(1, 0, f)
+            audio[pa - lo:pb - lo] = x16[pa:pb] * w
+        sortie, mode, erreurs = transcrire_morceau(audio, lg)
+        r['modes'][mode or 'échec'] = r['modes'].get(mode or 'échec', 0) + 1
+        if erreurs:
+            r.setdefault('erreurs', []).extend(erreurs[:2])
+        if not sortie:
+            continue
+        bruts = []
+        for c in sortie.get('chunks') or []:
+            d, f = (list(c.get('timestamp') or (None, None)) + [None, None])[:2]
+            if d is None or not isinstance(c.get('text'), str):
+                continue
+            f = f if f is not None and f >= d else min(d + 0.5, max(b - a, d))
+            if mode.startswith('mots'):
+                bruts.append({'debut': a + d, 'fin': a + f, 'mot': c['text'].strip(), 'brut': c['text']})
+            else:
+                bruts += [{**m, 'debut': a + m['debut'], 'fin': a + m['fin']} for m in mots_proportionnels(c['text'], d, f)]
+        for m in bruts:
+            m['langue'] = lg
+        garde, compte = nettoyer_mots(bruts, v['chant'], sortie.get('text') or '')
+        for cle, n in compte.items():
+            r['retraits'][cle] += n
+        mots += garde
+    lignes, r['retraits']['lignes'] = filtrer_lignes(lignes_de_mots(sorted(mots, key=lambda m: m['debut'])))
+    r.update({'lignes': len(lignes), 'mots': sum(len(l['mots']) for l in lignes), 'langue': langue_principale(lignes),
+              'langues_s': {}, 'transcription_s': round(time.time() - t1, 1)})
+    for l in lignes:
+        r['langues_s'][l['langue']] = round(r['langues_s'].get(l['langue'], 0) + l['fin'] - l['debut'], 1)
+    return lignes
+
+
+def traduire_lignes(textes, traduire_lot, toujours=False, taille_lot=16):
+    """Traduction vers le français, ligne par ligne, de toutes les vidéos ({id: lignes}) : les lignes en français sont
+    gardées telles quelles (sauf toujours), les autres traduites par lots d'une même langue (traduire_lot(langue,
+    [textes]) -> [traductions], ou None si la langue est inconnue du traducteur : la ligne reste dans sa langue). Rend
+    ({id: [texte de chaque ligne]}, mesures)."""
+    places = {}
+    for vid, lignes in textes.items():
+        for j, l in enumerate(lignes):
+            if l['langue'] != 'fr' or toujours:
+                places.setdefault(l['langue'], []).append((vid, j))
+    traductions = {vid: [l['texte'] for l in lignes] for vid, lignes in textes.items()}
+    info = {'lignes_traduites': 0}
+    for lg, liste in places.items():
+        for d in range(0, len(liste), taille_lot):
+            lot = liste[d:d + taille_lot]
+            sortie = traduire_lot(lg, [textes[vid][j]['texte'] for vid, j in lot])
+            if sortie is None:
+                info.setdefault('langues_sans_traduction', []).append(lg)
+                break
+            for (vid, j), t in zip(lot, sortie):
+                if isinstance(t, str) and t.strip():
+                    traductions[vid][j] = t.strip()
+                    info['lignes_traduites'] += 1
+    return traductions, info
 
 
 def etape_isolee(etape, chemin):

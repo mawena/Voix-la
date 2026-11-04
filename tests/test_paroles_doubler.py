@@ -4,12 +4,9 @@ de la session. Textes inventés ; HOME est un dossier temporaire."""
 import contextlib
 import io
 import json
-import math
 import os
 import subprocess
 import unittest
-from pathlib import Path
-from unittest import mock
 
 from commun import DOUBLER, Dossier, charger_doubler, python
 

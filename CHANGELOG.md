@@ -7,6 +7,24 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+### Ajouté
+
+- **Paquet Debian** `voix-la_<version>_all.deb` (Ubuntu 24.04 ou plus récent), construit par `make deb` :
+  - commandes `/usr/bin/doubler` et `/usr/bin/voix-la`, code dans `/usr/lib/voix-la/` ;
+  - entrée « Voix-là » du menu des applications, icône, pages de manuel `doubler(1)` et `voix-la(1)` ;
+  - `scripts/build-deb.sh` vérifie les versions, lance les tests, range le paquet et `SHA256SUMS` dans `dist/`,
+    puis passe `lintian`.
+- Lanceurs `bin/doubler` et `bin/voix-la` : le code du dépôt, sinon celui du paquet.
+- `doubler --version`.
+- `VOIXLA_KAGGLE` choisit la commande `kaggle` de `doubler`, comme pour l'interface.
+- `doubler --config` affiche la commande `kaggle`, le script du noyau et le fichier des ancres de genre utilisés.
+
+### Modifié
+
+- Les ancres de genre sont cherchées d'abord dans `~/.config/voix-la/ancres_genre.json`, puis dans
+  `kaggle/ancres_genre.json` à côté de `doubler.py`.
+- L'interface trouve son code, `doubler.py` et le noyau une fois installée dans `/usr/lib/voix-la`.
+
 ## [0.1.0] - 2026-11-04
 
 Première version publique.

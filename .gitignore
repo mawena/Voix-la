@@ -36,3 +36,13 @@ octave/donnees/
 octave/RESULTATS.md
 *.log
 banc/travail/
+# Paquet Debian : sorties de debhelper et paquets construits (dist/ : publiés à part, jamais dans le dépôt)
+dist/
+debian/.debhelper/
+debian/voix-la/
+debian/files
+debian/*.substvars
+debian/*.debhelper.log
+debian/debhelper-build-stamp
+debian/*.debhelper
+/*.deb

@@ -1,0 +1,169 @@
+.TH DOUBLER 1 "novembre 2026" "Voix-là 0.2.0" "Commandes utilisateur"
+.nh
+.SH NOM
+doubler \- remplace la voix d'une vidéo par une voix clonée (GPU gratuit de Kaggle)
+.SH SYNOPSIS
+.B doubler
+\fIvidéo\fR [\fIvidéo\fR...] [\fIoptions\fR]
+.br
+.B doubler \-\-ajouter\-voix
+\fInom\fR \fIenregistrement\fR
+.br
+.B doubler \-\-voix\-liste
+[\fB\-\-json\fR]
+.br
+.B doubler \-\-config
+[\fIclé\fR \fIvaleur\fR] [\fB\-\-json\fR]
+.br
+.B doubler \-\-reprendre
+.br
+.B doubler \-\-preparer\-outils
+.SH DESCRIPTION
+.B doubler
+remplace la voix d'une vidéo (chanson, duo, rap ou vidéo parlée) par une voix
+clonée, et rend la même vidéo et son audio en MP3.
+.PP
+Toutes les vidéos d'une même commande partent dans une seule session Kaggle :
+.IP 1. 4
+sur le PC, le son de chaque vidéo est extrait et envoyé en FLAC 24 bits dans
+un jeu de données privé ;
+.IP 2. 4
+sur le GPU de Kaggle, un noyau privé sépare la voix, choisit entre chant et
+parole et le décalage d'octave de chaque chanteur, nettoie la voix chantée
+(voix principale et chœurs séparés, reverb d'origine retirée), puis la
+convertit avec YingMusic\-SVC ou Seed\-VC ;
+.IP 3. 4
+de retour sur le PC, la voix convertie est mixée (nuances de la voix
+d'origine, dé\-esseur, reverb, limiteur), puis remise sur la vidéo ; l'image et
+les sous\-titres sont copiés sans réencodage.
+.PP
+Seuls le son des vidéos et la référence de la voix choisie partent sur Kaggle.
+Un extrait propre à chaque vidéo s'écrit \fIvidéo\fB@\fIdébut\fB+\fIdurée\fR
+(secondes ou m:ss) : \fB"clip.mp4@60+40"\fR démarre à 60 s et dure 40 s.
+.SH OPTIONS
+.TP
+.BI \-\-voix " nom"
+Voix cible : un dossier de \fI<données>/voix\fR. Par défaut, la clé \fBvoix\fR
+de la configuration, sinon la seule voix présente.
+.TP
+.BR \-\-mode " auto|chant|parole"
+Mode du doublage (défaut : auto).
+.TP
+.BR \-\-octave " auto|0|\-12|+12"
+En chant, auto choisit un seul décalage par chanteur d'après la hauteur ; les
+ancres de genre, facultatives, départagent les cas ambigus et repèrent les
+duos. 0, \-12 ou +12 imposent le décalage partout.
+.TP
+.BI \-\-pas " n"
+Pas de diffusion de la conversion (défaut : 30).
+.TP
+.BR \-\-moteur " yingmusic|seedvc"
+Moteur du chant : YingMusic\-SVC (défaut) ou Seed\-VC 44 kHz. La parole passe
+toujours par Seed\-VC 22 kHz.
+.TP
+.B \-\-sans\-nettoyage
+En chant, convertit la voix isolée complète, sans nettoyage (plus rapide).
+.TP
+.BI \-\-voix\-db " dB"
+Niveau de la voix par rapport à celle de la vidéo (défaut : +4 en chant, 0 en
+parole).
+.TP
+.BI \-\-reverb\-db " dB"
+Reverb sous la voix sèche, en chant (défaut : \-13).
+.TP
+.B \-\-mix\-v1
+Ancien mixage, sans suivi des nuances ni dé\-esseur.
+.TP
+.BI \-\-debut " s" "\fR, \fB\-\-duree" " s"
+Extrait commun à toutes les vidéos, pour un essai.
+.TP
+.B \-\-remix
+Refait seulement le mixage et la vidéo depuis \fItravail/\fR, sans Kaggle.
+.TP
+.B \-\-reprendre
+Finit la dernière session Kaggle interrompue (coupure réseau, PC éteint) :
+suivi, rapatriement, mixage et vidéo, sans repasser sur le GPU.
+.TP
+.BI \-\-donnees " dossier"
+Dossier des données \fIvoix/\fR et \fIsorties/\fR.
+.TP
+.BI \-\-sortie " dossier"
+Dossier des sorties (défaut : \fI<données>/sorties\fR).
+.TP
+.BI \-\-evenements " fichier"
+Écrit l'avancement en JSON, un événement par ligne (pour une interface).
+.TP
+.BI \-\-comparer\-pas " n"
+Convertit aussi environ 30 s en \fIn\fR pas, pour comparer.
+.TP
+.BI \-\-ajouter\-voix " nom enregistrement"
+Ajoute une voix depuis un enregistrement (n'importe quel audio ou vidéo).
+.TP
+.B \-\-voix\-liste
+Affiche les voix disponibles.
+.TP
+.B \-\-json
+Avec \fB\-\-voix\-liste\fR ou \fB\-\-config\fR : sortie en JSON.
+.TP
+.BR \-\-config " [\fIclé valeur\fR]"
+Sans argument, affiche la configuration et les valeurs utilisées (données,
+commande kaggle, script du noyau, ancres de genre) ; avec \fIclé valeur\fR,
+écrit une clé : \fBdonnees\fR, \fBvoix\fR, \fBmoteur\fR, \fBkaggle.compte\fR,
+\fBkaggle.jeu\fR, \fBkaggle.noyau\fR, \fBkaggle.outils\fR.
+.TP
+.B \-\-preparer\-outils
+Prépare une fois sur Kaggle les paquets et les modèles, pour des installations
+plus rapides ensuite.
+.TP
+.B \-\-version
+Affiche la version.
+.TP
+.BR \-h ", " \-\-help
+Affiche l'aide.
+.SH PRÉREQUIS
+Un compte Kaggle avec le GPU activé, son jeton d'API dans
+\fI~/.kaggle/access_token\fR, et la commande \fBkaggle\fR, qui n'est pas fournie
+par le paquet :
+.PP
+.RS
+.nf
+python3 \-m venv ~/kaggle\-venv
+~/kaggle\-venv/bin/pip install kaggle
+doubler \-\-config kaggle.compte \fIcompte\fR
+.fi
+.RE
+.SH FICHIERS
+.TP
+.I ~/.config/voix\-la/config.json
+Configuration : compte Kaggle, dossier des données, voix et moteur par défaut.
+.TP
+.I ~/.config/voix\-la/ancres_genre.json
+Ancres de genre, facultatives (deux empreintes de voix chantées, aucun son).
+Cherchées ensuite dans \fIkaggle/ancres_genre.json\fR à côté de doubler.py.
+.TP
+.I ~/Music/Voix\-là/
+Dossier des données par défaut : \fIvoix/\fR et \fIsorties/\fR.
+.TP
+.I ~/.local/state/voix\-la/
+Verrou commun et session Kaggle en cours (pour \fB\-\-reprendre\fR).
+.TP
+.I /usr/lib/voix\-la/
+Code installé : doubler.py, le noyau \fIkaggle/doubler_kaggle.py\fR et
+l'interface.
+.SH ENVIRONNEMENT
+.TP
+.B VOIXLA_DONNEES
+Dossier des données, si \fB\-\-donnees\fR n'est pas donné.
+.TP
+.B VOIXLA_KAGGLE
+Commande \fBkaggle\fR (défaut : \fI~/kaggle\-venv/bin/kaggle\fR).
+.TP
+.B DOUBLER_VOIX
+Dossier des voix (compatibilité).
+.SH NOTES
+Les poids de YingMusic\-SVC sont sous licence CC BY\-NC 4.0 : usage personnel
+et non commercial seulement. N'enregistrez que votre voix, ou celle d'une
+personne d'accord pour être clonée.
+.SH VOIR AUSSI
+.BR voix\-la (1),
+.BR ffmpeg (1)

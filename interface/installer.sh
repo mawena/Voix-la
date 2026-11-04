@@ -32,7 +32,7 @@ export PYTHONPATH="$ICI\${PYTHONPATH:+:\$PYTHONPATH}"
 exec python3 -m voixla "\$@"
 LANCEUR
 chmod +x "$BIN"
-sed "s|@LANCEUR@|$BIN|" "$ICI/donnees/io.mawena.VoixLa.desktop" > "$DESKTOP"
+sed "s|^Exec=.*|Exec=$BIN|" "$ICI/donnees/io.mawena.VoixLa.desktop" > "$DESKTOP"   # le paquet Debian garde Exec=voix-la
 install -m 644 "$ICI/donnees/io.mawena.VoixLa.svg" "$ICONE"
 command -v desktop-file-validate >/dev/null && desktop-file-validate "$DESKTOP" || true
 command -v update-desktop-database >/dev/null && update-desktop-database -q "$APPS" || true

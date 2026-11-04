@@ -1,0 +1,20 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+# Rien à compiler. Les tests (`make test`) sont lancés par scripts/build-deb.sh
+# avant la construction : ils ont besoin d'un HOME et ne doivent pas tourner en root.
+override_dh_auto_build:
+override_dh_auto_test:
+override_dh_auto_install:
+
+override_dh_install:
+	dh_install
+	find debian/voix-la/usr/lib/voix-la -name __pycache__ -type d -prune -exec rm -rf {} +
+
+# doubler.py est lancé par /usr/bin/doubler (python3 doubler.py) : pas besoin
+# du bit exécutable dans /usr/lib, qu'il garde dans le dépôt.
+override_dh_fixperms:
+	dh_fixperms
+	chmod 644 debian/voix-la/usr/lib/voix-la/doubler.py

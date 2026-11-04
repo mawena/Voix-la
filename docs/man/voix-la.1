@@ -1,0 +1,67 @@
+.TH VOIX-LA 1 "novembre 2026" "Voix-là 0.2.0" "Commandes utilisateur"
+.nh
+.SH NOM
+voix-la \- interface graphique de doubler (doublage de vidéos avec une voix clonée)
+.SH SYNOPSIS
+.B voix\-la
+.SH DESCRIPTION
+.B voix\-la
+ouvre l'application GTK 4 et libadwaita « Voix\-là ». Elle ne fait aucun
+calcul lourd : pour doubler, ajouter une voix ou lire la configuration, elle
+appelle la commande
+.BR doubler (1).
+Ses doublages passent par une file : un seul \fBdoubler\fR à la fois, et la
+file continue même fenêtre fermée.
+.PP
+Pages :
+.TP
+.B Doubler
+une ou plusieurs vidéos, un extrait par vidéo, les réglages du doublage et une
+estimation de la durée ;
+.TP
+.B Travaux
+la file, les étapes en direct, le journal et l'annulation ;
+.TP
+.B Résultats
+la lecture avec bascule original/doublé à la même position, la frise
+d'octave, les durées par étape et le remix rapide ;
+.TP
+.B Voix
+écouter, ajouter (depuis un fichier ou au micro), renommer, choisir la voix
+par défaut ;
+.TP
+.B État
+Kaggle (jeton, compte, noyaux), verrou de \fBdoubler\fR, mémoire et charge du
+poste.
+.PP
+L'interface lance \fBdoubler\fR trouvé dans le \fBPATH\fR (\fI/usr/bin/doubler\fR
+avec le paquet), sinon \fIdoubler.py\fR à côté de son code.
+.SH FICHIERS
+.TP
+.I ~/.config/voix\-la/config.json
+Configuration partagée avec \fBdoubler\fR, écrite par \fBdoubler \-\-config\fR.
+.TP
+.I ~/.config/voix\-la/interface.json
+Préférences de l'interface.
+.TP
+.I ~/.local/state/voix\-la/travaux/
+File des travaux : demande, état, journal et événements de chaque travail.
+.TP
+.I ~/.cache/voix\-la/
+Analyses du son (courbes de mélodie, spectrogrammes).
+.SH ENVIRONNEMENT
+.TP
+.B VOIXLA_DONNEES
+Dossier des données (défaut : clé \fBdonnees\fR de la configuration, sinon
+\fI~/Music/Voix\-là\fR).
+.TP
+.B VOIXLA_DOUBLER
+Commande \fBdoubler\fR à lancer (essais).
+.TP
+.B VOIXLA_KAGGLE
+Commande \fBkaggle\fR (défaut : \fI~/kaggle\-venv/bin/kaggle\fR).
+.TP
+.B VOIXLA_DECODAGE_MATERIEL
+À 1, garde le décodage vidéo matériel (logiciel par défaut).
+.SH VOIR AUSSI
+.BR doubler (1)

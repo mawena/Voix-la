@@ -71,7 +71,7 @@ def executer(racine, d):
             return
     debut = time.time()
     etat = {"statut": "en_cours", "pid": p.pid, "pgid": p.pid, "demarrage": demarrage_processus(p.pid),
-            "debut": debut, "executeur": os.getpid()}
+            "debut": debut, "executeur": os.getpid(), "executeur_demarrage": demarrage_processus(os.getpid())}
     ecrire_etat(d, etat)
     annule, t_signal, tue = False, None, False
     while True:

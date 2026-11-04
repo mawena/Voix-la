@@ -1,7 +1,9 @@
 """Essais de voixla.chemins : dossiers, config.json partagé, préférences de l'interface."""
 
+import importlib.util
 import json
 import os
+import shutil
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -38,6 +40,29 @@ class EssaiDossiers(EssaiIsole):
     def test_depot_et_interface(self):
         self.assertTrue((chemins.DEPOT / "interface" / "voixla").is_dir())
         self.assertEqual(chemins.INTERFACE, chemins.DEPOT / "interface")
+
+    def charger_copie(self, dossier_voixla):
+        """voixla/chemins.py copié dans dossier_voixla, puis chargé à part (ses DEPOT et INTERFACE suivent la copie)."""
+        dossier_voixla.mkdir(parents=True)
+        shutil.copy2(Path(chemins.__file__), dossier_voixla / "chemins.py")
+        spec = importlib.util.spec_from_file_location("chemins_copie", dossier_voixla / "chemins.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_disposition_du_depot(self):
+        depot = self.tmp / "depot"
+        c = self.charger_copie(depot / "interface" / "voixla")
+        (depot / "doubler.py").write_text("")
+        self.assertEqual((c.DEPOT, c.INTERFACE), (depot, depot / "interface"))
+
+    def test_disposition_installee(self):
+        # paquet Debian : /usr/lib/voix-la/{doubler.py, kaggle/, voixla/}
+        lib = self.tmp / "usr" / "lib" / "voix-la"
+        lib.mkdir(parents=True)
+        (lib / "doubler.py").write_text("")
+        c = self.charger_copie(lib / "voixla")
+        self.assertEqual((c.DEPOT, c.INTERFACE), (lib, lib))
 
     def test_dossiers_derives(self):
         d = Path("/x/données")

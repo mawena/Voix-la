@@ -386,6 +386,51 @@ def preparer_outils():
     log('OUTILS prêts : ' + json.dumps(fiche, ensure_ascii=False))
 
 
+def copier_paroles(outils, dest='/tmp/paroles_modeles'):
+    """Copie, dans un fil à part, des modèles de paroles du montage d'outils vers le disque local. from_pretrained lit
+    les poids en mmap : sur /kaggle/input, les 3 Go de Whisper large-v3 ont mis 310 s à se charger (extrait d'essai du
+    04/11/2026), quand une lecture d'un trait (tar des autres poids) va dix fois plus vite. Lancée dès l'installation,
+    la copie se fait pendant la séparation, le nettoyage et la conversion. Rend l'état à passer à transcrire."""
+    import threading
+    fiche = (lire_outils(outils).get('paroles') or {}) if outils else {}
+    paires = {}
+    for cle in ('whisper', 'traducteur'):
+        rel = fiche.get(cle)
+        src = os.path.join(outils, rel) if outils and rel else None
+        if src and os.path.isfile(os.path.join(src, 'config.json')):
+            paires[cle] = (src, os.path.join(dest, os.path.basename(src.rstrip('/'))))
+    etat = {'paires': paires, 'copies': {}, 'duree_s': None, 'erreur': None, 'fil': None}
+    if not paires:
+        return etat
+
+    def copier():
+        t = time.time()
+        for cle, (src, dst) in paires.items():
+            try:
+                if not os.path.isfile(os.path.join(dst, 'config.json')):
+                    shutil.rmtree(dst + '.part', ignore_errors=True)
+                    shutil.copytree(src, dst + '.part')
+                    os.replace(dst + '.part', dst)
+                etat['copies'][cle] = dst
+            except Exception as e:  # noqa: BLE001 — disque plein… : le montage, plus lent
+                shutil.rmtree(dst + '.part', ignore_errors=True)
+                etat['erreur'] = f'{cle} : {e!r}'[:300]
+        etat['duree_s'] = round(time.time() - t, 1)
+    etat['fil'] = threading.Thread(target=copier, daemon=True)
+    etat['fil'].start()
+    return etat
+
+
+def chemins_paroles(etat, attendre=True):
+    """{'whisper': chemin, 'traducteur': chemin} à charger : la copie locale si elle est finie et complète, sinon le
+    montage (None : téléchargé depuis Hugging Face). Attend la fin de la copie ; rend aussi l'attente (s)."""
+    t = time.time()
+    if attendre and etat.get('fil') is not None:
+        etat['fil'].join()
+    chemins = {cle: etat['copies'].get(cle) or src for cle, (src, _) in etat.get('paires', {}).items()}
+    return chemins, round(time.time() - t, 1)
+
+
 def preparer_paroles_outils(w):
     """Noyau « outils » : dossiers complets de Whisper large-v3 et de NLLB-200 distillé 600M (from_pretrained les lit
     tels quels dans le montage ; sinon le noyau de doublage les télécharge), puis essai dans un processus à part :
@@ -2041,6 +2086,13 @@ def depuis_hf(classe, sources, cache, demi=True, **options):
     raise RuntimeError('chargement impossible : ' + ' | '.join(erreurs))
 
 
+def origine_modele(src, depot):
+    """D'où vient un modèle chargé : Hugging Face, copie locale du montage, ou montage."""
+    if not src or src == depot:
+        return 'Hugging Face'
+    return 'copie locale du montage' if str(src).startswith('/tmp/') else 'montage'
+
+
 def etape_paroles(travail):
     """Paroles de toutes les vidéos, dans un processus à part (le GPU est rendu à la sortie) : Whisper large-v3 chargé une
     fois, langue détectée phrase par phrase, transcription par morceaux de phrases de même langue (au plus 25 s, hors chant
@@ -2063,7 +2115,7 @@ def etape_paroles(travail):
         modele = modele.to('cuda').eval()
         pipe = pipeline('automatic-speech-recognition', model=modele, tokenizer=proc.tokenizer,
                         feature_extractor=proc.feature_extractor, device=modele.device)
-        res.update({'whisper_origine': 'montage' if src_w != WHISPER[0] else 'Hugging Face', 'erreurs_chargement': err + err2})
+        res.update({'whisper_origine': origine_modele(src_w, WHISPER[0]), 'erreurs_chargement': err + err2})
     except Exception as e:  # noqa: BLE001 — pas de paroles, le doublage continue
         import traceback
         traceback.print_exc()
@@ -2085,8 +2137,9 @@ def etape_paroles(travail):
         logits = modele(input_features=feats, decoder_input_ids=dec).logits[0, -1].float()
         codes, ids = list(l2i), torch.tensor(list(l2i.values()), device=logits.device)
         p = torch.softmax(logits[ids], -1)
-        j = int(p.argmax())
-        return codes[j].strip('<|>'), float(p[j])
+        ordre = torch.argsort(p, descending=True)[:3].tolist()
+        return (codes[ordre[0]].strip('<|>'), float(p[ordre[0]]),
+                [[codes[j].strip('<|>'), round(float(p[j]), 3)] for j in ordre])
 
     def transcrire(audio, lg):
         """Le pipeline, des garde-fous complets à la transcription la plus simple : rend (sortie, mode, erreurs)."""
@@ -2146,7 +2199,7 @@ def etape_paroles(travail):
             mt, src_t, err = depuis_hf(AutoModelForSeq2SeqLM, [travail.get('traducteur'), TRADUCTEUR[0]], cache)
             res['erreurs_chargement_traducteur'] = err
             mt, toks = mt.to('cuda').eval(), {}
-            res['traducteur_origine'] = 'montage' if src_t != TRADUCTEUR[0] else 'Hugging Face'
+            res['traducteur_origine'] = origine_modele(src_t, TRADUCTEUR[0])
             res['chargements_s']['traducteur'] = round(time.time() - t2, 1)
             log(f"PAROLES traducteur {TRADUCTEUR[1]} chargé en {time.time() - t2:.0f} s ({res['traducteur_origine']})")
             t3 = time.time()
@@ -2182,12 +2235,15 @@ def transcrire_video(v, x16, detecter, transcrire_morceau, r):
     r.update({'piste': v.get('piste'), 'phrases': len(v['phrases']),
               'secondes_transcrites': round(sum(b - a for a, b in v['phrases']), 1), 'modes': {},
               'retraits': {'hors_chant': 0, 'boucles': 0, 'lignes': 0}})
-    langues = []
+    langues, tops = [], []
     for a, b in v['phrases']:
         seg = x16[int(a * 16000):int(b * 16000)]
-        langues.append((*detecter(seg), b - a) if len(seg) >= 1600 else (None, 0.0, b - a))
+        d = detecter(seg) if len(seg) >= 1600 else (None, 0.0)
+        langues.append((d[0], d[1], b - a))
+        tops.append(d[2] if len(d) > 2 else None)   # les trois langues les plus probables, pour mémoire
     choisies = lisser_langues(langues)
-    r['langues_phrases'] = [[a, b, c, round(p, 2), lg] for (a, b), (c, p, _), lg in zip(v['phrases'], langues, choisies)]
+    r['langues_phrases'] = [[a, b, c, round(p, 2), lg] + ([top] if top else [])
+                            for (a, b), (c, p, _), lg, top in zip(v['phrases'], langues, choisies, tops)]
     r['temps_langue_s'] = round(time.time() - t1, 1)
     mots = []
     for a, b, lg, idx in grouper_morceaux(v['phrases'], choisies):
@@ -2281,6 +2337,8 @@ def main():
     installer(outils)
     sha = cloner(outils)
     poids_depuis_outils(outils)
+    # modèles de paroles copiés sur le disque local pendant tout le reste (lus en mmap sur le montage : très lent)
+    copie_paroles = copier_paroles(outils) if R.get('paroles', True) else {}
     session['temps']['installation_s'] = round(time.time() - t, 1)
     os.environ['TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD'] = '1'   # points de contrôle officiels (pickle) de Seed-VC et RMVPE
     import numpy as np
@@ -2810,13 +2868,12 @@ def main():
         """Paroles de toutes les vidéos dans une seule étape à part (Whisper et le traducteur chargés une fois) : voix
         principale sèche quand elle existe, sinon voix isolée complète ; seulement ses phrases chantées (hauteur RMVPE)."""
         t = time.time()
-        fiche_p = (lire_outils(outils).get('paroles') or {}) if outils else {}
-
-        def monte(cle):
-            rel = fiche_p.get(cle)
-            p = os.path.join(outils, rel) if outils and rel else None
-            return p if p and os.path.isfile(os.path.join(p, 'config.json')) else None
-        travail = {'whisper': monte('whisper'), 'traducteur': monte('traducteur'), 'cache': '/tmp/hf_paroles',
+        chemins, attente = chemins_paroles(copie_paroles)
+        session['temps']['paroles_attente_copie_s'] = attente
+        session['temps']['paroles_copie_s'] = copie_paroles.get('duree_s')
+        if copie_paroles.get('erreur'):
+            log(f"PAROLES copie locale des modèles impossible ({copie_paroles['erreur']}) : lus sur le montage")
+        travail = {'whisper': chemins.get('whisper'), 'traducteur': chemins.get('traducteur'), 'cache': '/tmp/hf_paroles',
                    'resultat': '/tmp/paroles/resultat.json', 'videos': []}
         for e in etats_v:
             p = next((q for q in e['pistes'] if q['nom'] == 'lead_sec'), None) or piste_voix(e)
@@ -2831,8 +2888,8 @@ def main():
         if not travail['videos']:
             return
         log(f"PAROLES de {len(travail['videos'])} vidéo(s) : Whisper large-v3 "
-            f"({'montage' if travail['whisper'] else 'Hugging Face'}), traduction {TRADUCTEUR[1]} "
-            f"({'montage' if travail['traducteur'] else 'Hugging Face'})")
+            f"({origine_modele(travail['whisper'], None)}), traduction {TRADUCTEUR[1]} "
+            f"({origine_modele(travail['traducteur'], None)}) ; attente de la copie locale {attente:.0f} s")
         torch.cuda.empty_cache()
         try:
             res = etape_a_part('paroles', travail)

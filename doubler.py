@@ -807,8 +807,10 @@ def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=
                 net.append(tps['nettoyage_s'] / d)
             if d > 5 and v.get('conversion_s') and v.get('pas_diffusion'):
                 (conv_net if nettoyee else conv).append(v['conversion_s'] / d / v['pas_diffusion'])
-            if sk.get('paroles_total_s') is not None and r.get('temps_local', {}).get('videos_dans_la_session') == 1:
-                # tout ce qui n'est pas transcription (démarrage du processus, chargements, traduction) compte comme fixe
+            if ('paroles_copie_s' in sk and sk.get('paroles_total_s') is not None
+                    and r.get('temps_local', {}).get('videos_dans_la_session') == 1):
+                # tout ce qui n'est pas transcription (démarrage du processus, chargements, traduction) compte comme fixe ;
+                # seulement les noyaux qui copient les modèles sur le disque local (avant : 5 min de chargement)
                 par_fixes.append(max(float(sk['paroles_total_s']) - float(tps.get('paroles_s') or 0), 0.0))
             if d > 5 and tps.get('paroles_s'):
                 par.append(tps['paroles_s'] / d)

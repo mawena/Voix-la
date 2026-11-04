@@ -101,6 +101,48 @@ class Enchainement(unittest.TestCase):
         self.assertEqual(trad['v'], ['el gato'])   # traduction vide : la ligne d'origine reste
 
 
+class CopieLocale(unittest.TestCase):
+    """copier_paroles / chemins_paroles : les modèles du montage copiés d'un trait sur le disque local, en tâche de fond ;
+    sinon le montage, sinon Hugging Face."""
+
+    def test_copie_puis_chemins(self):
+        import json
+        from commun import Dossier
+        with Dossier() as d:
+            outils = d / 'outils'
+            for nom in ('whisper-large-v3', 'nllb-200-distilled-600M'):
+                (outils / 'paroles' / nom).mkdir(parents=True)
+                (outils / 'paroles' / nom / 'config.json').write_text('{}')
+                (outils / 'paroles' / nom / 'model.safetensors').write_bytes(b'x' * 1000)
+            (outils / 'outils.json').write_text(json.dumps({'paroles': {'whisper': 'paroles/whisper-large-v3',
+                                                                        'traducteur': 'paroles/nllb-200-distilled-600M'}}))
+            etat = N.copier_paroles(str(outils), str(d / 'local'))
+            chemins, attente = N.chemins_paroles(etat)
+            self.assertEqual(chemins, {'whisper': str(d / 'local' / 'whisper-large-v3'),
+                                       'traducteur': str(d / 'local' / 'nllb-200-distilled-600M')})
+            self.assertEqual((d / 'local' / 'whisper-large-v3' / 'model.safetensors').stat().st_size, 1000)
+            self.assertIsNotNone(etat['duree_s'])
+            self.assertIsNone(etat['erreur'])
+            self.assertFalse((d / 'local' / 'whisper-large-v3.part').exists())
+
+    def test_copie_impossible_ou_montage_absent(self):
+        import json
+        from commun import Dossier
+        with Dossier() as d:
+            outils = d / 'outils'
+            (outils / 'paroles' / 'whisper-large-v3').mkdir(parents=True)
+            (outils / 'paroles' / 'whisper-large-v3' / 'config.json').write_text('{}')
+            (outils / 'outils.json').write_text(json.dumps({'paroles': {'whisper': 'paroles/whisper-large-v3',
+                                                                        'traducteur': 'paroles/absent'}}))
+            bloque = d / 'fichier'
+            bloque.write_text('pas un dossier')   # la destination ne peut pas être créée : le montage reste
+            etat = N.copier_paroles(str(outils), str(bloque))
+            chemins, _ = N.chemins_paroles(etat)
+            self.assertEqual(chemins, {'whisper': str(outils / 'paroles' / 'whisper-large-v3')})
+            self.assertIn('whisper', etat['erreur'])
+        self.assertEqual(N.chemins_paroles(N.copier_paroles(None))[0], {})
+
+
 class Chargement(unittest.TestCase):
     """depuis_hf : montage puis Hugging Face, options refusées retirées une à une (API de transformers changée)."""
 

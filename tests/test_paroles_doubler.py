@@ -80,6 +80,21 @@ class Configuration(Base):
         self.assertGreater(avec, sans)
         self.assertAlmostEqual(avec - sans, 90 + 25 * 0.25, delta=1)
 
+    def test_estimation_d_apres_l_historique_des_paroles(self):
+        """Seuls les noyaux qui copient les modèles sur le disque local comptent (avant : 5 min de chargement)."""
+        def rapport(nom, sk):
+            d = self.tmp / 'sorties' / nom / 'travail' / 'v'
+            d.mkdir(parents=True)
+            (d / 'rapport.json').write_text(json.dumps({
+                'duree_s': 100.0, 'temps': {'paroles_s': 20.0},
+                'temps_local': {'videos_dans_la_session': 1, 'session_kaggle': sk}}))
+        rapport('ancien', {'paroles_total_s': 334.8})
+        sans_historique = self.D.estimer_noyau_s([25.0], 30, self.tmp / 'sorties')
+        rapport('nouveau', {'paroles_total_s': 60.0, 'paroles_copie_s': 40.0})
+        avec = self.D.estimer_noyau_s([25.0], 30, self.tmp / 'sorties')
+        # le débit de transcription de l'ancien rapport reste valable (0,2 s par seconde) ; seul le fixe change
+        self.assertAlmostEqual(sans_historique - avec, 90 - 40, delta=1)
+
 
 class Lecture(Base):
     def ecrire(self, contenu):

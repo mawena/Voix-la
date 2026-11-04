@@ -7,6 +7,31 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+## [0.2.0] - 2026-11-04
+
+### Ajouté
+
+- **Paquet Debian** `voix-la_<version>_all.deb` (Ubuntu 24.04 ou plus récent), construit par `make deb` :
+  - commandes `/usr/bin/doubler` et `/usr/bin/voix-la`, code dans `/usr/lib/voix-la/` ;
+  - entrée « Voix-là » du menu des applications, icône, pages de manuel `doubler(1)` et `voix-la(1)` ;
+  - `scripts/build-deb.sh` vérifie les versions, lance les tests, range le paquet et `SHA256SUMS` dans `dist/`,
+    puis passe `lintian`.
+- Lanceurs `bin/doubler` et `bin/voix-la` : le code du dépôt, sinon celui du paquet.
+- `doubler --version`.
+- `VOIXLA_KAGGLE` choisit la commande `kaggle` de `doubler`, comme pour l'interface.
+- `doubler --config` affiche la commande `kaggle`, le script du noyau et le fichier des ancres de genre utilisés.
+
+### Modifié
+
+- Les ancres de genre sont cherchées d'abord dans `~/.config/voix-la/ancres_genre.json`, puis dans
+  `kaggle/ancres_genre.json` à côté de `doubler.py`.
+- L'interface trouve son code, `doubler.py` et le noyau une fois installée dans `/usr/lib/voix-la`.
+
+### Corrigé
+
+- Interface : un doublage fini pouvait rester affiché « interrompu », avec une barre rouge. L'interface voyait
+  le processus déjà terminé avant que l'exécuteur n'ait écrit « fini », et ne revenait plus sur cette conclusion.
+
 ## [0.1.0] - 2026-11-04
 
 Première version publique.
@@ -63,5 +88,6 @@ Première version publique.
     `VOIXLA_DECODAGE_MATERIEL=1` remet le décodage matériel ;
   - les essais automatiques laissaient le son de l'application coupé.
 
-[Non publié]: https://github.com/mawena/Voix-la/compare/v0.1.0...HEAD
+[Non publié]: https://github.com/mawena/Voix-la/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/mawena/Voix-la/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/mawena/Voix-la/releases/tag/v0.1.0

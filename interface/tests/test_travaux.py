@@ -344,6 +344,45 @@ class EssaiReprise(EssaiFile):
         self.assertIn("le suivi s’est arrêté (poste redémarré ?) : état inconnu", t.avancement.erreurs)
         self.assertTrue(self.file.retirer(t))
 
+    def test_fin_en_cours_d_ecriture_par_l_executeur(self):
+        """doubler vient de finir et l'exécuteur n'a pas encore écrit « fini » : ce n'est pas une interruption."""
+        p = subprocess.Popen([sys.executable, "-c", "pass"])
+        p.wait()
+        verrou = open(self.racine / "executeur.verrou", "a")
+        self.addCleanup(verrou.close)
+        fcntl.flock(verrou, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        moi = os.getpid()
+        t = self.fabriquer({"statut": "en_cours", "pid": p.pid, "pgid": p.pid, "demarrage": "1",
+                            "debut": time.time() - 10, "executeur": moi,
+                            "executeur_demarrage": travaux.demarrage_processus(moi)})
+        t.actualiser()
+        self.assertEqual(t.statut, "en_cours")
+        self.assertFalse(t.avancement.termine)
+        time.sleep(0.01)
+        travaux.chemins.ecrire_json(t.dossier / "etat.json", {**t.etat, "statut": "fini", "code": 0, "fin": time.time()})
+        t.actualiser()
+        self.assertEqual(t.statut, "fini")
+        self.assertEqual(t.avancement.code, 0)
+        self.assertEqual(t.avancement.erreurs, [])
+
+    def test_interrompu_puis_fini_se_corrige(self):
+        """« interrompu » vu juste avant que l'état final n'arrive : le vrai statut final remplace la conclusion."""
+        p = subprocess.Popen([sys.executable, "-c", "pass"])
+        p.wait()
+        t = self.fabriquer({"statut": "en_cours", "pid": p.pid, "pgid": p.pid, "demarrage": "1",
+                            "debut": time.time() - 10})
+        ev = '{"t": "2026-01-01T10:00:00.000+00:00", "type": "etape", "video": "A", "etape": "extraction", "etat": "debut"}\n'
+        (t.dossier / "evenements.jsonl").write_text(ev, encoding="utf-8")
+        t.actualiser()
+        self.assertEqual(t.statut, "interrompu")
+        self.assertEqual(t.avancement.code, 1)
+        time.sleep(0.01)
+        travaux.chemins.ecrire_json(t.dossier / "etat.json", {**t.etat, "statut": "fini", "code": 0, "fin": time.time()})
+        t.actualiser()
+        self.assertEqual(t.statut, "fini")
+        self.assertEqual(t.avancement.code, 0)
+        self.assertNotIn("le suivi s’est arrêté (poste redémarré ?) : état inconnu", t.avancement.erreurs)
+
     def test_numero_repris_par_un_autre_processus(self):
         moi = os.getpid()
         t = self.fabriquer({"statut": "en_cours", "pid": moi, "pgid": moi, "demarrage": "1"})

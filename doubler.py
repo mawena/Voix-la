@@ -28,7 +28,8 @@ mixage et la remise sur la vidéo. Seuls le son des vidéos et la référence de
 Données (voix/, sorties/) : --donnees, sinon $VOIXLA_DONNEES, sinon « donnees » de ~/.config/voix-la/config.json,
 sinon ~/Music/Voix-là. Voix par défaut : « voix » du même fichier (doubler --config voix NOM), sinon la seule voix de
 <données>/voix. Compte Kaggle : « kaggle.compte » (doubler --config kaggle.compte <nom>) ; moteur du chant par
-défaut : « moteur » (doubler --config moteur seedvc), sinon yingmusic.
+défaut : « moteur » (doubler --config moteur seedvc), sinon yingmusic. Commande kaggle : $VOIXLA_KAGGLE, sinon
+~/kaggle-venv/bin/kaggle. Ancres de genre (facultatives) : ~/.config/voix-la/ancres_genre.json, sinon kaggle/ du dépôt.
 YingMusic-SVC : code MIT, poids CC BY-NC 4.0, donc usage personnel et non commercial seulement.
 """
 import argparse
@@ -47,8 +48,13 @@ import tempfile
 import time
 from pathlib import Path
 
+VERSION = '0.2.0'   # même version que le paquet Debian (debian/changelog) et l'interface (voixla.__version__)
+# Dossier du code : le dépôt, ou /usr/lib/voix-la une fois le paquet installé (/usr/bin/doubler lance ce fichier)
 DEPOT = Path(__file__).resolve().parent
-KAGGLE = Path.home() / 'kaggle-venv/bin/kaggle'
+SCRIPT_NOYAU = DEPOT / 'kaggle' / 'doubler_kaggle.py'   # le noyau envoyé à Kaggle
+# Commande kaggle, absente du paquet : $VOIXLA_KAGGLE, sinon l'environnement Python dédié (README, Prérequis)
+KAGGLE = (Path(os.environ['VOIXLA_KAGGLE']).expanduser() if os.environ.get('VOIXLA_KAGGLE')
+          else Path.home() / 'kaggle-venv/bin/kaggle')
 JETON = Path.home() / '.kaggle/access_token'
 CONFIG = Path.home() / '.config' / 'voix-la' / 'config.json'
 DONNEES_DEFAUT = Path.home() / 'Music' / 'Voix-là'
@@ -80,9 +86,10 @@ NOYAU_REGLAGES = {
     'sil_parole': 0.2,
     'nettoyage_recouvrement': 4,   # recouvrement des Roformer du nettoyage (banc : 8, deux fois plus lent)
 }
-# Facultatif, hors du dépôt : empreintes CAMPPlus moyennes (192 nombres) d'une voix d'homme et d'une voix de femme
-# chantées, {"homme": […], "femme": […]} ; sans lui, la décision d'octave se passe d'empreinte (voir lire_ancres)
-ANCRES = DEPOT / 'kaggle' / 'ancres_genre.json'
+# Facultatif, jamais publié : empreintes CAMPPlus moyennes (192 nombres) d'une voix d'homme et d'une voix de femme
+# chantées, {"homme": […], "femme": […]} ; sans lui, la décision d'octave se passe d'empreinte (voir lire_ancres).
+# Cherché d'abord à côté de la configuration (paquet installé), puis dans le dépôt (installation de développement)
+ANCRES = (CONFIG.parent / 'ancres_genre.json', DEPOT / 'kaggle' / 'ancres_genre.json')
 CONTENEURS = {   # extension -> (codec audio, options, sous-titres copiables)
     '.mp4': (['-c:a', 'aac', '-b:a', '256k'], ['-movflags', '+faststart'], {'mov_text'}),
     '.m4v': (['-c:a', 'aac', '-b:a', '256k'], ['-movflags', '+faststart'], {'mov_text'}),
@@ -237,10 +244,12 @@ def afficher_config(a, en_json=False):
     except SystemExit:
         noms = {n: None for n in KAGGLE_DEFAUTS}
     moteur = valeur_config(conf, 'moteur') or MOTEUR_DEFAUT
+    ancres = fichier_ancres()
     effectif = {'config': str(CONFIG), 'donnees': str(DONNEES), 'source_donnees': a.source_donnees, 'voix': str(VOIX),
                 'sorties': a.sortie, 'voix_defaut': VOIX_DEFAUT, 'source_voix_defaut': VOIX_DEFAUT_SOURCE,
                 'moteur': moteur, 'kaggle': {'compte': valeur_config(conf, 'kaggle.compte'), **noms},
                 'jeton_kaggle': 'présent' if JETON.exists() else 'absent', 'commande_kaggle': str(KAGGLE),
+                'script_noyau': str(SCRIPT_NOYAU), 'ancres_genre': str(ancres) if ancres else None,
                 'contenu': masquer(conf)}
     if en_json:
         print(json.dumps(effectif, ensure_ascii=False, indent=1))
@@ -256,6 +265,10 @@ def afficher_config(a, en_json=False):
     for n in KAGGLE_DEFAUTS:
         print(f"  kaggle.{n:8s} {noms[n] or '— (kaggle.compte manque : doubler --config kaggle.compte <nom>)'}")
     print(f"  jeton Kaggle   {'présent' if JETON.exists() else 'absent'} ({JETON}, jamais affiché)")
+    print(f"  outil kaggle   {KAGGLE}{'' if KAGGLE.exists() else '  (absent)'}"
+          f"{'  ($VOIXLA_KAGGLE)' if os.environ.get('VOIXLA_KAGGLE') else ''}")
+    print(f"  script noyau   {SCRIPT_NOYAU}{'' if SCRIPT_NOYAU.exists() else '  (ABSENT)'}")
+    print(f"  ancres genre   {ancres or 'absentes (facultatives : ' + ' ou '.join(map(abrege, ANCRES)) + ')'}")
     print('clés : ' + ' ; '.join(f'{c} ({d})' for c, d in CLES_CONFIG.items()))
 
 
@@ -789,7 +802,7 @@ def pousser_noyau(reglages, dossier, attente_maxi, noyau, jeux, sources=(), vide
     envoi = dossier / f"envoi-{noyau.split('/')[1]}"
     shutil.rmtree(envoi, ignore_errors=True)
     envoi.mkdir(parents=True)
-    script = (DEPOT / 'kaggle' / 'doubler_kaggle.py').read_text().replace(
+    script = SCRIPT_NOYAU.read_text().replace(
         '__REGLAGES__', base64.b64encode(json.dumps(reglages).encode()).decode())
     # Kaggle exécute le script en carnet, sans fichier : il reçoit sa propre source, pour ses étapes à part (nettoyage,
     # YingMusic-SVC), chacune dans son processus
@@ -1541,22 +1554,28 @@ def finir_travaux(travaux, a, voix, session, temps, envoi_s, estimation):
     return echecs
 
 
+def fichier_ancres():
+    """Le premier fichier d'ancres de genre présent parmi ANCRES (~/.config/voix-la, puis le dépôt), ou None."""
+    return next((f for f in ANCRES if f.is_file()), None)
+
+
 def lire_ancres():
-    """Ancres de genre {'homme': […], 'femme': […]} de ANCRES, telles quelles ; None si le fichier manque ou est
-    illisible : en chant, l'octave se décide alors sans empreinte (hauteur, notes graves, sinon frontière d'octave de la
-    hauteur seule) et sans recherche de duo."""
+    """Ancres de genre {'homme': […], 'femme': […]} du premier fichier de ANCRES, telles quelles ; None si aucun
+    n'existe ou s'il est illisible : en chant, l'octave se décide alors sans empreinte (hauteur, notes graves, sinon
+    frontière d'octave de la hauteur seule) et sans recherche de duo."""
     sans = "en chant, l'octave sera décidée sans empreinte (hauteur, notes graves), sans recherche de duo"
+    fichier = fichier_ancres()
+    if fichier is None:
+        dire(f"ancres de genre absentes ({' ou '.join(map(abrege, ANCRES))}, facultatif) : {sans}")
+        return None
     try:
-        ancres = json.loads(ANCRES.read_text())
+        ancres = json.loads(fichier.read_text())
         h, f = ancres['homme'], ancres['femme']
         if not (isinstance(h, list) and isinstance(f, list) and len(h) == len(f) == 192
                 and all(isinstance(v, (int, float)) for v in h + f)):
             raise ValueError('« homme » et « femme » : 192 nombres chacun attendus')
-    except FileNotFoundError:
-        dire(f'ancres de genre absentes ({ANCRES}, facultatif) : {sans}')
-        return None
     except (OSError, ValueError, KeyError, TypeError) as e:
-        dire(f'ATTENTION : ancres de genre illisibles ({ANCRES} : {e}) : {sans}')
+        dire(f'ATTENTION : ancres de genre illisibles ({fichier} : {e}) : {sans}')
         return None
     return {'homme': h, 'femme': f}
 
@@ -1594,7 +1613,7 @@ def traiter_lot(videos, a, voix):
         # gain_entree : gain appliqué avant le FLAC (crête à -1 dBFS), retiré par le noyau à la lecture ;
         # retour_flac : la voix isolée revient en FLAC 24 bits (voix_source.flac et son gain dans voix_source.flac.json)
         # moteur_chant, nettoyage : chaîne du chant (YingMusic-SVC sur la voix nettoyée par défaut)
-        # ancres : None sans kaggle/ancres_genre.json (le noyau décide alors l'octave sans empreinte)
+        # ancres : None sans fichier d'ancres (ANCRES ; le noyau décide alors l'octave sans empreinte)
         reglages = {**NOYAU_REGLAGES, 'pas': a.pas, 'ancres': ancres,
                     'moteur_chant': a.moteur, 'nettoyage': not a.sans_nettoyage,
                     'voix': {'nom': voix['id'], 'fichier': f"voix-{voix['id']}.wav", 'f0_parole_hz': voix['f0'],
@@ -1770,6 +1789,8 @@ def main():
     p.add_argument('--comparer-modeles', action='store_true', help=argparse.SUPPRESS)
     p.add_argument('--preparer-outils', action='store_true',
                    help='prépare une fois sur Kaggle les paquets et les modèles (installation plus rapide ensuite)')
+    p.add_argument('--version', action='version', version=f'doubler (Voix-là) {VERSION}',
+                   help='affiche la version et quitte')
     a = p.parse_args()
     EV.ouvrir(a.evenements)
     code = 1

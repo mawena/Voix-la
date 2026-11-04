@@ -74,13 +74,9 @@ class Travail:
         self._off_ev = 0
         self._reste_ev = b""
         self.avec_evenements = bool(self.demande.get("evenements"))
-        self.avancement = suivi.Avancement(
-            nb_videos=len(self.demande.get("videos") or []) or 1,
-            estimations=self.demande.get("estimations"),
-            type_travail=self.demande.get("type", "doublage"),
-            debut=None)
+        self.avancement = self._nouvel_avancement()
         self.lecture_texte = None
-        self._fin_appliquee = False
+        self._fin_appliquee = False       # statut terminal déjà appliqué à l'avancement
 
     # --- propriétés ----------------------------------------------------------------------------------------------------
 
@@ -101,11 +97,21 @@ class Travail:
         s = self.etat.get("statut")
         if s == "en_cours":
             if not vivant(self.etat.get("pid"), self.etat.get("demarrage")):
+                # doubler vient de finir : tant que l'exécuteur qui l'a lancé tourne, il va écrire le statut final
+                if self._executeur_vivant():
+                    return "en_cours"
                 return "interrompu"
             return "en_cours"
         if s:
             return s
         return "annule" if self.annulation_demandee else "en_attente"
+
+    def _executeur_vivant(self):
+        """Vrai si l'exécuteur qui a lancé ce travail tourne encore et tient le verrou de la file."""
+        pid = self.etat.get("executeur")
+        if not pid or not vivant(pid, self.etat.get("executeur_demarrage")):
+            return False
+        return verrou_tenu(self.dossier.parent / "executeur.verrou")
 
     @property
     def actif(self):
@@ -147,8 +153,11 @@ class Travail:
                     self.avancement.appliquer(ev)
                     change = True
         statut = self.statut
+        if self._fin_appliquee == "interrompu" and statut in TERMINES and statut != "interrompu":
+            # l'état final est arrivé après une conclusion « interrompu » : on refait l'avancement avec la vraie fin
+            self._refaire_avancement()
         if statut in TERMINES and not self._fin_appliquee:
-            self._fin_appliquee = True
+            self._fin_appliquee = statut
             code = self.etat.get("code")
             fin = self.etat.get("fin") or self.avancement.dernier_t
             if statut == "interrompu":
@@ -161,6 +170,35 @@ class Travail:
                     self.avancement.erreurs.append(self.derniere_erreur())
             change = True
         return change, nouveau
+
+    def _nouvel_avancement(self):
+        return suivi.Avancement(
+            nb_videos=len(self.demande.get("videos") or []) or 1,
+            estimations=self.demande.get("estimations"),
+            type_travail=self.demande.get("type", "doublage"),
+            debut=None)
+
+    def _refaire_avancement(self):
+        """Repart d'un avancement neuf (événements relus depuis le début, ou journal déjà lu) ; le journal affiché ne
+        change pas."""
+        self.avancement = self._nouvel_avancement()
+        self._fin_appliquee = False
+        debut = self.etat.get("debut")
+        if debut:
+            self.avancement.debut = float(debut)
+        if self.avec_evenements:
+            self._off_ev, self._reste_ev = 0, b""
+            _, lignes_ev = self._lire_suite(Path(self.demande["evenements"]).name, "_off_ev", "_reste_ev",
+                                            chemin=Path(self.demande["evenements"]))
+            for l in lignes_ev:
+                ev = moteur.analyser_evenement(l)
+                if ev:
+                    self.avancement.appliquer(ev)
+        else:
+            self.lecture_texte = moteur.LectureTexte(float(debut) if debut else self.cree or time.time())
+            for l in self.journal.splitlines():
+                for ev in self.lecture_texte.ligne(l):
+                    self.avancement.appliquer(ev)
 
     def _lire_suite(self, nom, attr_off, attr_reste, chemin=None):
         chemin = chemin or self.dossier / nom

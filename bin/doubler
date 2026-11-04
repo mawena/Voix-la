@@ -1,0 +1,16 @@
+#!/usr/bin/python3
+"""Lanceur de doubler : trouve doubler.py (dépôt, ou /usr/lib/voix-la du paquet Debian) et l'exécute."""
+
+import os
+import sys
+
+here = os.path.dirname(os.path.realpath(__file__))
+# bin/ du dépôt → ../doubler.py ; /usr/bin → ../lib/voix-la/doubler.py (aussi dans un paquet extrait)
+for candidate in (os.path.join(here, ".."), os.path.join(here, "..", "lib", "voix-la"), "/usr/lib/voix-la"):
+    script = os.path.abspath(os.path.join(candidate, "doubler.py"))
+    if os.path.isfile(script):
+        break
+else:
+    sys.exit("doubler : doubler.py introuvable (ni dans le dépôt Voix-là, ni dans /usr/lib/voix-la)")
+
+os.execv(sys.executable, [sys.executable, script, *sys.argv[1:]])

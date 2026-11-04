@@ -1,0 +1,17 @@
+#!/usr/bin/python3
+"""Lanceur de l'interface Voix-là : trouve le paquet voixla (dépôt, ou /usr/lib/voix-la du paquet Debian) et le lance."""
+
+import os
+import runpy
+import sys
+
+here = os.path.dirname(os.path.realpath(__file__))
+# bin/ du dépôt → ../interface/voixla ; /usr/bin → ../lib/voix-la/voixla (aussi dans un paquet extrait)
+for candidate in (os.path.join(here, "..", "interface"), os.path.join(here, "..", "lib", "voix-la"), "/usr/lib/voix-la"):
+    if os.path.isdir(os.path.join(candidate, "voixla")):
+        sys.path.insert(0, os.path.abspath(candidate))
+        break
+else:
+    sys.exit("voix-la : paquet voixla introuvable (ni dans le dépôt Voix-là, ni dans /usr/lib/voix-la)")
+
+runpy.run_module("voixla", run_name="__main__", alter_sys=True)

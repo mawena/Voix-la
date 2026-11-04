@@ -1,0 +1,13 @@
+voix-la (0.2.0) unstable; urgency=medium
+
+  * Paquet Debian : commandes doubler et voix-la dans /usr/bin, code dans
+    /usr/lib/voix-la, entrée du menu des applications, icône, pages de
+    manuel.
+  * Ancres de genre cherchées d'abord dans ~/.config/voix-la, puis dans le
+    dépôt.
+  * doubler --version ; VOIXLA_KAGGLE choisit la commande kaggle ;
+    doubler --config affiche la commande kaggle, le script du noyau et les
+    ancres utilisés.
+  * Interface : un doublage fini n'est plus affiché « interrompu ».
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Wed, 04 Nov 2026 12:38:57 +0000

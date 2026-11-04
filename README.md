@@ -2,7 +2,8 @@
 
 Voix-là : votre vidéo, avec une autre voix. Et voilà.
 
-> **Version 0.1.0** (première version publique) : voir le [journal des modifications](CHANGELOG.md).
+> **Version 0.2.0** : paquet Debian `.deb` joint à chaque [release](https://github.com/mawena/Voix-la/releases). Voir le
+> [journal des modifications](CHANGELOG.md).
 
 `doubler` prend une vidéo (chanson d'une chanteuse ou d'un chanteur, duo, rap, ou vidéo parlée) et rend la même vidéo,
 avec son audio, où la voix est remplacée par une voix clonée. La mélodie, le phrasé et l'interprétation restent ceux de
@@ -101,13 +102,24 @@ fois.
 
 - **Linux**, avec `ffmpeg` et `ffprobe`.
 - **Python 3** en `/usr/bin/python3`, avec **numpy** (utilisé par `--ajouter-voix` et par le mixage).
+
+  Le [paquet Debian](#paquet-debian) installe ces deux prérequis, et ceux de l'interface graphique.
 - **Un compte Kaggle avec le GPU activé.** Kaggle ne donne le GPU et internet aux noyaux qu'après la vérification du
   numéro de téléphone du compte (page *Settings* de Kaggle). Sans elle, le noyau s'arrête sur « ACCÈS REFUSÉ ».
-- **La commande Kaggle** dans un environnement Python dédié, à l'emplacement attendu par `doubler` :
+- **La commande Kaggle** dans un environnement Python dédié, à l'emplacement attendu par `doubler`. Elle n'est pas
+  fournie par le paquet Debian (Ubuntu n'en a pas), et s'installe à part, sans `sudo` (sous Ubuntu, `python3 -m venv`
+  demande le paquet `python3-venv`) :
 
   ```sh
   python3 -m venv ~/kaggle-venv
   ~/kaggle-venv/bin/pip install kaggle
+  ```
+
+  Pour une commande `kaggle` installée ailleurs, la variable d'environnement `VOIXLA_KAGGLE` donne son chemin, pour
+  `doubler` comme pour l'interface :
+
+  ```sh
+  export VOIXLA_KAGGLE=~/.local/bin/kaggle   # par exemple, dans ~/.profile
   ```
 
 - **Un jeton d'API Kaggle** dans `~/.kaggle/access_token`. Il se crée depuis la page *Settings* de Kaggle, section
@@ -128,17 +140,46 @@ sont installés sur Kaggle. L'interface graphique a ses propres prérequis (voir
 
 ## Installation
 
+### Paquet Debian
+
+Pour Ubuntu 24.04 ou plus récent (libadwaita 1.5 au moins). Le paquet `voix-la_<version>_all.deb` et ses sommes
+`SHA256SUMS` sont joints à chaque version sur GitHub (*Releases*), ou se construisent depuis le dépôt (voir
+[Construire le paquet](#construire-le-paquet)).
+
+```sh
+sha256sum -c SHA256SUMS
+sudo apt install ./voix-la_0.2.0_all.deb
+doubler --version
+```
+
+`apt` installe aussi les dépendances : Python 3 et numpy, ffmpeg, PyGObject, GTK 4, libadwaita, GStreamer et ses
+greffons. Le paquet contient :
+
+| Emplacement | Contenu |
+|---|---|
+| `/usr/bin/doubler` | la commande `doubler` |
+| `/usr/bin/voix-la` | l'interface graphique, aussi dans le menu des applications (« Voix-là ») |
+| `/usr/lib/voix-la/` | le code : `doubler.py`, le noyau `kaggle/doubler_kaggle.py`, l'interface `voixla/` |
+| `/usr/share/man/man1/` | les pages de manuel `doubler(1)` et `voix-la(1)` |
+| `/usr/share/doc/voix-la/` | ce README et le journal des modifications |
+
+La commande `kaggle` et son jeton restent à installer à part (voir [Prérequis](#prérequis)). Les données ne sont
+jamais dans le paquet : la configuration, les voix et les doublages restent chez l'utilisateur, et `sudo apt remove
+voix-la` n'y touche pas.
+
+### Depuis le dépôt (développement)
+
 ```sh
 git clone https://github.com/mawena/Voix-la.git
 cd Voix-la
-chmod +x doubler.py
 mkdir -p ~/.local/bin
-ln -s "$PWD/doubler.py" ~/.local/bin/doubler    # la commande doubler, disponible partout
+ln -s "$PWD/bin/doubler" ~/.local/bin/doubler    # la commande doubler, disponible partout
 doubler --help
 ```
 
-`~/.local/bin` doit être dans le `PATH`. Le lien suit le fichier : `doubler` trouve `kaggle/` à côté de `doubler.py`,
-même appelé par le lien.
+`~/.local/bin` doit être dans le `PATH`. Le lanceur `bin/doubler` suit le lien et exécute `doubler.py` du dépôt, qui
+trouve `kaggle/` à côté de lui. Un lien direct vers `doubler.py` marche aussi. Si le paquet est aussi installé,
+`~/.local/bin` passe en général avant `/usr/bin` dans le `PATH` : `doubler` est alors celui du dépôt.
 
 Le code et les données sont séparés : le dépôt ne contient que le code. Les voix et les doublages vont dans le
 dossier des données, `~/Music/Voix-là` par défaut (voir [Configuration](#configuration)). Mettre à jour le code ne
@@ -211,9 +252,11 @@ Le fichier ressemble à ceci :
   coup. `donnees` y est noté en chemin absolu ; `moteur` n'accepte que `yingmusic` ou `seedvc` ; `voix` n'accepte
   qu'un nom de voix valide (minuscules, chiffres, `-` ou `_`), et prévient si cette voix n'existe pas encore.
 - `--config` seul affiche le fichier, puis les valeurs utilisées : dossier des données et d'où il vient, dossiers des
-  voix et des sorties, voix par défaut et d'où elle vient, noms Kaggle complets, présence du jeton. Le jeton n'est
-  jamais affiché, seulement « présent » ou « absent ». En JSON (`--json`), la voix par défaut est dans `voix_defaut`
-  (`null` s'il n'y en a pas) et sa provenance dans `source_voix_defaut`.
+  voix et des sorties, voix par défaut et d'où elle vient, noms Kaggle complets, présence du jeton, commande
+  `kaggle`, script du noyau et fichier des ancres de genre utilisés. Le jeton n'est jamais affiché, seulement
+  « présent » ou « absent ». En JSON (`--json`), la voix par défaut est dans `voix_defaut` (`null` s'il n'y en a pas)
+  et sa provenance dans `source_voix_defaut` ; la commande `kaggle` dans `commande_kaggle`, le script du noyau dans
+  `script_noyau` et les ancres dans `ancres_genre` (`null` sans ancres).
 
 ### Dossier des données
 
@@ -573,15 +616,19 @@ doubler, ajouter une voix ou lire la configuration, elle appelle la commande `do
 `--config` et `--voix-liste --json`). Ses doublages passent par une file : un seul `doubler` à la fois, et la file
 continue même fenêtre fermée.
 
+Le [paquet Debian](#paquet-debian) l'installe avec ses dépendances : commande `voix-la` et « Voix-là » dans le menu
+des applications. Elle lance alors la commande `doubler` du `PATH` (`/usr/bin/doubler`), sinon `doubler.py` à côté
+de son code. Depuis le dépôt, pour le développement :
+
 ```sh
 interface/installer.sh               # une fois : commande voix-la, entrée du menu des applications, icône
 voix-la
-cd interface && python3 -m voixla    # sans installation
+bin/voix-la                          # sans installation (ou : cd interface && python3 -m voixla)
 interface/installer.sh --retirer     # tout enlever (le code et les données restent)
 ```
 
 Il faut PyGObject avec GTK 4, libadwaita 1.5, GStreamer (lecture, enregistrement au micro) et `pactl`.
-L'installation n'écrit que dans `~/.local`.
+`installer.sh` n'écrit que dans `~/.local`.
 
 Pages écrites, encore en essai :
 
@@ -649,17 +696,23 @@ ambiance, musique discrète) passe donc en parole. `--mode chant` ou `--mode par
 ### Ancres de genre (facultatives)
 
 Les ancres de genre sont deux vecteurs de 192 nombres, l'un pour les voix d'homme, l'autre pour les voix de femme,
-dans l'espace des empreintes CAMPPlus. Elles sont rangées dans `kaggle/ancres_genre.json`, sans aucun son :
-`{"homme": [192 nombres], "femme": [192 nombres]}`. Le genre d'un passage est la différence de ses ressemblances aux
-deux ancres.
+dans l'espace des empreintes CAMPPlus, sans aucun son : `{"homme": [192 nombres], "femme": [192 nombres]}`. Le genre
+d'un passage est la différence de ses ressemblances aux deux ancres. `doubler` prend le premier de ces deux fichiers
+qui existe :
 
-Elles sont **facultatives**, et ne sont pas fournies avec le code : ce fichier reste local, hors du dépôt.
-`octave/ancres.py` les bâtit sur un corpus public de parole lue dont le genre des locuteurs est connu (rangé comme
-LibriSpeech) : chaque ancre est la moyenne des empreintes des locuteurs d'un genre, chaque locuteur pesant autant.
-L'empreinte marque d'abord une personne, ensuite son genre : des ancres bâties sur une seule voix d'homme et une seule
-voix de femme, ou sur quelques chanteurs, donnent un axe qui sépare des personnes plus que des genres. Sur des dizaines
-de locuteurs, les personnes s'effacent et le genre reste. Aucune voix chantée n'y entre : toutes les chansons des
-cas restent des cas de validation (`octave/rejouer.py --ancres`).
+1. `~/.config/voix-la/ancres_genre.json`, à côté de la configuration (c'est là qu'elles vont avec le paquet
+   Debian) ;
+2. `kaggle/ancres_genre.json`, à côté de `doubler.py` (installation depuis le dépôt).
+
+`doubler --config` affiche celui qui est utilisé.
+
+Elles sont **facultatives**, et ne sont pas fournies avec le code : ce fichier reste local, hors du dépôt et du
+paquet. `octave/ancres.py` les bâtit sur un corpus public de parole lue dont le genre des locuteurs est connu (rangé
+comme LibriSpeech) : chaque ancre est la moyenne des empreintes des locuteurs d'un genre, chaque locuteur pesant
+autant. L'empreinte marque d'abord une personne, ensuite son genre : des ancres bâties sur une seule voix d'homme et
+une seule voix de femme, ou sur quelques chanteurs, donnent un axe qui sépare des personnes plus que des genres. Sur
+des dizaines de locuteurs, les personnes s'effacent et le genre reste. Aucune voix chantée n'y entre : toutes les
+chansons des cas restent des cas de validation (`octave/rejouer.py --ancres`).
 
 Sans ancres, `doubler` le signale par une ligne au lancement, et la décision d'octave se passe d'empreinte :
 
@@ -850,12 +903,19 @@ docs: README complet
 │   └── doubler_kaggle.py    noyau GPU : séparation, mode, hauteur, nettoyage, conversion YingMusic-SVC et Seed-VC ;
 │                            noyau « outils »
 ├── interface/               interface graphique GTK 4 + libadwaita (en cours)
-│   ├── installer.sh         commande voix-la, entrée du menu, icône
+│   ├── installer.sh         installation de développement : commande voix-la, entrée du menu, icône
 │   ├── voixla/              logique sans GTK : chemins, appel de doubler, suivi, file des travaux, rapports
 │   │   └── gui/             fenêtre et pages
 │   ├── donnees/             entrée du menu et icône
 │   └── tests/               tests (unittest) et faux doubler, sans réseau
+├── bin/                     lanceurs doubler et voix-la : le code du dépôt, sinon celui de /usr/lib/voix-la
+├── debian/                  paquet Debian (debhelper 13, 3.0 native)
+├── docs/man/                pages de manuel doubler.1 et voix-la.1
+├── scripts/build-deb.sh     construction du paquet : versions, tests, paquet, SHA256SUMS, lintian
+├── Makefile                 make test, make deb, make clean
+├── banc/, octave/           outils de mise au point (hors du paquet)
 ├── README.md
+├── CHANGELOG.md
 ├── LICENSE
 └── .gitignore
 ```
@@ -874,6 +934,22 @@ Dossiers et fichiers locaux, exclus par `.gitignore` :
 | `kaggle/ancres_genre.json` | [ancres de genre](#ancres-de-genre-facultatives), facultatives : empreintes tirées de voix réelles |
 | `REPRISE*.md`, `*/REPRISE.md` | notes de travail en cours |
 | `__pycache__/` | cache Python |
+| `dist/`, `debian/voix-la/`, `debian/.debhelper/`… | paquet construit et sorties de debhelper |
+
+### Construire le paquet
+
+Il faut `debhelper`, `dpkg-dev` et `lintian`, en plus des dépendances du paquet (pour les tests).
+
+```sh
+make test   # tests de l'interface, puis essai rapide de doubler --help et --version
+make deb    # versions, tests, dist/voix-la_<version>_all.deb, dist/SHA256SUMS, lintian
+make clean
+```
+
+`scripts/build-deb.sh` vérifie d'abord que les trois versions concordent : `debian/changelog`,
+`interface/voixla/__init__.py` (`__version__`) et `VERSION` de `doubler.py` (`doubler --version`). Il construit le
+paquet avec `dpkg-buildpackage -us -uc -b` (paquet non signé), puis s'arrête si `lintian` y trouve une erreur.
+`dist/` n'est jamais dans le dépôt : le paquet est joint à la version sur GitHub.
 
 ## Crédits
 

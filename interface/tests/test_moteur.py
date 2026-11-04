@@ -94,6 +94,22 @@ class EssaiCapacites(EssaiIsole):
         cmd = moteur.commande()
         self.assertTrue(cmd and (cmd[-1].endswith("doubler") or cmd[-1].endswith("doubler.py")))
 
+    def test_commande_hors_du_depot(self):
+        # sans VOIXLA_DOUBLER : « doubler » du PATH (/usr/bin/doubler du paquet), sinon doubler.py à côté du code
+        del os.environ["VOIXLA_DOUBLER"]
+        bin_ = self.tmp / "bin"
+        bin_.mkdir()
+        os.environ["PATH"] = str(bin_)
+        lib = self.tmp / "lib" / "voix-la"
+        lib.mkdir(parents=True)
+        (lib / "doubler.py").write_text("")
+        with mock.patch.object(chemins, "DEPOT", lib):
+            self.assertEqual(moteur.commande(), [sys.executable, str(lib / "doubler.py")])
+            lanceur = bin_ / "doubler"
+            lanceur.write_text("#!/bin/sh\n")
+            lanceur.chmod(0o755)
+            self.assertEqual(moteur.commande(), [str(lanceur)])
+
     def test_environnement(self):
         caps = moteur.capacites()
         self.assertEqual(moteur.environnement(self.donnees, caps),

@@ -13,8 +13,12 @@ import os
 import tempfile
 from pathlib import Path
 
-DEPOT = Path(__file__).resolve().parents[2]          # racine du dépôt Voix-là (interface/voixla/ → ../..)
-INTERFACE = Path(__file__).resolve().parents[1]      # dossier interface/ (pour relancer python3 -m voixla.*)
+# Dossier qui contient le paquet voixla, pour relancer python3 -m voixla.* : interface/ du dépôt, ou /usr/lib/voix-la
+# une fois le paquet Debian installé
+INTERFACE = Path(__file__).resolve().parents[1]
+# Racine du code : le dépôt Voix-là (interface/voixla/ → ../..) ou, installé, /usr/lib/voix-la, où doubler.py et kaggle/
+# sont à côté de voixla/
+DEPOT = INTERFACE if (INTERFACE / "doubler.py").is_file() else INTERFACE.parent
 DONNEES_DEFAUT = Path.home() / "Music" / "Voix-là"
 
 # Noms par défaut (ceux de doubler) ; le compte n'a pas de défaut : il est lu dans config.json (dépôt public)

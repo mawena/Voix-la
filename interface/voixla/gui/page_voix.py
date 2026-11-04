@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 
-from gi.repository import Adw, Gio, GLib, Gtk
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
 from .. import chemins, controle, formats, moteur
 from . import commun
@@ -37,9 +37,19 @@ class PageVoix(commun.Page):
 
         self.page = Adw.PreferencesPage()
         self.g_voix = Adw.PreferencesGroup(
-            title="Voix", description="Une voix = un dossier voix/&lt;nom&gt;/ : reference.wav (20 à 25 s de parole) et "
-                                      "voix.json. Seule la référence de la voix choisie part sur Kaggle.")
+            title="Voix", description="Ajoutez une voix depuis un fichier audio ou vidéo (ou glissez-le sur cette page), "
+                                      "ou enregistrez-vous au micro. Une voix = un dossier voix/&lt;nom&gt;/ : "
+                                      "reference.wav (20 à 25 s de parole) et voix.json. Seule la référence de la voix "
+                                      "choisie part sur Kaggle.")
+        # bouton visible à côté du titre (le « + » de la barre de titre seul passait inaperçu)
+        bouton_ajout = Gtk.MenuButton(menu_model=menu, valign=Gtk.Align.CENTER, css_classes=["suggested-action"],
+                                      tooltip_text="Depuis un fichier audio ou vidéo, ou au micro")
+        bouton_ajout.set_child(Adw.ButtonContent(icon_name="list-add-symbolic", label="Ajouter une voix"))
+        self.g_voix.set_header_suffix(bouton_ajout)
         self.page.add(self.g_voix)
+        cible = Gtk.DropTarget.new(Gdk.FileList, Gdk.DragAction.COPY)
+        cible.connect("drop", self._depose)
+        self.page.add_controller(cible)
         self.g_chant = Adw.PreferencesGroup(
             title="Chant pour l’affinage",
             description="Prises de chant (48 kHz) pour affiner plus tard le modèle sur votre timbre : 5 à 10 min au "
@@ -196,6 +206,16 @@ class PageVoix(commun.Page):
         self.fenetre.prefs = chemins.modifier_preference("voix_defaut", ident)
         self.fenetre.preferences_changees()
         self.fenetre.toast(f"{self.fenetre.nom_voix(ident)} : voix par défaut")
+
+    def _depose(self, _cible, valeur, _x, _y):
+        """Un fichier audio ou vidéo glissé sur la page : on demande le nom de la nouvelle voix."""
+        fichiers = [p for p in (commun.chemin_de(f) for f in valeur.get_files()) if p and p.is_file()]
+        if not fichiers:
+            return False
+        if len(fichiers) > 1:
+            self.fenetre.toast("Une voix à la fois : seul le premier fichier est pris")
+        self.demander_nom(fichiers[0])
+        return True
 
     def depuis_fichier(self):
         d = Gtk.FileDialog(title="Enregistrement de la voix", modal=True,

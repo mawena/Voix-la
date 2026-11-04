@@ -7,6 +7,11 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+### Modifié
+
+- Interface, page Voix : bouton « Ajouter une voix » bien visible à côté du titre (depuis un fichier audio ou vidéo,
+  ou au micro), et glisser-déposer d'un fichier sur la page ; le seul « + » de la barre de titre passait inaperçu.
+
 ## [0.3.0] - 2026-11-04
 
 ### Ajouté

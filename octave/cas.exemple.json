@@ -1,0 +1,191 @@
+{
+ "note": "Modèle de octave/cas.json (cas de référence de rejouer.py) : le copier en octave/cas.json (ignoré par git) et l'adapter, ou passer « rejouer.py --cas FICHIER ». Les cas sont les dossiers de <sorties>/ (rapport.json de doubler) et les fichiers de octave/donnees/ (f0_locale.py) ; un motif est un morceau de leur nom.",
+ "aide": {
+  "centre_chant_hz": "centre de chant de la voix cible (Hz) : celui des cas synthétiques, et le défaut de f0_locale.py --centre",
+  "references": "règles de vérité, essayées dans l'ordre : la première dont un des « motifs » figure dans le nom du cas donne le décalage attendu (« decalage ») ; un cas sans règle n'est pas évalué",
+  "references[].sections": "facultatif : [{debut_s, fin_s, decalage}] ; un morceau couvert à plus de moitié par une section prend son décalage (duo)",
+  "references[].douteux_genre_max": "facultatif : morceaux douteux (non comptés) si |genre_score| est sous ce seuil (chant à deux probable)",
+  "references[].note": "texte affiché après « vérité : »",
+  "synthetiques": "cas bâtis à partir des vrais, seulement si toutes leurs sources sont là ; « parties » recollées bout à bout (« recaler » : false garde les temps d'origine) ; « duo » : jusqu'à 10 % de faux tolérés dans --sensibilite ; « hors_sensibilite » : cas écarté de --sensibilite",
+  "synthetiques[].parties[]": "cas (motif du cas source), actifs (morceaux non muets seulement), avec_hauteur (f0_med non vide seulement), si_verite (morceaux dont la vérité du cas source vaut cette valeur), tranche [début, fin] (null : ouvert), verite (décalage attendu, ou « reference » : celui du cas source), transposer_dt (hauteurs transposées de tant de demi-tons), decaler_genre {si_verite, de} (genre_score + de, là où la vérité du cas source vaut si_verite)"
+ },
+ "centre_chant_hz": 200.0,
+ "references": [
+  {
+   "motifs": [
+    "chanteur-1",
+    "chanteur-2"
+   ],
+   "decalage": 0,
+   "note": "voix d’homme : 0 partout"
+  },
+  {
+   "motifs": [
+    "chanteuse-1",
+    "chanteuse-2"
+   ],
+   "decalage": -12,
+   "note": "voix de femme : −12 partout"
+  },
+  {
+   "motifs": [
+    "film-1"
+   ],
+   "decalage": 0,
+   "note": "parole (détectée à tort en chant) : 0 attendu, aucune octave"
+  },
+  {
+   "motifs": [
+    "duo-1"
+   ],
+   "decalage": 0,
+   "sections": [
+    {
+     "debut_s": 60.0,
+     "fin_s": 85.0,
+     "decalage": -12
+    },
+    {
+     "debut_s": 150.0,
+     "fin_s": 170.0,
+     "decalage": -12
+    }
+   ],
+   "douteux_genre_max": 0.05,
+   "note": "chanteur 0, chanteuse −12 (sections 1:00–1:25, 2:30–2:50) ; douteux : empreinte |g| < 0,05"
+  }
+ ],
+ "synthetiques": [
+  {
+   "nom": "duo-1, chanteur seul (sans les sections de la chanteuse)",
+   "parties": [
+    {
+     "cas": "duo-1",
+     "actifs": true,
+     "si_verite": 0,
+     "verite": 0
+    }
+   ]
+  },
+  {
+   "nom": "duo-1, chanteuse seule",
+   "parties": [
+    {
+     "cas": "duo-1",
+     "actifs": true,
+     "si_verite": -12,
+     "verite": -12
+    }
+   ]
+  },
+  {
+   "nom": "duo-1, chanteuse moins marquée (empreintes +0,03)",
+   "parties": [
+    {
+     "cas": "duo-1",
+     "verite": "reference",
+     "decaler_genre": {
+      "si_verite": -12,
+      "de": 0.03
+     }
+    }
+   ]
+  },
+  {
+   "nom": "chanteur-1 transposé +3 dt (stress)",
+   "recaler": false,
+   "parties": [
+    {
+     "cas": "chanteur-1",
+     "verite": 0,
+     "transposer_dt": 3
+    }
+   ]
+  },
+  {
+   "nom": "chanteur-1 transposé +5 dt (stress)",
+   "recaler": false,
+   "hors_sensibilite": true,
+   "parties": [
+    {
+     "cas": "chanteur-1",
+     "verite": 0,
+     "transposer_dt": 5
+    }
+   ]
+  },
+  {
+   "nom": "Duo synthétique chanteur-1 (0) puis chanteuse-1 (−12) puis chanteur-1",
+   "duo": true,
+   "parties": [
+    {
+     "cas": "chanteur-1",
+     "actifs": true,
+     "tranche": [
+      null,
+      15
+     ],
+     "verite": 0
+    },
+    {
+     "cas": "chanteuse-1",
+     "actifs": true,
+     "verite": -12
+    },
+    {
+     "cas": "chanteur-1",
+     "actifs": true,
+     "tranche": [
+      15,
+      30
+     ],
+     "verite": 0
+    }
+   ]
+  },
+  {
+   "nom": "Duo synthétique chanteur-2 (0) / chanteuse-1 (−12) en alternance",
+   "duo": true,
+   "parties": [
+    {
+     "cas": "chanteur-2",
+     "actifs": true,
+     "avec_hauteur": true,
+     "tranche": [
+      null,
+      3
+     ],
+     "verite": 0
+    },
+    {
+     "cas": "chanteuse-1",
+     "actifs": true,
+     "tranche": [
+      null,
+      4
+     ],
+     "verite": -12
+    },
+    {
+     "cas": "chanteur-2",
+     "actifs": true,
+     "avec_hauteur": true,
+     "tranche": [
+      3,
+      null
+     ],
+     "verite": 0
+    },
+    {
+     "cas": "chanteuse-1",
+     "actifs": true,
+     "tranche": [
+      4,
+      null
+     ],
+     "verite": -12
+    }
+   ]
+  }
+ ]
+}

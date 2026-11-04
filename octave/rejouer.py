@@ -6,8 +6,9 @@
     exécuter le reste du noyau), avec les réglages de doubler.py (lus, pas exécutés) et les ancres de genre.
     --ancres : recalcule le genre_score de chaque morceau à partir de son empreinte (rapport['empreintes'], ou
     --empreintes) avec ces ancres ({"homme": [...], "femme": [...]}, ce que doubler.py enverrait) ; « aucune » :
-    décision sans empreinte, comme sans kaggle/ancres_genre.json. Sans --ancres : genre_score tels que le noyau les a
-    écrits dans les rapports (et, avec --kaggle, kaggle/ancres_genre.json s'il existe).
+    décision sans empreinte, comme sans fichier d'ancres. Sans --ancres : genre_score tels que le noyau les a écrits
+    dans les rapports (et, avec --kaggle, les ancres que doubler.py prendrait : ~/.config/voix-la/ancres_genre.json,
+    sinon kaggle/ancres_genre.json, s'il y en a).
     --empreintes : dossier d'empreintes calculées à part (« ancres.py rapports ») pour des rapports qui n'en ont pas
     (fichiers JSON {"nom": <dossier du cas>, "morceaux": {numéro: base64}}, même format que rapport['empreintes']) ;
     défaut : donnees/empreintes/ à côté du fichier des cas, s'il existe.
@@ -438,8 +439,9 @@ def main():
         if sans:
             print(f"  sans empreinte (décision sans genre_score) : {', '.join(n[:40] for n in sans)}")
     else:
-        defaut = os.path.join(DEPOT, 'kaggle', 'ancres_genre.json')
-        ancres = lire_ancres(defaut) if os.path.exists(defaut) else None
+        defaut = next((f for f in (os.path.expanduser('~/.config/voix-la/ancres_genre.json'),   # comme doubler.py
+                                   os.path.join(DEPOT, 'kaggle', 'ancres_genre.json')) if os.path.isfile(f)), None)
+        ancres = lire_ancres(defaut) if defaut else None
         for c in cas:   # genre_score des rapports, que le noyau ne recalcule donc pas
             for s in c['morceaux']:
                 s.pop('emb', None)

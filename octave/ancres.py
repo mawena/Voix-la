@@ -1,4 +1,4 @@
-"""Ancres de genre (kaggle/ancres_genre.json) bâties sur un corpus public de parole, et empreintes locales des rapports.
+"""Ancres de genre (ancres_genre.json) bâties sur un corpus public de parole, et empreintes locales des rapports.
 
     python -I ancres.py parole   --corpus DOSSIER --locuteurs SPEAKERS.TXT --modules DOSSIER --poids FICHIER
                                  [--enonces 25] --sortie corpus.npz

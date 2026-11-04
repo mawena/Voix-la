@@ -83,38 +83,42 @@ class Analyses:
 
     # --- pistes séparées : ma voix seule, enregistrements -------------------------------------------------------------
 
-    def ma_voix(self, dossier_voix, rappel, duree_s=None, prioritaire=False, avancement=None):
+    def ma_voix(self, dossier_voix, rappel, duree_s=None, prioritaire=False, avancement=None, autotune=False):
         """rappel(fichier ou None, message) : « ma voix seule » en cache, sinon préparée (ffmpeg, priorité basse).
-        avancement(fraction, étape) pendant le calcul."""
+        avancement(fraction, étape) pendant le calcul. autotune : celle de la version auto-tune."""
         dossier_voix = str(dossier_voix)
+        at = ["--autotune"] if autotune else []
 
         def lire():
             from .. import pistes
-            return pistes.ma_voix_prete(dossier_voix)
+            return pistes.ma_voix_prete(dossier_voix, autotune=autotune)
 
         def lu(f):
             if f is not None:
                 rappel(f, "")
                 return
             rappel(None, "attente")
-            self._demander(("ma_voix", dossier_voix), ["voix", dossier_voix], duree_s,
+            self._demander(("ma_voix", dossier_voix, autotune), ["voix", dossier_voix, *at], duree_s,
                            lambda ok, sortie: commun.en_fil(lire, lambda f2: rappel(
                                f2, "" if f2 is not None else
                                f"préparation impossible : {derniere_ligne(sortie) or 'sans message'}")),
                            module="voixla.pistes", prioritaire=prioritaire, avancement=avancement)
         commun.en_fil(lire, lu, lambda e: rappel(None, f"préparation impossible : {e}"))
 
-    def video(self, video, rappel, son=None, voix=None, duree_s=None, prioritaire=False, avancement=None):
+    def video(self, video, rappel, son=None, voix=None, duree_s=None, prioritaire=False, avancement=None,
+              autotune=False):
         """rappel(fichier ou None, message) : la copie vidéo d'une piste sans image (l'image de la vidéo doublée
         copiée telle quelle, le son de la piste), en cache, sinon préparée (ffmpeg, sous nice). son : le fichier de la
         piste ; voix : le dossier d'une voix, pour « ma voix seule ». Message « a_refaire » : la copie faite ne
         correspond plus aux fichiers (remix pendant la préparation), à redemander. prioritaire : la piste qu'on vient
-        de cliquer (passe devant les préparations à l'avance) ; avancement(fraction, étape) pendant la copie."""
+        de cliquer (passe devant les préparations à l'avance) ; avancement(fraction, étape) pendant la copie.
+        autotune (avec voix) : la voix seule de la version auto-tune."""
         video, son, voix = str(video), (str(son) if son else None), (str(voix) if voix else None)
+        autotune = bool(autotune and voix)
 
         def lire():
             from .. import pistes
-            return pistes.video_prete(video, son=son, voix=voix)
+            return pistes.video_prete(video, son=son, voix=voix, autotune=autotune)
 
         def fini(ok, sortie):
             raison = derniere_ligne(sortie).removeprefix("erreur :").strip()
@@ -133,14 +137,16 @@ class Analyses:
                 rappel(f, "")
                 return
             rappel(None, "attente")
-            argv = ["video", video, *(["--voix", voix] if voix else [son or ""])]
-            self._demander(("video", video, voix or son), argv, duree_s, fini, module="voixla.pistes",
+            argv = ["video", video, *(["--voix", voix] if voix else [son or ""]), *(["--autotune"] if autotune else [])]
+            self._demander(("video", video, voix or son, autotune), argv, duree_s, fini, module="voixla.pistes",
                            prioritaire=prioritaire, avancement=avancement)
         commun.en_fil(lire, lu, lambda e: rappel(None, f"copie vidéo impossible : {e}"))
 
-    def exporter(self, source, sortie, rappel, duree_s=None, voix=False):
-        """Enregistre source (un fichier, ou le dossier d'une voix si voix=True) dans sortie ; rappel(ok, message)."""
-        argv = ["exporter", *(["--voix"] if voix else []), str(source), str(sortie)]
+    def exporter(self, source, sortie, rappel, duree_s=None, voix=False, autotune=False):
+        """Enregistre source (un fichier, ou le dossier d'une voix si voix=True, sa version auto-tune si autotune) dans
+        sortie ; rappel(ok, message)."""
+        argv = ["exporter", *(["--voix"] if voix else []), str(source), str(sortie),
+                *(["--autotune"] if voix and autotune else [])]
         self._demander(("exporter", str(sortie)), argv, duree_s,
                        lambda ok, s: rappel(ok, "" if ok else (s.strip()[-300:] or "sans message")),
                        module="voixla.pistes")

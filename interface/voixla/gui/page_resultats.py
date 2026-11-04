@@ -12,12 +12,13 @@ from .. import lecture as regles
 from . import commun
 from . import visualisations as vis
 from .analyses import analyses
-from .frise import Frise, legende as legende_frise
+from .frise import Frise, FriseVoix, legende as legende_frise, legende_voix
 from .lecteur import Lecteur
 from .lecture import lectures
 from .vue_paroles import VueParoles
 
 PRODUITS_VIS = {"spectre": "spectre", "onde": "onde", "vumetre": "bandes"}
+VOIX_SEULES = ("ma_voix", "ma_voix_at")     # voix seules combinées en cache (normale et auto-tune)
 
 
 def phrase(texte):
@@ -33,6 +34,8 @@ def sous_titre(res, maintenant=None):
         morceaux.append(f"voix {res.voix_nom or res.voix}")
     if res.mode:
         morceaux.append(res.mode)
+    if res.autotune:
+        morceaux.append("auto-tune")
     if res.duree_s:
         morceaux.append(formats.chrono(res.duree_s))
     if res.extrait:
@@ -62,12 +65,13 @@ class PageDetail(Adw.NavigationPage):
         self.piste = "doublage"       # ce qu'on écoute (clé de voixla.pistes, ou « comparaison »)
         self.voulue = None            # piste demandée qui se prépare encore (ma voix seule)
         self._maj = False             # bascules mises à jour par le code (pas par un clic)
-        self._preparation = False
         self._videos = set()          # pistes sans image dont la copie vidéo se prépare
         self._avancement = {}         # piste → avancement de sa préparation (0 à 1), quand ffmpeg le donne
         self._echecs = {}             # piste → raison d'une préparation ratée (bouton « Réessayer »)
         self._demandees = set()       # (fichier, produits) dont l'analyse a été demandée
         self._oubliee = False         # page quittée et fermée (flux fermés, plus d'écoute des préférences)
+        self.autotune = False         # bascule « Auto-tune » (touche T) : doublage et voix seule auto-tunés
+        self._preparations = set()    # voix seules en préparation (ma_voix, ma_voix_at)
         self.vue_paroles = None
         self.pistes_dispo = pistes.choisir_pistes(res, self.forme, self.source_choisie())
         vue = Adw.ToolbarView()
@@ -85,6 +89,8 @@ class PageDetail(Adw.NavigationPage):
             menu_vis.append(libelle, f"win.{action}")
         section = Gio.Menu()
         section.append("Mélodie en Hz (sinon en notes)", "win.melodie-hz")
+        if res.autotune:
+            section.append("Courbe de la version auto-tune", "win.melodie-autotune")
         menu_vis.append_section(None, section)
         section = Gio.Menu()
         section.append("Paroles", "win.paroles")
@@ -111,14 +117,21 @@ class PageDetail(Adw.NavigationPage):
         groupe.update_property([Gtk.AccessibleProperty.LABEL], ["Ce qu’on écoute"])
         self.t_pistes, premier = {}, None
         for cle in pistes.CLES:
-            # libellés qui se raccourcissent (…) dans une fenêtre étroite plutôt que d'élargir la page
-            t = Gtk.ToggleButton(child=Gtk.Label(label=pistes.LIBELLES[cle], ellipsize=Pango.EllipsizeMode.END),
+            # libellés qui se raccourcissent (…) dans une fenêtre étroite plutôt que d'élargir la page ; « Voix
+            # converties seules » pour une voix par chanteur
+            t = Gtk.ToggleButton(child=Gtk.Label(label=self.pistes_dispo[cle].libelle,
+                                                 ellipsize=Pango.EllipsizeMode.END),
                                  group=premier, active=cle == "doublage")
             premier = premier or t
             t.connect("toggled", lambda b, c=cle: b.get_active() and self.choisir_piste(c))
             groupe.append(t)
             self.t_pistes[cle] = t
         barre.append(groupe)
+        # version auto-tune (doubler --autotune N) : la même piste auto-tunée, à la même position (touche T)
+        self.t_autotune = Gtk.ToggleButton(label="Auto-tune", valign=Gtk.Align.CENTER, visible=bool(res.autotune),
+                                           tooltip_text="Avec ou sans auto-tune, à la même position (touche T)")
+        self.t_autotune.connect("toggled", lambda b: self._maj or self.basculer_autotune(b.get_active()))
+        barre.append(self.t_autotune)
         corps.append(barre)
         self.note_piste = commun.legende("")
         self.note_piste.set_hexpand(True)
@@ -157,6 +170,17 @@ class PageDetail(Adw.NavigationPage):
         else:
             self.frise = None
             g_frise.append(commun.legende("Pas de frise dans ce rapport."))
+        # une voix par chanteur : quelle voix cible chante chaque passage (voix principale et chœurs compris)
+        self.frise_voix = None
+        passages = rapports.passages_voix(res.rapport)
+        if passages:
+            noms = [v.get("nom") for v in res.voix_cibles if v.get("nom")] or res.voix_membres
+            affichages = {n: self.fenetre.nom_voix(n) for n in noms}
+            g_frise.append(Gtk.Label(label="Voix de chaque passage", xalign=0, css_classes=["heading"], margin_top=6))
+            self.frise_voix = FriseVoix(sur_clic=self._clic_frise)
+            self.frise_voix.definir(passages, noms, rapports.duree_frise(res.rapport, self.segs), affichages)
+            g_frise.append(self.frise_voix)
+            g_frise.append(legende_voix(noms, affichages))
         corps.append(g_frise)
         corps.append(self.boite_onde)
 
@@ -174,6 +198,8 @@ class PageDetail(Adw.NavigationPage):
         raccourcis = Gtk.ShortcutController(scope=Gtk.ShortcutScope.MANAGED)
         raccourcis.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string("b"),
                                                  Gtk.CallbackAction.new(lambda *_: (self.bascule_ab(), True)[1])))
+        raccourcis.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string("t"),
+                                                 Gtk.CallbackAction.new(lambda *_: (self.bascule_autotune(), True)[1])))
         raccourcis.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string("space"),
                                                  Gtk.CallbackAction.new(lambda *_: (self.lecture_pause(), True)[1])))
         self.add_controller(raccourcis)
@@ -194,21 +220,22 @@ class PageDetail(Adw.NavigationPage):
         # le beat et les voix seules : leur copie vidéo si elle est prête (en cache), sinon le son seul
         sources = {c: (p.a_lire, p.decalage, p.libelle) for c, p in self.pistes_dispo.items() if p.a_lire}
         sans_image = {c for c, p in self.pistes_dispo.items() if not p.avec_image}
-        ephemeres = {c for c in pistes.SANS_IMAGE if self.pistes_dispo[c].video}
+        ephemeres = {c for c in pistes.SANS_IMAGE_TOUTES if c in self.pistes_dispo and self.pistes_dispo[c].video}
         cle = pistes.piste_apres_changement(self.pistes_dispo, self.voulue or self.piste)
         if cle is not None and self.pistes_dispo[cle].a_lire is None:
             # ma voix seule pas encore prête : on écoute le doublage pendant qu'elle se prépare
             self.voulue = cle
-            cle = "doublage" if "doublage" in sources else next(iter(sources), None)
+            cle = self._effective("doublage") if "doublage" in sources else next(iter(sources), None)
         self.lecteur.definir(sources, cle, audio_seul=forme == "mp3", sans_image=sans_image, ephemeres=ephemeres,
-                             notes={c: self._note_bandeau(c) for c in pistes.SANS_IMAGE})
+                             notes={c: self._note_bandeau(c) for c in pistes.SANS_IMAGE_TOUTES
+                                    if c in self.pistes_dispo})
         if pos:
             self.lecteur.aller_a(pos)
         self.piste = self.lecteur.cle or "doublage"
         self._maj_bascules()
         self._maj_groupe_pistes()
         if self.voulue:
-            self._preparer_ma_voix(prioritaire=True)
+            self._preparer_ma_voix(prioritaire=True, cle=self.voulue)
         self._preparer_video(self.piste, prioritaire=True)
         self._preparer_tout()
         self._appliquer_pistes()
@@ -219,12 +246,12 @@ class PageDetail(Adw.NavigationPage):
         à faible priorité (beat seul, ma voix seule combinée puis copiée sur l'image, voix d'origine seule)."""
         if self._oubliee:
             return
-        for cle in pistes.SANS_IMAGE:
+        for cle in pistes.SANS_IMAGE_TOUTES:
             p = self.pistes_dispo.get(cle)
             if p is None or cle in self._echecs:
                 continue
-            if cle == "ma_voix" and p.a_preparer:
-                self._preparer_ma_voix()      # puis sa copie vidéo
+            if cle in VOIX_SEULES and p.a_preparer:
+                self._preparer_ma_voix(cle=cle)      # puis sa copie vidéo
             else:
                 self._preparer_video(cle)
 
@@ -234,9 +261,10 @@ class PageDetail(Adw.NavigationPage):
             return []
         cache = chemins.dossier_cache()
         fichiers = [p.video for p in self.pistes_dispo.values() if p.video]
-        m = self.pistes_dispo.get("ma_voix")
-        if m is not None and m.fichier is not None and cache in Path(m.fichier).parents:
-            fichiers.append(m.fichier)
+        for c in VOIX_SEULES:
+            m = self.pistes_dispo.get(c)
+            if m is not None and m.fichier is not None and cache in Path(m.fichier).parents:
+                fichiers.append(m.fichier)
         return fichiers
 
     def _note_bandeau(self, cle):
@@ -258,15 +286,19 @@ class PageDetail(Adw.NavigationPage):
         """État des bascules de pistes : grisées (avec la raison en infobulle) si la piste manque."""
         self._maj = True
         try:
+            courante = pistes.cle_de_base(self.voulue or self.piste)
             for c, t in self.t_pistes.items():
                 p = self.pistes_dispo.get(c)
                 ok = bool(p and p.disponible)
                 t.set_sensitive(ok)
-                t.set_tooltip_text(pistes.INFOBULLES[c] if ok else f"{p.libelle} indisponible : {p.explication}")
-                if c == (self.voulue or self.piste):
+                infobulle = (pistes.INFOBULLE_VOIX_CONVERTIES if c == "ma_voix" and self.res.plusieurs_voix
+                             else pistes.INFOBULLES[c])
+                t.set_tooltip_text(infobulle if ok else f"{p.libelle} indisponible : {p.explication}")
+                if c == courante:
                     t.set_active(True)
                 elif t.get_active():
                     t.set_active(False)
+            self.t_autotune.set_active(self.autotune)
         finally:
             self._maj = False
         self._maj_note()
@@ -280,10 +312,10 @@ class PageDetail(Adw.NavigationPage):
         elif p is None:
             return
         elif self.voulue:
-            a = self._avancement.get("ma_voix_son")
-            texte = (f"Préparation de ma voix seule ({p.explication}){f', {round(100 * a)} %' if a else ''}, en tâche "
-                     "de fond. En attendant, le doublage continue.")
-        elif c == "doublage":
+            a = self._avancement.get(f"{self.voulue}_son")
+            texte = (f"Préparation de « {p.libelle} » ({p.explication}){f', {round(100 * a)} %' if a else ''}, en "
+                     "tâche de fond. En attendant, le doublage continue.")
+        elif c in ("doublage", "doublage_at"):
             texte = ("Touche B : l’original à la même position." if o and o.fichier else
                      f"Original indisponible : {o.explication}." if o else "")
         elif c == "original":
@@ -293,13 +325,16 @@ class PageDetail(Adw.NavigationPage):
         if self._echecs:
             texte += " " + " ".join(f"{pistes.LIBELLES.get(k, k)} : préparation impossible ({m})."
                                     for k, m in self._echecs.items())
+        if self.res.autotune:
+            texte += (" Auto-tune : version auto-tune (touche T : sans)." if self.autotune
+                      else " Touche T : la version auto-tune.")
         self.note_piste.set_label(texte)
         self.b_reessayer.set_visible(bool(self._echecs))
 
     def _note_image(self, cle, p):
         """Ce qu'on voit pendant le beat ou une voix seule : la vidéo qui avance, sa préparation, ou pourquoi on s'en
         passe."""
-        if cle not in pistes.SANS_IMAGE:
+        if cle not in pistes.SANS_IMAGE_TOUTES:
             return ""
         if self.forme == "video" and p.video:
             return " Sur l’image de la vidéo doublée, qui avance avec le son."
@@ -315,6 +350,7 @@ class PageDetail(Adw.NavigationPage):
         """Clic sur une piste : on y passe à la même position (ma voix seule se prépare d'abord, au besoin)."""
         if self._maj:
             return
+        cle = self._effective(cle)
         p = self.pistes_dispo.get(cle)
         if p is None or not p.disponible:
             self._maj_bascules()
@@ -322,7 +358,7 @@ class PageDetail(Adw.NavigationPage):
         if p.a_lire is None:
             self.voulue = cle
             self._maj_note()
-            self._preparer_ma_voix(prioritaire=True)
+            self._preparer_ma_voix(prioritaire=True, cle=cle)
             return
         self.voulue = None
         if cle not in self.lecteur.sources:   # on écoutait un extrait de comparaison : retour aux pistes
@@ -341,6 +377,29 @@ class PageDetail(Adw.NavigationPage):
         self._maj_note()
         self._appliquer_pistes()
 
+    def _effective(self, cle):
+        """La piste lue pour la bascule cle : sa version auto-tune si « Auto-tune » est allumé et qu'elle existe."""
+        base = pistes.cle_de_base(cle)
+        at = pistes.cle_ecoutee(base, self.autotune)
+        q = self.pistes_dispo.get(at)
+        return at if q is not None and q.disponible else base
+
+    def basculer_autotune(self, oui):
+        """Bascule « Auto-tune » : la piste écoutée passe à sa version auto-tune (ou en revient), à la même position ;
+        les pistes sans version auto-tune (original, beat, voix d'origine) ne changent pas."""
+        if self._maj or not self.res.autotune:
+            return
+        self.autotune = bool(oui)
+        base = pistes.cle_de_base(self.voulue or self.piste)
+        if base in self.t_pistes:
+            self.choisir_piste(base)
+        self._maj_bascules()
+
+    def bascule_autotune(self):
+        """Touche T."""
+        if self.res.autotune:
+            self.t_autotune.set_active(not self.autotune)
+
     def _preparer_video(self, cle, prioritaire=False):
         """La copie vidéo d'une piste sans image (beat, voix seules), préparée une fois en cache, en tâche de fond et à
         faible priorité (jamais par file-attente, voir voixla/preparation.py). En attendant, le son seul sur l'image
@@ -350,15 +409,16 @@ class PageDetail(Adw.NavigationPage):
         p = self.pistes_dispo.get(cle)
         if self.forme != "video" or p is None or not p.video_a_preparer or self._oubliee:
             return
-        if cle == "ma_voix" and p.fichier is None:
+        if cle in VOIX_SEULES and p.fichier is None:
             return                            # la voix seule se prépare d'abord (_preparer_ma_voix)
         video = self.res.video
-        voix = self.res.dossier_voix if cle == "ma_voix" else None
+        voix = self.res.dossier_voix if cle in VOIX_SEULES else None
         son = None if voix else p.fichier
+        at = cle == "ma_voix_at"
         if cle in self._videos:
             if prioritaire:                   # déjà demandée à l'avance : elle passe devant
                 analyses().video(video, lambda *_: None, son=son, voix=voix, duree_s=self.res.duree_s,
-                                 prioritaire=True)
+                                 prioritaire=True, autotune=at)
             return
         self._videos.add(cle)
 
@@ -389,38 +449,42 @@ class PageDetail(Adw.NavigationPage):
             self._maj_note()
         self.lecteur.annoter(cle, self._note_bandeau(cle))
         analyses().video(video, pret, son=son, voix=voix, duree_s=self.res.duree_s, prioritaire=prioritaire,
-                         avancement=lambda f, _e: not self._oubliee and self._avance(cle, f))
+                         avancement=lambda f, _e: not self._oubliee and self._avance(cle, f), autotune=at)
 
-    def _preparer_ma_voix(self, prioritaire=False):
-        if self._preparation or not self.res.dossier_voix or self._oubliee:
-            if self._preparation and prioritaire:
-                analyses().ma_voix(self.res.dossier_voix, lambda *_: None, self.res.duree_s, prioritaire=True)
+    def _preparer_ma_voix(self, prioritaire=False, cle="ma_voix"):
+        """Ma voix seule (cle « ma_voix ») ou celle de la version auto-tune (« ma_voix_at »), combinée en cache."""
+        at = cle == "ma_voix_at"
+        if cle in self._preparations or not self.res.dossier_voix or self._oubliee:
+            if cle in self._preparations and prioritaire:
+                analyses().ma_voix(self.res.dossier_voix, lambda *_: None, self.res.duree_s, prioritaire=True,
+                                   autotune=at)
             return
-        self._preparation = True
+        self._preparations.add(cle)
 
         def pret(f, message):
             if message == "attente" or self._oubliee:
                 return
-            self._preparation = False
-            self._avancement.pop("ma_voix_son", None)
-            p = self.pistes_dispo.get("ma_voix")
+            self._preparations.discard(cle)
+            self._avancement.pop(f"{cle}_son", None)
+            p = self.pistes_dispo.get(cle)
             if f is None or p is None:
-                self.voulue = None
-                self._echecs["ma_voix"] = message or "indisponible"
-                self.fenetre.toast(f"Ma voix seule : {message or 'indisponible'}", "Réessayer", self.reessayer,
-                                   duree=10)
+                if self.voulue == cle:
+                    self.voulue = None
+                self._echecs[cle] = message or "indisponible"
+                self.fenetre.toast(f"{p.libelle if p else 'Voix seule'} : {message or 'indisponible'}", "Réessayer",
+                                   self.reessayer, duree=10)
                 self._maj_bascules()
                 return
             p.fichier, p.a_preparer = Path(f), False
             if p.video is None:
-                self.lecteur.ajouter("ma_voix", (p.fichier, 0.0, p.libelle), sans_image=True)
-            if self.voulue == "ma_voix":
+                self.lecteur.ajouter(cle, (p.fichier, 0.0, p.libelle), sans_image=True)
+            if self.voulue == cle:
                 self.voulue = None
-                self.lecteur.basculer("ma_voix")
-                self.piste = self.lecteur.cle or "ma_voix"
-                self._preparer_video("ma_voix", prioritaire=True)   # puis sa copie vidéo, pour que l'image avance
+                self.lecteur.basculer(cle)
+                self.piste = self.lecteur.cle or cle
+                self._preparer_video(cle, prioritaire=True)   # puis sa copie vidéo, pour que l'image avance
             else:
-                self._preparer_video("ma_voix")                     # à l'avance, pour le premier clic
+                self._preparer_video(cle)                     # à l'avance, pour le premier clic
             self._maj_bascules()
             self._maj_groupe_pistes()
             self._appliquer_pistes()
@@ -428,10 +492,11 @@ class PageDetail(Adw.NavigationPage):
 
         def avance(f, _etape):
             if not self._oubliee:
-                self._avancement["ma_voix_son"] = f
-                if self.voulue == "ma_voix":
+                self._avancement[f"{cle}_son"] = f
+                if self.voulue == cle:
                     self._maj_note()
-        analyses().ma_voix(self.res.dossier_voix, pret, self.res.duree_s, prioritaire=prioritaire, avancement=avance)
+        analyses().ma_voix(self.res.dossier_voix, pret, self.res.duree_s, prioritaire=prioritaire, avancement=avance,
+                           autotune=at)
 
     def reessayer(self):
         """« Réessayer » : relance les préparations ratées (la piste écoutée d'abord)."""
@@ -442,15 +507,15 @@ class PageDetail(Adw.NavigationPage):
             q = self.pistes_dispo.get(cle)
             if q is None:
                 continue
-            if cle == "ma_voix" and q.fichier is None:
+            if cle in VOIX_SEULES and q.fichier is None:
                 q.a_preparer = True
             elif self.forme == "video" and q.video is None and q.fichier is not None:
                 q.video_a_preparer, q.sans_video = True, ""
         courante = self.voulue or self.piste
         if courante in echecs:
-            if courante == "ma_voix" and self.pistes_dispo["ma_voix"].fichier is None:
-                self.voulue = "ma_voix"
-                self._preparer_ma_voix(prioritaire=True)
+            if courante in VOIX_SEULES and self.pistes_dispo[courante].fichier is None:
+                self.voulue = courante
+                self._preparer_ma_voix(prioritaire=True, cle=courante)
             else:
                 self._preparer_video(courante, prioritaire=True)
         self._preparer_tout()
@@ -488,7 +553,7 @@ class PageDetail(Adw.NavigationPage):
 
     def bascule_ab(self):
         """Touche B : doublage ⇄ original (et de toute autre piste au doublage)."""
-        cible = pistes.bascule_ab(self.piste)
+        cible = pistes.bascule_ab(pistes.cle_de_base(self.piste))
         p = self.pistes_dispo.get(cible)
         if p is not None and p.fichier is not None:
             self.t_pistes[cible].set_active(True)
@@ -551,7 +616,8 @@ class PageDetail(Adw.NavigationPage):
             piste = f"comparaison {source[2]}".replace("_", " ") if source else "comparaison"
             duree = self.lecteur.duree()
         else:
-            piste = pistes.LIBELLES.get(self.piste, self.piste)
+            q = self.pistes_dispo.get(self.piste)
+            piste = q.libelle if q is not None else pistes.LIBELLES.get(self.piste, self.piste)
             duree = r.duree_s or self._duree_ref()
         return regles.Etat(statut=statut, position_s=self.lecteur.position_ref(), duree_s=duree, titre=r.titre_court,
                            voix=r.voix_nom or (r.voix or ""), piste=piste, genre="resultat",
@@ -604,7 +670,7 @@ class PageDetail(Adw.NavigationPage):
         """Fenêtre fermée : la piste en cours passe de la vidéo à son son seul (le MP3 du doublage, le son d'origine
         extrait, le fichier du beat ou d'une voix seule), à la même position, pour ne pas décoder d'image pour rien."""
         cle = self.lecteur.cle
-        if self._oubliee or self.forme != "video" or cle not in pistes.CLES or cle in self.lecteur.sans_image:
+        if self._oubliee or self.forme != "video" or cle not in self.pistes_dispo or cle in self.lecteur.sans_image:
             return
         try:
             son = regles.source_son(cle, pistes.choisir_pistes(self.res, "mp3", self.source_choisie()),
@@ -621,6 +687,8 @@ class PageDetail(Adw.NavigationPage):
     def _position(self, t, lecture):
         if self.frise:
             self.frise.placer(t)
+        if self.frise_voix is not None:
+            self.frise_voix.placer(t)
         for w in self.vis.values():
             w.placer(t, lecture)
         if self.vue_paroles is not None:
@@ -631,6 +699,10 @@ class PageDetail(Adw.NavigationPage):
             texte += " · " + ("muet" if s["classe"] == "muet" else
                               f"voix {s['voix']}" + (f" · {formats.demi_tons(s['decalage'])} dt"
                                                      if s.get("decalage") is not None else ""))
+        if self.frise_voix is not None:
+            p = self.frise_voix.passage_a(t)
+            if p:
+                texte += " · " + " et ".join(self.fenetre.nom_voix(v) for v in p["voix"])
         self.passage.set_label(texte)
 
     def _clic_frise(self, t):
@@ -649,7 +721,9 @@ class PageDetail(Adw.NavigationPage):
         r = self.res
         if cle == "original":
             return r.original_wav
-        if cle not in pistes.CLES or cle == "doublage":
+        if cle == "doublage_at":
+            return r.mp3_autotune or r.video_autotune
+        if cle not in self.pistes_dispo or cle == "doublage":
             return r.mp3 or r.video
         p = self.pistes_dispo.get(cle)
         return (p.fichier or p.video) if p else None     # le son de la copie vidéo si la voix seule a quitté le cache
@@ -697,17 +771,19 @@ class PageDetail(Adw.NavigationPage):
                 conteneur.get_parent().remove(conteneur)
         if "melodie" in self.vis:
             self.vis["melodie"].en_hz = bool(p.get("melodie_hz"))
+            self.vis["melodie"].montrer_autotune = bool(p.get("melodie_autotune"))
             self.vis["melodie"].queue_draw()
         self._charger_pistes()
 
     def _creer(self, nom):
         duree = self.res.duree_s
         if nom == "melodie":
-            w = vis.Melodie(sur_clic=self._clic_frise, en_hz=bool(self.fenetre.prefs.get("melodie_hz")))
+            w = vis.Melodie(sur_clic=self._clic_frise, en_hz=bool(self.fenetre.prefs.get("melodie_hz")),
+                            autotune=bool(self.fenetre.prefs.get("melodie_autotune")))
             boite = commun.boite(espace=4)
             boite.append(Gtk.Label(label="Mélodie", xalign=0, css_classes=["heading"]))
             boite.append(w)
-            boite.append(vis.legende_melodie())
+            boite.append(vis.legende_melodie(autotune=bool(self.res.autotune)))
             if self.res.dossier_voix and self.res.rapport:
                 def lu(c, message, w=w, titre=boite.get_first_child()):
                     if c is not None:
@@ -755,7 +831,7 @@ class PageDetail(Adw.NavigationPage):
         return [p for nom, p in PRODUITS_VIS.items() if nom in self.vis]
 
     def _cle_vis(self):
-        return self.piste if self.piste in pistes.CLES else "doublage"
+        return self.piste if self.piste in self.pistes_dispo else "doublage"
 
     def _charger_pistes(self, cles=None):
         """Analyse (en cache, sinon sous nice) des pistes à visualiser : par défaut le doublage, l'original et la piste
@@ -805,14 +881,14 @@ class PageDetail(Adw.NavigationPage):
             if f is not None and (str(f), tuple(produits)) not in self._demandees:
                 for nom in PRODUITS_VIS:
                     if nom in self.vis:
-                        self.vis[nom].dire(f"Analyse de la piste « {pistes.LIBELLES[cle]} »…")
+                        self.vis[nom].dire(f"Analyse de la piste « {self.pistes_dispo[cle].libelle} »…")
                 self._charger_pistes([cle])
             return
         for nom, produit in PRODUITS_VIS.items():
             if nom in self.vis and produit in d:
                 self.vis[nom].definir(d)
         if "spectre" in self.vis and hasattr(self, "l_spectre"):
-            self.l_spectre.set_label(f"Spectrogramme — {pistes.LIBELLES[cle]}")
+            self.l_spectre.set_label(f"Spectrogramme — {self.pistes_dispo[cle].libelle}")
 
     # --- groupes ---------------------------------------------------------------------------------------------------
 
@@ -822,6 +898,11 @@ class PageDetail(Adw.NavigationPage):
         if not r.complet:
             g.set_description("Doublage inachevé : pas de rapport ou pas de fichier final dans ce dossier.")
         g.add(commun.ligne_valeur("Voix", f"{r.voix_nom} ({r.voix})" if r.voix else "—"))
+        lignes_vc = r.resume_voix_cibles()
+        if lignes_vc:   # une voix par chanteur : la décision, les voix entendues, les passages en duo
+            l_vc = Adw.ActionRow(title="Une voix par chanteur", subtitle=commun.echapper("\n".join(lignes_vc)),
+                                 subtitle_lines=6)
+            g.add(l_vc)
         if r.mode:
             g.add(commun.ligne_valeur("Mode", r.mode + (" (imposé)" if rap.get("mode_force") else " (détecté)")))
         if r.modele or r.pas:
@@ -853,6 +934,16 @@ class PageDetail(Adw.NavigationPage):
             ligne_h = commun.ligne_valeur("Hauteur", h, raison or None)
             ligne_h.set_subtitle_lines(3)
             g.add(ligne_h)
+        at = r.resume_autotune()
+        if at:
+            ton, mesures = at
+            l_at = Adw.ActionRow(title="Auto-tune", subtitle=commun.echapper(
+                f"intensité {r.autotune.get('intensite')} · gamme {ton}" + (f"\n{mesures}" if mesures else "")),
+                subtitle_lines=3)
+            l_at.add_suffix(commun.badge("version en plus", "succes"))
+            g.add(l_at)
+        elif isinstance(rap.get("autotune"), dict) and rap["autotune"].get("raison"):
+            g.add(commun.ligne_valeur("Auto-tune", "non appliqué", rap["autotune"]["raison"]))
         mix = rap.get("mix") or {}
         if mix:
             texte = f"v{mix.get('version', '?')} · voix {formats.db(mix.get('voix_db'))}"
@@ -878,12 +969,13 @@ class PageDetail(Adw.NavigationPage):
                                                infobulle="Choisir la vidéo d’origine pour la bascule A/B "
                                                          "(travail/source.json n’est pas modifié)"))
         g.add(ligne_src)
-        if r.video:
-            l = commun.ligne("Vidéo doublée", r.video.name)
-            l.add_suffix(commun.bouton(icone="folder-open-symbolic", infobulle="Montrer dans le dossier",
-                                       styles=("flat",), valign=Gtk.Align.CENTER,
-                                       clic=lambda: commun.montrer_fichier(self.fenetre, r.video)))
-            g.add(l)
+        for titre, f in (("Vidéo doublée", r.video), ("Vidéo auto-tune", r.video_autotune if r.autotune else None)):
+            if f:
+                l = commun.ligne(titre, f.name)
+                l.add_suffix(commun.bouton(icone="folder-open-symbolic", infobulle="Montrer dans le dossier",
+                                           styles=("flat",), valign=Gtk.Align.CENTER,
+                                           clic=lambda f=f: commun.montrer_fichier(self.fenetre, f)))
+                g.add(l)
         return g
 
     def _groupe_pistes(self):
@@ -892,9 +984,12 @@ class PageDetail(Adw.NavigationPage):
                                              "en MP3 (ou FLAC) à côté des sorties. Les fichiers de doubler ne sont "
                                              "pas modifiés.")
         self.lignes_pistes = {}
-        for cle, libelle in (("beat", "Enregistrer le beat…"), ("ma_voix", "Enregistrer ma voix seule…"),
-                             ("voix_origine", None)):
-            ligne = Adw.ActionRow(title=pistes.LIBELLES[cle], subtitle_lines=3)
+        voix = "les voix converties" if self.res.plusieurs_voix else "ma voix seule"
+        choix = [("beat", "Enregistrer le beat…"), ("ma_voix", f"Enregistrer {voix}…"), ("voix_origine", None)]
+        if "ma_voix_at" in self.pistes_dispo:
+            choix.insert(2, ("ma_voix_at", f"Enregistrer {voix} (auto-tune)…"))
+        for cle, libelle in choix:
+            ligne = Adw.ActionRow(title=self.pistes_dispo[cle].libelle, subtitle_lines=3)
             b = None
             if libelle:
                 b = commun.bouton(libelle, valign=Gtk.Align.CENTER, clic=lambda c=cle: self.enregistrer(c))
@@ -910,7 +1005,7 @@ class PageDetail(Adw.NavigationPage):
             if p is None:
                 continue
             texte = phrase(p.explication)
-            if cle == "ma_voix" and p.a_preparer:
+            if cle in VOIX_SEULES and p.a_preparer:
                 texte += " ; préparée en cache au premier usage."
             ligne.set_subtitle(commun.echapper(texte))
             if b is not None:
@@ -925,7 +1020,7 @@ class PageDetail(Adw.NavigationPage):
             return
         filtres = commun.liste_filtres(commun.filtre_fichiers("MP3 (320 kb/s)", ("audio/mpeg",), ("*.mp3",)),
                                        commun.filtre_fichiers("FLAC (sans perte)", ("audio/flac",), ("*.flac",)))
-        d = Gtk.FileDialog(title=f"Enregistrer {'le beat' if cle == 'beat' else 'ma voix seule'}", modal=True,
+        d = Gtk.FileDialog(title=f"Enregistrer {'le beat' if cle == 'beat' else p.libelle.lower()}", modal=True,
                            filters=filtres, initial_folder=Gio.File.new_for_path(str(self.res.dossier)),
                            initial_name=pistes.nom_export(self.res, cle, ".mp3"))
 
@@ -951,8 +1046,9 @@ class PageDetail(Adw.NavigationPage):
                                    lambda: commun.montrer_fichier(self.fenetre, sortie), duree=6)
             else:
                 commun.informer(self.fenetre, "Enregistrement impossible", message)
-        if cle == "ma_voix" and p.fichier is None:
-            analyses().exporter(self.res.dossier_voix, sortie, fini, self.res.duree_s, voix=True)
+        if cle in VOIX_SEULES and p.fichier is None:
+            analyses().exporter(self.res.dossier_voix, sortie, fini, self.res.duree_s, voix=True,
+                                autotune=cle == "ma_voix_at")
         else:
             analyses().exporter(p.fichier, sortie, fini, self.res.duree_s)
 
@@ -1054,6 +1150,8 @@ class PageDetail(Adw.NavigationPage):
             GLib.timeout_add(2600, lambda: (cle in self.t_pistes and self.t_pistes[cle].set_active(True), False)[1])
         if action == "mp3" and self.t_mp3.get_sensitive():
             self.t_mp3.set_active(True)
+        if action == "autotune":
+            GLib.timeout_add(2600, lambda: (self.bascule_autotune(), False)[1])
         if action in ("lire", "ab") or action.startswith("piste-"):
             self.lecteur.rendre_muet()     # essais : jamais de son, même sur une piste ouverte plus tard
         if action == "lire":
@@ -1146,7 +1244,8 @@ class PageDetail(Adw.NavigationPage):
                 commun.informer(self.fenetre, "Le remix a échoué", "\n".join(lignes[-12:]) or "sans message")
             self.changer_forme(self.forme)
             self.lecteur.aller_a(pos)
-        commun.en_fil(lambda: moteur.remixer(r.video_source, r.voix, r.dossier, donnees, voix_db, reverb, v1), fini)
+        spec = moteur.spec_de_rapport(r.voix, r.rapport)   # « homme:a,femme:b » pour le dossier « a+b »
+        commun.en_fil(lambda: moteur.remixer(r.video_source, spec, r.dossier, donnees, voix_db, reverb, v1), fini)
 
     def supprimer(self):
         """Bouton corbeille du détail : la même mise à la corbeille que la liste (PageResultats.mettre_a_la_corbeille),

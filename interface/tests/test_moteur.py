@@ -57,7 +57,7 @@ class EssaiAide(unittest.TestCase):
 class EssaiCapacites(EssaiIsole):
     def test_doubler_recent(self):
         caps = moteur.capacites()
-        self.assertEqual(caps, frozenset(moteur.OPTIONS_SUIVIES) | {"extrait_par_video"})
+        self.assertEqual(caps, frozenset(moteur.OPTIONS_SUIVIES) | {"extrait_par_video", "voix_par_chanteur"})
         self.assertTrue(moteur.disponible())
         self.assertIn("usage: doubler", moteur._capacites["aide"])
 
@@ -67,7 +67,8 @@ class EssaiCapacites(EssaiIsole):
         # l'ancien doubler n'a ni les options récentes ni --reprendre (seules les options suivies sont comparées)
         self.assertEqual(caps & frozenset(moteur.OPTIONS_SUIVIES),
                          frozenset(moteur.OPTIONS_SUIVIES) - RECENTES - {"--reprendre", "--moteur", "--sans-nettoyage",
-                                                                         "--sans-paroles"})
+                                                                         "--sans-paroles", "--autotune",
+                                                                         "--sans-autotune", "--autotune-gamme"})
         self.assertTrue(moteur.disponible())
 
     def test_doubler_introuvable(self):

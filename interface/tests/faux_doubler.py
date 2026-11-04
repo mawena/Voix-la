@@ -19,7 +19,12 @@ Variables d'environnement :
   dans ce fichier (l'annulation doit tuer tout le groupe de processus) ;
 - FAUX_DOUBLER_TRACE=<fichier> : une ligne JSON par lancement (argv, début, variables utiles) et une à la fin (code) ;
 - FAUX_DOUBLER_CONFIG=<dossier> : son config.json, à la place du fichier fixe ~/.config/voix-la/config.json du vrai
-  (sinon $VOIXLA_CONFIG/config.json).
+  (sinon $VOIXLA_CONFIG/config.json) ;
+- FAUX_DOUBLER_X42=absent : greffon x42-autotune absent (--config --json : x42_autotune null ; auto-tune refusé).
+Une voix par chanteur (--voix homme:a,femme:b ou chanteur1:a,chanteur2:b) : voix combinée « a+b », sorties « voix A et
+B », rapport inventé d'un duo (voix_cibles, chanteurs, affectation, passages) et courbes.json avec voix_par_trame.
+Auto-tune (--autotune [N], --sans-autotune, --autotune-gamme, clé « autotune ») : fichiers « (auto-tune) » vides et
+section « autotune » du rapport, comme doubler.
 config.json n'est jamais lu ni écrit ailleurs ; il refuse d'écrire dans ~/Music, ~/.config, ~/.local et dans les
 dossiers voix/ et sorties/ du dépôt.
 """
@@ -47,6 +52,7 @@ CLES_CONFIG = {"donnees": "dossier des données (voix/, sorties/)", "kaggle.comp
                "kaggle.jeu": "jeu de données privé des entrées", "kaggle.noyau": "noyau GPU privé du doublage",
                "kaggle.outils": "noyau privé des outils préparés",
                "paroles": "transcription des paroles et traduction française : oui (défaut) ou non",
+               "autotune": "intensité de l'auto-tune à chaque doublage, de 0 (désactivé, défaut) à 100",
                "voix": "voix cible par défaut, un dossier de <données>/voix (sinon la seule voix présente)"}
 # paroles inventées du faux doubler (format 1 de travail/<voix>/paroles.json)
 PAROLES_FAUSSES = [(0.5, 2.5, "Un matin de pluie fine"), (3.0, 5.0, "le café refroidit doucement"),
@@ -56,8 +62,10 @@ SECRETS = re.compile(r"jeton|token|secret|password|mot.?de.?passe|(^|[._])(cle|c
 
 AIDE = """doubler (Voix-là) : remplace la voix d'une vidéo par une voix clonée (FAUX doubler des essais, sans Kaggle).
 
-  doubler <vidéo> [<vidéo>…] [--voix NOM] [--mode auto|chant|parole] [--octave auto|0|-12|+12] [--pas 30]
+  doubler <vidéo> [<vidéo>…] [--voix NOM | --voix homme:NOM,femme:NOM | --voix chanteur1:NOM,chanteur2:NOM]
+          [--mode auto|chant|parole] [--octave auto|0|-12|+12] [--pas 30]
           [--voix-db 4] [--reverb-db -13] [--mix-v1] [--debut S --duree S] [--remix] [--sortie DIR]
+          [--autotune [N]] [--autotune-gamme GAMME] [--sans-autotune]
           [--comparer-pas 50] [--donnees DIR] [--evenements FICHIER]
   doubler --ajouter-voix <nom> <enregistrement>      ajoute une voix (copie telle quelle, sans analyse)
   doubler --voix-liste [--json]                      voix disponibles
@@ -215,6 +223,11 @@ def ecrire_config(cle, valeur):
         if str(valeur).strip().lower() not in ("oui", "non", "vrai", "faux", "true", "false", "1", "0"):
             raise SystemExit(f"paroles : oui ou non (pas « {valeur} »)")
         valeur = str(valeur).strip().lower() in ("oui", "vrai", "true", "1")
+    if cle == "autotune":
+        v = str(valeur).strip().lower()
+        valeur = 0 if v in ("non", "faux", "false", "off") else int(v) if v.isdigit() else -1
+        if not 0 <= valeur <= 100:
+            raise SystemExit("autotune : un entier de 0 à 100 ; 0 le désactive")
     conf = lire_config()
     d = conf
     *chemin, fin = cle.split(".")
@@ -306,6 +319,7 @@ def afficher_config(a, en_json=False):
     effectif = {"config": str(f) if f else None, "donnees": str(DONNEES), "source_donnees": SOURCE_DONNEES,
                 "voix": str(VOIX), "sorties": a.sortie, "voix_defaut": VOIX_DEFAUT,
                 "source_voix_defaut": VOIX_DEFAUT_SOURCE, "kaggle": {"compte": compte, **noms},
+                "autotune": autotune_config(conf), "x42_autotune": x42(),
                 "jeton_kaggle": "absent", "commande_kaggle": "(faux doubler : aucune)", "contenu": masquer(conf)}
     if en_json:
         print(json.dumps(effectif, ensure_ascii=False, indent=1))
@@ -341,6 +355,51 @@ def charger_voix(nom):
     if not f0:
         raise SystemExit(f"{fiche} : hauteur_parole_mediane_hz manque")
     return {"id": nom, "affichage": f.get("nom") or nom.capitalize(), "reference": ref, "f0": float(f0), "fiche": f}
+
+
+CLES_VOIX = {"genre": ("homme", "femme"), "ordre": ("chanteur1", "chanteur2")}
+
+
+def charger_voix_spec(texte):
+    """Comme doubler : « NOM », ou « homme:a,femme:b » / « chanteur1:a,chanteur2:b » (voix combinée « a+b »)."""
+    texte = str(texte).strip()
+    if ":" not in texte:
+        return charger_voix(texte)
+    paires = []
+    for morceau in (m.strip() for m in texte.split(",") if m.strip()):
+        cle, _, nom = (x.strip() for x in morceau.partition(":"))
+        if not nom or cle in (c for c, _ in paires):
+            raise SystemExit(f"--voix {texte} : « {morceau} » : clé:voix attendu")
+        paires.append((cle.lower(), nom))
+    mode = next((m for m, cles in CLES_VOIX.items() if all(c in cles for c, _ in paires)), None)
+    if mode is None:
+        raise SystemExit(f"--voix {texte} : homme/femme et chanteur1/chanteur2 ne se mélangent pas")
+    paires.sort(key=lambda p: CLES_VOIX[mode].index(p[0]))
+    noms = list(dict.fromkeys(n for _, n in paires))
+    if len(noms) == 1:
+        return charger_voix(noms[0])
+    membres = [charger_voix(n) for n in noms]
+    for (cle, _), m in zip(paires, membres):
+        m["cle"] = cle
+    return {"id": "+".join(noms), "affichage": " et ".join(m["affichage"] for m in membres),
+            "reference": membres[0]["reference"], "f0": membres[0]["f0"], "fiche": membres[0]["fiche"], "mode": mode,
+            "membres": membres, "spec": ",".join(f"{c}:{n}" for c, n in paires)}
+
+
+def voix_membres(voix):
+    return voix.get("membres") or [voix]
+
+
+def autotune_config(conf):
+    v = valeur_config(conf, "autotune")
+    try:
+        return max(0, min(100, int(v))) if v is not None and not isinstance(v, bool) else (70 if v else 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def x42():
+    return None if os.environ.get("FAUX_DOUBLER_X42") == "absent" else "/usr/lib/lv2 (faux)"
 
 
 def liste_voix(en_json=False):
@@ -516,7 +575,32 @@ def rapport_kaggle(tr, a, voix):
         frise.append(f"{chrono(m['debut_s'])}–{chrono(m['fin_s'])}  {v}  f0 {m['f0_med'] or 0:4.0f} Hz  → "
                      f"{m['decalage']:+g} dt  ({m['base']})")
     conv = round(d * 0.045 * a.pas, 1)
+    plus = {}
+    if voix.get("membres") and mode == "chant":
+        # une voix par chanteur (comme doubler_kaggle.py) : le chanteur (morceau 1) et la chanteuse (morceau 2), les
+        # deux ensemble à la fin du morceau 2 (voix principale et chœurs chacun dans sa voix)
+        m1, m2 = voix["membres"][0]["id"], voix["membres"][1]["id"]
+        morceaux[0]["voix_cible"] = m1
+        morceaux[1].update({"voix_cible": m1, "voix_pistes": {"lead_sec": m1}})
+        morceaux[2].update({"voix_cible": m2, "voix_pistes": {"lead_sec": m2, "choeurs_sec": m1}})
+        fin_duo = round(d * 0.8, 2)
+        plus = {
+            "voix_cibles": {"mode": voix["mode"], "voix": [{"cle": m["cle"], "nom": m["id"], "affichage": m["affichage"],
+                                                            "centre_chant_hz": round(FACTEUR_CHANT * m["f0"], 1)}
+                                                           for m in voix["membres"]]},
+            "affectation": {"mode": voix["mode"], "message": "duo", "voix_utilisees": [m1, m2], "morceaux_en_duo": 1,
+                            "passages": [{"debut_s": round(d * 0.1, 2), "fin_s": round(d * 0.6, 2), "voix": [m1]},
+                                         {"debut_s": round(d * 0.6, 2), "fin_s": fin_duo, "voix": [m2]},
+                                         {"debut_s": fin_duo, "fin_s": round(d, 2), "voix": [m1, m2]}],
+                            "secondes_par_voix": {m1: round(d * 0.5, 1), m2: round(d * 0.2, 1), "ensemble": round(d * 0.2, 1)}},
+        }
+        decision = {"voix": 2, "axe": "genre", "message": f"duo : homme → {m1} (+0), femme → {m2} (+0)",
+                    "chanteurs": [{"nom": "homme", "classe": "homme", "voix": m1, "decalage": dec_homme},
+                                  {"nom": "femme", "classe": "femme", "voix": m2, "decalage": 0}],
+                    "f0_mediane_globale_hz": 230.0}
+        morceaux[2]["decalage"] = 0
     return {
+        **plus,
         "id": tr["id"], "reglages": {"pas": a.pas}, "voix_cible": voix["id"],
         "travail": {"entree": f"entree-{tr['id']}.flac"},
         "temps": {"separation_s": round(d * 0.7, 1), "analyse_s": round(d * 0.04, 1), "conversion_s": conv,
@@ -547,6 +631,58 @@ def ecrire_paroles(tv, a):
         f.write_text(json.dumps({"format": 1, "langue": "fr", "source": "faux-whisper", "segments": segments},
                                 ensure_ascii=False, indent=1), encoding="utf-8")
     return f
+
+
+FICHIERS_AUTOTUNE_TRAVAIL = ("mix_autotune.wav", "seche_voix_autotune.wav", "reverb_voix_autotune.wav")
+
+
+def autotune(a, rapport, tv, dossier, base, sortie, mode):
+    """Version auto-tune, comme doubler : --sans-autotune la retire ; --autotune N, la clé « autotune » ou une version
+    déjà là (remix) la font (fichiers vides) ; greffon absent (FAUX_DOUBLER_X42=absent) : refusée, avec la raison.
+    Écrit rapport["autotune"] et rend l'événement « autotune » (ou None)."""
+    if ANCIEN:
+        return None
+    b = f"{base} (auto-tune)"
+    if a.sans_autotune:
+        for f in [dossier / f"{b}{e}" for e in (*CONTENEURS, ".mp3", ".lrc")] + [tv / n for n in FICHIERS_AUTOTUNE_TRAVAIL]:
+            if f.exists():
+                f.unlink()
+        rapport["autotune"] = {"applique": False, "intensite": 0, "source": "option --sans-autotune",
+                               "raison": "version auto-tune retirée (--sans-autotune)"}
+        return None
+    prec = rapport.get("autotune") if isinstance(rapport.get("autotune"), dict) else {}
+    n = a.autotune if a.autotune is not None else autotune_config(lire_config()) or (
+        prec.get("intensite") if prec.get("applique") else 0)
+    if not n:
+        return None
+    if mode == "parole" and a.autotune is None:
+        rapport["autotune"] = {"applique": False, "intensite": n, "raison": "parole : auto-tune seulement sur demande"}
+        return None
+    if x42() is None:
+        dire("ATTENTION : auto-tune demandé, mais x42-autotune absent : installez x42-plugins : sudo apt install "
+             "x42-plugins ; version normale seule")
+        rapport["autotune"] = {"applique": False, "intensite": n, "raison": "x42-autotune absent : installez x42-plugins"}
+        return None
+    for f in FICHIERS_AUTOTUNE_TRAVAIL if mode == "chant" else FICHIERS_AUTOTUNE_TRAVAIL[:2]:
+        (tv / f).write_bytes(b"")
+    mp3, video, lrc = dossier / f"{b}.mp3", dossier / f"{b}{sortie.suffix}", dossier / f"{b}.lrc"
+    for f in (mp3, video, lrc):
+        f.write_bytes(b"")
+    gamme = (a.autotune_gamme or prec.get("gamme", {}).get("demandee") or "auto")
+    rapport["autotune"] = {
+        "applique": True, "intensite": int(n), "source": "option --autotune" if a.autotune is not None else "configuration",
+        "gamme": {"demandee": gamme, "type": "chromatique" if gamme == "chromatique" else "tonalite",
+                  "tonalite": None if gamme == "chromatique" else "fa majeur", "masque": [1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0],
+                  "accord_hz": 440.0, "detection": {"correlation": 0.81}},
+        "mesures": {"avant": {"ecart_median_cents": 32.0, "part_a_10_cents": 0.21},
+                    "apres": {"ecart_median_cents": 4.0, "part_a_10_cents": 0.86}},
+        "gains_db": {"seche": 6.5, **({"reverb": 1.2} if mode == "chant" else {})}, "temps_s": 2.0,
+        "fichiers": {"mp3": mp3.name, "mix": "mix_autotune.wav", "seche": "seche_voix_autotune.wav",
+                     "reverb": "reverb_voix_autotune.wav" if mode == "chant" else None, "video": video.name, "lrc": lrc.name}}
+    g = rapport["autotune"]["gamme"]
+    dire(f"auto-tune {n} : gamme {g['tonalite'] or 'chromatique'}, écart médian aux notes 32 → 4 cents")
+    return {"mp4": str(video), "mp3": str(mp3), "lrc": str(lrc), "intensite": int(n), "tonalite": g["tonalite"],
+            "gamme": g["type"]}
 
 
 def finir(tr, a, voix, temps_local=None):
@@ -593,8 +729,10 @@ def finir(tr, a, voix, temps_local=None):
         rapport["temps_local"] = temps_local
     (tv / "rapport.json").write_text(json.dumps(rapport, ensure_ascii=False, indent=1), encoding="utf-8")
     paroles = ecrire_paroles(tv, a)
+    ev_at = autotune(a, rapport, tv, dossier, base, sortie, mode)
+    (tv / "rapport.json").write_text(json.dumps(rapport, ensure_ascii=False, indent=1), encoding="utf-8")
     EV("sortie", titre, mp4=str(sortie), mp3=str(mp3), rapport=str(tv / "rapport.json"), comparaisons=None,
-       **({"paroles": str(paroles)} if paroles else {}))
+       **({"paroles": str(paroles)} if paroles else {}), autotune=ev_at, voix=[v["id"] for v in voix_membres(voix)])
     m = rapport.get("mesures_musique", {})
     dire(f"mode {mode} ({'imposé' if rapport.get('mode_force') else 'détecté'} : musique sous la voix "
          f"{m.get('reste_sous_voix_db')} dB, tonalité {m.get('tonalite_reste')}, notes tenues {m.get('tenue')}) ; "
@@ -651,7 +789,8 @@ def envoyer_jeu(travaux, voix):
         tr["gain_entree"] = 0.89
     taille = sum(tr["taille_envoi"] for tr in travaux)
     dire(f"Kaggle : envoi du son de {len(travaux)} vidéo(s) ({taille / 1e6:.0f} Mo en FLAC au lieu de {taille_wav / 1e6:.0f} Mo "
-         f"en WAV) et de la voix {voix['id']} dans le jeu privé {JEU}")
+         f"en WAV) et de {'la voix ' if len(voix_membres(voix)) == 1 else 'les voix '}"
+         f"{' et '.join(v['id'] for v in voix_membres(voix))} dans le jeu privé {JEU}")
     if ECHEC == "envoi":
         raise RuntimeError("Kaggle : jeu de données refusé : 403 - Forbidden (faux doubler)")
     pause(0.5)   # « téléversement et préparation du jeu »
@@ -704,8 +843,15 @@ def lancer_noyau(travaux, titres, a, voix, estimation):
     for tr in travaux:   # sorties du « noyau » rangées dans travail/ et travail/<voix>/
         (tr["travail"] / "voix_source.wav").write_bytes(b"")
         (tr["tv"] / "voix_convertie.flac").write_bytes(b"")
-        (tr["tv"] / "rapport.json").write_text(json.dumps(rapport_kaggle(tr, a, voix), ensure_ascii=False, indent=1),
-                                              encoding="utf-8")
+        rapport = rapport_kaggle(tr, a, voix)
+        (tr["tv"] / "rapport.json").write_text(json.dumps(rapport, ensure_ascii=False, indent=1), encoding="utf-8")
+        if rapport.get("voix_cibles"):
+            k = int(float(tr["duree_audio_s"]) / 0.02)
+            vt = [-1 if i < 0.1 * k else 0 if i < 0.6 * k else 1 if i < 0.8 * k else 2 for i in range(k)]
+            (tr["tv"] / "courbes.json").write_text(json.dumps(
+                {"format": 1, "pas_s": 0.02, "source_hz": [0 if v < 0 else 200.0 for v in vt],
+                 "convertie_hz": [0 if v < 0 else 200.0 for v in vt], "decalage_dt": [0] * k,
+                 "voix_cibles": [m["id"] for m in voix["membres"]], "voix_par_trame": vt}), encoding="utf-8")
     temps = {"pousse_epoch": pousse, "version_noyau": 7, "noyau_depuis_envoi_s": noyau_s,
              "rapatriement_s": round(time.time() - debut_rap, 1)}
     return temps, rapatriement
@@ -770,7 +916,8 @@ def analyseur():
     p.add_argument("videos", nargs="*", help="vidéo(s) mp4, mkv, webm, mov… ; « vidéo@60+40 » : extrait propre à cette vidéo")
     p.add_argument("--voix", default=None, metavar="NOM",
                    help="voix cible : un dossier de <données>/voix (défaut : clé « voix » de la configuration, "
-                        "sinon la seule voix présente)")
+                        "sinon la seule voix présente) ; une voix par chanteur : homme:NOM,femme:NOM (duo mixte) ou "
+                        "chanteur1:NOM,chanteur2:NOM (duo de même genre)")
     p.add_argument("--mode", choices=["auto", "chant", "parole"], default="auto")
     p.add_argument("--octave", choices=["auto", "0", "-12", "+12", "12"], default="auto",
                    help="auto : décidé passage par passage ; 0, -12 ou +12 : imposé partout")
@@ -784,6 +931,11 @@ def analyseur():
         p.add_argument("--sans-paroles", action="store_true",
                        help="sans transcription des paroles ni traduction (défaut : clé « paroles » de la configuration)")
         p.add_argument("--mix-v1", action="store_true", help="ancien mixage : sans suivi des nuances ni dé-esseur")
+        p.add_argument("--autotune", nargs="?", type=int, const=70, default=None, metavar="N",
+                       help="auto-tune de la voix, intensité N de 0 à 100 (70 sans valeur) : version « (auto-tune) » en plus")
+        p.add_argument("--sans-autotune", action="store_true", help="pas d'auto-tune ; avec --remix : version retirée")
+        p.add_argument("--autotune-gamme", default=None, metavar="GAMME",
+                       help="gamme de l'auto-tune : auto, chromatique, ou une tonalité (la-mineur, do#-majeur…)")
     p.add_argument("--debut", type=float, default=None, help="début de l'extrait (s), pour un essai")
     p.add_argument("--duree", type=float, default=None, help="durée de l'extrait (s)")
     p.add_argument("--remix", action="store_true", help="refaire seulement le mixage et la vidéo depuis travail/ (sans Kaggle)")
@@ -825,8 +977,8 @@ def main():
     p = analyseur()
     a = p.parse_args()
     if ANCIEN:
-        a.evenements = a.donnees = a.config = None
-        a.json = a.mix_v1 = a.reprendre = a.preparer_outils = False
+        a.evenements = a.donnees = a.config = a.autotune = a.autotune_gamme = None
+        a.json = a.mix_v1 = a.reprendre = a.preparer_outils = a.sans_autotune = False
     EV.ouvrir(a.evenements)
     code = 1
     enfant = None
@@ -884,7 +1036,7 @@ def executer(p, a):
         a.octave = "+12"
     if a.voix is None:
         a.voix = exiger_voix_defaut()
-    voix = charger_voix(a.voix)
+    voix = charger_voix_spec(a.voix)
     if a.remix:
         echecs = []
         for v in a.videos:

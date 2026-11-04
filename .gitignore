@@ -1,0 +1,17 @@
+# Sorties et fichiers de travail (audio, vidéo, retours Kaggle) : jamais dans le dépôt
+sorties/
+*.wav
+*.flac
+*.mp3
+*.mp4
+*.mkv
+*.webm
+retour*/
+__pycache__/
+# Jamais de clé Kaggle ici
+access_token
+kaggle.json
+# Voix (enregistrements et fiches) : données personnelles, jamais dans le dépôt
+voix/
+# Vidéos sources (œuvres protégées) : jamais dans le dépôt
+Vidéos/

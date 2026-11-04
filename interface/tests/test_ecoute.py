@@ -2,6 +2,7 @@
 
 import json
 import unittest
+from pathlib import Path
 
 from voixla import chemins, ecoute
 
@@ -130,6 +131,28 @@ class EssaiBanc(EssaiIsole):
         ecoute.enregistrer_vote("refrain-chanteuse", {"A": 3, "B": 3}, correspondance=nouvelle, racine=self.banc)
         votes = ecoute.lire_votes()
         self.assertEqual(ecoute.dernier_vote(votes, "refrain-chanteuse", nouvelle)["notes"], {"A": 3, "B": 3})
+
+
+class EssaiInterrupteurVoixSeule(unittest.TestCase):
+    """ecoute.autre_forme : l'interrupteur « voix seule » passe du mix d'une version à sa voix seule, et retour."""
+
+    def setUp(self):
+        d = Path("/banc/refrain")
+        self.versions = [ecoute.Version("A", d / "A.mp3", d / "A_voix.mp3"), ecoute.Version("B", d / "B.mp3")]
+
+    def test_mix_vers_voix_et_retour(self):
+        self.assertEqual(ecoute.autre_forme(("refrain", "A", "mix"), self.versions),
+                         (("refrain", "A", "voix"), Path("/banc/refrain/A_voix.mp3")))
+        self.assertEqual(ecoute.autre_forme(("refrain", "A", "voix"), self.versions),
+                         (("refrain", "A", "mix"), Path("/banc/refrain/A.mp3")))
+
+    def test_impossible(self):
+        for cle in (("refrain", "B", "mix"),                 # pas de B_voix.mp3
+                    ("refrain", "original", None),           # l'original
+                    ("refrain", "Z", "mix"),                 # lettre inconnue
+                    ("refrain", "A", "autre"), None, ("refrain", "A")):
+            self.assertIsNone(ecoute.autre_forme(cle, self.versions), cle)
+        self.assertIsNone(ecoute.autre_forme(("refrain", "A", "mix"), []))
 
 
 if __name__ == "__main__":

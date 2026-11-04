@@ -60,6 +60,11 @@ class DialogueReglages(Adw.PreferencesDialog):
                 self.r_moteur.set_selected(ids.index(actuel))
             self._moteur_relie = True
             self.r_moteur.connect("notify::selected", lambda w, _p: self._ecrire("moteur", ids[w.get_selected()]))
+        if getattr(self, "r_paroles", None) is not None and not getattr(self, "_paroles_relie", False):
+            self.r_paroles.set_active(moteur.paroles_par_defaut(conf))
+            self._paroles_relie = True
+            self.r_paroles.connect("notify::active", lambda w, _p: self._ecrire(
+                "paroles", "oui" if w.get_active() else "non", lambda oui=w.get_active(): self._paroles_ecrites(oui)))
         k = (conf or {}).get("kaggle") or {}
         for cle, e in self.entrees.items():
             brut = chemins.valeur(contenu, f"kaggle.{cle}")
@@ -79,6 +84,12 @@ class DialogueReglages(Adw.PreferencesDialog):
             self.fenetre.toast("Le compte Kaggle ne peut pas être vide")
             return
         self._ecrire(f"kaggle.{cle}", valeur)
+
+    def _paroles_ecrites(self, oui):
+        """Nouveau défaut des paroles : la page Doubler le reprend (son interrupteur revient au défaut)."""
+        page = (getattr(self.fenetre, "pages", None) or {}).get("doubler")
+        if page is not None and hasattr(page, "paroles_par_defaut_change"):
+            page.paroles_par_defaut_change(oui)
 
     def _ecrire(self, cle, valeur, apres=None):
         def fini(r):
@@ -178,6 +189,12 @@ class DialogueReglages(Adw.PreferencesDialog):
             r_ch.set_selected(next((i for i, c in enumerate(choix) if c[0] == actuelle), 0))
             r_ch.connect("notify::selected", lambda w, _p: self._pref("chaine", choix[w.get_selected()][0]))
             g.add(r_ch)
+        if "--sans-paroles" in caps:
+            self.r_paroles = Adw.SwitchRow(title="Paroles (configuration de doubler)", active=True,
+                                           subtitle="Clé « paroles » de config.json : transcription des paroles et "
+                                                    "traduction française ; la page Doubler peut les retirer d’un "
+                                                    "lancement")
+            g.add(self.r_paroles)
         p.add(g)
 
         ge = Adw.PreferencesGroup(title="Enregistrement")
@@ -233,10 +250,13 @@ class DialogueReglages(Adw.PreferencesDialog):
                                              "calculs se font une fois, sous nice, puis restent en cache.")
         for cle, titre, sous_titre in (
                 ("vis_melodie", "Courbe de mélodie", "Origine, consigne et voix convertie, sur une échelle de notes"),
-                ("vis_spectre", "Spectrogramme", "Défile avec la lecture ; suit la bascule A/B"),
+                ("vis_spectre", "Spectrogramme", "Défile avec la lecture ; montre la piste écoutée (doublage, "
+                                                 "original, beat, voix seule)"),
                 ("vis_onde", "Forme d’onde", "Sous la frise d’octave, avec le curseur de lecture"),
                 ("vis_vumetre", "Vu-mètre", "Niveau par bande de fréquence, animé pendant la lecture"),
-                ("melodie_hz", "Mélodie en Hz", "Sinon en notes (do, ré, mi…, la3 = 440 Hz)")):
+                ("melodie_hz", "Mélodie en Hz", "Sinon en notes (do, ré, mi…, la3 = 440 Hz)"),
+                ("paroles", "Paroles", "Ligne en cours et suivante sous le lecteur : paroles de doubler, sinon "
+                                       "sous-titres de la vidéo")):
             r = Adw.SwitchRow(title=titre, subtitle=sous_titre, active=bool(self.prefs.get(cle)))
             r.connect("notify::active", lambda w, _p, c=cle: self.fenetre.regler_visualisation(c, w.get_active()))
             g.add(r)

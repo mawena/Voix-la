@@ -102,6 +102,7 @@ class LecteurEcoute:
         self.sur_changement = sur_changement
         self.sur_erreur = sur_erreur
         self.sur_position = None
+        self.muet = False             # essais : tous les flux restent muets, même ceux ouverts plus tard
 
     def media(self):
         return self.flux.get(self.cle) if self.cle else None
@@ -114,6 +115,8 @@ class LecteurEcoute:
         m = self.flux.get(cle)
         if m is None:
             m = lecteur.media(chemin)
+            if self.muet:
+                m.set_muted(True)
             m.connect("notify::playing", lambda *_: self.sur_changement())
             m.connect("notify::error", self._erreur)
             m.connect("notify::timestamp", lambda *_: self.sur_position and self.sur_position())
@@ -152,6 +155,26 @@ class LecteurEcoute:
         self.cle = cle
         self.commandes.set_media_stream(m)
         self._lire(m, position)
+        self.sur_changement()
+
+    def basculer(self, cle, chemin):
+        """Passe à une autre source à la même position, en gardant la lecture ou la pause."""
+        actuel = self.media()
+        if actuel is None or cle == self.cle:
+            return
+        lisait = actuel.get_playing()
+        position = 0 if actuel.get_ended() else actuel.get_timestamp()
+        actuel.pause()
+        m = self._flux(cle, chemin)
+        self.cle = cle
+        self.commandes.set_media_stream(m)
+
+        def placer():
+            duree = m.get_duration()
+            m.seek(position if position and (not duree or position < duree) else 0)
+            if lisait:
+                m.play()
+        lecteur.quand_pret(m, placer)
         self.sur_changement()
 
     @staticmethod
@@ -218,6 +241,19 @@ class PageEcoute(commun.Page):
         self.joue = Gtk.Label(xalign=0, width_chars=16, max_width_chars=26, ellipsize=Pango.EllipsizeMode.END)
         barre.append(self.joue)
         barre.append(self.lecteur.commandes)
+        # interrupteur « voix seule » : la version en cours passe de son mix à sa voix seule (et retour), à la même
+        # position, en lecture ou en pause comme avant (touche V)
+        self.t_voix = Gtk.ToggleButton(child=Adw.ButtonContent(label="Voix seule",
+                                                               icon_name="audio-input-microphone-symbolic"),
+                                       valign=Gtk.Align.CENTER, sensitive=False,
+                                       tooltip_text="Voix seule de la version en cours, à la même position (touche V)")
+        self._maj_voix = False
+        self.t_voix.connect("toggled", lambda *_: self._maj_voix or self.basculer_voix())
+        barre.append(self.t_voix)
+        raccourcis = Gtk.ShortcutController(scope=Gtk.ShortcutScope.MANAGED)
+        raccourcis.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string("v"),
+                                                 Gtk.CallbackAction.new(lambda *_: (self.basculer_voix(), True)[1])))
+        self.add_controller(raccourcis)
         # Visualisations (vu-mètre, spectrogramme, forme d'onde) de ce qui joue : interrupteurs du menu « œil »
         self.vis = {}
         self.pistes_vis = {}
@@ -619,6 +655,15 @@ class PageEcoute(commun.Page):
                 texte += f" · {version}"
         return texte
 
+    def basculer_voix(self):
+        """Mix ⇄ voix seule de la version en cours (interrupteur et touche V)."""
+        ext = self._extrait()
+        autre = ecoute.autre_forme(self.lecteur.cle, ext.versions if ext else [])
+        if autre is not None and ext is not None and self.lecteur.cle[0] == ext.nom:
+            self.lecteur.basculer(*autre)
+        else:
+            self._maj_lecture()   # rien à basculer : l'interrupteur reprend l'état de ce qui joue
+
     # --- visualisations ----------------------------------------------------------------------------------------------
 
     def _fournisseur(self):
@@ -705,6 +750,18 @@ class PageEcoute(commun.Page):
         else:
             self.joue.set_label("Rien en lecture")
             self.joue.set_css_classes(["dim-label"])
+        if getattr(self, "t_voix", None) is not None:
+            ext = self._extrait()
+            possible = bool(ext and cle and cle[0] == ext.nom and ecoute.autre_forme(cle, ext.versions))
+            self._maj_voix = True
+            self.t_voix.set_active(bool(cle and cle[2] == "voix"))
+            self._maj_voix = False
+            self.t_voix.set_sensitive(possible)
+            self.t_voix.set_tooltip_text(
+                "Voix seule de la version en cours, à la même position (touche V)" if possible else
+                "Pas de voix seule pour l’original" if cle and cle[1] == "original" else
+                "Pas de voix seule pour cette version (X_voix.mp3 absent)" if cle else
+                "Écoutez d’abord une version")
         for k, (b, contenu) in self.boutons.items():
             joue = self.lecteur.joue(k)
             contenu.set_icon_name("media-playback-pause-symbolic" if joue else "media-playback-start-symbolic")
@@ -753,13 +810,17 @@ class PageEcoute(commun.Page):
             self.commentaires[ext.nom] = commentaire
             self._construire()
             self._enregistrer()
-        elif action == "joue":
-            # lecture muette de la version B (captures des visualisations)
+        elif action in ("joue", "voix"):
+            # lecture muette de la version B (captures des visualisations) ; « voix » : puis l'interrupteur
+            # « voix seule » (même position)
+            self.lecteur.muet = True
+            for m in self.lecteur.flux.values():
+                m.set_muted(True)
             v = ext.versions[1] if len(ext.versions) > 1 else ext.versions[0]
             self.lecteur.jouer((ext.nom, v.lettre, "mix"), v.mix)
-            m = self.lecteur.media()
-            if m:
-                m.set_muted(True)
+            if action == "voix":
+                GLib.timeout_add(1200, lambda: (self.t_voix.get_sensitive() and self.t_voix.set_active(True),
+                                                False)[1])
         elif action.startswith("extrait"):
             i = int(action[len("extrait"):] or 1) - 1
             if 0 <= i < len(self.extraits):

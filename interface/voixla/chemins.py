@@ -53,6 +53,9 @@ PREFERENCES_DEFAUT = {
     "vis_onde": False,
     "vis_vumetre": False,
     "melodie_hz": False,        # échelle de la courbe de mélodie : notes (faux) ou Hz (vrai)
+    # Paroles sous le lecteur des résultats (paroles.json de doubler, sinon sous-titres de la vidéo doublée)
+    "paroles": True,
+    "paroles_langue": "deux",   # originale, fr ou deux
     # {dossier de résultat: vidéo source} choisie à la main quand celle de travail/source.json est introuvable
     "sources_choisies": {},
 }
@@ -82,6 +85,36 @@ def dossier_cache():
         return Path(os.environ["VOIXLA_CACHE"]).expanduser()
     base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
     return Path(base) / "voix-la"
+
+
+def purger_dossier(dossier, max_mo):
+    """Garde un dossier du cache sous max_mo : efface les fichiers les moins récemment utilisés (et les .tmp
+    abandonnés depuis plus d'une heure). Rend le nombre de fichiers effacés."""
+    import time
+    d = Path(dossier)
+    if not d.is_dir():
+        return 0
+    fichiers, efface = [], 0
+    for f in d.iterdir():
+        try:
+            st = f.stat()
+        except OSError:
+            continue
+        if not f.is_file():
+            continue
+        if ".tmp" in f.name and time.time() - st.st_mtime > 3600:
+            f.unlink(missing_ok=True)
+            efface += 1
+            continue
+        fichiers.append((max(st.st_atime, st.st_mtime), st.st_size, f))
+    total = sum(s for _t, s, _f in fichiers)
+    for _t, s, f in sorted(fichiers):
+        if total <= max_mo * 1024 * 1024:
+            break
+        f.unlink(missing_ok=True)
+        total -= s
+        efface += 1
+    return efface
 
 
 def dossier_etat():

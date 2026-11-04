@@ -1,7 +1,8 @@
 #!/usr/bin/python3
 """doubler (Voix-là) : remplace la voix d'une vidéo par une voix clonée (YingMusic-SVC, Seed-VC ; GPU gratuit de Kaggle).
 
-  doubler <vidéo> [<vidéo>…] [--voix NOM] [--mode auto|chant|parole] [--octave auto|0|-12|+12] [--pas 30]
+  doubler <vidéo> [<vidéo>…] [--voix NOM | --voix homme:NOM,femme:NOM | --voix chanteur1:NOM,chanteur2:NOM]
+          [--mode auto|chant|parole] [--octave auto|0|-12|+12] [--pas 30]
           [--moteur yingmusic|seedvc] [--sans-nettoyage] [--sans-paroles] [--voix-db 4] [--reverb-db -13] [--mix-v1]
           [--autotune [N]] [--autotune-gamme auto|chromatique|la-mineur…] [--sans-autotune]
           [--debut S --duree S] [--remix] [--sortie DIR] [--comparer-pas 50] [--donnees DIR] [--evenements FICHIER]
@@ -30,6 +31,9 @@ Sorties : <sortie>/<titre>/<titre> - voix <Nom>.<conteneur d'origine> et .mp3, .
 .lrc (paroles synchronisées, à côté du mp3) ; travail/ (son d'origine, voix isolée, reste) et travail/<voix>/ (voix
 convertie, rapport.json avec les temps de chaque étape, paroles.json). --remix refait seulement le mixage et la remise
 sur la vidéo, paroles comprises. Seuls le son des vidéos et la référence de la voix choisie partent sur Kaggle.
+Une voix par chanteur (--voix homme:A,femme:B pour un duo mixte, chanteur1:A,chanteur2:B pour un duo de même genre) :
+chaque piste de chaque passage (voix principale, chœurs, secours) prend la voix du chanteur qu'on y reconnaît, l'octave
+se décide pour chaque couple chanteur -> voix ; sorties <titre> - voix A et B.<ext>, travail/A+B/.
 Auto-tune (--autotune [N], de 0 à 100, 70 sans valeur ; clé « autotune » de la configuration, 0 ou absente : désactivé) :
 en plus de la version normale, inchangée, <titre> - voix <Nom> (auto-tune).<conteneur>, .mp3 et .lrc, faits sur le PC
 par x42-autotune (paquet x42-plugins, filtre lv2 de ffmpeg) sur la voix sèche, avant la reverb, dans la gamme détectée
@@ -483,6 +487,111 @@ def charger_voix(nom):
     return {'id': nom, 'affichage': f.get('nom') or nom.capitalize(), 'reference': ref, 'f0': float(f0), 'fiche': f}
 
 
+# Une voix par chanteur : --voix homme:NOM,femme:NOM (duo mixte) ou chanteur1:NOM,chanteur2:NOM (duo de même genre,
+# chanteurs pris dans l'ordre d'apparition). Le noyau reçoit voix_cibles (kaggle/doubler_kaggle.py, decider_chanteurs).
+CLES_VOIX = {'genre': ('homme', 'femme'), 'ordre': ('chanteur1', 'chanteur2')}
+
+
+def lire_spec_voix(texte):
+    """« NOM » -> (None, [(None, NOM)]) ; « homme:a,femme:b » ou « chanteur1:a,chanteur2:b » -> (mode, [(clé, nom)]),
+    rangé dans l'ordre des clés (homme puis femme, chanteur1 puis chanteur2). ValueError si la syntaxe est fausse."""
+    texte = str(texte).strip()
+    if ':' not in texte and ',' not in texte:
+        if not re.fullmatch(NOM_VOIX, texte):
+            raise ValueError(f'nom de voix invalide : « {texte} » (minuscules, chiffres, - ou _)')
+        return None, [(None, texte)]
+    toutes = [c for cles in CLES_VOIX.values() for c in cles]
+    paires = []
+    for morceau in (m.strip() for m in texte.split(',')):
+        if not morceau:
+            continue
+        cle, sep, nom = (x.strip() for x in morceau.partition(':'))
+        cle = cle.lower().replace(' ', '').replace('-', '').replace('_', '')
+        if not sep or not nom:
+            raise ValueError(f'« {morceau} » : clé:voix attendu ({", ".join(f"{c}:NOM" for c in toutes)})')
+        if cle not in toutes:
+            raise ValueError(f'clé inconnue « {cle} » : homme et femme (duo mixte), ou chanteur1 et chanteur2 (duo de '
+                             'même genre)')
+        if not re.fullmatch(NOM_VOIX, nom):
+            raise ValueError(f'nom de voix invalide : « {nom} » (minuscules, chiffres, - ou _)')
+        if cle in (c for c, _ in paires):
+            raise ValueError(f'clé {cle} donnée deux fois')
+        paires.append((cle, nom))
+    if not paires:
+        raise ValueError('aucune voix')
+    modes = {m for m, cles in CLES_VOIX.items() for c, _ in paires if c in cles}
+    if len(modes) > 1:
+        raise ValueError('homme/femme et chanteur1/chanteur2 ne se mélangent pas : homme:…,femme:… pour un duo mixte, '
+                         'chanteur1:…,chanteur2:… pour un duo de même genre')
+    mode = modes.pop()
+    return mode, sorted(paires, key=lambda p: CLES_VOIX[mode].index(p[0]))
+
+
+def charger_voix_spec(texte):
+    """La voix de --voix : une voix (charger_voix, comme avant), ou plusieurs voix, une par chanteur, réunies en une voix
+    combinée : id « a+b » (dossier travail/a+b/), affichage « A et B » (« <titre> - voix A et B.<ext> »), référence et
+    hauteur de la première (celles de l'analyse), plus mode, membres (chacun avec sa clé) et spec (à garder pour
+    --reprendre). Une seule voix différente (« homme:a » seul, ou la même deux fois) : la voix seule, comme avant."""
+    try:
+        mode, paires = lire_spec_voix(texte)
+    except ValueError as e:
+        raise SystemExit(f'--voix {texte} : {e}') from None
+    noms = list(dict.fromkeys(n for _, n in paires))
+    if mode is None or len(noms) == 1:
+        v = charger_voix(noms[0])
+        if mode is not None:
+            dire(f'--voix {texte} : une seule voix différente ({noms[0]}) : doublage à une voix, comme --voix {noms[0]}')
+        return v
+    membres = [charger_voix(n) for n in noms]
+    for (cle, _), m in zip(paires, membres):
+        m['cle'] = cle
+    return {'id': '+'.join(noms), 'affichage': ' et '.join(m['affichage'] for m in membres),
+            'reference': membres[0]['reference'], 'f0': membres[0]['f0'], 'fiche': membres[0]['fiche'], 'mode': mode,
+            'membres': membres, 'spec': ','.join(f'{c}:{n}' for c, n in paires)}
+
+
+def voix_membres(voix):
+    """Les voix réelles d'une voix (combinée ou non)."""
+    return voix.get('membres') or [voix]
+
+
+def decrire_voix(voix):
+    """« jules », ou « homme → jules, femme → marie » (plusieurs voix)."""
+    if not voix.get('membres'):
+        return voix['id']
+    return ', '.join(f"{m['cle'].replace('chanteur', 'chanteur ')} → {m['id']}" for m in voix['membres'])
+
+
+def lignes_voix_cibles(rapport):
+    """Ce qu'il faut dire après un doublage à plusieurs voix (rapport du noyau) : la décision (duo, ou une seule voix
+    trouvée, avec la raison), puis les secondes chantées par chaque voix et les passages en duo. [] avec une seule voix."""
+    vc = rapport.get('voix_cibles')
+    if not isinstance(vc, dict):
+        return []
+    if vc.get('message'):   # parole : la première voix seule
+        return [f"voix cibles : {vc['message']}"]
+    dh = rapport.get('decision_hauteur') or {}
+    lignes = []
+    if dh.get('voix') == 2:
+        lignes.append(f"voix cibles, {'duo mixte' if vc.get('mode') == 'genre' else 'duo'} ("
+                      f"{'axe du genre' if dh.get('axe') == 'genre' else 'empreintes de la chanson'}) : "
+                      + ', '.join(f"{c.get('nom')} → {c.get('voix')} ({c.get('decalage', 0):+d} dt)"
+                                  for c in dh.get('chanteurs') or []))
+    elif dh.get('message'):
+        lignes.append(f"ATTENTION : {dh['message']}" + (f" ({dh['pourquoi_une_voix']})" if dh.get('pourquoi_une_voix') else ''))
+    aff = rapport.get('affectation') or {}
+    sec = aff.get('secondes_par_voix') or {}
+    if sec:
+        lignes.append('voix entendues : ' + ', '.join(f'{v} {s:.0f} s' for v, s in sec.items() if v != 'ensemble')
+                      + (f", ensemble {sec['ensemble']:.0f} s" if sec.get('ensemble') else '')
+                      + (f" ; {aff['morceaux_en_duo']} passage(s) en duo (voix principale et chœurs)"
+                         if aff.get('morceaux_en_duo') else ''))
+    if aff.get('erreur'):
+        lignes.append(f"ATTENTION : reconnaissance des pistes impossible ({aff['erreur']}) : chaque piste prend la voix "
+                      'du passage')
+    return lignes
+
+
 def liste_voix(en_json=False):
     fiches = sorted(VOIX.glob('*/voix.json'))
     if en_json:
@@ -761,12 +870,14 @@ def preparer_source(video, info, debut, duree, travail):
 # --- Kaggle ----------------------------------------------------------------------------------------------------------
 
 def envoyer_jeu(travaux, voix, dossier):
-    """Une version du jeu de données privé par session : la référence de la voix choisie et le son des vidéos seulement,
-    en FLAC 24 bits (gain de chaque vidéo noté dans tr['gain_entree'], à transmettre au noyau)."""
+    """Une version du jeu de données privé par session : la référence de la voix choisie (de chaque voix, avec une voix
+    par chanteur) et le son des vidéos seulement, en FLAC 24 bits (gain de chaque vidéo noté dans tr['gain_entree'], à
+    transmettre au noyau)."""
     jeu = dossier / 'jeu'
     shutil.rmtree(jeu, ignore_errors=True)
     jeu.mkdir(parents=True)
-    shutil.copy2(voix['reference'], jeu / f"voix-{voix['id']}.wav")
+    for m in voix_membres(voix):
+        shutil.copy2(m['reference'], jeu / f"voix-{m['id']}.wav")
     taille, taille_wav = 0, 0
     for tr in travaux:
         tr['gain_entree'] = encoder_flac(tr['travail'] / 'original.wav', jeu / tr['entree'])
@@ -776,8 +887,9 @@ def envoyer_jeu(travaux, voix, dossier):
     with open(jeu / 'dataset-metadata.json', 'w') as f:
         json.dump({'title': JEU.split('/')[1], 'id': JEU, 'licenses': [{'name': 'unknown'}]}, f)
     existe = kaggle('datasets', 'status', JEU)[0] == 0
+    noms = [m['id'] for m in voix_membres(voix)]
     dire(f'Kaggle : envoi du son de {len(travaux)} vidéo(s) ({taille / 1e6:.0f} Mo en FLAC au lieu de {taille_wav / 1e6:.0f} Mo '
-         f'en WAV) et de la voix {voix["id"]} dans le jeu privé {JEU}')
+         f"en WAV) et de {'la voix ' + noms[0] if len(noms) == 1 else 'les voix ' + ' et '.join(noms)} dans le jeu privé {JEU}")
     code, texte = (kaggle('datasets', 'version', '-p', str(jeu), '-m', f"{len(travaux)} video(s), voix {voix['id']}") if existe
                    else kaggle('datasets', 'create', '-p', str(jeu)))
     if code or re.search(r'error|fail|invalid', texte, re.I):
@@ -795,7 +907,7 @@ def envoyer_jeu(travaux, voix, dossier):
     shutil.rmtree(jeu, ignore_errors=True)
 
 
-def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=MOTEUR_DEFAUT, paroles=True):
+def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=MOTEUR_DEFAUT, paroles=True, voix_cibles=1):
     """Durée probable d'une session (de l'envoi du noyau à sa fin), d'après la durée audio des vidéos et les rapports
     passés (rapport.json sous <sorties>/*/travail/*/) : démarrage + installation + chargement des modèles, puis par
     seconde d'audio la séparation et l'analyse, le nettoyage (chant) et la conversion (proportionnelle aux pas de
@@ -846,6 +958,9 @@ def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=
     if paroles:
         fixe += statistics.median(par_fixes) if par_fixes else 90.0   # Whisper large-v3 (3 Go) et NLLB-200 (2,5 Go)
         t_sep += statistics.median(par) if par else 0.25
+    if voix_cibles > 1 and chant:   # une voix par chanteur : chaque référence préparée par moteur, pistes reconnues
+        fixe += 20.0 * (voix_cibles - 1)
+        t_sep += 0.05
     return round(60 + fixe + sum(durees_s) * (t_sep + t_conv * pas))   # 60 s : file Kaggle et écriture des sorties
 
 
@@ -2355,12 +2470,14 @@ def finir(tr, a, voix, temps_local=None):
        courbes=str(tv / 'courbes.json') if (tv / 'courbes.json').exists() else None,
        paroles=str(tv / 'paroles.json') if paroles_on and (tv / 'paroles.json').exists() else None,
        srt=[str(f) for f in fichiers_paroles if f.suffix == '.srt'] or None, lrc=str(lrc) if lrc else None,
-       autotune=ev_at)
+       autotune=ev_at, voix=[v['id'] for v in voix_membres(voix)])
     m = rapport.get('mesures_musique', {})
     principale = rapport.get('variantes', {}).get('voix_convertie.flac', {})
     dire(f"mode {mode} ({'imposé' if rapport.get('mode_force') else 'détecté'} : musique sous la voix "
          f"{m.get('reste_sous_voix_db')} dB, tonalité {m.get('tonalite_reste')}, notes tenues {m.get('tenue')}) ; "
          f"modèle {rapport.get('modele')}, {principale.get('pas_diffusion')} pas")
+    for ligne in lignes_voix_cibles(rapport):
+        dire(ligne)
     net = rapport.get('nettoyage')
     if net is not None:   # rapports d'avant le 04/11/2026 : ni moteur ni nettoyage
         nom_moteur = {'yingmusic': 'YingMusic-SVC', 'seedvc': 'Seed-VC'}.get(rapport.get('moteur'), rapport.get('moteur'))
@@ -2596,6 +2713,34 @@ def lire_ancres():
     return {'homme': h, 'femme': f}
 
 
+def reglages_noyau(a, voix, ancres, travaux):
+    """Réglages du noyau (doubler_kaggle.py, REGLAGES) pour ces vidéos et cette voix. Une voix : ceux d'avant, tels quels.
+    Plusieurs voix (voix combinée de charger_voix_spec) : « voix » est la première (analyse, parole), et voix_cibles les
+    donne toutes, avec leur clé (homme, femme, chanteur1, chanteur2) et le mode (genre, ordre).
+    gain_entree : gain appliqué avant le FLAC (crête à -1 dBFS), retiré par le noyau à la lecture ; retour_flac : la voix
+    isolée revient en FLAC 24 bits (voix_source.flac et son gain dans voix_source.flac.json) ; moteur_chant, nettoyage :
+    chaîne du chant (YingMusic-SVC sur la voix nettoyée par défaut) ; ancres : None sans fichier d'ancres (ANCRES ; le
+    noyau décide alors l'octave sans empreinte) ; paroles : transcription (Whisper large-v3) et traduction française dans
+    le noyau (paroles.json)."""
+    v0 = voix_membres(voix)[0]
+    reglages = {**NOYAU_REGLAGES, 'pas': a.pas, 'ancres': ancres, 'paroles': bool(a.paroles),
+                'moteur_chant': a.moteur, 'nettoyage': not a.sans_nettoyage,
+                'voix': {'nom': v0['id'], 'fichier': f"voix-{v0['id']}.wav", 'f0_parole_hz': v0['f0'],
+                         'facteur_chant': FACTEUR_CHANT},
+                'travaux': [{'id': tr['id'], 'entree': tr['entree'], 'mode': a.mode,
+                             'octave': a.octave if a.octave == 'auto' else int(a.octave),
+                             'comparer_modeles': bool(a.comparer_modeles), 'comparer_pas': a.comparer_pas,
+                             'gain_entree': tr['gain_entree'], 'gain_entree_db': round(20 * math.log10(tr['gain_entree']), 3),
+                             'retour_flac': True} for tr in travaux]}
+    if voix.get('membres'):
+        reglages['voix_cibles'] = {'mode': voix['mode'], 'voix': [
+            {'cle': m['cle'], 'nom': m['id'], 'fichier': f"voix-{m['id']}.wav", 'f0_parole_hz': m['f0'],
+             'facteur_chant': FACTEUR_CHANT, 'affichage': m['affichage']} for m in voix['membres']]}
+    if a.modele_parole:
+        reglages['modele_parole'] = a.modele_parole
+    return reglages
+
+
 def traiter_lot(videos, a, voix):
     """Toutes les vidéos dans une seule session Kaggle, puis le mixage de chacune sur le PC."""
     if SESSION.exists():   # vérifié de nouveau sous le verrou ; ici, pour ne pas extraire le son pour rien
@@ -2626,37 +2771,28 @@ def traiter_lot(videos, a, voix):
         except Exception as e:  # noqa: BLE001
             return abandon(f'de l\'envoi sur Kaggle : {e}')
         envoi_s = round(time.time() - debut, 1)
-        # gain_entree : gain appliqué avant le FLAC (crête à -1 dBFS), retiré par le noyau à la lecture ;
-        # retour_flac : la voix isolée revient en FLAC 24 bits (voix_source.flac et son gain dans voix_source.flac.json)
-        # moteur_chant, nettoyage : chaîne du chant (YingMusic-SVC sur la voix nettoyée par défaut)
-        # ancres : None sans fichier d'ancres (ANCRES ; le noyau décide alors l'octave sans empreinte)
-        # paroles : transcription (Whisper large-v3) et traduction française dans le noyau (paroles.json)
-        reglages = {**NOYAU_REGLAGES, 'pas': a.pas, 'ancres': ancres, 'paroles': bool(a.paroles),
-                    'moteur_chant': a.moteur, 'nettoyage': not a.sans_nettoyage,
-                    'voix': {'nom': voix['id'], 'fichier': f"voix-{voix['id']}.wav", 'f0_parole_hz': voix['f0'],
-                             'facteur_chant': FACTEUR_CHANT},
-                    'travaux': [{'id': tr['id'], 'entree': tr['entree'], 'mode': a.mode,
-                                 'octave': a.octave if a.octave == 'auto' else int(a.octave),
-                                 'comparer_modeles': bool(a.comparer_modeles), 'comparer_pas': a.comparer_pas,
-                                 'gain_entree': tr['gain_entree'], 'gain_entree_db': round(20 * math.log10(tr['gain_entree']), 3),
-                                 'retour_flac': True} for tr in travaux]}
-        if a.modele_parole:
-            reglages['modele_parole'] = a.modele_parole
+        # réglages du noyau (reglages_noyau) ; voix_cibles seulement avec plusieurs voix (sinon ceux d'avant, tels quels)
+        reglages = reglages_noyau(a, voix, ancres, travaux)
         retour = kdir / 'retour'
         sources = [OUTILS] if (kdir / 'outils.json').exists() else []
         estimation = estimer_noyau_s([tr['duree_audio_s'] for tr in travaux], a.pas, a.sortie, not a.sans_nettoyage, a.mode,
-                                     a.moteur, a.paroles)
+                                     a.moteur, a.paroles, len(voix_membres(voix)))
         # limite du suivi : au moins le double de l'estimation (le nettoyage allonge beaucoup une longue chanson)
         attente_maxi = max((30 + 20 * len(travaux)) * 60, 2 * estimation + 30 * 60)
         dire(f"chaîne : chant → {'voix nettoyée' if not a.sans_nettoyage else 'voix complète (sans nettoyage)'}, "
              f"{'YingMusic-SVC' if a.moteur == 'yingmusic' else 'Seed-VC 44 kHz'} ; parole → Seed-VC 22 kHz ; "
              f"paroles → {'Whisper large-v3 et traduction française' if a.paroles else 'non'} ; "
              f"session estimée à {estimation / 60:.0f} min")
+        if voix.get('membres'):
+            dire(f"une voix par chanteur ({'duo mixte' if voix['mode'] == 'genre' else 'chanteurs dans l’ordre d’apparition'}) : "
+                 f"{decrire_voix(voix)} ; en parole, {voix['membres'][0]['id']} seule")
 
         def noter(pousse, version):
+            # voix : la spécification de --voix (homme:a,femme:b) avec plusieurs voix, pour que --reprendre la retrouve
             ecrire_session({'noyau': NOYAU, 'jeu': JEU, 'version_noyau': version, 'pousse_epoch': pousse,
                             'poussee_le': datetime.datetime.fromtimestamp(pousse).astimezone().isoformat(timespec='seconds'),
-                            'voix': voix['id'], 'sortie': str(Path(a.sortie).expanduser().resolve()), 'envoi_s': envoi_s,
+                            'voix': voix.get('spec') or voix['id'], 'sortie': str(Path(a.sortie).expanduser().resolve()),
+                            'envoi_s': envoi_s,
                             'estimation_s': estimation, 'attente_maxi_s': attente_maxi, 'pas': a.pas,
                             'moteur': a.moteur, 'nettoyage': not a.sans_nettoyage, 'paroles': bool(a.paroles),
                             'travaux': [{k: tr.get(k) for k in CHAMPS_SESSION} for tr in travaux]})
@@ -2694,7 +2830,7 @@ def reprendre(a):
             tr[k] = Path(tr[k])
         travaux.append(tr)
     titres = [tr['nom'] for tr in travaux]
-    voix = charger_voix(s['voix'])
+    voix = charger_voix_spec(s['voix'])   # un nom, ou la spécification homme:a,femme:b
     kdir = Path(s['sortie']) / '.kaggle'
     kdir.mkdir(parents=True, exist_ok=True)
     noyau = s['noyau']
@@ -2790,7 +2926,10 @@ def main():
                                               'vidéo (début+durée en s ou m:ss ; @60 jusqu\'à la fin, @+40 le début)')
     p.add_argument('--voix', default=None, metavar='NOM',
                    help='voix cible : un dossier de <données>/voix (défaut : clé « voix » de la configuration, '
-                        'sinon la seule voix présente)')
+                        'sinon la seule voix présente) ; une voix par chanteur : homme:NOM,femme:NOM (duo mixte) ou '
+                        'chanteur1:NOM,chanteur2:NOM (duo de même genre, dans l\'ordre d\'apparition) : sorties « voix A et '
+                        'B », dossier travail/A+B ; une seule voix trouvée dans la chanson : tout dans la voix de sa classe, '
+                        'sinon la première')
     p.add_argument('--mode', choices=['auto', 'chant', 'parole'], default='auto')
     p.add_argument('--octave', choices=['auto', '0', '-12', '+12', '12'], default='auto',
                    help="auto : en chant, un seul décalage par chanteur, choisi d'après la hauteur (avec les ancres de "
@@ -2916,7 +3055,7 @@ def executer(p, a):
     a.autotune_reglage = reglage_autotune(a, conf)
     if a.voix is None:
         a.voix = exiger_voix_defaut()
-    voix = charger_voix(a.voix)
+    voix = charger_voix_spec(a.voix)   # une voix, ou une par chanteur (homme:a,femme:b, chanteur1:a,chanteur2:b)
     if a.remix:
         if moteur_donne or a.sans_nettoyage:
             dire('--moteur et --sans-nettoyage sont sans effet avec --remix (le mixage repart de la voix déjà convertie)')
@@ -2928,7 +3067,7 @@ def executer(p, a):
                 tr = emplacements(chemin, debut_v, duree_v, a, voix)
                 titre = tr['nom']
                 tr['debut_epoch'] = time.time()
-                dire(f"=== {tr['video'].name} (remix, voix {voix['id']})")
+                dire(f"=== {tr['video'].name} (remix, voix {decrire_voix(voix)})")
                 finir(tr, a, voix)
             except Exception as e:  # noqa: BLE001
                 dire(f'ÉCHEC {v} : {e}')

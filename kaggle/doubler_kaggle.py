@@ -1081,6 +1081,15 @@ CHANTEURS_DEFAUT = {
                                      # plus probable) ; en deçà : incertain, chanteur du morceau
     'piste_min_db': -20.0,           # piste plus faible que la voix complète sur le morceau : chanteur du morceau
     'sigma_hauteur_min_oct': 0.1,    # écart-type plancher de la hauteur d'un chanteur (octaves, hauteur par morceau)
+    # Mode genre (l'utilisateur annonce un duo mixte) : sur l'axe du genre, les chanteurs peuvent alterner phrase à
+    # phrase (essai réel du 04/11/2026 : une fin de duo où ils se répondent toutes les 3 à 7 s, z des suites +1,0, la
+    # voix la moins présente 11 s) ; pas d'épreuve des sections, 6 s voisées au moins par voix, sections de 2,5 s.
+    # Garde-fous : deux groupes de même classe ne font qu'une voix ; l'empreinte ne tranche la classe contre la
+    # hauteur (un chanteur à 345 Hz) que si un groupe est nettement d'homme (≥ genre_homme) et l'autre nettement de
+    # femme (≤ genre_femme) : une chanteuse seule dont les empreintes se partagent reste une voix (rapports locaux).
+    'genre_z_suites': None,
+    'genre_voise_min_s': 6.0,
+    'genre_section_min_s': 2.5,
 }
 
 
@@ -1131,7 +1140,7 @@ def chercher_duo(morceaux, actifs_i, cle, R, ecart_min):
     if min(voise) < max(R['duo_part_min'] * tot, R['duo_voise_min_s']):
         return None, (f"une des deux voix chante trop peu ({min(voise):.0f} s voisées, {min(essai['parts']):.0%} ; il en "
                       f"faut {R['duo_part_min']:.0%} et {R['duo_voise_min_s']:.0f} s)"), essai
-    if z > R['duo_z_suites']:
+    if R['duo_z_suites'] is not None and z > R['duo_z_suites']:
         return None, f"empreintes mêlées dans le temps, pas en sections (z des suites {z:.1f} > {R['duo_z_suites']})", essai
     sigma = []
     for k, gr in enumerate(groupes):
@@ -1190,11 +1199,15 @@ def decider_chanteurs(morceaux, cibles, reglages=None, coupes_son=None):
 
     # 1. Deux chanteurs ? Axe du genre d'abord (ancres), puis, en mode ordre, axe des empreintes de la chanson
     duo, axe, pourquoi, essais = None, None, None, {}
+    # duo mixte annoncé (mode genre) : alternance phrase à phrase permise sur l'axe du genre (CHANTEURS_DEFAUT)
+    Rg = ({**R, 'duo_z_suites': R['genre_z_suites'], 'duo_voise_min_s': R['genre_voise_min_s'],
+           'section_min_s': R['genre_section_min_s']} if mode == 'genre' else R)
+    Rd = R
     if not actifs_i:
         pourquoi = 'aucun morceau chanté'
     elif any(morceaux[i].get('genre_score') is not None for i in actifs_i):
-        duo, pourquoi, essais['genre'] = chercher_duo(morceaux, actifs_i, 'genre_score', R, R['duo_ecart_genre'])
-        axe = 'genre_score' if duo else None
+        duo, pourquoi, essais['genre'] = chercher_duo(morceaux, actifs_i, 'genre_score', Rg, R['duo_ecart_genre'])
+        axe, Rd = ('genre_score', Rg) if duo else (None, R)
     else:
         pourquoi = 'sans ancres de genre : pas de duo sur l\'axe du genre'
     vecteur = None
@@ -1229,15 +1242,24 @@ def decider_chanteurs(morceaux, cibles, reglages=None, coupes_son=None):
             pause.append(b - a > 1 or not en_son)
         act = [morceaux[i] for i in actifs_i]
         sur_axe = [{**s, 'genre_score': s.get(axe)} for s in act]
-        lab = lisser_sections(sur_axe, viterbi(sur_axe, mu, sigma, pause, R), R)
+        lab = lisser_sections(sur_axe, viterbi(sur_axe, mu, sigma, pause, Rd), Rd)
         voise = [sum(s['voise_s'] for s, k in zip(act, lab) if k == j) for j in (0, 1)]
-        if min(voise) < max(R['duo_part_min'] * sum(voise), R['duo_voise_min_s']):
+        if min(voise) < max(Rd['duo_part_min'] * sum(voise), Rd['duo_voise_min_s']):
             pourquoi, duo = f"après attribution, une voix chante trop peu ({min(voise):.0f} s voisées)", None
     if duo:
         mes = [mesurer_voix(gr, R) for gr in duo['groupes']]
+        # duo mixte annoncé, empreintes nettement d'homme et de femme : l'empreinte donne la classe, même contre la
+        # hauteur (un chanteur qui monte à 345 Hz, une chanteuse grave)
+        g_med = [m.get('genre_med') for m in mes]
+        par_empreinte = (mode == 'genre' and axe == 'genre_score' and None not in g_med
+                         and g_med[1] >= R['genre_homme'] and g_med[0] <= R['genre_femme'])
         for k, m in enumerate(mes):
             c, r = classer(m, R, sur_seulement=True)
-            if c is None:
+            if par_empreinte:
+                c = 'femme' if k == 0 else 'homme'
+                r = (f"duo mixte d'après l'empreinte : {g_med[k]:+.3f} (" + ('femme' if k == 0 else 'homme')
+                     + (f", hauteur {m['f0_med_hz']:.0f} Hz" if m.get('f0_med_hz') else '') + ')')
+            elif c is None:
                 ch = classe_hauteur(m['f0_med_hz'], R) if m.get('f0_med_hz') else None
                 attendue = ('femme' if k == 0 else 'homme') if axe == 'genre_score' else ch
                 if ch is not None and ch == attendue:

@@ -134,6 +134,40 @@ class DuoMixte(unittest.TestCase):
         self.assertNotIn('voix', self.segs[6])
 
 
+class DuoMixteAlterne(unittest.TestCase):
+    """Mode genre (duo mixte annoncé) : chanteur et chanteuse qui se répondent phrase à phrase, le chanteur aussi haut
+    que la chanteuse ; une chanteuse seule dont les empreintes se partagent reste une voix."""
+
+    def setUp(self):
+        self.m = Monde(21)
+
+    def test_alternance_phrase_a_phrase(self):
+        voix = [self.m.chanteur('homme'), self.m.chanteur('femme')]
+        segs = self.m.morceaux([(k % 2, 1) for k in range(12)], voix, [345, 360], duree=4.0, voise=3.0)
+        info, modele = N.decider_chant_cibles(segs, reglages(self.m), cibles())
+        self.assertEqual(info['voix'], 2, info.get('pourquoi_une_voix'))
+        self.assertIsNotNone(modele)
+        # l'empreinte donne la classe, même pour un chanteur à 345 Hz (la hauteur seule dirait femme)
+        self.assertEqual({c['classe'] for c in info['chanteurs']}, {'homme', 'femme'})
+        self.assertIn("d'après l'empreinte", next(c['raison'] for c in info['chanteurs'] if c['classe'] == 'homme'))
+        juste = sum(s['voix_cible'] == ('jules' if s['verite'] == 0 else 'marie') for s in segs)
+        self.assertGreaterEqual(juste, 10)
+        # mode ordre : l'épreuve des sections reste (deux chanteurs qui alternent ne sont pas départagés ainsi)
+        segs2 = self.m.morceaux([(k % 2, 1) for k in range(12)], voix, [345, 360], duree=4.0, voise=3.0)
+        info2, _ = N.decider_chant_cibles(segs2, reglages(self.m), cibles('ordre'))
+        self.assertEqual(info2['voix'], 1)
+        self.assertIn('pas en sections', info2['pourquoi_une_voix'])
+
+    def test_chanteuse_seule_partagee(self):
+        f = self.m.chanteur('femme')
+        d = unite(self.m.d)
+        styles = [unite(f + 0.12 * d), unite(f - 0.12 * d)]   # deux groupes d'empreintes, tous deux de femme
+        segs = self.m.morceaux([(k % 2, 1) for k in range(12)], styles, [400, 400], duree=4.0, voise=3.0, bruit=0.05)
+        info, modele = N.decider_chant_cibles(segs, reglages(self.m), cibles())
+        self.assertIsNone(modele)
+        self.assertEqual({s['voix_cible'] for s in segs}, {'marie'})
+
+
 class VoixSeule(unittest.TestCase):
     def setUp(self):
         self.m = Monde(11)

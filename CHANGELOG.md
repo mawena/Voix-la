@@ -7,6 +7,8 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+## [0.3.1] - 2026-11-04
+
 ### Corrigé
 
 - Interface, page Résultats : « Beat seul », « Ma voix seule » et « Voix d'origine seule » se lisent maintenant sur
@@ -149,7 +151,8 @@ Première version publique.
     `VOIXLA_DECODAGE_MATERIEL=1` remet le décodage matériel ;
   - les essais automatiques laissaient le son de l'application coupé.
 
-[Non publié]: https://github.com/mawena/Voix-la/compare/v0.3.0...HEAD
+[Non publié]: https://github.com/mawena/Voix-la/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/mawena/Voix-la/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/mawena/Voix-la/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/mawena/Voix-la/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/mawena/Voix-la/releases/tag/v0.1.0

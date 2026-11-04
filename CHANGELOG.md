@@ -7,6 +7,41 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+### Ajouté
+
+- Interface : la musique continue en arrière-plan.
+  - Un seul lecteur pour toute l'application : lancer une lecture ailleurs (autre résultat, écoute à l'aveugle,
+    référence d'une voix, réécoute d'une prise, extrait à doubler) met la précédente en pause ; changer de piste dans
+    un résultat reste une bascule à la même position.
+  - Quitter la page n'arrête plus la lecture : on retrouve le résultat tel quel (position, piste, lecture ou pause).
+    Suivi et visualisations s'arrêtent quand on ne les voit pas.
+  - Barre « en cours de lecture » en bas de la fenêtre : image de la vidéo, titre, voix et piste, position,
+    lecture/pause, stop, retour au résultat.
+  - Fermer la fenêtre pendant une lecture : l'application reste en vie et la musique continue, sur le seul son de la
+    piste (1,5 % d'un cœur au lieu de 24 % pour une vidéo 1080p) ; relancer voix-la rouvre la fenêtre telle quelle ;
+    l'application quitte à la fin de la lecture, sur un stop, ou après 15 min de pause.
+  - MPRIS (org.mpris.MediaPlayer2.voixla) : la lecture dans le menu du haut de GNOME, et les touches multimédia.
+- Interface, page Résultats : « Mettre à la corbeille… » sur chaque ligne (menu « ⋮ ») et mode « Sélectionner » pour
+  plusieurs doublages, avec une seule confirmation ; même règle que le détail (une voix : le dossier ; plusieurs : les
+  fichiers de cette voix) ; la lecture d'un doublage mis à la corbeille s'arrête d'abord.
+- Interface : beat seul, ma voix seule et voix d'origine seule se préparent à l'avance : à la fin de chaque doublage,
+  même fenêtre fermée ; dès l'ouverture d'un résultat ; au démarrage pour les 5 derniers doublages, quand le poste
+  est calme. Avancement affiché, « Réessayer » en cas d'échec.
+- Interface, Réglages : « Taille du cache des pistes » (2 Go par défaut) ; les copies du doublage ouvert ou en lecture
+  ne sont jamais purgées.
+
+### Corrigé
+
+- Interface : « Ma voix seule » et les autres pistes n'attendent plus derrière les travaux lourds des autres
+  sessions. Leurs préparations, légères, ne passent plus par file-attente : elles tournent tout de suite, en priorité
+  basse (nice 19, ionice idle), avec un garde-fou mémoire.
+- Interface : un résultat quitté sans lecture ferme ses lecteurs (ils restaient ouverts jusqu'à la fermeture de la
+  fenêtre).
+
+### Modifié
+
+- Interface, essais : les captures tournent sur un bus de session privé, sans aucun service (outils/bus-essai.conf).
+
 ## [0.3.1] - 2026-11-04
 
 ### Corrigé

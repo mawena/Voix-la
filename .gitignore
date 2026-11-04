@@ -46,3 +46,5 @@ debian/*.debhelper.log
 debian/debhelper-build-stamp
 debian/*.debhelper
 /*.deb
+# Copies de travail temporaires des outils
+.claude/

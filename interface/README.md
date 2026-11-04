@@ -5,10 +5,13 @@ puis on écoute et on compare les résultats. Elle ne fait aucun calcul lourd : 
 
 ## Lancer
 
+Avec le paquet Debian (voir le README principal), `voix-la` ou « Voix-là » dans le menu des applications : le code
+est dans `/usr/lib/voix-la/`, et l'interface lance `/usr/bin/doubler`. Depuis le dépôt, pour le développement :
+
 ```sh
 interface/installer.sh   # une fois : lanceur ~/.local/bin/voix-la, entrée du menu, icône
 voix-la                  # ou « Voix-là » dans le menu des applications
-cd interface && python3 -m voixla   # sans installation
+bin/voix-la              # sans installation (ou : cd interface && python3 -m voixla)
 interface/installer.sh --retirer    # tout enlever (le code et les données restent)
 ```
 

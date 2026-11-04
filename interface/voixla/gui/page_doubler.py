@@ -19,7 +19,9 @@ TEXTE_OCTAVE = ("Automatique : en chant, un seul décalage par chanteur, choisi 
                 "Sinon imposée partout")
 TEXTE_PAS = ("30 par défaut ; 50 : environ 40 % de temps GPU de conversion en plus. Avec YingMusic, 50 ou 100 "
              "n’apportent rien de mesurable")
-MOTEURS = [("", "Par défaut"), ("yingmusic", "YingMusic-SVC"), ("seedvc", "Seed-VC 44 kHz")]
+TEXTE_PAROLES = ("Transcription des paroles (Whisper) et traduction française si la chanson n’est pas en français, "
+                 "affichées sous le lecteur des résultats")
+MOTEURS =[("", "Par défaut"), ("yingmusic", "YingMusic-SVC"), ("seedvc", "Seed-VC 44 kHz")]
 # Chaîne de conversion du chant : raccourcis vers les réglages moteur / nettoyage
 CHAINES = [("defaut", "Par défaut"), ("avant", "Chaîne d’avant"), ("mesure", "Sur mesure")]
 EXPLICATIONS_CHAINES = {
@@ -235,6 +237,14 @@ class PageDoubler(commun.Page):
         g.add(self.r_nettoyage)
         self.r_moteur.connect("notify::selected", lambda *_: self._maj())
         self.r_nettoyage.connect("notify::active", lambda *_: self._maj())
+        # paroles : visible seulement si doubler annonce --sans-paroles ; par défaut, la clé « paroles » de sa
+        # configuration (vraie si absente)
+        self.r_paroles = Adw.SwitchRow(title="Paroles", active=True, visible=False, subtitle=TEXTE_PAROLES)
+        self._paroles_touchees = False
+        self._paroles_auto = False
+        self.r_paroles.connect("notify::active", lambda *_: self._paroles_auto or
+                               setattr(self, "_paroles_touchees", True))
+        g.add(self.r_paroles)
         page.add(g)
 
         # Lancer
@@ -317,6 +327,7 @@ class PageDoubler(commun.Page):
             "session Kaggle." if "extrait_par_video" in self.fenetre.caps else
             "Une ou plusieurs vidéos : celles qui ont le même extrait partent ensemble dans une seule session Kaggle.")
         self.r_mix_v1.set_visible("--mix-v1" in self.fenetre.caps)
+        self.r_paroles.set_visible("--sans-paroles" in self.fenetre.caps)
         # options récentes de doubler : masquées tant que son aide ne les annonce pas
         self.r_chaine.set_visible("--moteur" in self.fenetre.caps and "--sans-nettoyage" in self.fenetre.caps)
         self._chaine_changee()
@@ -364,12 +375,36 @@ class PageDoubler(commun.Page):
             self._maj()
         commun.en_fil(lambda: rapports.modele_durees(rapports.lister_resultats(sorties)), fini)
 
+    def paroles_par_defaut_change(self, oui):
+        """Depuis les Réglages : le nouveau défaut remplace le choix fait à la main."""
+        self._paroles_touchees = False
+        self._paroles_defaut(oui)
+
+    def _paroles_defaut(self, oui):
+        """Le réglage par défaut de doubler (clé « paroles ») ; un choix fait à la main dans la page est gardé.
+        À « non », --sans-paroles ne peut que les retirer : l'interrupteur est alors grisé, avec la raison."""
+        if not oui:
+            self._paroles_auto = True
+            self.r_paroles.set_active(False)
+            self._paroles_auto = False
+            self.r_paroles.set_sensitive(False)
+            self.r_paroles.set_subtitle("Désactivées dans la configuration de doubler (clé « paroles » à non) : "
+                                        "à changer dans les Réglages")
+            return
+        self.r_paroles.set_sensitive(True)
+        self.r_paroles.set_subtitle(TEXTE_PAROLES)
+        if not self._paroles_touchees:
+            self._paroles_auto = True
+            self.r_paroles.set_active(True)
+            self._paroles_auto = False
+
     def _verifier_kaggle(self):
         def lire():
             return systeme.jeton_kaggle_present(), moteur.config_effective()
 
         def fini(r):
             jeton, conf = r
+            self._paroles_defaut(moteur.paroles_par_defaut(conf))
             compte = ((conf or {}).get("kaggle") or {}).get("compte")
             if not jeton:
                 self.banniere.set_title("Jeton Kaggle absent (~/.kaggle/access_token) : doubler ne pourra pas lancer "
@@ -478,6 +513,8 @@ class PageDoubler(commun.Page):
             r["moteur"] = moteur_
         if sans:
             r["sans_nettoyage"] = True
+        if self.r_paroles.get_visible() and not self.r_paroles.get_active():
+            r["sans_paroles"] = True
         return r
 
     def _maj(self):

@@ -3,7 +3,8 @@
 
 Il imite doubler.py : mêmes options (aide argparse), mêmes lignes de texte « HH:MM:SS … » dans le même ordre, mêmes
 événements (--evenements), mêmes fichiers de sortie (travail/source.json, travail/<voix>/rapport.json minimal,
-fichiers .mp4/.mp3 vides). AUCUN appel réseau, aucun Kaggle, aucun ffmpeg : chaque étape est une courte pause.
+travail/<voix>/paroles.json inventé sauf avec --sans-paroles ou la clé « paroles » à non, fichiers .mp4/.mp3 vides).
+AUCUN appel réseau, aucun Kaggle, aucun ffmpeg : chaque étape est une courte pause.
 Il meurt normalement sur SIGTERM (essai d'annulation).
 
 Variables d'environnement :
@@ -45,7 +46,11 @@ KAGGLE_DEFAUTS = {"jeu": "doublage-voix-entrees", "noyau": "doublage-voix-gpu", 
 CLES_CONFIG = {"donnees": "dossier des données (voix/, sorties/)", "kaggle.compte": "compte Kaggle (nom d'utilisateur)",
                "kaggle.jeu": "jeu de données privé des entrées", "kaggle.noyau": "noyau GPU privé du doublage",
                "kaggle.outils": "noyau privé des outils préparés",
+               "paroles": "transcription des paroles et traduction française : oui (défaut) ou non",
                "voix": "voix cible par défaut, un dossier de <données>/voix (sinon la seule voix présente)"}
+# paroles inventées du faux doubler (format 1 de travail/<voix>/paroles.json)
+PAROLES_FAUSSES = [(0.5, 2.5, "Un matin de pluie fine"), (3.0, 5.0, "le café refroidit doucement"),
+                   (6.0, 8.5, "et la radio chante encore")]
 CONTENEURS = (".mp4", ".m4v", ".mov", ".mkv", ".webm")
 SECRETS = re.compile(r"jeton|token|secret|password|mot.?de.?passe|(^|[._])(cle|clé|key)($|[._])", re.I)
 
@@ -206,6 +211,10 @@ def ecrire_config(cle, valeur):
         raise SystemExit(f"clé inconnue : {cle} (clés : {', '.join(CLES_CONFIG)})")
     if cle == "donnees":
         valeur = str(Path(valeur).expanduser().resolve())   # comme le vrai : "" devient le dossier courant
+    if cle == "paroles":
+        if str(valeur).strip().lower() not in ("oui", "non", "vrai", "faux", "true", "false", "1", "0"):
+            raise SystemExit(f"paroles : oui ou non (pas « {valeur} »)")
+        valeur = str(valeur).strip().lower() in ("oui", "vrai", "true", "1")
     conf = lire_config()
     d = conf
     *chemin, fin = cle.split(".")
@@ -521,6 +530,25 @@ def rapport_kaggle(tr, a, voix):
     }
 
 
+def ecrire_paroles(tv, a):
+    """travail/<voix>/paroles.json (paroles inventées), sauf avec --sans-paroles ou la clé « paroles » à non ; un
+    paroles.json déjà là (remix) est gardé. Rend son chemin, ou None."""
+    refus = str(valeur_config(lire_config(), "paroles")).strip().lower() in ("false", "non", "faux", "0")
+    if ANCIEN or getattr(a, "sans_paroles", False) or refus:
+        return None
+    f = tv / "paroles.json"
+    if not f.exists():
+        segments = [{"debut": d, "fin": fin, "texte": texte,
+                     "mots": [{"debut": round(d + k * (fin - d) / len(texte.split()), 3),
+                               "fin": round(d + (k + 1) * (fin - d) / len(texte.split()), 3), "mot": m}
+                              for k, m in enumerate(texte.split())]}
+                    for d, fin, texte in PAROLES_FAUSSES]
+        verifier_ecriture(f)
+        f.write_text(json.dumps({"format": 1, "langue": "fr", "source": "faux-whisper", "segments": segments},
+                                ensure_ascii=False, indent=1), encoding="utf-8")
+    return f
+
+
 def finir(tr, a, voix, temps_local=None):
     """Mixage, MP3, remise sur la vidéo depuis travail/ (fichiers vides), comme doubler.finir."""
     global _mix_rate
@@ -564,7 +592,9 @@ def finir(tr, a, voix, temps_local=None):
         temps_local.update({"mix_local_s": round(mix_s, 1), "remise_video_s": round(video_s, 1)})
         rapport["temps_local"] = temps_local
     (tv / "rapport.json").write_text(json.dumps(rapport, ensure_ascii=False, indent=1), encoding="utf-8")
-    EV("sortie", titre, mp4=str(sortie), mp3=str(mp3), rapport=str(tv / "rapport.json"), comparaisons=None)
+    paroles = ecrire_paroles(tv, a)
+    EV("sortie", titre, mp4=str(sortie), mp3=str(mp3), rapport=str(tv / "rapport.json"), comparaisons=None,
+       **({"paroles": str(paroles)} if paroles else {}))
     m = rapport.get("mesures_musique", {})
     dire(f"mode {mode} ({'imposé' if rapport.get('mode_force') else 'détecté'} : musique sous la voix "
          f"{m.get('reste_sous_voix_db')} dB, tonalité {m.get('tonalite_reste')}, notes tenues {m.get('tenue')}) ; "
@@ -751,6 +781,8 @@ def analyseur():
         p.add_argument("--moteur", choices=["yingmusic", "seedvc"], default=None,
                        help="moteur de conversion du chant (défaut lu dans la configuration, clé « moteur »)")
         p.add_argument("--sans-nettoyage", action="store_true", help="chant : voix isolée complète, sans nettoyage")
+        p.add_argument("--sans-paroles", action="store_true",
+                       help="sans transcription des paroles ni traduction (défaut : clé « paroles » de la configuration)")
         p.add_argument("--mix-v1", action="store_true", help="ancien mixage : sans suivi des nuances ni dé-esseur")
     p.add_argument("--debut", type=float, default=None, help="début de l'extrait (s), pour un essai")
     p.add_argument("--duree", type=float, default=None, help="durée de l'extrait (s)")

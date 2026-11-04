@@ -25,7 +25,7 @@ from . import chemins
 
 OPTIONS_SUIVIES = ("--evenements", "--donnees", "--config", "--json", "--voix-liste", "--ajouter-voix", "--remix",
                    "--debut", "--duree", "--pas", "--voix-db", "--reverb-db", "--octave", "--mode", "--sortie",
-                   "--mix-v1", "--comparer-pas", "--reprendre", "--moteur", "--sans-nettoyage")
+                   "--mix-v1", "--comparer-pas", "--reprendre", "--moteur", "--sans-nettoyage", "--sans-paroles")
 MOTEURS = (("yingmusic", "YingMusic-SVC"), ("seedvc", "Seed-VC 44 kHz"))
 NOM_VOIX = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")   # même règle que doubler --ajouter-voix
 EXTRAIT_NOM = re.compile(r" \(extrait (\d+)m(\d+(?:,\d+)?)(?:\+(\d+)m(\d+(?:,\d+)?))?\)$")
@@ -168,6 +168,8 @@ def args_doublage(videos, reglages, donnees, extrait=None, evenements=None, caps
         a.append(f"--moteur={reglages['moteur']}")
     if reglages.get("sans_nettoyage") and "--sans-nettoyage" in caps:
         a.append("--sans-nettoyage")
+    if reglages.get("sans_paroles") and "--sans-paroles" in caps:
+        a.append("--sans-paroles")
     if extrait:
         debut, duree = extrait
         a.append(f"--debut={_nombre(debut or 0)}")
@@ -428,7 +430,27 @@ def config_effective():
             "contenu": conf, "par_doubler": False}
 
 
-CLES_CONFIG = ("donnees", "kaggle.compte", "kaggle.jeu", "kaggle.noyau", "kaggle.outils", "moteur")
+CLES_CONFIG = ("donnees", "kaggle.compte", "kaggle.jeu", "kaggle.noyau", "kaggle.outils", "moteur", "paroles")
+CLES_BOOLEENNES = ("paroles",)      # « doubler --config paroles oui|non » ; un booléen dans config.json
+VRAI = ("oui", "vrai", "true", "1", "on", "yes")
+FAUX = ("non", "faux", "false", "0", "off", "no")
+
+
+def booleen(valeur, defaut=True):
+    """Valeur booléenne d'une clé de configuration : vrai, faux, « oui », « non »… ; defaut sinon."""
+    if isinstance(valeur, bool):
+        return valeur
+    if isinstance(valeur, (int, float)):
+        return bool(valeur)
+    t = str(valeur).strip().lower() if valeur is not None else ""
+    return True if t in VRAI else False if t in FAUX else defaut
+
+
+def paroles_par_defaut(conf):
+    """Transcription des paroles par défaut (clé « paroles » de la configuration de doubler, vraie si absente)."""
+    conf = conf if isinstance(conf, dict) else {}
+    contenu = conf.get("contenu") if isinstance(conf.get("contenu"), dict) else {}
+    return booleen(contenu.get("paroles", conf.get("paroles")), True)
 
 
 def ecrire_config(cle, valeur):
@@ -447,6 +469,8 @@ def ecrire_config(cle, valeur):
         if code == 0:
             return True, sortie.strip()
         return False, sortie.strip().splitlines()[-1] if sortie.strip() else f"doubler --config : code {code}"
+    if cle in CLES_BOOLEENNES:
+        valeur = booleen(valeur)     # écrite directement : un vrai booléen, comme doubler --config
     try:
         chemins.ecrire_cle_config(cle, valeur)
         return True, ""

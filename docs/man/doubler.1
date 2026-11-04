@@ -37,7 +37,8 @@ de retour sur le PC, la voix convertie est mixée (nuances de la voix
 d'origine, dé\-esseur, reverb, limiteur), puis remise sur la vidéo ; l'image et
 les sous\-titres sont copiés sans réencodage.
 .PP
-Seuls le son des vidéos et la référence de la voix choisie partent sur Kaggle.
+Seuls le son des vidéos et la référence de la voix choisie (de chaque voix,
+avec une voix par chanteur) partent sur Kaggle.
 .PP
 Avec l'auto\-tune (\fB\-\-autotune\fR, ou la clé \fBautotune\fR de la
 configuration), une version de plus est faite sur le PC, sans GPU : la voix
@@ -56,6 +57,21 @@ Un extrait propre à chaque vidéo s'écrit \fIvidéo\fB@\fIdébut\fB+\fIdurée\
 .BI \-\-voix " nom"
 Voix cible : un dossier de \fI<données>/voix\fR. Par défaut, la clé \fBvoix\fR
 de la configuration, sinon la seule voix présente.
+.TP
+.BI \-\-voix " homme:nom,femme:nom" "\fR, " "\-\-voix " "chanteur1:nom,chanteur2:nom"
+Une voix par chanteur. \fBhomme:\fR et \fBfemme:\fR pour un duo mixte : le
+chanteur et la chanteuse sont trouvés comme pour l'octave, et chacun prend la
+voix de sa classe. \fBchanteur1:\fR et \fBchanteur2:\fR pour un duo de même
+genre : les deux chanteurs sont départagés par leur empreinte, le chanteur 1
+étant celui qui chante le premier. Chaque piste de chaque passage (voix
+principale, chœurs, piste de secours) prend la voix du chanteur qu'on y
+reconnaît ; quand les deux chantent ensemble, voix principale et chœurs peuvent
+chanter chacun dans sa voix. L'octave se décide pour chaque couple chanteur →
+voix. Si la chanson n'a qu'une voix détectée, tout prend la voix de sa classe,
+sinon la première, avec un message ; en parole, seule la première voix sert.
+Sorties : \fI<titre> \- voix <A> et <B>.<conteneur>\fR, \fI.mp3\fR, et
+\fItravail/<a>+<b>/\fR (les mêmes quel que soit l'ordre donné ; \fB\-\-remix\fR
+et l'auto\-tune les reprennent).
 .TP
 .BR \-\-mode " auto|chant|parole"
 Mode du doublage (défaut : auto).

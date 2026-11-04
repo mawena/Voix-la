@@ -64,6 +64,8 @@ class PageDetail(Adw.NavigationPage):
         self._maj = False             # bascules mises à jour par le code (pas par un clic)
         self._preparation = False
         self._videos = set()          # pistes sans image dont la copie vidéo se prépare
+        self._avancement = {}         # piste → avancement de sa préparation (0 à 1), quand ffmpeg le donne
+        self._echecs = {}             # piste → raison d'une préparation ratée (bouton « Réessayer »)
         self._demandees = set()       # (fichier, produits) dont l'analyse a été demandée
         self._oubliee = False         # page quittée et fermée (flux fermés, plus d'écoute des préférences)
         self.vue_paroles = None
@@ -119,7 +121,14 @@ class PageDetail(Adw.NavigationPage):
         barre.append(groupe)
         corps.append(barre)
         self.note_piste = commun.legende("")
-        corps.append(self.note_piste)
+        self.note_piste.set_hexpand(True)
+        self.b_reessayer = commun.bouton("Réessayer", "view-refresh-symbolic", styles=("flat",),
+                                         valign=Gtk.Align.CENTER, visible=False, clic=self.reessayer,
+                                         infobulle="Relancer la préparation des pistes qui ont échoué")
+        ligne_note = Gtk.Box(spacing=8)
+        ligne_note.append(self.note_piste)
+        ligne_note.append(self.b_reessayer)
+        corps.append(ligne_note)
 
         self.lecteur = Lecteur(hauteur=320, sur_position=self._position, proprietaire=self)
         corps.append(self.lecteur)
@@ -170,6 +179,7 @@ class PageDetail(Adw.NavigationPage):
         self.add_controller(raccourcis)
         # quitter la page n'arrête pas la lecture ; une page quittée qui ne lit pas est oubliée
         self.connect("hidden", lambda *_: self._cachee())
+        self.connect("shown", lambda *_: self.page.proteger_caches())
         self.changer_forme(self.forme)
         self.fenetre.ecouter("visualisations", self._maj_visualisations)
         self._maj_visualisations()
@@ -198,16 +208,51 @@ class PageDetail(Adw.NavigationPage):
         self._maj_bascules()
         self._maj_groupe_pistes()
         if self.voulue:
-            self._preparer_ma_voix()
-        self._preparer_video(self.piste)
+            self._preparer_ma_voix(prioritaire=True)
+        self._preparer_video(self.piste, prioritaire=True)
+        self._preparer_tout()
         self._appliquer_pistes()
+        self.page.proteger_caches()
+
+    def _preparer_tout(self):
+        """Dès l'ouverture, avant le moindre clic : ce qui manque se prépare en tâche de fond, une chose à la fois et
+        à faible priorité (beat seul, ma voix seule combinée puis copiée sur l'image, voix d'origine seule)."""
+        if self._oubliee:
+            return
+        for cle in pistes.SANS_IMAGE:
+            p = self.pistes_dispo.get(cle)
+            if p is None or cle in self._echecs:
+                continue
+            if cle == "ma_voix" and p.a_preparer:
+                self._preparer_ma_voix()      # puis sa copie vidéo
+            else:
+                self._preparer_video(cle)
+
+    def fichiers_caches(self):
+        """Les fichiers du cache que lit ce résultat (copies vidéo, ma voix seule) : la purge ne doit pas y toucher."""
+        if self._oubliee:
+            return []
+        cache = chemins.dossier_cache()
+        fichiers = [p.video for p in self.pistes_dispo.values() if p.video]
+        m = self.pistes_dispo.get("ma_voix")
+        if m is not None and m.fichier is not None and cache in Path(m.fichier).parents:
+            fichiers.append(m.fichier)
+        return fichiers
 
     def _note_bandeau(self, cle):
         """Bandeau d'une piste lue sans image, à côté d'une vidéo."""
         p = self.pistes_dispo.get(cle)
         if p is not None and (p.video_a_preparer or cle in self._videos):
-            return "préparation de la vidéo… (son seul, image arrêtée)"
+            a = self._avancement.get(cle)
+            return f"préparation de la vidéo… {round(100 * a)} % (son seul, image arrêtée)" if a else \
+                "préparation de la vidéo… (son seul, image arrêtée)"
         return "son seul, image arrêtée"
+
+    def _avance(self, cle, fraction):
+        self._avancement[cle] = fraction
+        self.lecteur.annoter(cle, self._note_bandeau(cle))
+        if (self.voulue or self.piste) == cle:
+            self._maj_note()
 
     def _maj_bascules(self):
         """État des bascules de pistes : grisées (avec la raison en infobulle) si la piste manque."""
@@ -235,8 +280,9 @@ class PageDetail(Adw.NavigationPage):
         elif p is None:
             return
         elif self.voulue:
-            texte = (f"Préparation de ma voix seule ({p.explication}), sous nice ; elle attend son tour si le poste "
-                     "est chargé. En attendant, le doublage continue.")
+            a = self._avancement.get("ma_voix_son")
+            texte = (f"Préparation de ma voix seule ({p.explication}){f', {round(100 * a)} %' if a else ''}, en tâche "
+                     "de fond. En attendant, le doublage continue.")
         elif c == "doublage":
             texte = ("Touche B : l’original à la même position." if o and o.fichier else
                      f"Original indisponible : {o.explication}." if o else "")
@@ -244,7 +290,11 @@ class PageDetail(Adw.NavigationPage):
             texte = f"Original : {p.explication}. Touche B : retour au doublage."
         else:
             texte = f"{p.libelle} : {p.explication}.{self._note_image(c, p)} Touche B : retour au doublage."
+        if self._echecs:
+            texte += " " + " ".join(f"{pistes.LIBELLES.get(k, k)} : préparation impossible ({m})."
+                                    for k, m in self._echecs.items())
         self.note_piste.set_label(texte)
+        self.b_reessayer.set_visible(bool(self._echecs))
 
     def _note_image(self, cle, p):
         """Ce qu'on voit pendant le beat ou une voix seule : la vidéo qui avance, sa préparation, ou pourquoi on s'en
@@ -254,8 +304,9 @@ class PageDetail(Adw.NavigationPage):
         if self.forme == "video" and p.video:
             return " Sur l’image de la vidéo doublée, qui avance avec le son."
         if self.forme == "video" and (p.video_a_preparer or cle in self._videos):
-            return (" Préparation de la vidéo (l’image de la vidéo doublée, copiée telle quelle, sous nice ; elle "
-                    "attend son tour si le poste est chargé) : en attendant, le son seul sur l’image arrêtée.")
+            a = self._avancement.get(cle)
+            return (" Préparation de la vidéo (l’image de la vidéo doublée, copiée telle quelle, en tâche de fond"
+                    + (f", {round(100 * a)} %" if a else "") + ") : en attendant, le son seul sur l’image arrêtée.")
         if p.sans_video:
             return f" Sans image : {p.sans_video}."
         return ""
@@ -271,7 +322,7 @@ class PageDetail(Adw.NavigationPage):
         if p.a_lire is None:
             self.voulue = cle
             self._maj_note()
-            self._preparer_ma_voix()
+            self._preparer_ma_voix(prioritaire=True)
             return
         self.voulue = None
         if cle not in self.lecteur.sources:   # on écoutait un extrait de comparaison : retour aux pistes
@@ -286,27 +337,36 @@ class PageDetail(Adw.NavigationPage):
         self.piste = self.lecteur.cle or cle
         if p.video and self.forme == "video":
             pistes.toucher(p.video)           # copie lue : la purge du cache la garde
-        self._preparer_video(cle)
+        self._preparer_video(cle, prioritaire=True)
         self._maj_note()
         self._appliquer_pistes()
 
-    def _preparer_video(self, cle):
-        """La copie vidéo d'une piste sans image (beat, voix seules), préparée une fois en cache, sous nice, dans la
-        file des analyses. En attendant, le son seul sur l'image arrêtée ; quand elle est prête, le lecteur y passe à
-        la même position. Si elle est impossible, le son seul reste, avec la raison."""
+    def _preparer_video(self, cle, prioritaire=False):
+        """La copie vidéo d'une piste sans image (beat, voix seules), préparée une fois en cache, en tâche de fond et à
+        faible priorité (jamais par file-attente, voir voixla/preparation.py). En attendant, le son seul sur l'image
+        arrêtée, avec l'avancement ; quand elle est prête, le lecteur y passe à la même position. Si elle est
+        impossible, le son seul reste, avec la raison et « Réessayer ». prioritaire : la piste qu'on vient de choisir
+        passe devant les préparations à l'avance."""
         p = self.pistes_dispo.get(cle)
-        if self.forme != "video" or p is None or not p.video_a_preparer or cle in self._videos:
+        if self.forme != "video" or p is None or not p.video_a_preparer or self._oubliee:
             return
         if cle == "ma_voix" and p.fichier is None:
             return                            # la voix seule se prépare d'abord (_preparer_ma_voix)
-        self._videos.add(cle)
         video = self.res.video
         voix = self.res.dossier_voix if cle == "ma_voix" else None
+        son = None if voix else p.fichier
+        if cle in self._videos:
+            if prioritaire:                   # déjà demandée à l'avance : elle passe devant
+                analyses().video(video, lambda *_: None, son=son, voix=voix, duree_s=self.res.duree_s,
+                                 prioritaire=True)
+            return
+        self._videos.add(cle)
 
         def pret(f, message):
             if message == "attente" or self._oubliee:
                 return
             self._videos.discard(cle)
+            self._avancement.pop(cle, None)
             q = self.pistes_dispo.get(cle)
             if self.forme != "video" or q is None or self.res.video != video or q.video is not None:
                 return                        # forme changée entre-temps : la copie est en cache pour la prochaine
@@ -316,21 +376,25 @@ class PageDetail(Adw.NavigationPage):
             q.video_a_preparer = False
             if f is None:
                 q.sans_video = message or "copie vidéo impossible"
+                self._echecs[cle] = q.sans_video
                 self.lecteur.annoter(cle, "son seul, image arrêtée")
-                if self.piste == cle:
-                    self.fenetre.toast(f"{q.libelle} sans image : {q.sans_video}")
+                self.fenetre.toast(f"{q.libelle} sans image : {q.sans_video}", "Réessayer", self.reessayer, duree=10)
             else:
                 q.video = Path(f)
                 if self.piste != "comparaison":   # sinon, elle sera lue au retour aux pistes (changer_forme)
                     self.lecteur.ajouter(cle, (q.video, q.decalage, q.libelle), sans_image=False, ephemere=True)
                 if self.lecteur.cle == cle:
                     self.piste = cle
+                self.page.proteger_caches()
             self._maj_note()
         self.lecteur.annoter(cle, self._note_bandeau(cle))
-        analyses().video(video, pret, son=None if voix else p.fichier, voix=voix, duree_s=self.res.duree_s)
+        analyses().video(video, pret, son=son, voix=voix, duree_s=self.res.duree_s, prioritaire=prioritaire,
+                         avancement=lambda f, _e: not self._oubliee and self._avance(cle, f))
 
-    def _preparer_ma_voix(self):
-        if self._preparation or not self.res.dossier_voix:
+    def _preparer_ma_voix(self, prioritaire=False):
+        if self._preparation or not self.res.dossier_voix or self._oubliee:
+            if self._preparation and prioritaire:
+                analyses().ma_voix(self.res.dossier_voix, lambda *_: None, self.res.duree_s, prioritaire=True)
             return
         self._preparation = True
 
@@ -338,10 +402,13 @@ class PageDetail(Adw.NavigationPage):
             if message == "attente" or self._oubliee:
                 return
             self._preparation = False
+            self._avancement.pop("ma_voix_son", None)
             p = self.pistes_dispo.get("ma_voix")
             if f is None or p is None:
                 self.voulue = None
-                self.fenetre.toast(f"Ma voix seule : {message or 'indisponible'}")
+                self._echecs["ma_voix"] = message or "indisponible"
+                self.fenetre.toast(f"Ma voix seule : {message or 'indisponible'}", "Réessayer", self.reessayer,
+                                   duree=10)
                 self._maj_bascules()
                 return
             p.fichier, p.a_preparer = Path(f), False
@@ -351,11 +418,43 @@ class PageDetail(Adw.NavigationPage):
                 self.voulue = None
                 self.lecteur.basculer("ma_voix")
                 self.piste = self.lecteur.cle or "ma_voix"
-                self._preparer_video("ma_voix")     # puis sa copie vidéo, pour que l'image avance
+                self._preparer_video("ma_voix", prioritaire=True)   # puis sa copie vidéo, pour que l'image avance
+            else:
+                self._preparer_video("ma_voix")                     # à l'avance, pour le premier clic
             self._maj_bascules()
             self._maj_groupe_pistes()
             self._appliquer_pistes()
-        analyses().ma_voix(self.res.dossier_voix, pret, self.res.duree_s)
+            self.page.proteger_caches()
+
+        def avance(f, _etape):
+            if not self._oubliee:
+                self._avancement["ma_voix_son"] = f
+                if self.voulue == "ma_voix":
+                    self._maj_note()
+        analyses().ma_voix(self.res.dossier_voix, pret, self.res.duree_s, prioritaire=prioritaire, avancement=avance)
+
+    def reessayer(self):
+        """« Réessayer » : relance les préparations ratées (la piste écoutée d'abord)."""
+        if self._oubliee or not self._echecs:
+            return
+        echecs, self._echecs = self._echecs, {}
+        for cle in echecs:
+            q = self.pistes_dispo.get(cle)
+            if q is None:
+                continue
+            if cle == "ma_voix" and q.fichier is None:
+                q.a_preparer = True
+            elif self.forme == "video" and q.video is None and q.fichier is not None:
+                q.video_a_preparer, q.sans_video = True, ""
+        courante = self.voulue or self.piste
+        if courante in echecs:
+            if courante == "ma_voix" and self.pistes_dispo["ma_voix"].fichier is None:
+                self.voulue = "ma_voix"
+                self._preparer_ma_voix(prioritaire=True)
+            else:
+                self._preparer_video(courante, prioritaire=True)
+        self._preparer_tout()
+        self._maj_bascules()
 
     def source_choisie(self):
         """Vidéo source choisie à la main (préférences de l'interface) quand celle de source.json est introuvable."""
@@ -431,6 +530,7 @@ class PageDetail(Adw.NavigationPage):
             if getattr(w, "animateur", None):
                 w.animateur.arreter()
         self.lecteur.liberer()
+        self.page.proteger_caches()
 
     def couper(self):
         self.lecteur.pause()
@@ -1214,6 +1314,15 @@ class PageResultats(commun.Page):
                                                 valign=Gtk.Align.CENTER, tooltip_text="Actions"))
                 ligne.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
             self.liste.append(ligne)
+
+    def proteger_caches(self):
+        """Les copies vidéo et la voix combinée des détails ouverts ou en lecture : jamais purgées (chemins.proteger,
+        lu par la purge des préparations, ici ou dans le préparateur en tâche de fond)."""
+        pile = self.fenetre.nav.get_navigation_stack()
+        details = [pile.get_item(i) for i in range(pile.get_n_items())] + [lectures().session]
+        fichiers = [str(f) for d in dict.fromkeys(d for d in details if isinstance(d, PageDetail))
+                    for f in d.fichiers_caches()]
+        commun.en_fil(lambda: chemins.proteger(fichiers))
 
     # --- mise à la corbeille -------------------------------------------------------------------------------------
 

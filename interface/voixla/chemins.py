@@ -58,6 +58,8 @@ PREFERENCES_DEFAUT = {
     "paroles_langue": "deux",   # originale, fr ou deux
     # {dossier de résultat: vidéo source} choisie à la main quand celle de travail/source.json est introuvable
     "sources_choisies": {},
+    # taille du cache des copies vidéo des pistes séparées, en Mo ; None : 2 Go (voixla.pistes.CACHE_VIDEO_MO)
+    "cache_pistes_mo": None,
 }
 
 
@@ -88,15 +90,53 @@ def dossier_cache():
     return Path(base) / "voix-la"
 
 
+def fichier_proteges():
+    return dossier_cache() / "proteges.json"
+
+
+def _vivant(pid):
+    try:
+        os.kill(int(pid), 0)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def proteger(fichiers, pid=None):
+    """Fichiers du cache que la purge ne doit pas effacer tant que ce processus vit (l'interface : les copies du
+    doublage ouvert ou en lecture). Remplace la liste de ce processus ; celles des processus finis sont oubliées."""
+    import fcntl
+    verrou = dossier_cache() / "verrous" / "proteges.verrou"
+    verrou.parent.mkdir(parents=True, exist_ok=True)
+    with open(verrou, "a") as v:
+        fcntl.flock(v, fcntl.LOCK_EX)
+        lu = lire_json(fichier_proteges(), {}) or {}
+        tous = {k: x for k, x in lu.items() if isinstance(x, list) and _vivant(k)} if isinstance(lu, dict) else {}
+        liste = sorted({str(f) for f in fichiers if f})
+        if liste:
+            tous[str(pid or os.getpid())] = liste
+        else:
+            tous.pop(str(pid or os.getpid()), None)
+        ecrire_json(fichier_proteges(), tous)
+
+
+def proteges():
+    """Les fichiers protégés par les processus encore en vie (voir proteger)."""
+    lu = lire_json(fichier_proteges(), {}) or {}
+    if not isinstance(lu, dict):
+        return set()
+    return {f for pid, liste in lu.items() if isinstance(liste, list) and _vivant(pid) for f in liste}
+
+
 def purger_dossier(dossier, max_mo, garder=()):
     """Garde un dossier du cache sous max_mo : efface les fichiers les moins récemment utilisés (et les .tmp
-    abandonnés depuis plus d'une heure), jamais ceux de garder (le fichier qu'on vient de faire). Rend le nombre de
-    fichiers effacés."""
+    abandonnés depuis plus d'une heure), jamais ceux de garder (le fichier qu'on vient de faire) ni ceux que l'interface
+    protège (copies du doublage ouvert ou en lecture, voir proteger). Rend le nombre de fichiers effacés."""
     import time
     d = Path(dossier)
     if not d.is_dir():
         return 0
-    garder = {Path(g).name for g in garder}
+    garder = {Path(g).name for g in garder} | {Path(f).name for f in proteges() if Path(f).parent == d}
     fichiers, efface = [], 0
     for f in d.iterdir():
         try:

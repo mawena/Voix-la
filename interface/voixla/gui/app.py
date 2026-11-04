@@ -19,9 +19,12 @@ from gi.repository import Adw, Gio, GLib, Gtk  # versions fixées dans gui/__ini
 
 from .. import APP_ID, NOM, __version__, chemins, moteur, travaux
 from .. import lecture as regles
+from .. import preparation
 from . import commun
 from .barre_lecture import BarreLecture
 from .lecture import lectures
+
+DELAI_PREPARATION_S = 45      # après le démarrage : la fenêtre et ses premières lectures d'abord
 
 SECTIONS = [
     ("doubler", "Doubler", "video-x-generic-symbolic", "page_doubler", "PageDoubler"),
@@ -128,6 +131,19 @@ class Fenetre(Adw.ApplicationWindow):
         self.recharger_voix()
         self._minuteur_travaux = None
         self.suivre_travaux()
+        # au démarrage, quand le poste est calme : les pistes des derniers doublages, en tâche de fond
+        GLib.timeout_add_seconds(DELAI_PREPARATION_S, self._preparer_recents)
+
+    def _preparer_recents(self):
+        """Les MAX_RECENTS doublages les plus récents à qui il manque des copies : préparés par le préparateur en tâche
+        de fond (voixla/preparation.py), qui attend que le poste soit calme. Pas pendant les captures d'essai."""
+        if not (os.environ.get("VOIXLA_CAPTURE") or os.environ.get("VOIXLA_SANS_PREPARATION")):
+            try:
+                preparation.lancer_en_fond(["--recents", preparation.MAX_RECENTS, "--si-calme",
+                                            "--donnees", self.donnees])
+            except OSError:
+                traceback.print_exc()
+        return False
 
     # --- actions ---------------------------------------------------------------------------------------------------
 

@@ -59,6 +59,21 @@ def charger(racine=None):
     return extraits, correspondance
 
 
+def autre_forme(cle, versions):
+    """Interrupteur « voix seule » : pour la clé (extrait, lettre, « mix » | « voix ») en cours, la clé et le fichier
+    de l'autre forme de la même version (mix ⇄ voix seule) ; None pour l'original, une lettre inconnue ou une version
+    sans X_voix.mp3."""
+    if not cle or len(cle) != 3:
+        return None
+    nom, lettre, sorte = cle
+    v = next((x for x in versions or [] if x.lettre == lettre), None)
+    if v is None or sorte not in ("mix", "voix"):
+        return None
+    if sorte == "mix":
+        return ((nom, lettre, "voix"), v.voix) if v.voix else None
+    return (nom, lettre, "mix"), v.mix
+
+
 def correspondance_de(correspondance, extrait):
     c = (correspondance or {}).get(extrait)
     return {k: str(v) for k, v in c.items()} if isinstance(c, dict) else {}

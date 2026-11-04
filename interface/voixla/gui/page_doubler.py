@@ -24,6 +24,21 @@ TEXTE_PAROLES = ("Transcription des paroles (Whisper) et traduction française s
 MOTEURS =[("", "Par défaut"), ("yingmusic", "YingMusic-SVC"), ("seedvc", "Seed-VC 44 kHz")]
 # Chaîne de conversion du chant : raccourcis vers les réglages moteur / nettoyage
 CHAINES = [("defaut", "Par défaut"), ("avant", "Chaîne d’avant"), ("mesure", "Sur mesure")]
+# Une voix par chanteur (doubler --voix homme:a,femme:b ou chanteur1:a,chanteur2:b)
+CHOIX_VOIX = [("une", "Une voix pour tous"), ("chanteurs", "Une voix par chanteur")]
+DUOS = [("genre", "Duo mixte"), ("ordre", "Même genre")]   # homme et femme ; deux chanteurs, ordre d'apparition
+LIBELLES_CHANTEURS = {"genre": ("Voix d’homme", "Voix de femme"), "ordre": ("Chanteur 1", "Chanteur 2")}
+SOUS_TITRES_CHANTEURS = {
+    "genre": ("Voix qui remplace le chanteur", "Voix qui remplace la chanteuse"),
+    "ordre": ("Voix de celui qui chante le premier", "Voix de l’autre chanteur"),
+}
+TEXTE_PAR_CHANTEUR = ("Duo mixte : un homme et une femme ; même genre : chanteur 1, celui qui chante le premier. Chaque "
+                      "passage, et dans un duo la voix principale et les chœurs, prend la voix du chanteur qu’on y "
+                      "reconnaît ; si la chanson n’a qu’une voix, tout prend la voix de sa classe (sinon la première). "
+                      "En parole, la première voix seule")
+TEXTE_AUTOTUNE = ("Version « (auto-tune) » en plus de la normale, qui ne change pas : x42-autotune sur la voix sèche, "
+                  "dans la gamme détectée sur la musique")
+TEXTE_X42_ABSENT = "x42-autotune absent : installez x42-plugins (sudo apt install x42-plugins)"
 EXPLICATIONS_CHAINES = {
     "defaut": "Voix principale et chœurs séparés, reverb retirée, moteur de la configuration (YingMusic-SVC) : "
               "environ deux fois plus de GPU",
@@ -189,9 +204,23 @@ class PageDoubler(commun.Page):
 
         # Réglages
         g = Adw.PreferencesGroup(title="Réglages")
+        # une voix pour tous, ou une par chanteur (si doubler l'annonce dans son aide)
+        self.r_choix_voix = Adw.ComboRow(title="Voix cible", model=Gtk.StringList.new([c[1] for c in CHOIX_VOIX]),
+                                         visible=False)
+        self.r_choix_voix.connect("notify::selected", lambda *_: self._choix_voix_change())
+        g.add(self.r_choix_voix)
         self.r_voix = Adw.ComboRow(title="Voix", subtitle="Voix clonée qui remplace celle de la vidéo")
         self.r_voix.connect("notify::selected", lambda *_: self._maj())
         g.add(self.r_voix)
+        self.r_duo = Adw.ComboRow(title="Chanteurs", model=Gtk.StringList.new([d[1] for d in DUOS]), visible=False,
+                                  subtitle=TEXTE_PAR_CHANTEUR)
+        self.r_duo.connect("notify::selected", lambda *_: self._choix_voix_change())
+        g.add(self.r_duo)
+        self.r_voix_a = Adw.ComboRow(title=LIBELLES_CHANTEURS["genre"][0], visible=False)
+        self.r_voix_b = Adw.ComboRow(title=LIBELLES_CHANTEURS["genre"][1], visible=False)
+        for r in (self.r_voix_a, self.r_voix_b):
+            r.connect("notify::selected", lambda *_: self._maj())
+            g.add(r)
         self.r_mode = Adw.ComboRow(title="Mode", model=Gtk.StringList.new([m[1] for m in MODES]),
                                    subtitle="Automatique : chant s’il y a une musique sous la voix et que la voix "
                                             "chante ou rappe, sinon parole")
@@ -245,6 +274,33 @@ class PageDoubler(commun.Page):
         self.r_paroles.connect("notify::active", lambda *_: self._paroles_auto or
                                setattr(self, "_paroles_touchees", True))
         g.add(self.r_paroles)
+        # auto-tune : visible si doubler annonce --autotune ; par défaut, la clé « autotune » de sa configuration ;
+        # grisé si doubler ne trouve pas x42-autotune
+        self.r_autotune = Adw.ExpanderRow(title="Auto-tune", subtitle=TEXTE_AUTOTUNE, show_enable_switch=True,
+                                          enable_expansion=False, visible=False)
+        self.r_at_intensite = Adw.ActionRow(title="Intensité",
+                                            subtitle="Bas : notes juste rendues plus justes ; haut : effet robotique")
+        self.at_echelle = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 1, 100, 1)
+        self.at_echelle.set_value(moteur.AUTOTUNE_DEFAUT)
+        self.at_echelle.set_size_request(220, -1)
+        self.at_echelle.set_valign(Gtk.Align.CENTER)
+        self.at_echelle.set_draw_value(True)
+        self.at_echelle.set_value_pos(Gtk.PositionType.LEFT)
+        self.at_echelle.set_digits(0)
+        self.at_echelle.add_mark(moteur.AUTOTUNE_DEFAUT, Gtk.PositionType.BOTTOM, None)
+        self.at_echelle.update_property([Gtk.AccessibleProperty.LABEL], ["Intensité de l’auto-tune, de 1 à 100"])
+        self.r_at_intensite.add_suffix(self.at_echelle)
+        self.r_autotune.add_row(self.r_at_intensite)
+        self.r_at_gamme = Adw.ComboRow(title="Gamme", model=Gtk.StringList.new([x[1] for x in moteur.GAMMES]),
+                                       subtitle="Auto : la tonalité détectée sur la musique seule (chromatique si elle "
+                                                "est peu sûre)")
+        self.r_autotune.add_row(self.r_at_gamme)
+        self._autotune_touche = False
+        self._autotune_auto = False
+        self._autotune_conf = 0
+        self.r_autotune.connect("notify::enable-expansion", lambda *_: self._autotune_auto or
+                                setattr(self, "_autotune_touche", True))
+        g.add(self.r_autotune)
         page.add(g)
 
         # Lancer
@@ -299,7 +355,7 @@ class PageDoubler(commun.Page):
 
     def _voix_changees(self):
         voix = self.fenetre.voix
-        actuelle = self._voix_choisie()
+        actuelle = self._choix_menu(self.r_voix) if hasattr(self, "_ids_voix") else None
         self._ids_voix = [v["id"] for v in voix]
         self.r_voix.set_model(Gtk.StringList.new([f"{v['nom']} ({v['id']})" if v["nom"].lower() != v["id"]
                                                   else v["nom"] for v in voix] or ["aucune voix"]))
@@ -310,12 +366,44 @@ class PageDoubler(commun.Page):
         elif voix:
             self.r_voix.set_selected(Gtk.INVALID_LIST_POSITION)
         self.r_voix.set_sensitive(bool(voix))
+        noms = [f"{v['nom']} ({v['id']})" if v["nom"].lower() != v["id"] else v["nom"] for v in voix] or ["aucune voix"]
+        for r in (self.r_voix_a, self.r_voix_b):
+            garde = self._choix_menu(r)
+            r.set_model(Gtk.StringList.new(noms))
+            if garde in self._ids_voix:
+                r.set_selected(self._ids_voix.index(garde))
+            else:
+                r.set_selected(Gtk.INVALID_LIST_POSITION)
+            r.set_sensitive(bool(voix))
         self._maj()
 
-    def _voix_choisie(self):
+    def _choix_menu(self, r):
         ids = getattr(self, "_ids_voix", [])
-        i = self.r_voix.get_selected()
+        i = r.get_selected()
         return ids[i] if 0 <= i < len(ids) else None
+
+    def par_chanteur(self):
+        """Vrai si « Une voix par chanteur » est choisi (et que doubler le connaît)."""
+        return self.r_choix_voix.get_visible() and CHOIX_VOIX[self.r_choix_voix.get_selected()][0] == "chanteurs"
+
+    def _choix_voix_change(self):
+        chanteurs = self.par_chanteur()
+        mode = DUOS[self.r_duo.get_selected()][0]
+        self.r_voix.set_visible(not chanteurs)
+        for r, titre, sous in zip((self.r_voix_a, self.r_voix_b), LIBELLES_CHANTEURS[mode], SOUS_TITRES_CHANTEURS[mode]):
+            r.set_visible(chanteurs)
+            r.set_title(titre)
+            r.set_subtitle(sous)
+        self.r_duo.set_visible(chanteurs)
+        self._rendre()
+
+    def _voix_choisie(self):
+        """L'identifiant de la voix, ou la spécification --voix d'une voix par chanteur (« homme:a,femme:b ») ; None
+        tant que le choix n'est pas complet."""
+        if self.par_chanteur():
+            a, b = self._choix_menu(self.r_voix_a), self._choix_menu(self.r_voix_b)
+            return moteur.spec_voix(DUOS[self.r_duo.get_selected()][0], [a, b]) if a and b else None
+        return self._choix_menu(self.r_voix)
 
     def montrer(self):
         super().montrer()
@@ -328,6 +416,10 @@ class PageDoubler(commun.Page):
             "Une ou plusieurs vidéos : celles qui ont le même extrait partent ensemble dans une seule session Kaggle.")
         self.r_mix_v1.set_visible("--mix-v1" in self.fenetre.caps)
         self.r_paroles.set_visible("--sans-paroles" in self.fenetre.caps)
+        self.r_choix_voix.set_visible("voix_par_chanteur" in self.fenetre.caps)
+        self.r_autotune.set_visible("--autotune" in self.fenetre.caps)
+        self.r_at_gamme.set_visible("--autotune-gamme" in self.fenetre.caps)
+        self._choix_voix_change()
         # options récentes de doubler : masquées tant que son aide ne les annonce pas
         self.r_chaine.set_visible("--moteur" in self.fenetre.caps and "--sans-nettoyage" in self.fenetre.caps)
         self._chaine_changee()
@@ -398,6 +490,31 @@ class PageDoubler(commun.Page):
             self.r_paroles.set_active(True)
             self._paroles_auto = False
 
+    def autotune_par_defaut_change(self, n):
+        """Depuis les Réglages : le nouveau défaut de l'auto-tune remplace le choix fait à la main."""
+        self._autotune_touche = False
+        self._autotune_defaut(n, getattr(self, "_x42", (False, None)))
+
+    def _autotune_defaut(self, n, x42):
+        """Clé « autotune » de doubler (0 : éteint) ; x42 = (connu, dossier) : sans le greffon, l'interrupteur est
+        grisé et éteint, avec la raison. Un choix fait à la main dans la page est gardé."""
+        self._autotune_conf, self._x42 = n, x42
+        connu, dossier = x42
+        if connu and dossier is None:
+            self._autotune_auto = True
+            self.r_autotune.set_enable_expansion(False)
+            self._autotune_auto = False
+            self.r_autotune.set_sensitive(False)
+            self.r_autotune.set_subtitle(TEXTE_X42_ABSENT)
+            return
+        self.r_autotune.set_sensitive(True)
+        self.r_autotune.set_subtitle(TEXTE_AUTOTUNE)
+        if not self._autotune_touche:
+            self._autotune_auto = True
+            self.r_autotune.set_enable_expansion(n > 0)
+            self.at_echelle.set_value(n or moteur.AUTOTUNE_DEFAUT)
+            self._autotune_auto = False
+
     def _verifier_kaggle(self):
         def lire():
             return systeme.jeton_kaggle_present(), moteur.config_effective()
@@ -405,6 +522,7 @@ class PageDoubler(commun.Page):
         def fini(r):
             jeton, conf = r
             self._paroles_defaut(moteur.paroles_par_defaut(conf))
+            self._autotune_defaut(moteur.autotune_par_defaut(conf), moteur.x42_autotune(conf))
             compte = ((conf or {}).get("kaggle") or {}).get("compte")
             if not jeton:
                 self.banniere.set_title("Jeton Kaggle absent (~/.kaggle/access_token) : doubler ne pourra pas lancer "
@@ -469,7 +587,7 @@ class PageDoubler(commun.Page):
             p = Path(v["chemin"])
             r = Adw.ActionRow(title=commun.echapper(p.stem), title_lines=2)
             morceaux = [formats.chrono(v["duree_s"]) if v["duree_s"] else "durée…", texte_extrait(v["extrait"])]
-            if voix and (sorties / moteur.nom_dossier(p.resolve(), v["extrait"]) / "travail" / voix /
+            if voix and (sorties / moteur.nom_dossier(p.resolve(), v["extrait"]) / "travail" / moteur.id_voix(voix) /
                          "rapport.json").exists():
                 morceaux.append("déjà doublée avec cette voix : sera refaite")
             r.set_subtitle(commun.echapper(" · ".join(morceaux)))
@@ -515,6 +633,14 @@ class PageDoubler(commun.Page):
             r["sans_nettoyage"] = True
         if self.r_paroles.get_visible() and not self.r_paroles.get_active():
             r["sans_paroles"] = True
+        if self.r_autotune.get_visible():
+            if self.r_autotune.get_sensitive() and self.r_autotune.get_enable_expansion():
+                r["autotune"] = int(round(self.at_echelle.get_value()))
+                gamme = moteur.GAMMES[self.r_at_gamme.get_selected()][0] if self.r_at_gamme.get_visible() else "auto"
+                if gamme != "auto":
+                    r["autotune_gamme"] = gamme
+            elif self._autotune_conf > 0:
+                r["sans_autotune"] = True   # éteint ici alors que la configuration de doubler l'allume
         return r
 
     def _maj(self):
@@ -536,6 +662,11 @@ class PageDoubler(commun.Page):
         else:
             self.note.set_label("Le travail part dans la file (onglet Travaux) : il continue si vous fermez la fenêtre.")
         self.b_lancer.set_sensitive(bool(n) and bool(self._voix_choisie()))
+        if self.par_chanteur():
+            a, b = self._choix_menu(self.r_voix_a), self._choix_menu(self.r_voix_b)
+            self.r_duo.set_subtitle(TEXTE_PAR_CHANTEUR if not (a and b and a == b) else
+                                    "La même voix pour les deux chanteurs : un doublage à une voix, comme « Une voix "
+                                    "pour tous »")
 
     def lancer(self):
         if not self.videos or not self._voix_choisie():
@@ -569,6 +700,15 @@ class PageDoubler(commun.Page):
             self.r_chaine.set_selected(next(i for i, c in enumerate(CHAINES) if c[0] == "mesure"))
         elif action == "extrait" and self.videos:
             self.regler_extrait(self.videos[0])
+        elif action in ("par-chanteur", "par-chanteur-ordre"):
+            self.scenario("exemple")
+            self.r_choix_voix.set_selected(1)
+            self.r_duo.set_selected(1 if action.endswith("ordre") else 0)
+            ids = getattr(self, "_ids_voix", [])
+            if len(ids) >= 2:
+                self.r_voix_a.set_selected(0)
+                self.r_voix_b.set_selected(1)
+            self.r_autotune.set_enable_expansion(True)
         elif action == "exemple-extrait":
             self.scenario("exemple")
             GLib.timeout_add(600, lambda: (self.scenario("extrait"), False)[1])

@@ -159,7 +159,8 @@ class Fenetre(Adw.ApplicationWindow):
                 self.get_application().set_accels_for_action(f"win.{nom}", raccourcis)
         # Visualisations du son : interrupteurs (cases du menu « œil »), mémorisés dans interface.json
         for nom, cle in (("vis-melodie", "vis_melodie"), ("vis-spectre", "vis_spectre"), ("vis-onde", "vis_onde"),
-                         ("vis-vumetre", "vis_vumetre"), ("melodie-hz", "melodie_hz"), ("paroles", "paroles")):
+                         ("vis-vumetre", "vis_vumetre"), ("melodie-hz", "melodie_hz"),
+                         ("melodie-autotune", "melodie_autotune"), ("paroles", "paroles")):
             a = Gio.SimpleAction.new_stateful(nom, None, GLib.Variant.new_boolean(bool(self.prefs.get(cle))))
             a.connect("change-state", lambda act, v, c=cle: self.basculer_visualisation(act, v, c))
             self.add_action(a)
@@ -180,7 +181,8 @@ class Fenetre(Adw.ApplicationWindow):
             groupe.add_shortcut(Gtk.ShortcutsShortcut(accelerator=acc, title=titre))
         section.add_group(groupe)
         lecture = Gtk.ShortcutsGroup(title="Résultats")
-        for acc, titre in (("b", "Basculer doublage ⇄ original"), ("space", "Lecture / pause")):
+        for acc, titre in (("b", "Basculer doublage ⇄ original"), ("t", "Avec ou sans auto-tune"),
+                           ("space", "Lecture / pause")):
             lecture.add_shortcut(Gtk.ShortcutsShortcut(accelerator=acc, title=titre))
         section.add_group(lecture)
         lecture = Gtk.ShortcutsGroup(title="Écoute à l’aveugle")
@@ -199,7 +201,8 @@ class Fenetre(Adw.ApplicationWindow):
     def regler_visualisation(self, cle, actif):
         """Depuis les réglages : même effet qu'une case du menu."""
         nom = {"vis_melodie": "vis-melodie", "vis_spectre": "vis-spectre", "vis_onde": "vis-onde",
-               "vis_vumetre": "vis-vumetre", "melodie_hz": "melodie-hz", "paroles": "paroles"}[cle]
+               "vis_vumetre": "vis-vumetre", "melodie_hz": "melodie-hz", "melodie_autotune": "melodie-autotune",
+               "paroles": "paroles"}[cle]
         self.lookup_action(nom).change_state(GLib.Variant.new_boolean(bool(actif)))
 
     def ouvrir_reglages(self, page=None):
@@ -257,7 +260,8 @@ class Fenetre(Adw.ApplicationWindow):
     def ouvrir_resultat(self, dossier, voix=None):
         p = self.aller("resultats")
         if hasattr(p, "ouvrir"):
-            p.ouvrir(dossier, voix)
+            # une voix par chanteur : la spécification « homme:a,femme:b » devient le dossier « a+b »
+            p.ouvrir(dossier, moteur.id_voix(voix) if voix else voix)
 
     def pousser(self, page):
         self.nav.push(page)
@@ -345,6 +349,10 @@ class Fenetre(Adw.ApplicationWindow):
         return self.voix_doubler if self.voix_doubler in ids else None
 
     def nom_voix(self, ident):
+        """Nom affiché d'une voix ; « Jules et Marie » pour une voix par chanteur (« a+b » ou « homme:a,femme:b »)."""
+        membres = moteur.membres_voix(moteur.id_voix(ident)) if ident else []
+        if len(membres) > 1:
+            return " et ".join(self.nom_voix(m) for m in membres)
         return next((v["nom"] for v in self.voix if v["id"] == ident), ident.capitalize() if ident else "")
 
     def changer_donnees(self):

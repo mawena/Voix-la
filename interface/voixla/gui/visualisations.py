@@ -156,9 +156,11 @@ class Melodie(Visu):
     """Origine en trait fin, consigne (origine décalée) en pointillés, voix convertie en trait plein ; couleurs de la
     frise d'octave ; échelle en notes (do, ré…) ou en Hz."""
 
-    def __init__(self, sur_clic=None, en_hz=False):
+    def __init__(self, sur_clic=None, en_hz=False, autotune=False):
         super().__init__(170, sur_clic, "Courbe de mélodie : origine, consigne et voix convertie")
         self.en_hz = en_hz
+        self.montrer_autotune = autotune   # la courbe de la version auto-tune (autotune_hz), si elle existe
+        self.autotune = None
         self.c = None
         self.dire("Chargement de la courbe de mélodie…")
 
@@ -172,6 +174,7 @@ class Melodie(Visu):
         from .. import analyse
         self.cons = analyse.consigne(self.src, courbes["decalage"])
         self.choeurs = courbes.get("choeurs")
+        self.autotune = courbes.get("autotune")
         # couleur de chaque trame d'après la frise (indice dans self.teintes)
         self.teintes = [None]
         idx = np.zeros(n, np.int16)
@@ -266,6 +269,9 @@ class Melodie(Visu):
         # là où la voix tient la consigne, les pointillés courent sur le trait plein
         self._tracer(cr, xs, self.conv[i0:i1], self.idx[i0:i1], haut, h, neutre, 0.95, 2.6, None)
         self._tracer(cr, xs, self.cons[i0:i1], None, haut, h, neutre, 0.85, 1.2, [4, 3])
+        if self.montrer_autotune and self.autotune is not None:
+            # la version auto-tune : ambre, trait moyen, par-dessus (là où l'auto-tune corrige, il quitte le plein)
+            self._tracer(cr, xs, self.autotune[i0:i1], None, haut, h, COULEUR_AUTOTUNE, 0.95, 1.6, None)
         cr.restore()
         x = g + (self.position - t0) / (t1 - t0) * w
         if g <= x <= g + w:
@@ -312,17 +318,23 @@ class Melodie(Visu):
         cr.set_dash([], 0)
 
 
-def legende_melodie():
+COULEUR_AUTOTUNE = (0.90, 0.55, 0.05)   # ambre
+
+
+def legende_melodie(autotune=False):
     b = Gtk.Box(spacing=16)
     for motif, libelle in (("fin", "voix d’origine"), ("tirets", "consigne (origine décalée)"),
-                           ("plein", "voix convertie")):
+                           ("plein", "voix convertie")) + ((("autotune", "version auto-tune"),) if autotune else ()):
         item = Gtk.Box(spacing=6)
         z = Gtk.DrawingArea(content_width=26, content_height=10, valign=Gtk.Align.CENTER)
 
         def dessiner(_z, cr, w, h, motif=motif, z=z):
             fg = z.get_color()
-            cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.8)
-            cr.set_line_width({"fin": 1.0, "tirets": 1.6, "plein": 2.6}[motif])
+            if motif == "autotune":
+                cr.set_source_rgba(*COULEUR_AUTOTUNE, 0.95)
+            else:
+                cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.8)
+            cr.set_line_width({"fin": 1.0, "tirets": 1.6, "plein": 2.6, "autotune": 1.6}[motif])
             if motif == "tirets":
                 cr.set_dash([5, 3], 0)
             cr.move_to(1, h / 2)

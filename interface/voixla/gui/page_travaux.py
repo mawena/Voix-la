@@ -39,6 +39,10 @@ def resume_reglages(demande, nom_voix=None):
         morceaux.append("sans nettoyage")
     if r.get("sans_paroles"):
         morceaux.append("sans paroles")
+    if r.get("autotune"):
+        morceaux.append(f"auto-tune {int(r['autotune'])}" + (f" ({r['autotune_gamme']})" if r.get("autotune_gamme") else ""))
+    elif r.get("sans_autotune"):
+        morceaux.append("sans auto-tune")
     ex = demande.get("extrait")
     if ex:
         morceaux.append(f"extrait {formats.chrono(ex[0])}" + (f" + {formats.duree(ex[1])}" if ex[1] else ""))

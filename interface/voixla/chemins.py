@@ -53,6 +53,7 @@ PREFERENCES_DEFAUT = {
     "vis_onde": False,
     "vis_vumetre": False,
     "melodie_hz": False,        # échelle de la courbe de mélodie : notes (faux) ou Hz (vrai)
+    "melodie_autotune": True,   # courbe de la version auto-tune sur la mélodie (doublages qui en ont une)
     # Paroles sous le lecteur des résultats (paroles.json de doubler, sinon sous-titres de la vidéo doublée)
     "paroles": True,
     "paroles_langue": "deux",   # originale, fr ou deux

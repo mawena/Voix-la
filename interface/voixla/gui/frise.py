@@ -134,6 +134,127 @@ class Frise(Gtk.DrawingArea):
         return True
 
 
+# --- Une voix par chanteur : quelle voix cible chante chaque passage ---------------------------------------------------
+
+COULEURS_VOIX = [(0.13, 0.57, 0.64), (0.90, 0.38, 0.0)]   # sarcelle, orange : la 1re et la 2e voix cible
+
+
+def couleur_voix(i):
+    return COULEURS_VOIX[i % len(COULEURS_VOIX)]
+
+
+class FriseVoix(Gtk.DrawingArea):
+    """Bandeau des voix cibles : chaque passage dans la couleur de la voix qui le chante ; deux voix ensemble (voix
+    principale et chœurs) : le bandeau partagé, une moitié par voix. Position de lecture, clic pour y aller."""
+
+    def __init__(self, sur_clic=None):
+        super().__init__(content_height=30, hexpand=True, has_tooltip=True)
+        self.passages, self.noms, self.affichages, self.duree, self.position = [], [], {}, 0.0, None
+        self.sur_clic = sur_clic
+        self.set_draw_func(self._dessiner)
+        clic = Gtk.GestureClick()
+        clic.connect("pressed", self._clic)
+        self.add_controller(clic)
+        self.connect("query-tooltip", self._infobulle)
+        self.set_cursor_from_name("pointer")
+        self.update_property([Gtk.AccessibleProperty.LABEL], ["Frise des voix : quelle voix chante chaque passage"])
+
+    def definir(self, passages, noms, duree, affichages=None):
+        """passages : rapports.passages_voix ; noms : les voix cibles dans leur ordre (couleurs)."""
+        self.passages, self.noms, self.duree = passages or [], list(noms or []), duree or 0.0
+        self.affichages = affichages or {}
+        if not self.duree:
+            self.duree = max((p["fin"] for p in self.passages), default=0.0)
+        self.queue_draw()
+
+    def placer(self, t):
+        if t is None or self.position is None or abs((self.position or 0) - t) > 0.05:
+            self.position = t
+            self.queue_draw()
+
+    def _x(self, t, largeur):
+        return 0 if self.duree <= 0 else max(0.0, min(largeur, t / self.duree * largeur))
+
+    def _indice(self, nom):
+        return self.noms.index(nom) if nom in self.noms else len(self.noms)
+
+    def _dessiner(self, _zone, cr, largeur, hauteur):
+        fg = self.get_color()
+        haut, bande = 3, hauteur - 6
+        cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.08)
+        cr.rectangle(0, haut, largeur, bande)
+        cr.fill()
+        if self.duree <= 0:
+            return
+        for p in self.passages:
+            x0, x1 = self._x(p["debut"], largeur), self._x(p["fin"], largeur)
+            voix = p["voix"] or []
+            for k, nom in enumerate(voix):
+                h = bande / len(voix)
+                cr.set_source_rgba(*couleur_voix(self._indice(nom)), 0.9)
+                cr.rectangle(x0, haut + k * h, max(1.0, x1 - x0), h)
+                cr.fill()
+        if self.position is not None:
+            x = self._x(self.position, largeur)
+            cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.95)
+            cr.rectangle(x - 1, 0, 2, hauteur)
+            cr.fill()
+
+    def _t(self, x):
+        largeur = self.get_width() or 1
+        return max(0.0, min(self.duree, x / largeur * self.duree))
+
+    def _clic(self, _g, _n, x, _y):
+        if self.sur_clic and self.duree > 0:
+            self.sur_clic(self._t(x))
+
+    def passage_a(self, t):
+        return next((p for p in self.passages if p["debut"] <= t < p["fin"]), None)
+
+    def _infobulle(self, _w, x, _y, _clavier, tip):
+        if self.duree <= 0:
+            return False
+        p = self.passage_a(self._t(x))
+        if not p:
+            return False
+        noms = [self.affichages.get(n, n.capitalize()) for n in p["voix"]]
+        tip.set_text(f"{formats.chrono_precis(p['debut'])} – {formats.chrono_precis(p['fin'])}\n"
+                     + (" et ".join(noms) + " ensemble" if len(noms) > 1 else noms[0] if noms else "—"))
+        return True
+
+
+def legende_voix(noms, affichages=None):
+    """Légende de la frise des voix : une pastille par voix, et « ensemble »."""
+    affichages = affichages or {}
+    b = Gtk.Box(spacing=14)
+    for i, nom in enumerate(noms):
+        item = Gtk.Box(spacing=6)
+        pastille = Gtk.DrawingArea(content_width=12, content_height=12, valign=Gtk.Align.CENTER)
+
+        def dessiner(_z, cr, w, h, c=couleur_voix(i)):
+            cr.set_source_rgba(*c, 0.9)
+            cr.arc(w / 2, h / 2, min(w, h) / 2, 0, 6.2832)
+            cr.fill()
+        pastille.set_draw_func(dessiner)
+        item.append(pastille)
+        item.append(Gtk.Label(label=affichages.get(nom, nom.capitalize()), css_classes=["caption"]))
+        b.append(item)
+    if len(noms) > 1:
+        item = Gtk.Box(spacing=6)
+        pastille = Gtk.DrawingArea(content_width=12, content_height=12, valign=Gtk.Align.CENTER)
+
+        def deux(_z, cr, w, h):
+            for k in (0, 1):
+                cr.set_source_rgba(*couleur_voix(k), 0.9)
+                cr.rectangle(0, k * h / 2, w, h / 2)
+                cr.fill()
+        pastille.set_draw_func(deux)
+        item.append(pastille)
+        item.append(Gtk.Label(label="les deux ensemble (voix principale et chœurs)", css_classes=["caption"]))
+        b.append(item)
+    return b
+
+
 def legende(segs):
     """Petite légende des couleurs présentes."""
     b = Gtk.Box(spacing=14)

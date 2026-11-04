@@ -102,6 +102,9 @@ fois.
 
 - **Linux**, avec `ffmpeg` et `ffprobe`.
 - **Python 3** en `/usr/bin/python3`, avec **numpy** (utilisé par `--ajouter-voix` et par le mixage).
+- **Facultatif, pour l'auto-tune : x42-autotune** (`sudo apt install x42-plugins`, recommandé par le paquet Debian).
+  `doubler` le cherche dans `LV2_PATH`, puis dans `~/.lv2`, `/usr/local/lib/lv2`, `/usr/lib/lv2` et les dossiers
+  multiarch. Sans lui, un auto-tune demandé est signalé et seule la version normale est faite.
 
   Le [paquet Debian](#paquet-debian) installe ces deux prérequis, et ceux de l'interface graphique.
 - **Un compte Kaggle avec le GPU activé.** Kaggle ne donne le GPU et internet aux noyaux qu'après la vérification du
@@ -233,6 +236,7 @@ doubler --config voix marie                     # choisir la voix par défaut
 | `moteur` | moteur de conversion du chant : `yingmusic` ou `seedvc` (`--moteur` l'emporte) | `yingmusic` |
 | `voix` | voix cible par défaut, un dossier de `<données>/voix/` (`--voix` l'emporte) | la seule voix présente |
 | `paroles` | paroles à chaque doublage : oui ou non (`--sans-paroles` l'emporte) | oui |
+| `autotune` | intensité de l'auto-tune, de 0 (désactivé) à 100 : `doubler --config autotune 70` (`--autotune` et `--sans-autotune` l'emportent) | 0 |
 
 Le fichier ressemble à ceci :
 
@@ -488,6 +492,9 @@ Une étape en `erreur` est suivie d'un événement `erreur`. Les étapes commune
 | `--moteur yingmusic\|seedvc` | moteur de conversion du chant : YingMusic-SVC ou Seed-VC 44,1 kHz ; sans effet en parole | clé `moteur` de la configuration, sinon `yingmusic` |
 | `--sans-nettoyage` | en chant, convertir la voix isolée complète sans séparer voix principale et chœurs ni retirer la reverb : la chaîne d'avant, plus rapide | nettoyage |
 | `--sans-paroles` | ni transcription ni traduction des paroles, ni pistes de sous-titres, `.srt` ou `.lrc` ; avec `--remix`, la vidéo est refaite sans les paroles | clé `paroles` de la configuration, sinon oui |
+| `--autotune [N]` | auto-tune de la voix, de 0 à 100 (70 sans valeur, 0 : désactivé) ; version « (auto-tune) » en plus de la normale ; en parole, seulement avec cette option ; avec `--remix` sans option, une version auto-tune existante est refaite à la même intensité | clé `autotune` de la configuration, sinon 0 |
+| `--autotune-gamme GAMME` | `auto` (tonalité détectée sur la musique seule), `chromatique`, ou une tonalité : `la-mineur`, `do#-majeur`, `sib`, `Am`, `C#m`… | `auto` |
+| `--sans-autotune` | pas d'auto-tune, quoi que disent `--autotune` et la configuration ; avec `--remix` : version auto-tune retirée (vidéo, mp3 et `.lrc` à la corbeille) | |
 | `--voix-db N` | niveau de la voix convertie par rapport à la voix d'origine (dB) | `+4` en chant, `0` en parole |
 | `--reverb-db N` | niveau de la reverb sous la voix sèche (dB), en chant seulement | `-13` |
 | `--mix-v1` | ancien mixage : sans suivi des nuances de la voix d'origine ni dé-esseur | mixage v2 |
@@ -520,9 +527,10 @@ Tout va dans `<données>/sorties/<titre>/` (ou le dossier de `--sortie`). Un ext
 | `<titre> - voix <Nom>.<langue>.srt` | les paroles dans la langue chantée, sur le temps de la vidéo doublée |
 | `<titre> - voix <Nom>.fr.srt` | leur traduction française, quand elles ne sont pas en français (`.traduction.fr.srt` si elles le sont déjà en partie) |
 | `<titre> - voix <Nom>.lrc` | les paroles synchronisées ligne à ligne, à côté du mp3, pour les lecteurs de musique |
+| `<titre> - voix <Nom> (auto-tune).<ext>`, `.mp3`, `.lrc` | avec l'auto-tune : la même chose avec la voix auto-tunée (mêmes pistes de paroles et sous-titres d'origine) ; la version normale ne change pas |
 | `comparaison_<pas>pas.mp3`, `comparaison_<N>pas.mp3` | avec `--comparer-pas` : le même passage dans les deux réglages |
 | `travail/` | `original.wav` (son extrait), `voix_source.wav` (voix isolée), `instrumental.wav` (musique seule, recalculée à chaque mixage), `source.json` |
-| `travail/<voix>/` | `voix_convertie.flac`, `mix.wav`, `rapport.json`, `courbes.json`, `paroles.json`, journal Kaggle, fichiers intermédiaires du mixage |
+| `travail/<voix>/` | `voix_convertie.flac`, `mix.wav`, `rapport.json`, `courbes.json`, `paroles.json`, journal Kaggle, fichiers intermédiaires du mixage ; avec l'auto-tune : `seche_voix_autotune.wav`, `reverb_voix_autotune.wav`, `mix_autotune.wav` |
 
 À la racine du dossier des sorties, `.kaggle/` garde `outils.json` (`--preparer-outils`), le journal du dernier noyau
 et les fichiers d'envoi.
@@ -553,6 +561,8 @@ Dans la vidéo doublée :
   raison) ;
 - les paroles (`paroles` : piste transcrite, langue de chaque phrase et les trois plus probables, lignes, mots, retraits
   des garde-fous, temps ; `paroles_sorties` : fichiers, pistes, décalage) ;
+- l'auto-tune (`autotune` : intensité, gamme et sa détection, accord, ports de x42-autotune, écart médian aux notes avant
+  et après, fichiers) ;
 - la ressemblance de timbre mesurée ;
 - les mesures du mixage (`mix` : nuances, dé-esseur, garde-fous de la musique seule, limite) ;
 - la durée de chaque étape (`temps` pour la vidéo, dont `nettoyage_s` et `conversion_s` ; `temps_local` pour la
@@ -571,6 +581,8 @@ Dans la vidéo doublée :
   modèle 22 kHz, qui rejoint de lui-même la hauteur de la voix cible) ;
 - les trois listes ont la même longueur ; le temps 0 est le début de l'audio doublé, celui de l'extrait s'il y en a
   un ;
+- `autotune_hz` (avec l'auto-tune) : la mélodie convertie après correction, décalée de la correction mesurée trame par
+  trame ;
 - environ 200 ko pour 5 min.
 
 `paroles.json` donne les paroles synchronisées (l'interface les affiche sous le lecteur) :
@@ -824,6 +836,28 @@ morceau à l'autre, seuils de non-parole et de répétition, mots hors du chant,
 NLLB-200 traduit ensuite en français, ligne par ligne, ce qui n'est pas en français. `--sans-paroles` (ou la clé
 `paroles`) s'en passe.
 
+### Auto-tune
+
+L'auto-tune est désactivé par défaut. Avec `--autotune N` (ou `doubler --config autotune N`), `doubler` fait, en plus
+de la version normale, une version « (auto-tune) » de la vidéo, du mp3 et du `.lrc`. Tout se passe sur le PC, sans GPU,
+en quelques secondes : la voix sèche passe dans x42-autotune (filtre `lv2` de ffmpeg) avant la reverb, puis elle est
+mixée au même niveau que la version normale.
+
+- **Intensité** : vers 20-30, correction lente et partielle, les notes sont juste rendues plus justes et le vibrato
+  reste ; vers 90-100, correction totale et immédiate, effet robotique, sauts de note francs. 70 par défaut.
+- **Gamme** : détectée sur la musique seule (profils de Krumhansl-Kessler), avec son accord (un morceau à 435 Hz, par
+  exemple) ; les notes hors gamme très présentes s'y ajoutent (la sensible d'un mineur harmonique) ; peu sûre :
+  gamme chromatique. `--autotune-gamme` l'impose.
+- **Retrait** : `--remix --sans-autotune` retire la version auto-tune.
+
+Mesures sur une voix de synthèse fausse de 29 cents (médiane), avec un vibrato de 14 cents :
+
+| Intensité | Écart médian aux notes | Vibrato gardé |
+|---|---|---|
+| 30 | 18,6 cents | 14,0 cents |
+| 70 | 8,5 cents | 11,8 cents |
+| 100 | 1,6 cent | 2,5 cents |
+
 ## Temps de traitement
 
 Temps mesurés de bout en bout, à 30 pas, avec les outils préparés (`--preparer-outils`).
@@ -970,6 +1004,7 @@ docs: README complet
 ├── debian/                  paquet Debian (debhelper 13, 3.0 native)
 ├── docs/man/                pages de manuel doubler.1 et voix-la.1
 ├── scripts/build-deb.sh     construction du paquet : versions, tests, paquet, SHA256SUMS, lintian
+├── tests/                   tests du noyau et de doubler (auto-tune, paroles, secours, vidéo), sans GPU
 ├── Makefile                 make test, make deb, make clean
 ├── banc/, octave/           outils de mise au point (hors du paquet)
 ├── README.md

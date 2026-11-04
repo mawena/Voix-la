@@ -2,8 +2,8 @@
 (python3 -m voixla.analyse, sous nice), une à la fois. Au-delà d'une minute de son (plus que quelques secondes de
 calcul), le calcul passe par file-attente, la file des travaux lourds du poste.
 
-La même file prépare « ma voix seule » et enregistre le beat ou la voix (python3 -m voixla.pistes), et extrait les
-sous-titres de la vidéo doublée (python3 -m voixla.paroles)."""
+La même file prépare « ma voix seule » et les copies vidéo des pistes sans image, enregistre le beat ou la voix
+(python3 -m voixla.pistes), et extrait les sous-titres de la vidéo doublée (python3 -m voixla.paroles)."""
 
 import os
 import shutil
@@ -96,6 +96,39 @@ class Analyses:
                                f"préparation impossible : {sortie.strip()[-200:] or 'sans message'}")),
                            module="voixla.pistes")
         commun.en_fil(lire, lu, lambda e: rappel(None, f"préparation impossible : {e}"))
+
+    def video(self, video, rappel, son=None, voix=None, duree_s=None):
+        """rappel(fichier ou None, message) : la copie vidéo d'une piste sans image (l'image de la vidéo doublée
+        copiée telle quelle, le son de la piste), en cache, sinon préparée (ffmpeg, sous nice). son : le fichier de la
+        piste ; voix : le dossier d'une voix, pour « ma voix seule ». Message « a_refaire » : la copie faite ne
+        correspond plus aux fichiers (remix pendant la préparation), à redemander."""
+        video, son, voix = str(video), (str(son) if son else None), (str(voix) if voix else None)
+
+        def lire():
+            from .. import pistes
+            return pistes.video_prete(video, son=son, voix=voix)
+
+        def fini(ok, sortie):
+            lignes = [l.strip() for l in (sortie or "").splitlines() if l.strip()]
+            raison = lignes[-1].removeprefix("erreur :").strip()[-200:] if lignes else ""
+
+            def lu(f2):
+                if f2 is not None:
+                    rappel(f2, "")
+                elif ok:
+                    rappel(None, "a_refaire")
+                else:
+                    rappel(None, raison or "copie vidéo impossible (sans message)")
+            commun.en_fil(lire, lu, lambda e: rappel(None, f"copie vidéo impossible : {e}"))
+
+        def lu(f):
+            if f is not None:
+                rappel(f, "")
+                return
+            rappel(None, "attente")
+            argv = ["video", video, *(["--voix", voix] if voix else [son or ""])]
+            self._demander(("video", video, voix or son), argv, duree_s, fini, module="voixla.pistes")
+        commun.en_fil(lire, lu, lambda e: rappel(None, f"copie vidéo impossible : {e}"))
 
     def exporter(self, source, sortie, rappel, duree_s=None, voix=False):
         """Enregistre source (un fichier, ou le dossier d'une voix si voix=True) dans sortie ; rappel(ok, message)."""

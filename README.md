@@ -486,6 +486,7 @@ Une étape en `erreur` est suivie d'un événement `erreur`. Les étapes commune
 |---|---|---|
 | `videos…` | une ou plusieurs vidéos (mp4, m4v, mov, mkv, webm…) ; `vidéo@DÉBUT+DURÉE` : extrait propre à cette vidéo | |
 | `--voix NOM` | voix cible, un dossier de `<données>/voix/` | clé `voix` de la configuration, sinon la seule voix présente |
+| `--voix homme:A,femme:B`, `--voix chanteur1:A,chanteur2:B` | une voix par chanteur (voir [Une voix par chanteur](#une-voix-par-chanteur)) | |
 | `--mode auto\|chant\|parole` | `auto` : chant s'il y a une musique sous la voix et que la voix chante, ou rappe sur un fond tonal ; sinon parole | `auto` |
 | `--octave auto\|0\|-12\|+12` | `auto` : un décalage par chanteur, choisi d'après sa hauteur et son timbre ; sinon décalage imposé partout (`12` vaut `+12`). Sans effet en parole avec le modèle 22 kHz | `auto` |
 | `--pas N` | pas de diffusion de la conversion ; 50 coûte environ 40 % de GPU de conversion en plus (au banc d'essai : aucun écart mesurable, oreille partagée) | `30` |
@@ -528,9 +529,11 @@ Tout va dans `<données>/sorties/<titre>/` (ou le dossier de `--sortie`). Un ext
 | `<titre> - voix <Nom>.fr.srt` | leur traduction française, quand elles ne sont pas en français (`.traduction.fr.srt` si elles le sont déjà en partie) |
 | `<titre> - voix <Nom>.lrc` | les paroles synchronisées ligne à ligne, à côté du mp3, pour les lecteurs de musique |
 | `<titre> - voix <Nom> (auto-tune).<ext>`, `.mp3`, `.lrc` | avec l'auto-tune : la même chose avec la voix auto-tunée (mêmes pistes de paroles et sous-titres d'origine) ; la version normale ne change pas |
+| `<titre> - voix A et B.<ext>`, `.mp3` | avec une voix par chanteur : le doublage où chaque chanteur a sa voix |
 | `comparaison_<pas>pas.mp3`, `comparaison_<N>pas.mp3` | avec `--comparer-pas` : le même passage dans les deux réglages |
 | `travail/` | `original.wav` (son extrait), `voix_source.wav` (voix isolée), `instrumental.wav` (musique seule, recalculée à chaque mixage), `source.json` |
 | `travail/<voix>/` | `voix_convertie.flac`, `mix.wav`, `rapport.json`, `courbes.json`, `paroles.json`, journal Kaggle, fichiers intermédiaires du mixage ; avec l'auto-tune : `seche_voix_autotune.wav`, `reverb_voix_autotune.wav`, `mix_autotune.wav` |
+| `travail/a+b/` | avec une voix par chanteur : comme `travail/<voix>/` |
 
 À la racine du dossier des sorties, `.kaggle/` garde `outils.json` (`--preparer-outils`), le journal du dernier noyau
 et les fichiers d'envoi.
@@ -563,6 +566,10 @@ Dans la vidéo doublée :
   des garde-fous, temps ; `paroles_sorties` : fichiers, pistes, décalage) ;
 - l'auto-tune (`autotune` : intensité, gamme et sa détection, accord, ports de x42-autotune, écart médian aux notes avant
   et après, fichiers) ;
+- une voix par chanteur : `voix_cibles` (chaque voix, sa clé, son centre de chant), `decision_hauteur.chanteurs`
+  (classe, voix cible et décalage de chaque couple, la raison), `affectation` (chaque piste sur chaque passage : voix,
+  état, raison, hauteur, empreinte ; `passages`, `secondes_par_voix`, `morceaux_en_duo`) ; sur chaque morceau,
+  `voix_cible` et `voix_pistes` ;
 - la ressemblance de timbre mesurée ;
 - les mesures du mixage (`mix` : nuances, dé-esseur, garde-fous de la musique seule, limite) ;
 - la durée de chaque étape (`temps` pour la vidéo, dont `nettoyage_s` et `conversion_s` ; `temps_local` pour la
@@ -583,6 +590,8 @@ Dans la vidéo doublée :
   un ;
 - `autotune_hz` (avec l'auto-tune) : la mélodie convertie après correction, décalée de la correction mesurée trame par
   trame ;
+- `voix_cibles` et `voix_par_trame` (une voix par chanteur) : la voix entendue à chaque trame, `-1` aucune, `j` la voix
+  `voix_cibles[j]`, `len(voix_cibles)` les deux ensemble ; `decalage_dt` est alors celui de la piste dominante ;
 - environ 200 ko pour 5 min.
 
 `paroles.json` donne les paroles synchronisées (l'interface les affiche sous le lecteur) :
@@ -674,9 +683,9 @@ Pages écrites, encore en essai :
 
 | Page | Rôle |
 |---|---|
-| Doubler | une ou plusieurs vidéos (sélecteur ou glisser-déposer), un extrait facultatif par vidéo réglé dans un petit lecteur, les réglages du doublage, dont l'interrupteur « Paroles » (si doubler connaît `--sans-paroles`), une estimation de la durée |
+| Doubler | une ou plusieurs vidéos (sélecteur ou glisser-déposer), un extrait facultatif par vidéo réglé dans un petit lecteur, les réglages du doublage, dont « Une voix pour tous / Une voix par chanteur » (Voix d'homme et Voix de femme, ou Chanteur 1 et Chanteur 2, si doubler les connaît), l'auto-tune (interrupteur, intensité, gamme ; grisé sans x42-plugins) et l'interrupteur « Paroles » (si doubler connaît `--sans-paroles`), une estimation de la durée |
 | Travaux | la file, les étapes en direct avec le temps écoulé et le temps restant estimé, le journal, l'annulation |
-| Résultats | les doublages, la lecture avec le choix de ce qu'on écoute à la même position (doublage, original, beat seul, ma voix seule, voix d'origine seule ; touche B : doublage ⇄ original), les paroles synchronisées (`paroles.json` de doubler, sinon les sous-titres de la vidéo), la frise d'octave, les durées par étape, le remix rapide, l'enregistrement du beat ou de la voix seule ; la lecture continue quand on quitte la page ou qu'on ferme la fenêtre (barre « en cours de lecture », MPRIS pour le menu du haut de GNOME et les touches multimédia) ; mise à la corbeille depuis la liste, une ligne ou plusieurs |
+| Résultats | les doublages, la lecture avec le choix de ce qu'on écoute à la même position (doublage, original, beat seul, ma voix seule — « voix converties seules » avec une voix par chanteur —, voix d'origine seule ; touche B : doublage ⇄ original ; touche T : avec ou sans auto-tune), les paroles synchronisées (`paroles.json` de doubler, sinon les sous-titres de la vidéo), la frise d'octave et celle des voix de chaque passage, les durées par étape, le remix rapide, l'enregistrement du beat ou de la voix seule ; la lecture continue quand on quitte la page ou qu'on ferme la fenêtre (barre « en cours de lecture », MPRIS pour le menu du haut de GNOME et les touches multimédia) ; mise à la corbeille depuis la liste, une ligne ou plusieurs |
 | Voix | écouter la référence, choisir la voix par défaut, ajouter une voix depuis un fichier ou au micro, renommer, mettre à la corbeille, prises de chant |
 | Écoute à l'aveugle | les versions du banc d'essai, notées de 1 à 5 sans savoir laquelle est laquelle ; interrupteur « voix seule » (touche V) |
 | État | Kaggle (présence du jeton, compte, noyaux), verrou de `doubler`, mémoire et charge du poste |
@@ -815,6 +824,32 @@ environ 1,5 fois plus longue, à cause des chœurs. `--sans-nettoyage` revient �
 - Sans ces quatre conditions, tout le monde garde le même décalage. Au pire, une section est ratée, mais il n'y a pas
   de saut d'octave en pleine voix.
 
+### Une voix par chanteur
+
+```sh
+doubler "Duo.mp4" --voix homme:jules,femme:marie            # duo mixte : le chanteur en jules, la chanteuse en marie
+doubler "Duo.mp4" --voix chanteur1:jules,chanteur2:marie    # duo de même genre, dans l'ordre d'apparition
+```
+
+- **`homme:` / `femme:`** : les deux chanteurs sont cherchés sur l'axe homme – femme des
+  [ancres de genre](#ancres-de-genre-facultatives). Comme le duo est annoncé, ils peuvent se répondre phrase à phrase
+  (pas d'épreuve des sections, 6 s chantées au moins chacun). Si l'un est nettement d'homme et l'autre nettement de
+  femme par l'empreinte, l'empreinte décide, même contre la hauteur. Deux chanteurs de même classe ne font qu'une voix.
+- **`chanteur1:` / `chanteur2:`** : le duo est cherché sur l'axe du genre, sinon sur les empreintes de la chanson
+  elle-même ; le chanteur 1 est celui qui chante le premier. Ce mode garde les épreuves de la règle d'octave.
+- **Chaque piste de chaque passage** (voix principale, chœurs, piste de secours) prend la voix du chanteur qu'on y
+  reconnaît, d'après sa hauteur et son empreinte sur ce passage : quand les deux chantent ensemble, voix principale et
+  chœurs reçoivent chacun leur voix. Une piste incertaine, ou à plus de 20 dB sous la voix complète, prend la voix du
+  chanteur du passage.
+- **L'octave** se décide pour chaque couple chanteur → voix cible, avec la règle d'une voix seule et le centre de chant
+  de sa voix : un chanteur doublé par une voix de femme monte d'une octave.
+- **Une seule voix trouvée** : tout prend la voix de sa classe (`homme:`/`femme:`), sinon la première, avec un message.
+  En parole, seule la première voix sert.
+- Sorties : `<titre> - voix Jules et Marie.<ext>` et `.mp3`, dossier `travail/jules+marie/`, les mêmes quel que soit
+  l'ordre donné ; `--remix` les retrouve avec la même `--voix`. Toutes les références partent dans le jeu privé.
+- Sans ancres de genre, `homme:`/`femme:` ne trouve aucun duo (tout dans la voix de la classe d'après la hauteur) ;
+  `chanteur1:`/`chanteur2:` peut encore départager par les empreintes de la chanson.
+
 ### Rap
 
 Le rap passe en mode `chant` quand il y a une musique tonale dessous : la voix est presque continue, même sans notes
@@ -899,6 +934,8 @@ chœurs compris ; en mode `auto`, il suppose du chant). Mesuré : 10,9 min annon
   conversion : lu en direct sur le montage, Whisper mettait 5 min à se charger.
 - Piste de secours : elle convertit en entier les morceaux qui touchent une zone perdue, soit +40 s sur un extrait de
   25 s et environ +1 min 40 à 30 pas sur une chanson de 3 min 30 (13 morceaux sur 38).
+- Une voix par chanteur : environ 3 s de GPU de plus par session (une référence de plus par moteur, la reconnaissance
+  des pistes), mesuré sur un extrait de 48 s, session de 9,1 min.
 
 ## Limites connues
 
@@ -914,11 +951,16 @@ chœurs compris ; en mode `auto`, il suppose du chant). Mesuré : 10,9 min annon
     suit la hauteur seule : un chanteur à la voix haute peut ainsi partir à −12, une chanteuse grave rester à 0 ;
   - sans [ancres de genre](#ancres-de-genre-facultatives), ces voix-là n'ont pas l'empreinte pour indice, et aucun
     duo n'est vu ;
-  - un duo n'est pas vu quand les deux timbres sont proches, quand les voix alternent phrase à phrase, ou quand l'une
-    chante trop peu : tout le monde garde alors un seul décalage ;
+  - un duo n'est pas vu quand les deux timbres sont proches, quand les voix alternent phrase à phrase (sauf duo
+    annoncé par `--voix homme:…,femme:…`), ou quand l'une chante trop peu : tout le monde garde alors un seul
+    décalage ;
   - les seuils ont été réglés sur peu de voix.
 
   `--octave` impose alors le décalage.
+- **Une voix par chanteur** : un passage, coupé au silence, qui chevauche deux chanteurs sans pause prend une seule voix
+  par piste. Un duo chanté à l'unisson, que le Roformer karaoké laisse dans la voix principale, garde une seule voix.
+  Le duo de même genre se fie aux empreintes de la chanson (réglé sur sept chansons) et peut prendre un changement de
+  style pour un changement de chanteur.
 - **Notes très graves** : après la descente d'une octave, les notes les plus graves de la source peuvent sonner
   creuses.
 - **Mode** : le critère du rap (voix presque continue sur un fond tonal) n'a pas encore été essayé sur un vrai rap.

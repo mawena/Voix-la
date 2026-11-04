@@ -21,6 +21,7 @@ from gi.repository import Adw, GLib, Gst, Gtk  # noqa: E402
 from .. import chemins, controle, formats, moteur  # noqa: E402
 from . import commun  # noqa: E402
 from .lecteur import media  # noqa: E402
+from .lecture import Apercu  # noqa: E402
 
 TEXTE_PAROLE = (
     "Bonjour ! J’enregistre ma voix pour Voix-là. Je lis ce texte calmement, comme si je racontais une histoire à un "
@@ -140,6 +141,8 @@ class DialogueEnregistrement(Adw.Dialog):
         self.fichier = None
         self.resultat = None
         self.lecture = None
+        # réécoute de la prise : coupe la musique en cours, et se met en pause si une autre lecture commence
+        self._apercu = Apercu(lambda: self.lecture and self.lecture.pause())
         self.duree = int(fenetre.prefs.get("duree_parole_s" if mode == "parole" else "duree_prise_chant_s")
                          or (60 if mode == "parole" else 120))
         vue = Adw.ToolbarView()
@@ -372,7 +375,7 @@ class DialogueEnregistrement(Adw.Dialog):
     def _ecouter(self):
         if self.lecture:
             self.lecture.pause()
-        self.lecture = media(self.fichier)
+        self.lecture = media(self.fichier, self._apercu)
         self.lecture.play()
 
     def recommencer(self):

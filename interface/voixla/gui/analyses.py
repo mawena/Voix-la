@@ -137,6 +137,27 @@ class Analyses:
                        lambda ok, s: rappel(ok, "" if ok else (s.strip()[-300:] or "sans message")),
                        module="voixla.pistes")
 
+    def miniature(self, video, rappel):
+        """rappel(fichier ou None, message) : une image de la vidéo doublée (MPRIS, barre « en cours de lecture »), en
+        cache, sinon prise par ffmpeg (une image, sous nice)."""
+        video = str(video)
+
+        def lire():
+            from .. import pistes
+            return pistes.miniature_prete(video)
+
+        def lu(f):
+            if f is not None:
+                rappel(f, "")
+                return
+            rappel(None, "attente")
+            self._demander(("miniature", video), ["miniature", video], 1.0,
+                           lambda ok, sortie: commun.en_fil(lire, lambda f2: rappel(
+                               f2, "" if f2 is not None else
+                               f"miniature impossible : {sortie.strip()[-200:] or 'sans message'}")),
+                           module="voixla.pistes")
+        commun.en_fil(lire, lu, lambda e: rappel(None, f"miniature impossible : {e}"))
+
     # --- paroles : paroles.json, sinon sous-titres de la vidéo doublée ------------------------------------------------
 
     def paroles(self, dossier_voix, video, rappel):

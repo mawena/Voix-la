@@ -6,7 +6,8 @@ Options récentes, utilisées seulement si « doubler --help » les annonce, ave
 - --donnees DOSSIER    : dossier de données. Repli : --sortie <données>/sorties et DOUBLER_VOIX=<données>/voix ;
 - --config [CLE VALEUR] : écriture de config.json. Repli : écriture directe du fichier (chemins.ecrire_cle_config) ;
 - --voix-liste --json  : liste des voix. Repli : lecture directe de voix/*/voix.json.
-VOIXLA_DOUBLER (essais) remplace la commande doubler, par exemple par un faux doubler.
+VOIXLA_DOUBLER (essais) remplace la commande doubler, par exemple par un faux doubler. Sinon, « doubler » du PATH
+(/usr/bin/doubler avec le paquet Debian), puis doubler.py à côté du code : celui du dépôt, ou /usr/lib/voix-la.
 """
 
 import json
@@ -34,7 +35,8 @@ ETAPES = ("extraction", "envoi", "attente", "kaggle", "rapatriement", "mix", "vi
 # --- La commande -----------------------------------------------------------------------------------------------------
 
 def commande():
-    """argv de doubler : VOIXLA_DOUBLER, sinon « doubler » du PATH, sinon doubler.py du dépôt."""
+    """argv de doubler : VOIXLA_DOUBLER, sinon « doubler » du PATH, sinon doubler.py à côté du code (le dépôt, ou
+    /usr/lib/voix-la une fois le paquet installé : le même fichier que /usr/bin/doubler)."""
     if os.environ.get("VOIXLA_DOUBLER"):
         return shlex.split(os.environ["VOIXLA_DOUBLER"])
     trouve = shutil.which("doubler")

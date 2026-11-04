@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Voix-là
+GenericName=Doublage avec une voix clonée
+Comment=Doubler des vidéos (chansons, duos, rap, vidéos parlées) avec une voix clonée, gérer les voix et écouter les résultats
+Exec=@LANCEUR@
+Icon=io.mawena.VoixLa
+Terminal=false
+Categories=AudioVideo;Audio;Video;
+Keywords=voix;doublage;chant;clone;seed-vc;kaggle;doubler;
+StartupWMClass=io.mawena.VoixLa
+StartupNotify=true
+DBusActivatable=false

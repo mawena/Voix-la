@@ -15,3 +15,24 @@ kaggle.json
 voix/
 # Vidéos sources (œuvres protégées) : jamais dans le dépôt
 Vidéos/
+# Notes de reprise (travail en cours, jamais dans le dépôt)
+REPRISE*.md
+*/REPRISE.md
+# Données personnelles et notes de travail : restent sur le poste, jamais dans le dépôt
+ROADMAP.md
+kaggle/ancres_genre.json
+.kaggle/
+# Banc d'essai et règle d'octave : seuls les scripts et les exemples sont publiés
+banc/cas.json
+banc/resultats/
+banc/sessions/
+banc/entrees/
+banc/ecoute/
+banc/base/
+banc/.kaggle/
+banc/RESULTATS.md
+octave/cas.json
+octave/donnees/
+octave/RESULTATS.md
+*.log
+banc/travail/

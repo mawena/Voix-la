@@ -1,0 +1,36 @@
+{
+ "note": "Modèle de banc/cas.json (extraits et voix cible du banc d'essai) : le copier en banc/cas.json (ignoré par git) et l'adapter, ou passer « banc.py --cas FICHIER ». Chemins relatifs : par rapport au dossier des données de doubler (voix/, sorties/) ; « ~ » : dossier personnel.",
+ "aide": {
+  "voix.nom": "identifiant de la voix cible : préfixe des fichiers envoyés sur Kaggle (<nom>-reference-A.wav, <nom>-ft-001.wav…), des points de contrôle affinés (<nom>_ft_500pas.pth) et clé des mesures du juge",
+  "voix.reference": "référence de la voix (celle de doubler, voix/<nom>/reference.wav) ; sert aussi à trouver le dossier des données",
+  "voix.dossier_prises": "dossier des enregistrements de la voix cible",
+  "voix.prises_entrainement": "prises de l'affinage (défaut de « preparer --prises »)",
+  "voix.prises_vides": "prises écartées (notées dans entrees/preparation.json)",
+  "voix.prise_tenue": "prise gardée hors entraînement, pour la mesure du juge (défaut de « preparer --tenue »)",
+  "voix.description_modele": "texte rangé dans le LISEZMOI.json du jeu des modèles (banc.py modele)",
+  "extraits.<id>": "id en lettres minuscules seulement (a-z) : nom des dossiers travail/<id>/, resultats/<session>/<id>/, ecoute/<id>/",
+  "extraits.<id>.debut, fin": "bornes de l'extrait (s), aux silences de la voix",
+  "extraits.<id>.decalage": "décalage fixe en demi-tons (p. ex. -12 : voix de femme vers une voix d'homme)",
+  "extraits.<id>.original, voix": "son complet et voix séparée (44,1 kHz), alignés échantillon par échantillon",
+  "extraits.<id>.paroles": "paroles chantées dans l'extrait, pour le taux d'erreur de mots (null : pas de mesure)"
+ },
+ "voix": {
+  "nom": "cible",
+  "reference": "voix/cible/reference.wav",
+  "dossier_prises": "prises",
+  "prises_entrainement": ["parole-1.wav", "parole-2.wav", "chant-1.wav"],
+  "prises_vides": [],
+  "prise_tenue": "parole-3.wav",
+  "description_modele": "voix cible : parole et chant, 3 prises, 24 kHz"
+ },
+ "extraits": {
+  "chanteuse": {"titre": "Chanteuse 1 — Chanson 1, 1er refrain", "debut": 50.0, "fin": 80.0, "decalage": -12,
+                "original": "sorties/Chanteuse 1 - Chanson 1/travail/original.wav",
+                "voix": "sorties/Chanteuse 1 - Chanson 1/travail/voix_source.wav",
+                "paroles": "Paroles du refrain, telles qu'elles sont chantées dans l'extrait."},
+  "chanteur": {"titre": "Chanteur 1 — Chanson 2, 1er couplet", "debut": 15.0, "fin": 45.0, "decalage": 0,
+               "original": "sorties/Chanteur 1 - Chanson 2/travail/original.wav",
+               "voix": "sorties/Chanteur 1 - Chanson 2/travail/voix_source.wav",
+               "paroles": null}
+ }
+}

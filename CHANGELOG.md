@@ -7,6 +7,19 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+### Ajouté
+
+- Auto-tune (`--autotune [N]`, de 0 à 100, 70 sans valeur ; clé de configuration `autotune`, 0 ou absente :
+  désactivé). En plus de la version normale, inchangée au bit près : `<titre> - voix <Nom> (auto-tune)` en vidéo (mêmes
+  pistes de paroles et sous-titres d'origine), en mp3 et en `.lrc`. Fait sur le PC, sans GPU, par x42-autotune (paquet
+  `x42-plugins`, recommandé ; filtre `lv2` de ffmpeg) sur la voix sèche, avant la reverb, au même niveau que la version
+  normale. Bas : correction lente et partielle, vibrato gardé ; haut : correction totale, effet robotique (deux passes
+  au-delà de 80). Gamme détectée sur la musique seule, avec son accord, repli chromatique si elle est peu sûre ;
+  `--autotune-gamme` l'impose (`la-mineur`, `do#-majeur`, `Am`…). Hauteur avant et après dans `rapport.json`
+  (`autotune`), `autotune_hz` dans `courbes.json`, champ `autotune` de l'événement `sortie`. Sans le greffon, doubler le
+  dit et fait la version normale seule ; en parole, seulement sur demande explicite. `--sans-autotune` l'emporte ; avec
+  `--remix`, il met la version auto-tune à la corbeille, et un `--remix` sans option la garde à jour.
+
 ## [0.4.0] - 2026-11-04
 
 ### Ajouté

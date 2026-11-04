@@ -38,6 +38,17 @@ d'origine, dé\-esseur, reverb, limiteur), puis remise sur la vidéo ; l'image e
 les sous\-titres sont copiés sans réencodage.
 .PP
 Seuls le son des vidéos et la référence de la voix choisie partent sur Kaggle.
+.PP
+Avec l'auto\-tune (\fB\-\-autotune\fR, ou la clé \fBautotune\fR de la
+configuration), une version de plus est faite sur le PC, sans GPU : la voix
+sèche passe dans x42\-autotune (paquet \fBx42\-plugins\fR, filtre \fBlv2\fR de
+ffmpeg) avant la reverb, dans la gamme détectée sur la musique seule, puis est
+mixée au même niveau que la version normale. Elle s'ajoute aux sorties
+habituelles, qui ne changent pas :
+\fI<titre> \- voix <Nom> (auto\-tune).<conteneur>\fR (mêmes pistes de paroles et
+sous\-titres d'origine), \fI.mp3\fR et \fI.lrc\fR. Sans le greffon, doubler le
+dit et fait la version normale seule.
+.PP
 Un extrait propre à chaque vidéo s'écrit \fIvidéo\fB@\fIdébut\fB+\fIdurée\fR
 (secondes ou m:ss) : \fB"clip.mp4@60+40"\fR démarre à 60 s et dure 40 s.
 .SH OPTIONS
@@ -77,6 +88,29 @@ Reverb sous la voix sèche, en chant (défaut : \-13).
 .B \-\-mix\-v1
 Ancien mixage, sans suivi des nuances ni dé\-esseur.
 .TP
+.BR \-\-autotune " [\fIn\fR]"
+Auto\-tune de la voix, intensité \fIn\fR de 0 à 100 (70 sans valeur ; 0 :
+désactivé). Bas (20 à 30) : correction lente et partielle, les notes sont juste
+rendues plus justes, le vibrato reste. Haut (90 à 100) : correction totale et
+immédiate, effet robotique, sauts de note francs. Par défaut, la clé
+\fBautotune\fR de la configuration (0 si elle manque). En parole, l'auto\-tune ne
+s'applique que demandé par cette option. Avec \fB\-\-remix\fR et sans
+\fB\-\-autotune\fR ni \fB\-\-sans\-autotune\fR, une version auto\-tune déjà faite
+est refaite à la même intensité.
+.TP
+.BI \-\-autotune\-gamme " gamme"
+Gamme de l'auto\-tune : \fBauto\fR (défaut : tonalité détectée sur la musique
+seule ; peu sûre, gamme chromatique), \fBchromatique\fR (les 12 notes), ou une
+tonalité : tonique \fBdo ré mi fa sol la si\fR (ou \fBC D E F G A B\fR), suivie de
+\fB#\fR ou \fBb\fR, puis \fB\-majeur\fR ou \fB\-mineur\fR (alias \fBmaj\fR, \fBmin\fR,
+\fBmajor\fR, \fBminor\fR, \fBm\fR ; majeur si omis). Exemples : \fBla\-mineur\fR,
+\fBdo#\-majeur\fR, \fBsib\fR, \fBAm\fR, \fBC#m\fR, \fBEb\-minor\fR.
+.TP
+.B \-\-sans\-autotune
+Pas d'auto\-tune, quoi que disent \fB\-\-autotune\fR et la configuration. Avec
+\fB\-\-remix\fR : la version auto\-tune est retirée (vidéo, mp3 et .lrc mis à la
+corbeille, fichiers de travail effacés).
+.TP
 .BI \-\-debut " s" "\fR, \fB\-\-duree" " s"
 Extrait commun à toutes les vidéos, pour un essai.
 .TP
@@ -111,8 +145,9 @@ Avec \fB\-\-voix\-liste\fR ou \fB\-\-config\fR : sortie en JSON.
 .BR \-\-config " [\fIclé valeur\fR]"
 Sans argument, affiche la configuration et les valeurs utilisées (données,
 commande kaggle, script du noyau, ancres de genre) ; avec \fIclé valeur\fR,
-écrit une clé : \fBdonnees\fR, \fBvoix\fR, \fBmoteur\fR, \fBparoles\fR, \fBkaggle.compte\fR,
-\fBkaggle.jeu\fR, \fBkaggle.noyau\fR, \fBkaggle.outils\fR.
+écrit une clé : \fBdonnees\fR, \fBvoix\fR, \fBmoteur\fR, \fBparoles\fR, \fBautotune\fR
+(intensité de 0 à 100), \fBkaggle.compte\fR, \fBkaggle.jeu\fR, \fBkaggle.noyau\fR,
+\fBkaggle.outils\fR.
 .TP
 .B \-\-preparer\-outils
 Prépare une fois sur Kaggle les paquets et les modèles, pour des installations
@@ -163,10 +198,15 @@ Commande \fBkaggle\fR (défaut : \fI~/kaggle\-venv/bin/kaggle\fR).
 .TP
 .B DOUBLER_VOIX
 Dossier des voix (compatibilité).
+.TP
+.B LV2_PATH
+Dossiers des greffons LV2, où chercher x42\-autotune avant \fI~/.lv2\fR,
+\fI/usr/local/lib/lv2\fR, \fI/usr/lib/lv2\fR et les dossiers multiarch.
 .SH NOTES
 Les poids de YingMusic\-SVC sont sous licence CC BY\-NC 4.0 : usage personnel
 et non commercial seulement. N'enregistrez que votre voix, ou celle d'une
 personne d'accord pour être clonée.
 .SH VOIR AUSSI
 .BR voix\-la (1),
-.BR ffmpeg (1)
+.BR ffmpeg (1),
+.BR x42\-fat1 (1)

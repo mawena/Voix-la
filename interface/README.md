@@ -59,9 +59,33 @@ perdre la position, et la lecture continue (ou reste en pause).
   les analyses du son, et passe par `file-attente` au-delà d'une minute de son. Il ne bloque jamais l'interface : le
   doublage continue en attendant. Le résultat va dans `~/.cache/voix-la/voix/` (FLAC, 300 Mo au plus, les moins
   récemment écoutés effacés d'abord) ; un remix change la clé et refait la voix.
-- **Sans image** : à côté d'une vidéo, le beat et les voix seules se lisent sous l'image de la vidéo arrêtée, avec le
-  bandeau « son seul, image arrêtée ». L'écran ne disparaît pas (la page ne saute pas) et rien n'est décodé deux fois.
-  Les visualisations, elles, suivent la piste écoutée : le spectrogramme du beat, de la voix seule…
+- **Sur la vidéo qui avance** : en vidéo, le beat et les voix seules se lisent sur l'image de la vidéo doublée, qui
+  avance avec le son, comme le doublage et l'original. Chaque piste a pour cela une copie préparée une fois, en cache :
+  - l'image de la vidéo doublée y est copiée sans réencodage (`-c:v copy`) : mêmes paquets, même nombre d'images ;
+  - le son de la piste y est encodé comme `doubler` le fait (AAC 256 kb/s, Opus 192 kb/s en webm) et coupé à la fin de
+    la vidéo.
+
+  Le son de la piste commence exactement là où commence le son du doublage. Ce départ est lu dans la vidéo doublée
+  plutôt que recalculé : il contient le `decalage_son` de `travail/source.json` et le calage d'un extrait sur une
+  image clé. On prend le temps du premier paquet du son doublé, qui porte l'amorce de l'encodeur (1024 échantillons
+  d'AAC, 312 d'Opus), et le premier paquet de la copie reçoit le même temps. La copie garde les temps de la vidéo
+  doublée (`-copyts`) : on y passe à la même position, et la touche B reste inchangée. Un essai le vérifie sur de
+  petites vidéos de synthèse remises en son par les fonctions de `doubler` : mp4 entier et extrait, extrait mkv avec
+  ou sans sous-titres, son d'origine en retard, webm. Les paquets d'image sont identiques, et le beat tombe au même
+  échantillon que le mix. Même résultat sur de vrais doublages : une chanson en mp4 et un extrait de série en mkv.
+  Un seul décodage vidéo à la fois : le flux d'une copie se ferme dès qu'on quitte sa piste. Seuls le doublage et
+  l'original restent ouverts.
+- **Préparation de la vidéo** : au premier choix de la piste, sous `nice`, dans la file des analyses (une à la fois),
+  par `file-attente` au-delà d'une minute de son. Pour une chanson de 4 min, comptez 7 à 14 s selon la charge du
+  poste ; c'est surtout l'encodage du son. En attendant,
+  le son se lit seul sous l'image arrêtée, avec le bandeau « préparation de la vidéo… », puis le lecteur passe tout
+  seul sur la vidéo prête, à la même position. Ma voix seule se combine d'abord, puis se copie. Les copies vont dans
+  `~/.cache/voix-la/videos/` (2 Go au plus, les moins récemment lues effacées d'abord). Elles sont nommées d'après le
+  chemin, la taille et la date de la vidéo doublée et du son : un remix les refait.
+- **Sans image** : si le doublage n'a pas de vidéo (MP3 seul) ou si la copie est impossible (vidéo doublée sans
+  image, illisible, ou plus lourde que tout le cache), la piste se lit sous l'image arrêtée, avec le bandeau « son
+  seul, image arrêtée » et la raison sous les bascules. L'écran ne disparaît pas, et la page ne saute pas. Les
+  visualisations suivent la piste écoutée : le spectrogramme du beat, de la voix seule…
 - **Enregistrer le beat…** et **Enregistrer ma voix seule…** (groupe « Pistes séparées ») ouvrent un sélecteur sur le
   dossier du doublage, avec le nom des sorties : `<titre> - voix <Nom> (beat).mp3` et
   `<titre> - voix <Nom> (voix seule).mp3`. On écrit en MP3 320 kb/s, ou en FLAC (ou WAV) si l'on change l'extension.
@@ -125,8 +149,8 @@ Chacune s'allume ou s'éteint dans le menu « œil » d'un résultat (ou dans le
   leur langue, vidéos sources choisies à la main). L'interface ne touche pas au `config.json` de
   `doubler`, sauf par `doubler --config`.
 - **Caches** (`~/.cache/voix-la/`, `VOIXLA_CACHE` pour les essais), chacun purgé à part, les fichiers les moins
-  récemment utilisés d'abord : `pistes/` (analyses du son, 500 Mo), `voix/` (ma voix seule, 300 Mo), `sous-titres/`
-  (20 Mo).
+  récemment utilisés d'abord : `pistes/` (analyses du son, 500 Mo), `voix/` (ma voix seule, 300 Mo), `videos/`
+  (copies vidéo du beat et des voix seules, 2 Go), `sous-titres/` (20 Mo).
 - **Beat et voix seule enregistrés** : à côté des sorties, `<titre> - voix <Nom> (beat).mp3` et
   `<titre> - voix <Nom> (voix seule).mp3` (ou ailleurs, par le sélecteur).
 - **Voix par défaut** : celle choisie dans l'interface (page Voix ou Réglages, gardée dans `interface.json`), sinon
@@ -194,7 +218,7 @@ Variables pour les essais :
 | `VOIXLA_CONFIG` | dossier de `config.json` et `interface.json` |
 | `VOIXLA_ETAT` | dossier de la file des travaux |
 | `VOIXLA_ECOUTE` | banc d'écoute |
-| `VOIXLA_CACHE` | caches : analyses du son, ma voix seule, sous-titres |
+| `VOIXLA_CACHE` | caches : analyses du son, ma voix seule, copies vidéo des pistes, sous-titres |
 | `VOIXLA_DOUBLER` | commande `doubler` |
 | `VOIXLA_KAGGLE` | commande `kaggle` |
 | `VOIXLA_MICRO_ESSAI=1` | son de synthèse au lieu du micro |
@@ -203,8 +227,12 @@ Variables pour les essais :
 ## Limites
 
 - **Enregistrement** : seulement par un micro du PC (PulseAudio/PipeWire) ; pas de micro de téléphone.
-- **Pistes en vidéo** : chaque piste écoutée ouvre son propre lecteur, et ils restent ouverts jusqu'à ce qu'on quitte
-  le résultat. Si la vidéo source a été déplacée, l'original se lit sans image, d'après `travail/original.wav`.
+- **Pistes en vidéo** : le doublage et l'original gardent chacun leur lecteur ouvert jusqu'à ce qu'on quitte le
+  résultat ; le beat et les voix seules ferment le leur quand on les quitte. Si la vidéo source a été déplacée,
+  l'original se lit sans image, d'après `travail/original.wav`.
+- **Copies vidéo des pistes** : chacune pèse à peu près le poids de la vidéo doublée. Une vidéo doublée plus lourde
+  que tout le cache (2 Go, un film entier par exemple) n'est pas copiée : ses pistes se lisent sous l'image arrêtée.
+  Le premier passage sur une piste attend sa copie (quelques secondes, plus si le poste est chargé).
 - **Ma voix seule** : le limiteur du mix agit sur la musique et la voix ensemble. Quand la musique le fait travailler,
   la voix du mix est un peu plus comprimée que la voix seule, où il ne voit que la voix.
 - **Paroles tirées des sous-titres** : ce sont ceux de la vidéo, souvent une traduction, et pas forcément le texte

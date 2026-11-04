@@ -2,7 +2,7 @@
 """doubler (Voix-là) : remplace la voix d'une vidéo par une voix clonée (YingMusic-SVC, Seed-VC ; GPU gratuit de Kaggle).
 
   doubler <vidéo> [<vidéo>…] [--voix NOM] [--mode auto|chant|parole] [--octave auto|0|-12|+12] [--pas 30]
-          [--moteur yingmusic|seedvc] [--sans-nettoyage] [--voix-db 4] [--reverb-db -13] [--mix-v1]
+          [--moteur yingmusic|seedvc] [--sans-nettoyage] [--sans-paroles] [--voix-db 4] [--reverb-db -13] [--mix-v1]
           [--debut S --duree S] [--remix] [--sortie DIR] [--comparer-pas 50] [--donnees DIR] [--evenements FICHIER]
   doubler --ajouter-voix <nom> <enregistrement>      ajoute une voix (n'importe quel audio ou vidéo)
   doubler --voix-liste [--json]                      voix disponibles
@@ -17,14 +17,18 @@ Les vidéos données ensemble partent dans UNE seule session Kaggle (installatio
      (en chant, un décalage d'octave par chanteur), et convertit (kaggle/doubler_kaggle.py) ; la voix isolée revient
      elle aussi en FLAC. En chant, la voix est d'abord nettoyée (voix principale et chœurs séparés, reverb d'origine
      retirée), puis convertie par YingMusic-SVC (--moteur seedvc : Seed-VC 44 kHz ; --sans-nettoyage : la voix isolée
-     complète, comme avant, plus rapide) ; en parole, Seed-VC 22 kHz sur la voix isolée complète ;
-  3. de retour sur le PC : mixage puis remise sur chaque vidéo, image et sous-titres copiés sans réencodage. Mixage v2
-     (défaut) : la voix suit les nuances de la voix d'origine (gain par fenêtres de 10 ms, lissé sur 150 ms, borné à
-     ±6 dB, seulement là où les deux voix chantent), « s » adoucis (dé-esseur), voix +4 dB et reverb -13 dB en chant ;
-     parole sans reverb. --mix-v1 : l'ancien mixage, sans nuances ni dé-esseur.
-Sorties : <sortie>/<titre>/<titre> - voix <Nom>.<conteneur d'origine> et .mp3 ; travail/ (son d'origine, voix isolée,
-reste) et travail/<voix>/ (voix convertie, rapport.json avec les temps de chaque étape). --remix refait seulement le
-mixage et la remise sur la vidéo. Seuls le son des vidéos et la référence de la voix choisie partent sur Kaggle.
+     complète, comme avant, plus rapide) ; un passage perdu au nettoyage (voix de fond prise pour de la reverb) est
+     repris de la voix complète ; en parole, Seed-VC 22 kHz sur la voix isolée complète. Paroles (sauf --sans-paroles
+     ou doubler --config paroles non) : Whisper large-v3 sur la voix principale, horodatées par mot, et traduction
+     française (NLLB-200) quand elles ne sont pas en français ;
+  3. de retour sur le PC : mixage puis remise sur chaque vidéo, image et sous-titres d'origine copiés sans réencodage,
+     paroles ajoutées en pistes de sous-titres. Mixage v2 (défaut) : la voix suit les nuances de la voix d'origine (gain
+     par fenêtres de 10 ms, lissé sur 150 ms, borné à ±6 dB, seulement là où les deux voix chantent), « s » adoucis
+     (dé-esseur), voix +4 dB et reverb -13 dB en chant ; parole sans reverb. --mix-v1 : l'ancien mixage.
+Sorties : <sortie>/<titre>/<titre> - voix <Nom>.<conteneur d'origine> et .mp3, .<langue>.srt, .fr.srt (traduction) et
+.lrc (paroles synchronisées, à côté du mp3) ; travail/ (son d'origine, voix isolée, reste) et travail/<voix>/ (voix
+convertie, rapport.json avec les temps de chaque étape, paroles.json). --remix refait seulement le mixage et la remise
+sur la vidéo, paroles comprises. Seuls le son des vidéos et la référence de la voix choisie partent sur Kaggle.
 Données (voix/, sorties/) : --donnees, sinon $VOIXLA_DONNEES, sinon « donnees » de ~/.config/voix-la/config.json,
 sinon ~/Music/Voix-là. Voix par défaut : « voix » du même fichier (doubler --config voix NOM), sinon la seule voix de
 <données>/voix. Compte Kaggle : « kaggle.compte » (doubler --config kaggle.compte <nom>) ; moteur du chant par
@@ -65,7 +69,11 @@ CLES_CONFIG = {'donnees': 'dossier des données (voix/, sorties/)', 'kaggle.comp
                'kaggle.jeu': 'jeu de données privé des entrées', 'kaggle.noyau': 'noyau GPU privé du doublage',
                'kaggle.outils': 'noyau privé des outils préparés',
                'moteur': 'moteur de conversion du chant : yingmusic (défaut) ou seedvc',
+               'paroles': 'paroles à chaque doublage (transcription, traduction française, sous-titres) : oui (défaut) '
+                          'ou non',
                'voix': 'voix cible par défaut, un dossier de <données>/voix (sinon la seule voix présente)'}
+OUI = {'oui', 'o', 'yes', 'y', 'true', 'vrai', '1', 'on'}
+NON = {'non', 'n', 'no', 'false', 'faux', '0', 'off'}
 NOM_VOIX = r'[a-z0-9][a-z0-9_-]{0,39}'   # nom d'une voix : celui de son dossier
 MOTEURS = ('yingmusic', 'seedvc')   # chant ; la parole passe toujours par Seed-VC 22 kHz
 MOTEUR_DEFAUT = 'yingmusic'         # gagnant du banc d'essai du 04/11/2026 (mesures et écoute à l'aveugle)
@@ -147,6 +155,11 @@ def ecrire_config(cle, valeur):
         raise SystemExit(f'moteur inconnu : {valeur} (moteurs : {", ".join(MOTEURS)})')
     if cle == 'voix' and not re.fullmatch(NOM_VOIX, valeur):
         raise SystemExit(f'nom de voix invalide : {valeur} (minuscules, chiffres, - ou _ ; ex. marie, jean-b)')
+    if cle == 'paroles':
+        booleen = oui_non(valeur)
+        if booleen is None:
+            raise SystemExit(f'paroles : oui ou non attendu (reçu : {valeur})')
+        valeur = booleen
     conf = lire_config()
     d = conf
     *chemin, fin = cle.split('.')
@@ -162,6 +175,26 @@ def ecrire_config(cle, valeur):
     print(f'{cle} = {valeur}  ({CONFIG})')
     if cle == 'voix' and not (VOIX / valeur / 'voix.json').exists():
         print(f'attention : pas (encore) de voix {valeur} dans {VOIX} (ajouter : doubler --ajouter-voix {valeur} <enregistrement>)')
+
+
+def oui_non(valeur):
+    """oui / non (et true, false, 1, 0…) -> True / False ; un booléen JSON tel quel ; None si ce n'est ni l'un ni l'autre."""
+    if isinstance(valeur, bool):
+        return valeur
+    v = str(valeur).strip().lower()
+    return True if v in OUI else False if v in NON else None
+
+
+def paroles_config(conf):
+    """Clé « paroles » de la configuration (vrai par défaut ; une valeur illisible compte comme vrai, avec un avis)."""
+    v = valeur_config(conf, 'paroles')
+    if v is None:
+        return True
+    b = oui_non(v)
+    if b is None:
+        dire(f'attention : « paroles » de {CONFIG} illisible ({v!r}) : paroles gardées (doubler --config paroles oui|non)')
+        return True
+    return b
 
 
 def masquer(conf):
@@ -245,9 +278,10 @@ def afficher_config(a, en_json=False):
         noms = {n: None for n in KAGGLE_DEFAUTS}
     moteur = valeur_config(conf, 'moteur') or MOTEUR_DEFAUT
     ancres = fichier_ancres()
+    paroles = paroles_config(conf)
     effectif = {'config': str(CONFIG), 'donnees': str(DONNEES), 'source_donnees': a.source_donnees, 'voix': str(VOIX),
                 'sorties': a.sortie, 'voix_defaut': VOIX_DEFAUT, 'source_voix_defaut': VOIX_DEFAUT_SOURCE,
-                'moteur': moteur, 'kaggle': {'compte': valeur_config(conf, 'kaggle.compte'), **noms},
+                'moteur': moteur, 'paroles': paroles, 'kaggle': {'compte': valeur_config(conf, 'kaggle.compte'), **noms},
                 'jeton_kaggle': 'présent' if JETON.exists() else 'absent', 'commande_kaggle': str(KAGGLE),
                 'script_noyau': str(SCRIPT_NOYAU), 'ancres_genre': str(ancres) if ancres else None,
                 'contenu': masquer(conf)}
@@ -262,6 +296,7 @@ def afficher_config(a, en_json=False):
     print(f"  sorties        {a.sortie}")
     print(f"  voix (défaut)  {VOIX_DEFAUT or '—'}  ({VOIX_DEFAUT_SOURCE})")
     print(f"  moteur (chant) {moteur}{'' if valeur_config(conf, 'moteur') else '  (défaut)'}")
+    print(f"  paroles        {'oui' if paroles else 'non'}{'' if valeur_config(conf, 'paroles') is not None else '  (défaut)'}")
     for n in KAGGLE_DEFAUTS:
         print(f"  kaggle.{n:8s} {noms[n] or '— (kaggle.compte manque : doubler --config kaggle.compte <nom>)'}")
     print(f"  jeton Kaggle   {'présent' if JETON.exists() else 'absent'} ({JETON}, jamais affiché)")
@@ -743,15 +778,16 @@ def envoyer_jeu(travaux, voix, dossier):
     shutil.rmtree(jeu, ignore_errors=True)
 
 
-def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=MOTEUR_DEFAUT):
+def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=MOTEUR_DEFAUT, paroles=True):
     """Durée probable d'une session (de l'envoi du noyau à sa fin), d'après la durée audio des vidéos et les rapports
     passés (rapport.json sous <sorties>/*/travail/*/) : démarrage + installation + chargement des modèles, puis par
     seconde d'audio la séparation et l'analyse, le nettoyage (chant) et la conversion (proportionnelle aux pas de
-    diffusion ; voix nettoyée : voix principale et chœurs convertis à part, environ 1,5 fois plus). Le mode n'est connu
-    qu'après la séparation : en mode auto, l'estimation suppose du chant (la plus longue). Défauts prudents sans
-    historique (nettoyage : banc d'essai du 04/11/2026)."""
+    diffusion ; voix nettoyée : voix principale, chœurs et passages repris par la piste de secours convertis à part,
+    environ 1,5 fois plus), enfin les paroles (chargement de Whisper large-v3 et du traducteur, puis transcription).
+    Le mode n'est connu qu'après la séparation : en mode auto, l'estimation suppose du chant (la plus longue). Défauts
+    prudents sans historique (nettoyage : banc d'essai du 04/11/2026 ; paroles : essai du même jour)."""
     import statistics
-    fixes, extras, sep, net, conv, conv_net = [], [], [], [], [], []
+    fixes, extras, sep, net, conv, conv_net, par_fixes, par = [], [], [], [], [], [], [], []
     rapports = sorted(Path(sorties).glob('*/travail/*/rapport.json'), key=lambda p: p.stat().st_mtime)[-30:]
     for p in rapports:
         try:
@@ -771,6 +807,11 @@ def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=
                 net.append(tps['nettoyage_s'] / d)
             if d > 5 and v.get('conversion_s') and v.get('pas_diffusion'):
                 (conv_net if nettoyee else conv).append(v['conversion_s'] / d / v['pas_diffusion'])
+            if sk.get('paroles_total_s') is not None and r.get('temps_local', {}).get('videos_dans_la_session') == 1:
+                # tout ce qui n'est pas transcription (démarrage du processus, chargements, traduction) compte comme fixe
+                par_fixes.append(max(float(sk['paroles_total_s']) - float(tps.get('paroles_s') or 0), 0.0))
+            if d > 5 and tps.get('paroles_s'):
+                par.append(tps['paroles_s'] / d)
         except (OSError, ValueError, KeyError, TypeError):
             continue
     fixe = statistics.median(fixes) if fixes else 120.0
@@ -783,6 +824,9 @@ def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=
         t_conv = statistics.median(conv_net) if conv_net else 1.5 * t_conv
     elif chant and moteur == 'yingmusic':
         fixe += 30.0   # chargement de YingMusic-SVC
+    if paroles:
+        fixe += statistics.median(par_fixes) if par_fixes else 90.0   # Whisper large-v3 (3 Go) et NLLB-200 (2,5 Go)
+        t_sep += statistics.median(par) if par else 0.25
     return round(60 + fixe + sum(durees_s) * (t_sep + t_conv * pas))   # 60 s : file Kaggle et écriture des sorties
 
 
@@ -1237,15 +1281,16 @@ def ajuster_coupe(video, info, fv, debut):
     return debut
 
 
-def remettre_sur_video(t, mix, dossier, base):
+def plan_video(t):
+    """Où et comment le mix sera remis sur la vidéo : conteneur de sortie, coupe de l'extrait (-ss/-t) et décalage du
+    son dans la vidéo de sortie (decalage_son : instant de la vidéo de sortie où commence le mix ; 0 le plus souvent,
+    -0,13 s pour un extrait mkv ou webm, le retard du flux audio d'origine pour une vidéo entière)."""
     src = json.loads((t / 'source.json').read_text())
     video = Path(src['video'])
     info = sonder(video)
     ext = video.suffix.lower()
     if ext not in CONTENEURS:
         ext = '.mkv'
-    audio, options, sous_titres = CONTENEURS[ext]
-    sortie = dossier / f'{base}{ext}'
     fv = flux_video(info)
     coupe, decalage_son = [], float(src.get('decalage_son') or 0)
     if 'debut' in src:
@@ -1253,24 +1298,258 @@ def remettre_sur_video(t, mix, dossier, base):
         # la vidéo commence à ss, le son du mix à debut : le mix est décalé d'autant (négatif si ss > debut)
         coupe = ['-ss', f'{ss:.6f}', '-t', f"{src['debut'] + src['duree'] - ss:.6f}"]
         decalage_son += src['debut'] - ss
-    decalage = ['-itsoffset', f'{decalage_son:.6f}'] if abs(decalage_son) > 1e-6 else []
+    return {'src': src, 'video': video, 'info': info, 'ext': ext, 'fv': fv, 'coupe': coupe, 'decalage_son': decalage_son}
+
+
+SOUS_TITRES_NOUVEAUX = {'.mp4': 'mov_text', '.m4v': 'mov_text', '.mov': 'mov_text', '.mkv': 'srt', '.webm': 'webvtt'}
+
+
+def remettre_sur_video(t, mix, dossier, base, sous_titres=(), plan=None):
+    """Le mix remis sur la vidéo : image copiée sans réencodage, sous-titres d'origine gardés (ceux que le conteneur
+    accepte tels quels), puis les pistes de sous_titres ajoutées ([{fichier (srt, temps de la vidéo de sortie), langue
+    (ISO 639-2), titre}] : mov_text en mp4, srt en mkv, webvtt en webm), sans être affichées d'office."""
+    p = plan or plan_video(t)
+    src, video, info, ext, fv = p['src'], p['video'], p['info'], p['ext'], p['fv']
+    audio, options, acceptes = CONTENEURS[ext]
+    sortie = dossier / f'{base}{ext}'
+    decalage = ['-itsoffset', f"{p['decalage_son']:.6f}"] if abs(p['decalage_son']) > 1e-6 else []
     cartes = ['-map', f"0:{fv['index']}", '-map', '1:a:0']
     gardes, jetes = [], []
     for s in flux(info, 'subtitle'):
-        (gardes if s.get('codec_name') in sous_titres else jetes).append(s)
+        (gardes if s.get('codec_name') in acceptes else jetes).append(s)
     for s in gardes:
         cartes += ['-map', f"0:{s['index']}"]
+    entrees, codecs = [], []
+    for j, st in enumerate(sous_titres):
+        k = len(gardes) + j   # index de la piste parmi les sous-titres de sortie
+        entrees += ['-i', st['fichier']]
+        cartes += ['-map', f'{2 + j}:0']
+        codecs += [f'-c:s:{k}', SOUS_TITRES_NOUVEAUX.get(ext, 'srt'), f'-metadata:s:s:{k}', f"language={st['langue']}",
+                   f'-metadata:s:s:{k}', f"title={st['titre']}", f'-disposition:s:{k}', '0']
+        if ext in ('.mp4', '.m4v', '.mov'):
+            codecs += [f'-metadata:s:s:{k}', f"handler_name={st['titre']}"]
     if ext == '.mkv':
         cartes += ['-map', '0:t?']   # polices jointes des sous-titres
+        if sous_titres:
+            options = [*options, '-default_mode', 'infer_no_subs']   # les paroles ne s'affichent pas d'office
     meta = ['-metadata:s:a:0', f"title={base.split(' - ', 1)[-1]}"]
     if src.get('langue'):
         meta += ['-metadata:s:a:0', f"language={src['langue']}"]
-    ff(*coupe, '-i', video, *decalage, '-i', mix, *cartes, '-c:v', 'copy', '-c:s', 'copy', '-c:t', 'copy',
-       *audio, *meta, *options, sortie)
+    ff(*p['coupe'], '-i', video, *decalage, '-i', mix, *entrees, *cartes, '-c:v', 'copy', '-c:s', 'copy', *codecs,
+       '-c:t', 'copy', *audio, *meta, *options, sortie)
     if jetes:
         dire(f"sous-titres non copiés ({', '.join(sorted({s.get('codec_name', '?') for s in jetes}))}) : le conteneur "
              f'{ext} ne les accepte pas tels quels')
     return sortie
+
+
+# --- Paroles : paroles.json (noyau), calage sur la vidéo, .srt, .lrc --------------------------------------------------
+
+# Langues de Whisper : code ISO 639-2/B (étiquette des pistes mp4 et mkv) et nom français (titre des pistes)
+LANGUES = {
+    'af': ('afr', 'afrikaans'), 'am': ('amh', 'amharique'), 'ar': ('ara', 'arabe'), 'az': ('aze', 'azéri'),
+    'be': ('bel', 'biélorusse'), 'bg': ('bul', 'bulgare'), 'bn': ('ben', 'bengali'), 'br': ('bre', 'breton'),
+    'bs': ('bos', 'bosnien'), 'ca': ('cat', 'catalan'), 'cs': ('cze', 'tchèque'), 'cy': ('wel', 'gallois'),
+    'da': ('dan', 'danois'), 'de': ('ger', 'allemand'), 'el': ('gre', 'grec'), 'en': ('eng', 'anglais'),
+    'es': ('spa', 'espagnol'), 'et': ('est', 'estonien'), 'eu': ('baq', 'basque'), 'fa': ('per', 'persan'),
+    'fi': ('fin', 'finnois'), 'fr': ('fre', 'français'), 'gl': ('glg', 'galicien'), 'gu': ('guj', 'gujarati'),
+    'ha': ('hau', 'haoussa'), 'haw': ('haw', 'hawaïen'), 'he': ('heb', 'hébreu'), 'hi': ('hin', 'hindi'),
+    'hr': ('hrv', 'croate'), 'ht': ('hat', 'créole haïtien'), 'hu': ('hun', 'hongrois'), 'hy': ('arm', 'arménien'),
+    'id': ('ind', 'indonésien'), 'is': ('ice', 'islandais'), 'it': ('ita', 'italien'), 'ja': ('jpn', 'japonais'),
+    'jw': ('jav', 'javanais'), 'ka': ('geo', 'géorgien'), 'kk': ('kaz', 'kazakh'), 'km': ('khm', 'khmer'),
+    'kn': ('kan', 'kannada'), 'ko': ('kor', 'coréen'), 'la': ('lat', 'latin'), 'lb': ('ltz', 'luxembourgeois'),
+    'ln': ('lin', 'lingala'), 'lo': ('lao', 'lao'), 'lt': ('lit', 'lituanien'), 'lv': ('lav', 'letton'),
+    'mg': ('mlg', 'malgache'), 'mi': ('mao', 'maori'), 'mk': ('mac', 'macédonien'), 'ml': ('mal', 'malayalam'),
+    'mr': ('mar', 'marathi'), 'ms': ('may', 'malais'), 'mt': ('mlt', 'maltais'), 'my': ('bur', 'birman'),
+    'ne': ('nep', 'népalais'), 'nl': ('dut', 'néerlandais'), 'nn': ('nno', 'norvégien nynorsk'),
+    'no': ('nor', 'norvégien'), 'oc': ('oci', 'occitan'), 'pa': ('pan', 'pendjabi'), 'pl': ('pol', 'polonais'),
+    'ps': ('pus', 'pachto'), 'pt': ('por', 'portugais'), 'ro': ('rum', 'roumain'), 'ru': ('rus', 'russe'),
+    'sd': ('snd', 'sindhi'), 'si': ('sin', 'cingalais'), 'sk': ('slo', 'slovaque'), 'sl': ('slv', 'slovène'),
+    'sn': ('sna', 'shona'), 'so': ('som', 'somali'), 'sq': ('alb', 'albanais'), 'sr': ('srp', 'serbe'),
+    'su': ('sun', 'soundanais'), 'sv': ('swe', 'suédois'), 'sw': ('swa', 'swahili'), 'ta': ('tam', 'tamoul'),
+    'te': ('tel', 'télougou'), 'tg': ('tgk', 'tadjik'), 'th': ('tha', 'thaï'), 'tk': ('tuk', 'turkmène'),
+    'tl': ('tgl', 'tagalog'), 'tr': ('tur', 'turc'), 'tt': ('tat', 'tatar'), 'uk': ('ukr', 'ukrainien'),
+    'ur': ('urd', 'ourdou'), 'uz': ('uzb', 'ouzbek'), 'vi': ('vie', 'vietnamien'), 'yi': ('yid', 'yiddish'),
+    'yo': ('yor', 'yoruba'), 'yue': ('chi', 'cantonais'), 'zh': ('chi', 'chinois'),
+}
+
+
+def langue_piste(code):
+    """(étiquette ISO 639-2, nom français) d'une langue de Whisper ; ('und', code) si elle est inconnue."""
+    return LANGUES.get(code or '', ('und', code or 'langue inconnue'))
+
+
+def _segments_propres(segments, cle='texte', mots=False):
+    """Segments valides (temps finis, texte non vide), triés ; fin avant le début : remise au début."""
+    out = []
+    for s in segments if isinstance(segments, list) else []:
+        if not isinstance(s, dict):
+            continue
+        try:
+            a, b = float(s['debut']), float(s['fin'])
+        except (KeyError, TypeError, ValueError):
+            continue
+        texte = re.sub(r'\s+', ' ', str(s.get(cle) or '')).strip()
+        if not (math.isfinite(a) and math.isfinite(b)) or not texte:
+            continue
+        item = {**s, 'debut': a, 'fin': max(a, b), cle: texte}
+        if mots:
+            item['mots'] = _segments_propres(s.get('mots'), 'mot')
+        out.append(item)
+    return sorted(out, key=lambda s: (s['debut'], s['fin']))
+
+
+def lire_paroles(chemin):
+    """paroles.json (format 1) lu et vérifié ; les cas abîmés (absent, JSON illisible, format inattendu, segments sans
+    temps ou sans texte, temps non finis, traductions mal formées) ne font jamais échouer la mise en vidéo. Rend
+    (paroles nettoyées ou None, raison)."""
+    try:
+        d = json.loads(Path(chemin).read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        return None, 'pas de paroles.json'
+    except (OSError, ValueError) as e:
+        return None, f'paroles.json illisible ({e})'
+    if not isinstance(d, dict) or not isinstance(d.get('segments'), list):
+        return None, 'paroles.json : format inattendu (segments manquants)'
+    d['segments'] = _segments_propres(d['segments'], mots=True)
+    trad = d.get('traductions') if isinstance(d.get('traductions'), dict) else {}
+    d['traductions'] = {lg: {**t, 'segments': _segments_propres(t.get('segments'))} for lg, t in trad.items()
+                        if isinstance(t, dict) and isinstance(t.get('segments'), list)}
+    try:
+        d['decalage_s'] = float(d.get('decalage_s') or 0.0)
+    except (TypeError, ValueError):
+        d['decalage_s'] = 0.0
+    if not math.isfinite(d['decalage_s']):
+        d['decalage_s'] = 0.0
+    if not isinstance(d.get('langue'), str) or not d['langue']:
+        d['langue'] = None
+    return d, None
+
+
+def caler_paroles(d, decalage):
+    """Temps des paroles en secondes de la vidéo de sortie : le noyau les donne en temps du son doublé (decalage_s 0) ;
+    le mix commence à decalage s dans la vidéo. Idempotent (--remix) : decalage_s garde le décalage déjà appliqué.
+    Ce qui tomberait avant le début de la vidéo est rogné ou retiré."""
+    delta = float(decalage) - float(d.get('decalage_s') or 0.0)
+
+    def decaler(segs, cle='texte', mots=False):
+        out = []
+        for s in segs:
+            a, b = s['debut'] + delta, s['fin'] + delta
+            if b <= 0:
+                continue
+            item = {**s, 'debut': round(max(a, 0.0), 6), 'fin': round(b, 6)}
+            if mots:
+                item['mots'] = decaler(s.get('mots') or [], 'mot')
+            out.append(item)
+        return out
+    d['segments'] = decaler(d['segments'], mots=True)
+    for t in d['traductions'].values():
+        t['segments'] = decaler(t['segments'])
+    d['decalage_s'] = round(float(decalage), 6)
+    return d
+
+
+def temps_srt(t):
+    ms = int(round(max(t, 0.0) * 1000))
+    return f'{ms // 3600000:02d}:{ms // 60000 % 60:02d}:{ms // 1000 % 60:02d},{ms % 1000:03d}'
+
+
+def couper_ligne(texte, largeur=42):
+    """Texte trop long pour une ligne de sous-titres : deux lignes, coupées à l'espace le plus proche du milieu."""
+    if len(texte) <= largeur or ' ' not in texte:
+        return texte
+    milieu = len(texte) // 2
+    i = min((i for i, c in enumerate(texte) if c == ' '), key=lambda i: abs(i - milieu))
+    return texte[:i] + '\n' + texte[i + 1:]
+
+
+def cues(segments, duree_max=None, lecture_min_s=1.0):
+    """Segments -> [(début, fin, texte)] affichables : chaque ligne reste au moins lecture_min_s (sans empiéter sur la
+    suivante), jamais deux à la fois, rien après duree_max (fin de la vidéo)."""
+    segs = [s for s in segments if duree_max is None or s['debut'] < duree_max]
+    out = []
+    for i, s in enumerate(segs):
+        suivant = segs[i + 1]['debut'] if i + 1 < len(segs) else None
+        fin = max(s['fin'], s['debut'] + lecture_min_s)
+        if suivant is not None:
+            fin = min(fin, suivant - 0.001)
+        if duree_max is not None:
+            fin = min(fin, duree_max)
+        if fin - s['debut'] < 0.05:
+            fin = s['debut'] + 0.05
+        out.append((s['debut'], fin, s['texte']))
+    return out
+
+
+def ecrire_srt(segments, chemin, duree_max=None):
+    """Fichier .srt (UTF-8) ; rend le nombre de répliques."""
+    c = cues(segments, duree_max)
+    texte = ''.join(f'{i}\n{temps_srt(a)} --> {temps_srt(b)}\n{couper_ligne(t)}\n\n' for i, (a, b, t) in enumerate(c, 1))
+    tmp = Path(str(chemin) + '.tmp')
+    tmp.write_text(texte, encoding='utf-8')
+    os.replace(tmp, chemin)
+    return len(c)
+
+
+def temps_lrc(t):
+    cs = int(round(max(t, 0.0) * 100))
+    return f'[{cs // 6000:02d}:{cs // 100 % 60:02d}.{cs % 100:02d}]'
+
+
+def ecrire_lrc(segments, chemin, decalage=0.0, titre=None, langue=None):
+    """Fichier .lrc (UTF-8) synchronisé ligne à ligne pour les lecteurs de musique, en temps du mp3 (temps de la vidéo
+    moins decalage) ; une ligne vide efface le texte aux silences de plus de 2 s. Rend le nombre de lignes."""
+    entetes = [f'[ti:{titre}]'] if titre else []
+    entetes += [f'[la:{langue}]'] if langue else []
+    entetes += ['[re:Voix-là (Whisper large-v3)]']
+    lignes, n = [], 0
+    segs = [s for s in segments if s['fin'] - decalage > 0]
+    for i, s in enumerate(segs):
+        lignes.append(f"{temps_lrc(s['debut'] - decalage)}{s['texte']}")
+        n += 1
+        suivant = segs[i + 1]['debut'] if i + 1 < len(segs) else None
+        if suivant is None or suivant - s['fin'] > 2.0:
+            lignes.append(temps_lrc(s['fin'] - decalage))
+    tmp = Path(str(chemin) + '.tmp')
+    tmp.write_text('\n'.join(entetes + lignes) + '\n', encoding='utf-8')
+    os.replace(tmp, chemin)
+    return n
+
+
+def preparer_paroles(tv, dossier, base, decalage, duree_video=None):
+    """paroles.json calé sur la vidéo de sortie (réécrit), puis <base>.<langue>.srt, <base>.fr.srt (traduction ; ou
+    <base>.traduction.fr.srt si les paroles sont déjà en français) et <base>.lrc à côté des sorties. Rend (pistes de
+    sous-titres pour remettre_sur_video, fichiers écrits, résumé pour le rapport)."""
+    chemin = tv / 'paroles.json'
+    d, raison = lire_paroles(chemin)
+    if d is None:
+        return [], [], {'raison': raison}
+    d = caler_paroles(d, decalage)
+    tmp = chemin.with_name(chemin.name + '.tmp')
+    tmp.write_text(json.dumps(d, ensure_ascii=False, indent=1), encoding='utf-8')
+    os.replace(tmp, chemin)
+    info = {'langue': d['langue'], 'lignes': len(d['segments']), 'decalage_s': d['decalage_s'],
+            'traduction': bool((d['traductions'].get('fr') or {}).get('segments'))}
+    if not d['segments']:
+        return [], [], {**info, 'raison': 'aucune parole reconnue'}
+    lg = d['langue'] or 'und'
+    code, nom = langue_piste(d['langue'])
+    pistes, fichiers = [], []
+    srt = dossier / f'{base}.{lg}.srt'
+    ecrire_srt(d['segments'], srt, duree_video)
+    pistes.append({'fichier': srt, 'langue': code, 'titre': f'Paroles ({nom})'})
+    fichiers.append(srt)
+    if info['traduction']:
+        srt_fr = dossier / (f'{base}.fr.srt' if lg != 'fr' else f'{base}.traduction.fr.srt')
+        ecrire_srt(d['traductions']['fr']['segments'], srt_fr, duree_video)
+        pistes.append({'fichier': srt_fr, 'langue': 'fre', 'titre': 'Paroles (français, traduction)'})
+        fichiers.append(srt_fr)
+    lrc = dossier / f'{base}.lrc'
+    ecrire_lrc(d['segments'], lrc, decalage, base, d['langue'])
+    fichiers.append(lrc)
+    info.update({'fichiers': [f.name for f in fichiers], 'nom_langue': nom})
+    return pistes, fichiers, info
 
 
 # --- Une vidéo -------------------------------------------------------------------------------------------------------
@@ -1355,18 +1634,41 @@ def finir(tr, a, voix, temps_local=None):
                 extraits.append(sortie)
     mix_s = time.time() - debut
     debut = time.time()
-    with Etape('video', titre, 'son remis sur la vidéo (image copiée)'):
-        sortie = remettre_sur_video(t, tv / 'mix.wav', dossier, base)
+    paroles_on = getattr(a, 'paroles', True)
+    pistes_st, fichiers_paroles, info_paroles = [], [], {'demande': paroles_on}
+    with Etape('video', titre, 'son remis sur la vidéo (image copiée)' + (', paroles en sous-titres' if paroles_on else '')):
+        plan = plan_video(t)
+        if paroles_on:
+            try:
+                pistes_st, fichiers_paroles, i_p = preparer_paroles(tv, dossier, base, plan['decalage_son'],
+                                                                    duree_s(tv / 'mix.wav') + plan['decalage_son'])
+                info_paroles.update(i_p)
+            except Exception as e:  # noqa: BLE001 — des paroles abîmées n'empêchent jamais la vidéo
+                info_paroles['raison'] = f'paroles inutilisables : {e}'
+        try:
+            sortie = remettre_sur_video(t, tv / 'mix.wav', dossier, base, pistes_st, plan)
+        except Exception as e:  # noqa: BLE001
+            if not pistes_st:
+                raise
+            dire(f'ATTENTION : pistes de paroles refusées par ffmpeg ({str(e).splitlines()[-1][:200]}) : vidéo sans elles')
+            info_paroles['raison'] = 'pistes de sous-titres refusées par ffmpeg (fichiers .srt et .lrc gardés)'
+            pistes_st = []
+            sortie = remettre_sur_video(t, tv / 'mix.wav', dossier, base, (), plan)
+        info_paroles['pistes_video'] = [st['titre'] for st in pistes_st]
     video_s = time.time() - debut
     rapport['mix'] = {**info, 'musique_seule': reste, 'limite_dbtp': round(20 * math.log10(LIMITE), 2), 'voix_db': voix_db, 'reverb_db': a.reverb_db if mode == 'chant' else None,
                       'gains_db': {k: round(v, 2) for k, v in gains.items()}, 'voix_source_db': cible}
+    rapport['paroles_sorties'] = info_paroles
     if temps_local is not None:
         temps_local.update({'mix_local_s': round(mix_s, 1), 'remise_video_s': round(video_s, 1)})
         rapport['temps_local'] = temps_local
     (tv / 'rapport.json').write_text(json.dumps(rapport, ensure_ascii=False, indent=1))
+    lrc = next((f for f in fichiers_paroles if f.suffix == '.lrc'), None)
     EV('sortie', titre, mp4=str(sortie), mp3=str(mp3), rapport=str(tv / 'rapport.json'),
        comparaisons=[str(e) for e in extraits] or None,
-       courbes=str(tv / 'courbes.json') if (tv / 'courbes.json').exists() else None)
+       courbes=str(tv / 'courbes.json') if (tv / 'courbes.json').exists() else None,
+       paroles=str(tv / 'paroles.json') if paroles_on and (tv / 'paroles.json').exists() else None,
+       srt=[str(f) for f in fichiers_paroles if f.suffix == '.srt'] or None, lrc=str(lrc) if lrc else None)
     m = rapport.get('mesures_musique', {})
     principale = rapport.get('variantes', {}).get('voix_convertie.flac', {})
     dire(f"mode {mode} ({'imposé' if rapport.get('mode_force') else 'détecté'} : musique sous la voix "
@@ -1384,6 +1686,19 @@ def finir(tr, a, voix, temps_local=None):
         dire(f'moteur {nom_moteur} ; {voix_txt}')
         if principale.get('repli'):
             dire(f"ATTENTION : YingMusic-SVC indisponible, repli sur Seed-VC 44 kHz ({principale['repli']})")
+    sec = rapport.get('secours') or {}
+    if sec.get('decision') == 'secours' and sec.get('zones'):
+        dire(f"passages perdus au nettoyage repris de la voix complète : {len(sec['zones'])}, {sec.get('secondes', 0):.1f} s ("
+             + ', '.join(f"{fmt_t(z['debut_s'])}–{fmt_t(z['fin_s'])}, écart {z['ecart_db']:.0f} dB" for z in sec['zones'][:6])
+             + (', …' if len(sec['zones']) > 6 else '') + ')')
+    if paroles_on:
+        if fichiers_paroles:
+            dire(f"paroles ({info_paroles.get('nom_langue')}, {info_paroles.get('lignes')} lignes"
+                 f"{', traduction française' if info_paroles.get('traduction') else ''}) : "
+                 + ', '.join(f.name for f in fichiers_paroles))
+        else:
+            kp = rapport.get('paroles') or {}
+            dire(f"paroles : aucune ({kp.get('erreur') or info_paroles.get('raison') or 'rien de reconnu'})")
     print('  hauteur par passage (dt = demi-tons) :', flush=True)
     for l in rapport.get('frise', []):
         print('   ', l, flush=True)
@@ -1614,7 +1929,8 @@ def traiter_lot(videos, a, voix):
         # retour_flac : la voix isolée revient en FLAC 24 bits (voix_source.flac et son gain dans voix_source.flac.json)
         # moteur_chant, nettoyage : chaîne du chant (YingMusic-SVC sur la voix nettoyée par défaut)
         # ancres : None sans fichier d'ancres (ANCRES ; le noyau décide alors l'octave sans empreinte)
-        reglages = {**NOYAU_REGLAGES, 'pas': a.pas, 'ancres': ancres,
+        # paroles : transcription (Whisper large-v3) et traduction française dans le noyau (paroles.json)
+        reglages = {**NOYAU_REGLAGES, 'pas': a.pas, 'ancres': ancres, 'paroles': bool(a.paroles),
                     'moteur_chant': a.moteur, 'nettoyage': not a.sans_nettoyage,
                     'voix': {'nom': voix['id'], 'fichier': f"voix-{voix['id']}.wav", 'f0_parole_hz': voix['f0'],
                              'facteur_chant': FACTEUR_CHANT},
@@ -1628,11 +1944,12 @@ def traiter_lot(videos, a, voix):
         retour = kdir / 'retour'
         sources = [OUTILS] if (kdir / 'outils.json').exists() else []
         estimation = estimer_noyau_s([tr['duree_audio_s'] for tr in travaux], a.pas, a.sortie, not a.sans_nettoyage, a.mode,
-                                     a.moteur)
+                                     a.moteur, a.paroles)
         # limite du suivi : au moins le double de l'estimation (le nettoyage allonge beaucoup une longue chanson)
         attente_maxi = max((30 + 20 * len(travaux)) * 60, 2 * estimation + 30 * 60)
         dire(f"chaîne : chant → {'voix nettoyée' if not a.sans_nettoyage else 'voix complète (sans nettoyage)'}, "
              f"{'YingMusic-SVC' if a.moteur == 'yingmusic' else 'Seed-VC 44 kHz'} ; parole → Seed-VC 22 kHz ; "
+             f"paroles → {'Whisper large-v3 et traduction française' if a.paroles else 'non'} ; "
              f"session estimée à {estimation / 60:.0f} min")
 
         def noter(pousse, version):
@@ -1640,7 +1957,7 @@ def traiter_lot(videos, a, voix):
                             'poussee_le': datetime.datetime.fromtimestamp(pousse).astimezone().isoformat(timespec='seconds'),
                             'voix': voix['id'], 'sortie': str(Path(a.sortie).expanduser().resolve()), 'envoi_s': envoi_s,
                             'estimation_s': estimation, 'attente_maxi_s': attente_maxi, 'pas': a.pas,
-                            'moteur': a.moteur, 'nettoyage': not a.sans_nettoyage,
+                            'moteur': a.moteur, 'nettoyage': not a.sans_nettoyage, 'paroles': bool(a.paroles),
                             'travaux': [{k: tr.get(k) for k in CHAMPS_SESSION} for tr in travaux]})
         etapes = {}
         try:
@@ -1738,6 +2055,16 @@ def preparer_outils(a):
     if (ying.get('essai') or {}).get('erreur'):
         dire(f"ATTENTION : YingMusic-SVC ne se charge pas sur Kaggle ({ying['essai']['erreur']}) : les doublages en chant "
              'se replieront sur Seed-VC 44 kHz')
+    par = fiche.get('paroles') or {}
+    essai = par.get('essai') or {}
+    manque = [n for n in ('whisper', 'traducteur') if not par.get(n)]
+    dire(f"paroles : Whisper large-v3 {'monté' if par.get('whisper') else 'absent (téléchargé à chaque doublage)'}"
+         f" ({par.get('whisper_mo', '?')} Mo), traducteur NLLB-200 {'monté' if par.get('traducteur') else 'absent'}"
+         f" ({par.get('traducteur_mo', '?')} Mo) ; essai : chargements {essai.get('chargements_s')}, temps {essai.get('temps')}"
+         + (f", ERREUR {essai.get('erreur') or essai.get('erreur_traduction')}"
+            if essai.get('erreur') or essai.get('erreur_traduction') else ''))
+    if manque or essai.get('erreur'):
+        dire('ATTENTION : paroles incomplètes dans les outils : les doublages les téléchargeront, ou se passeront de paroles')
 
 
 def main():
@@ -1761,6 +2088,9 @@ def main():
     p.add_argument('--sans-nettoyage', action='store_true',
                    help='chant : convertir la voix isolée complète, sans séparer voix principale et chœurs ni retirer la '
                         'reverb (chaîne d\'avant, plus rapide)')
+    p.add_argument('--sans-paroles', action='store_true',
+                   help='ni transcription ni traduction des paroles, ni sous-titres, .srt ou .lrc (défaut : clé « paroles » '
+                        'de la configuration, oui sinon ; avec --remix : la vidéo refaite sans les paroles)')
     p.add_argument('--voix-db', type=float, default=None, help='voix par rapport à celle de la vidéo (défaut +4 en chant, 0 en parole)')
     p.add_argument('--reverb-db', type=float, default=-13, help='reverb sous la voix sèche, en chant (défaut -13)')
     p.add_argument('--mix-v1', action='store_true',
@@ -1838,6 +2168,7 @@ def executer(p, a):
     if a.reprendre:
         if not KAGGLE.exists() or not JETON.exists():
             sys.exit(f'Kaggle : commande ({KAGGLE}) ou clé (~/.kaggle/access_token) absente')
+        a.paroles = not a.sans_paroles and paroles_config(conf)
         configurer_kaggle(conf)
         echecs = reprendre(a)
         if echecs:
@@ -1852,6 +2183,7 @@ def executer(p, a):
         raise SystemExit(f'{CONFIG} : moteur inconnu « {moteur_conf} » (moteurs : {", ".join(MOTEURS)})')
     moteur_donne = a.moteur is not None
     a.moteur = a.moteur or moteur_conf or MOTEUR_DEFAUT
+    a.paroles = not a.sans_paroles and paroles_config(conf)
     if a.voix is None:
         a.voix = exiger_voix_defaut()
     voix = charger_voix(a.voix)

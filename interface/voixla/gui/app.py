@@ -1,5 +1,12 @@
 """Application Voix-là (GTK4/libadwaita) : fenêtre, barre latérale des sections, suivi de la file des travaux,
-notifications."""
+notifications, barre « en cours de lecture ».
+
+Fermer la fenêtre pendant une lecture ne l'arrête pas : la fenêtre se cache, l'application reste en vie
+(Gio.Application.hold) et la musique continue, sur son seul son si c'était une vidéo. Elle quitte quand la lecture finit
+ou s'arrête (ou après une longue pause), sauf si la fenêtre est rouverte entre-temps : relancer voix-la (instance
+unique) ou « Raise » de MPRIS la remontre telle qu'on l'a laissée. Sans lecture, fermer la fenêtre quitte comme avant.
+Les règles sont dans voixla/lecture.py (sans GTK), la lecture partagée dans gui/lecture.py.
+"""
 
 import fcntl
 import importlib
@@ -11,7 +18,13 @@ import traceback
 from gi.repository import Adw, Gio, GLib, Gtk  # versions fixées dans gui/__init__.py
 
 from .. import APP_ID, NOM, __version__, chemins, moteur, travaux
+from .. import lecture as regles
+from .. import preparation
 from . import commun
+from .barre_lecture import BarreLecture
+from .lecture import lectures
+
+DELAI_PREPARATION_S = 45      # après le démarrage : la fenêtre et ses premières lectures d'abord
 
 SECTIONS = [
     ("doubler", "Doubler", "video-x-generic-symbolic", "page_doubler", "PageDoubler"),
@@ -51,6 +64,7 @@ class Fenetre(Adw.ApplicationWindow):
         self.statuts_vus = {}
         self._verrou = None
         self._prendre_verrou_interface()
+        self.dans_le_fond = False      # fenêtre cachée pendant une lecture (fermée par l'utilisateur)
 
         # Barre latérale
         self.liste = Gtk.ListBox(css_classes=["navigation-sidebar"], selection_mode=Gtk.SelectionMode.SINGLE)
@@ -93,8 +107,17 @@ class Fenetre(Adw.ApplicationWindow):
             sidebar=Adw.NavigationPage(title=NOM, child=vue_laterale),
             content=Adw.NavigationPage(title="Contenu", child=self.nav),
             min_sidebar_width=190, max_sidebar_width=250, sidebar_width_fraction=0.22)
+        self.split.connect("notify::show-content", lambda *_: self._maj_barre())
+        self.split.connect("notify::collapsed", lambda *_: self._maj_barre())
         self.toasts = Adw.ToastOverlay(child=self.split)
-        self.set_content(self.toasts)
+        # Barre « en cours de lecture » : en bas de toute la fenêtre, sous la barre latérale et le contenu, pour rester
+        # à portée même fenêtre étroite (barre latérale repliée) ; les notifications s'affichent au-dessus d'elle
+        self.barre = BarreLecture()
+        self.cadre = Adw.ToolbarView(content=self.toasts, bottom_bar_style=Adw.ToolbarStyle.RAISED,
+                                     reveal_bottom_bars=False)
+        self.cadre.add_bottom_bar(self.barre)
+        self.set_content(self.cadre)
+        lectures().ecouteurs.append(self._maj_barre)
         etroit = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 640sp"))
         etroit.add_setter(self.split, "collapsed", True)
         self.add_breakpoint(etroit)
@@ -108,6 +131,19 @@ class Fenetre(Adw.ApplicationWindow):
         self.recharger_voix()
         self._minuteur_travaux = None
         self.suivre_travaux()
+        # au démarrage, quand le poste est calme : les pistes des derniers doublages, en tâche de fond
+        GLib.timeout_add_seconds(DELAI_PREPARATION_S, self._preparer_recents)
+
+    def _preparer_recents(self):
+        """Les MAX_RECENTS doublages les plus récents à qui il manque des copies : préparés par le préparateur en tâche
+        de fond (voixla/preparation.py), qui attend que le poste soit calme. Pas pendant les captures d'essai."""
+        if not (os.environ.get("VOIXLA_CAPTURE") or os.environ.get("VOIXLA_SANS_PREPARATION")):
+            try:
+                preparation.lancer_en_fond(["--recents", preparation.MAX_RECENTS, "--si-calme",
+                                            "--donnees", self.donnees])
+            except OSError:
+                traceback.print_exc()
+        return False
 
     # --- actions ---------------------------------------------------------------------------------------------------
 
@@ -216,6 +252,7 @@ class Fenetre(Adw.ApplicationWindow):
             if p:
                 p.montrer()
         self.split.get_content().set_title(visible.get_title() if visible else NOM)
+        self._maj_barre()
 
     def ouvrir_resultat(self, dossier, voix=None):
         p = self.aller("resultats")
@@ -226,10 +263,42 @@ class Fenetre(Adw.ApplicationWindow):
         self.nav.push(page)
         self.split.set_show_content(True)
 
+    def montrer_pile(self, tag, *suite):
+        """La section tag avec ces pages par-dessus (retour à un résultat gardé, depuis la barre de lecture)."""
+        page = self.pages[tag]
+        self.liste.select_row(self.lignes[tag])
+        self.nav.replace([page, *suite])
+        self.split.set_show_content(True)
+
+    def page_vue(self):
+        """La page du contenu qu'on voit (None si la fenêtre est cachée, ou si la barre latérale la recouvre)."""
+        if not self.get_visible() or (self.split.get_collapsed() and not self.split.get_show_content()):
+            return None
+        return self.nav.get_visible_page()
+
+    # --- lecture en cours ------------------------------------------------------------------------------------------
+
+    def _maj_barre(self, etat=None):
+        """La barre « en cours de lecture » : visible pendant une session, sauf sur la page qui lit."""
+        if not hasattr(self, "cadre"):
+            return                    # pendant la construction de la fenêtre
+        etat = etat if etat is not None else lectures().dernier
+        voir = bool(etat.session and self.get_visible() and not lectures().session_visible())
+        if voir:
+            self.barre.montrer(etat)
+        if self.cadre.get_reveal_bottom_bars() != voir:
+            self.cadre.set_reveal_bottom_bars(voir)
+
     # --- données partagées -----------------------------------------------------------------------------------------
 
     def ecouter(self, sujet, rappel):
         self.ecouteurs[sujet].append(rappel)
+
+    def oublier(self, sujet, rappel):
+        try:
+            self.ecouteurs[sujet].remove(rappel)
+        except ValueError:
+            pass
 
     def prevenir(self, sujet, *args):
         for r in list(self.ecouteurs[sujet]):
@@ -359,6 +428,20 @@ class Fenetre(Adw.ApplicationWindow):
             self._verrou = None
 
     def _fermeture(self, *_):
+        """Fermeture par l'utilisateur : pendant une lecture, la fenêtre se cache et l'application reste ; sinon on
+        quitte comme avant (les pages se ferment, le verrou de l'interface tombe avec le processus)."""
+        self._prevenir_travaux()
+        e = lectures().etat_courant()
+        app = self.get_application()
+        if app.vie.fermer(e.statut if e.session else regles.ARRET) == "cacher":
+            self.cacher_dans_le_fond()
+            return True
+        self._fermer_pages()
+        if app.fenetre is self:
+            app.fenetre = None        # une relance éventuelle ouvrira une fenêtre neuve
+        return False
+
+    def _prevenir_travaux(self):
         en_cours = self.file.en_cours()
         attente = self.file.en_attente()
         if en_cours or attente:
@@ -366,13 +449,53 @@ class Fenetre(Adw.ApplicationWindow):
             n.set_body(f"{len(attente) + (1 if en_cours else 0)} travail(aux) dans la file : ils continuent sans la "
                        "fenêtre, et une notification arrivera à la fin de chacun.")
             self.get_application().send_notification("fermeture", n)
+
+    def _fermer_pages(self):
         for p in self.pages.values():
             if hasattr(p, "fermer"):
                 try:
                     p.fermer()
                 except Exception:  # noqa: BLE001
                     pass
-        return False
+
+    def cacher_dans_le_fond(self):
+        """La fenêtre disparaît, la lecture continue : l'application est tenue (hold) ; la page affichée se cache (ses
+        minuteurs s'arrêtent) ; la vidéo en cours passe sur son seul son. Le suivi des travaux continue, et avec lui
+        leurs notifications (le verrou de l'interface reste pris tant que l'application vit)."""
+        self.dans_le_fond = True
+        self.set_visible(False)
+        self.get_application().garder()
+        p = self.pages.get(self.page_courante)
+        if p:
+            p.cacher()
+        lectures().fenetre_cachee()
+        lectures().prevoir()
+
+    def reouvrir(self):
+        """Relance de voix-la (activate) ou Raise de MPRIS : la fenêtre revient telle qu'on l'a laissée."""
+        cachee = not self.get_visible()
+        self.present()
+        if not cachee:
+            return
+        self.dans_le_fond = False
+        app = self.get_application()
+        app.vie.ouvrir()
+        app.relacher()
+        p = self.pages.get(self.page_courante)
+        if p:
+            p.montrer()
+        lectures().fenetre_montree()
+        lectures().prevoir()
+        self._maj_barre()
+
+    def fermer_vraiment(self):
+        """Fin de la lecture fenêtre cachée, ou Quit de MPRIS : on quitte pour de bon."""
+        self._fermer_pages()
+        try:
+            lectures().ecouteurs.remove(self._maj_barre)
+        except ValueError:
+            pass
+        self.destroy()
 
 
 class Application(Adw.Application):
@@ -383,13 +506,75 @@ class Application(Adw.Application):
         # Le serveur son (WirePlumber) retient volume et sourdine par nom d'application : les essais, qui jouent
         # son coupé, prennent un autre nom pour ne pas laisser la vraie application muette au lancement suivant.
         GLib.set_application_name(f"{NOM} (essai)" if os.environ.get("VOIXLA_APP_ID") else NOM)
+        self.fenetre = None
+        self.vie = regles.Vie()
+        self._tenue = False
+        self._verif_pause = None
+        self._quitte = False
+
+    def do_startup(self):
+        Adw.Application.do_startup(self)
+        lectures().app = self       # MPRIS sur la connexion de l'application, règles de vie, Raise et Quit
 
     def do_activate(self):
-        fen = self.props.active_window or Fenetre(self)
-        fen.present()
+        if self.fenetre is not None:
+            self.fenetre.reouvrir()     # instance unique : la fenêtre, cachée ou non, revient telle quelle
+            return
+        self.fenetre = Fenetre(self)
+        self.fenetre.present()
         if os.environ.get("VOIXLA_CAPTURE"):
             from . import essais
-            essais.preparer_capture(self, fen)
+            essais.preparer_capture(self, self.fenetre)
+
+    def do_shutdown(self):
+        lectures().fermer()
+        Adw.Application.do_shutdown(self)
+
+    # --- vie sans fenêtre ------------------------------------------------------------------------------------------
+
+    def garder(self):
+        if not self._tenue:
+            self._tenue = True
+            self.hold()
+
+    def relacher(self):
+        if self._tenue:
+            self._tenue = False
+            self.release()
+
+    def lecture_changee(self, etat):
+        """Après chaque changement de la lecture : fenêtre cachée, on quitte quand elle finit ou s'arrête, ou après
+        une longue pause (voixla.lecture.sans_fenetre)."""
+        if self.fenetre is None or self._quitte:
+            return
+        d = self.vie.decider(etat.statut if etat.session else regles.ARRET, time.monotonic())
+        if d == "quitter":
+            GLib.idle_add(lambda: (self.quitter_tout(), False)[1])
+        elif d == "attendre" and self._verif_pause is None:
+            reste = self.vie.reste_pause(time.monotonic()) or 0.0
+            self._verif_pause = GLib.timeout_add_seconds(int(reste) + 1, self._reverifier)
+
+    def _reverifier(self):
+        self._verif_pause = None
+        self.lecture_changee(lectures().etat_courant())
+        return False
+
+    def quitter_tout(self):
+        """Quitte pour de bon (fin de la lecture fenêtre cachée, Quit de MPRIS)."""
+        if self._quitte:
+            return
+        self._quitte = True
+        s = lectures().session
+        if s is not None:
+            try:
+                s.mettre_en_pause()
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
+        lectures().fermer()
+        f, self.fenetre = self.fenetre, None
+        if f is not None:
+            f.fermer_vraiment()
+        self.relacher()
 
 
 def lancer(argv=None):

@@ -6,17 +6,27 @@ Gtk.MediaControls toujours visible, pour la vidéo comme pour le son. Une source
 le dit : pas de second décodage, pas d'écran qui disparaît et fait sauter la page. Quand sa copie vidéo est prête, elle
 la remplace à la même position (ajouter). Les sources « éphémères » (ces copies) sont fermées dès qu'on les quitte :
 seuls le doublage et l'original restent ouverts, pour la touche B.
+
+Quitter la page n'arrête pas la lecture : seul le suivi de la position (et les visualisations qu'il anime) s'arrête
+tant que le lecteur est caché, et reprend au retour. Une seule lecture dans toute l'application : chaque flux est ouvert
+par media(), qui le confie au coordinateur (gui/lecture.py) avec son propriétaire ; lancer une lecture ailleurs coupe
+celle-ci, changer de source dans ce lecteur ne coupe rien. Fenêtre fermée, passer_en_son() remplace la vidéo par une
+source sans image de même contenu, à la même position et sans blanc ; revenir_en_video() la remet.
 """
 
 from gi.repository import GLib, Gtk
 
 from .. import formats
+from ..lecture import Reprise
+from .lecture import lectures
 
 
-def media(chemin):
+def media(chemin, proprietaire):
+    """Un flux (Gtk.MediaFile) suivi par le coordinateur : quand il joue, la lecture d'un autre propriétaire est
+    coupée."""
     m = Gtk.MediaFile.new_for_filename(str(chemin))
     m.set_loop(False)
-    return m
+    return lectures().suivre(m, proprietaire)
 
 
 def quand_pret(m, rappel):
@@ -35,9 +45,13 @@ def quand_pret(m, rappel):
 
 class Lecteur(Gtk.Box):
     """Un lecteur ; sources = {clé: (chemin, décalage_s, libellé)} ; bascule entre sources à la même position
-    (position de référence = position de la source « B » ; une source de décalage d est lue à position + d)."""
+    (position de référence = position de la source « B » ; une source de décalage d est lue à position + d).
+    proprietaire : ce qui lit, pour le coordinateur (la page d'un résultat) ; à défaut, le lecteur lui-même, une
+    préécoute (durable faux) qu'une autre lecture met en pause."""
 
-    def __init__(self, hauteur=280, sur_position=None):
+    durable = False
+
+    def __init__(self, hauteur=280, sur_position=None, proprietaire=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self.ecran = Gtk.Picture(content_fit=Gtk.ContentFit.CONTAIN, can_shrink=True, hexpand=True,
                                  css_classes=["ecran-media"])
@@ -59,11 +73,20 @@ class Lecteur(Gtk.Box):
         self.notes = {}           # clé → texte du bandeau d'une source sans image
         self.muet = False         # essais : tous les flux, même ceux ouverts plus tard, restent muets
         self.sur_position = sur_position
+        self.proprietaire = proprietaire
         self._minuteur = None
         self._fin_extrait = None
-        self._attente = None      # [flux, position voulue, placé] tant qu'un flux activé n'est pas prêt et placé
-        self.connect("unmap", lambda *_: self.pause())
-        self.connect("map", lambda *_: self.media() and self._suivre())   # le suivi s'arrête quand on est caché
+        self._attente = None      # [flux, position voulue, placé, lire] tant qu'un flux activé n'est pas prêt et placé
+        self._reprise = None      # fenêtre fermée : la source vidéo à remettre (voixla.lecture.Reprise)
+        # pas de pause quand on quitte la page : la lecture continue ; le suivi s'arrête caché et reprend au retour
+        self.connect("map", lambda *_: self.media() and self._suivre())
+
+    def _proprio(self):
+        return self.proprietaire if self.proprietaire is not None else self
+
+    def couper(self):
+        """Une autre lecture commence (coordinateur) : pause."""
+        self.pause()
 
     # --- sources -------------------------------------------------------------------------------------------------
 
@@ -71,7 +94,7 @@ class Lecteur(Gtk.Box):
         """Remplace les sources ; garde la position si c'est le même contenu sous une autre forme. sans_image : les
         clés des sources sans image (lues sous l'image arrêtée d'une source qui en a une) ; ephemeres : celles qu'on
         ferme dès qu'on les quitte ; notes : le texte du bandeau des sources sans image."""
-        self.liberer()
+        self._tout_fermer()
         self.sources = {k: v for k, v in sources.items() if v and v[0]}
         self.audio_seul = audio_seul
         self.sans_image = set(sans_image)
@@ -85,15 +108,25 @@ class Lecteur(Gtk.Box):
     def ajouter(self, cle, source, sans_image=False, ephemere=False):
         """Ajoute ou remplace une source (une piste préparée après coup). Si c'est la source en cours (le beat lu sous
         l'image arrêtée, dont la copie vidéo vient d'être prête), on passe à la nouvelle à la même position, en lecture
-        si on lisait."""
+        si on lisait. Fenêtre fermée (son seul), une nouvelle vidéo de la piste en cours attend le retour de la
+        fenêtre."""
         if not source or not source[0]:
             return
+        if self._reprise is not None and cle == self._reprise.cle:
+            self._reprise = self._reprise.mise_a_jour(source, sans_image, ephemere)
+            return
+        self._remplacer(cle, source, sans_image, ephemere)
+
+    def _remplacer(self, cle, source, sans_image=False, ephemere=False, flux=None):
+        """ajouter, sans le cas du son seul ; flux : un flux déjà ouvert (et prêt) pour cette source."""
         courante = cle == self.cle and cle in self.flux
         pos = self.position_ref() if courante else 0.0
-        lisait = bool(courante and self.flux[cle].get_playing())
+        lisait = bool(courante and self.en_lecture())
         ancien = self.flux.pop(cle, None)
         if ancien is not None:
             ancien.pause()
+        if flux is not None:
+            self.flux[cle] = flux
         self.sources[cle] = source
         (self.sans_image.add if sans_image else self.sans_image.discard)(cle)
         (self.ephemeres.add if ephemere else self.ephemeres.discard)(cle)
@@ -120,11 +153,15 @@ class Lecteur(Gtk.Box):
         except Exception:  # noqa: BLE001
             pass
 
+    def _ouvrir(self, chemin):
+        m = media(chemin, self._proprio())
+        if self.muet:
+            m.set_muted(True)
+        return m
+
     def _flux(self, cle):
         if cle not in self.flux:
-            self.flux[cle] = media(self.sources[cle][0])
-            if self.muet:
-                self.flux[cle].set_muted(True)
+            self.flux[cle] = self._ouvrir(self.sources[cle][0])
         return self.flux[cle]
 
     def rendre_muet(self):
@@ -141,8 +178,8 @@ class Lecteur(Gtk.Box):
             self.ecran.set_paintable(courante.get_current_image())
             return
         autre = next((k for k in self.sources if k not in self.sans_image), None)
-        if autre is None:
-            return
+        if autre is None or self._reprise is not None:
+            return                # fenêtre fermée : pas de vidéo ouverte pour une image que personne ne voit
         m = self._flux(autre)
         self.ecran.set_paintable(m)
         decalage = self.sources[autre][1] or 0.0
@@ -170,16 +207,18 @@ class Lecteur(Gtk.Box):
         self.commandes.set_media_stream(m)
         decalage = self.sources[cle][1] or 0.0
         # tant que le flux n'est pas prêt et placé, sa position est celle qu'on lui a demandée : une nouvelle bascule
-        # (la copie vidéo prête juste après) repart de là, pas de 0
-        self._attente = [m, position_ref, False]
+        # (la copie vidéo prête juste après) repart de là, pas de 0 ; et il « lit » déjà si on l'a demandé
+        self._attente = [m, position_ref, False, lire]
 
         def placer():
             if position_ref or decalage:
                 m.seek(int(max(0.0, position_ref + decalage) * 1_000_000))
-            if lire:
+            a = self._attente
+            # une pause demandée pendant la préparation l'emporte
+            if (a[3] if a is not None and a[0] is m else lire):
                 m.play()
-            if self._attente and self._attente[0] is m:
-                self._attente[2] = True
+            if a is not None and a[0] is m:
+                a[2] = True
         quand_pret(m, placer)
         self._suivre()
 
@@ -187,20 +226,83 @@ class Lecteur(Gtk.Box):
         """Passe à une autre source, à la même position (et en lecture si on lisait)."""
         if cle == self.cle or cle not in self.sources:
             return
+        reprise, self._reprise = self._reprise, None
         ancien, ancienne_cle = self.media(), self.cle
         pos = self.position_ref()
-        lisait = bool(ancien and ancien.get_playing())
+        lisait = self.en_lecture()
         if ancien:
             ancien.pause()
         self._activer(cle, pos, lisait)
-        if ancienne_cle in self.ephemeres:
+        if ancienne_cle in self.ephemeres or (reprise is not None and reprise.cle == ancienne_cle):
             self._fermer(self.flux.pop(ancienne_cle, None))
+        if reprise is not None:
+            self._remettre(reprise)
 
     def media(self):
         return self.flux.get(self.cle) if self.cle else None
 
+    def en_lecture(self):
+        """Vrai pendant la lecture, et pendant une bascule demandée en lecture dont le flux se prépare encore."""
+        m = self.media()
+        if not m:
+            return False
+        a = self._attente
+        if a is not None and a[0] is m and not a[2]:
+            return bool(a[3])
+        return bool(m.get_playing())
+
+    # --- fenêtre fermée : le son seul, puis retour à la vidéo ------------------------------------------------------
+
+    def passer_en_son(self, son):
+        """Remplace la source en cours par son (chemin, décalage, libellé) : même contenu sans image, à la même
+        position, sans blanc (le son se prépare pendant que la vidéo joue encore). Le décodage vidéo s'arrête."""
+        cle = self.cle
+        if not cle or self._reprise is not None or cle not in self.sources:
+            return False
+        self._reprise = Reprise(cle, self.sources[cle], cle in self.sans_image, cle in self.ephemeres)
+        self._substituer(cle, son, sans_image=True, ephemere=True)
+        return True
+
+    def revenir_en_video(self):
+        """Remet la source d'avant passer_en_son, là où en est le son, en lecture ou en pause comme lui."""
+        r, self._reprise = self._reprise, None
+        if r is None:
+            return False
+        if self.cle != r.cle:
+            self.sources[r.cle] = r.source
+            return False
+        self._substituer(r.cle, r.source, r.sans_image, r.ephemere)
+        return True
+
+    def _remettre(self, r):
+        """Après une bascule pendant le son seul (le flux du son est fermé) : la source vidéo reprend sa place."""
+        self.sources[r.cle] = r.source
+        (self.sans_image.add if r.sans_image else self.sans_image.discard)(r.cle)
+        (self.ephemeres.add if r.ephemere else self.ephemeres.discard)(r.cle)
+
+    def _substituer(self, cle, source, sans_image, ephemere):
+        """Comme _remplacer, mais le nouveau flux se prépare d'abord pendant que l'ancien joue encore."""
+        actuel = self.flux.get(cle)
+        if actuel is None or not actuel.get_playing():
+            self._remplacer(cle, source, sans_image, ephemere)
+            return
+        nouveau = self._ouvrir(source[0])
+
+        def pret():
+            if self.cle != cle or self.flux.get(cle) is not actuel:
+                self._fermer(nouveau)      # tout a changé pendant la préparation
+                return
+            self._remplacer(cle, source, sans_image, ephemere, flux=nouveau)
+        quand_pret(nouveau, pret)
+
     def liberer(self):
-        """Arrête et ferme tous les flux (avant un remix qui réécrit les fichiers, ou en quittant la page)."""
+        """Arrête et ferme tous les flux (avant un remix qui réécrit les fichiers, ou en fermant la page) : la lecture
+        quitte la barre « en cours de lecture » et MPRIS."""
+        self._tout_fermer()
+        lectures().terminer(self._proprio())
+
+    def _tout_fermer(self):
+        self._reprise = None
         for m in self.flux.values():
             try:
                 m.pause()
@@ -242,7 +344,7 @@ class Lecteur(Gtk.Box):
         if not m:
             return
         decalage = self.sources[self.cle][1] or 0.0
-        self._attente = [m, s_ref, False]
+        self._attente = [m, s_ref, False, bool(lire) or self.en_lecture()]
 
         def placer():
             m.seek(int(max(0.0, s_ref + decalage) * 1_000_000))
@@ -274,6 +376,9 @@ class Lecteur(Gtk.Box):
         m = self.media()
         if m:
             m.pause()
+        a = self._attente
+        if a is not None and a[0] is m:
+            a[3] = False          # une bascule en cours ne relance pas la lecture
 
     def _suivre(self):
         if self._minuteur is None:
@@ -289,9 +394,6 @@ class Lecteur(Gtk.Box):
             self._fin_extrait = None
         if self.sur_position:
             self.sur_position(self.position_ref(), m.get_playing())
-        if not m.get_playing() and self._fin_extrait is None:
-            # on continue à suivre lentement (déplacements à la souris) tant que la page est visible
-            pass
         return True
 
 

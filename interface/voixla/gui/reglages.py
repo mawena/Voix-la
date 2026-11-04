@@ -223,6 +223,21 @@ class DialogueReglages(Adw.PreferencesDialog):
                                                      clic=lambda: self._externes({})))
         ge.add(self.r_externes)
         p.add(ge)
+
+        gc = Adw.PreferencesGroup(title="Pistes séparées",
+                                  description="Beat seul et voix seules se lisent sur l’image de la vidéo doublée "
+                                              "grâce à des copies préparées à l’avance, en tâche de fond (environ "
+                                              "150 Mo par chanson pour trois pistes). Les moins récemment lues sont "
+                                              "effacées au-delà de cette taille ; celles du doublage ouvert ou en "
+                                              "lecture, jamais.")
+        from .. import pistes
+        r_cache = Adw.SpinRow.new_with_range(0.5, 50, 0.5)
+        r_cache.set_title("Taille du cache des pistes (Go)")
+        r_cache.set_digits(1)
+        r_cache.set_value(pistes.limite_cache_video_mo(self.prefs) / 1024)
+        r_cache.connect("notify::value", lambda r, _p: self._pref("cache_pistes_mo", round(r.get_value() * 1024)))
+        gc.add(r_cache)
+        p.add(gc)
         return p
 
     def choisir_externes(self):

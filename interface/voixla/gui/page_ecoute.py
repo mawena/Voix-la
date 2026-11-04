@@ -14,9 +14,11 @@ from datetime import datetime
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
 from .. import chemins, ecoute, formats
+from .. import lecture as regles
 from . import commun, lecteur
 from . import visualisations as vis
 from .analyses import analyses
+from .lecture import lectures
 
 CSS = b"""
 .ecoute-barre { padding: 6px 12px; }
@@ -92,9 +94,12 @@ class BancChange(Exception):
 
 class LecteurEcoute:
     """Un seul son à la fois. jouer(clé) sur la source déjà chargée : lecture / pause ; sur une autre source : bascule
-    à la même position (sauf si la précédente était finie) et lecture."""
+    à la même position (sauf si la précédente était finie) et lecture. proprietaire : la page, pour le coordinateur
+    des lectures (une lecture ailleurs met celle-ci en pause)."""
 
-    def __init__(self, sur_changement, sur_erreur=None):
+    durable = False
+
+    def __init__(self, sur_changement, sur_erreur=None, proprietaire=None):
         self.commandes = Gtk.MediaControls(hexpand=True)
         self.flux = {}
         self.chemins = {}             # clé → fichier (pour les visualisations)
@@ -103,6 +108,13 @@ class LecteurEcoute:
         self.sur_erreur = sur_erreur
         self.sur_position = None
         self.muet = False             # essais : tous les flux restent muets, même ceux ouverts plus tard
+        self.proprietaire = proprietaire
+
+    def _proprio(self):
+        return self.proprietaire if self.proprietaire is not None else self
+
+    def couper(self):
+        self.pause()
 
     def media(self):
         return self.flux.get(self.cle) if self.cle else None
@@ -114,7 +126,7 @@ class LecteurEcoute:
     def _flux(self, cle, chemin):
         m = self.flux.get(cle)
         if m is None:
-            m = lecteur.media(chemin)
+            m = lecteur.media(chemin, self._proprio())
             if self.muet:
                 m.set_muted(True)
             m.connect("notify::playing", lambda *_: self.sur_changement())
@@ -201,9 +213,16 @@ class LecteurEcoute:
         self.cle = None
         self.commandes.set_media_stream(None)
         self.sur_changement()
+        lectures().terminer(self._proprio())
 
 
 class PageEcoute(commun.Page):
+    """La page est aussi le propriétaire de sa lecture pour le coordinateur (gui/lecture.py) : une lecture durable, qui
+    continue quand on quitte la page ou qu'on ferme la fenêtre, et que montrent la barre « en cours de lecture » et
+    MPRIS, avec la lettre seulement tant qu'on n'a pas voté."""
+
+    durable = True
+
     def __init__(self, fenetre):
         super().__init__(fenetre, "Écoute à l’aveugle", "ecoute")
         installer_css()
@@ -235,7 +254,8 @@ class PageEcoute(commun.Page):
         self.entete.pack_start(self.choix)
 
         # Lecteur partagé (barre du bas, toujours visible quand il y a des versions)
-        self.lecteur = LecteurEcoute(self._maj_lecture, lambda m: self.fenetre.toast(f"Lecture impossible : {m}"))
+        self.lecteur = LecteurEcoute(self._maj_lecture, lambda m: self.fenetre.toast(f"Lecture impossible : {m}"),
+                                     proprietaire=self)
         barre = Gtk.Box(spacing=12, css_classes=["ecoute-barre"])
         barre.append(Gtk.Image(icon_name="audio-headphones-symbolic", css_classes=["dim-label"]))
         self.joue = Gtk.Label(xalign=0, width_chars=16, max_width_chars=26, ellipsize=Pango.EllipsizeMode.END)
@@ -290,16 +310,67 @@ class PageEcoute(commun.Page):
     def montrer(self):
         super().montrer()
         self._charger()   # le banc a pu être (re)fait pendant ce temps
+        self._position_vis()
 
     def cacher(self):
+        # la lecture continue (barre « en cours de lecture ») ; les visualisations s'arrêtent, cachées
         super().cacher()
-        self.lecteur.pause()
 
     def actualiser(self):
         self._charger()
 
     def fermer(self):
         self.lecteur.liberer()
+
+    # --- lecture durable (coordinateur, barre, MPRIS) ----------------------------------------------------------------
+
+    def couper(self):
+        self.lecteur.pause()
+
+    def etat_lecture(self):
+        m, cle = self.lecteur.media(), self.lecteur.cle
+        if m is None or cle is None:
+            return regles.Etat()
+        statut = regles.LECTURE if m.get_playing() else regles.ARRET if m.get_ended() else regles.PAUSE
+        ext = next((e for e in self.extraits or [] if e.nom == cle[0]), None)
+        return regles.Etat(statut=statut, position_s=m.get_timestamp() / 1e6,
+                           duree_s=m.get_duration() / 1e6 if m.is_prepared() and m.get_duration() > 0 else None,
+                           titre=ext.titre if ext else cle[0], piste=self._libelle(cle), genre="ecoute",
+                           cle=("ecoute", cle[0]), volume=m.get_volume())
+
+    def lire(self):
+        m = self.lecteur.media()
+        if m is not None and not m.get_playing():
+            LecteurEcoute._lire(m, 0 if m.get_ended() else None)
+
+    def mettre_en_pause(self):
+        self.lecteur.pause()
+
+    def lecture_pause(self):
+        m = self.lecteur.media()
+        if m is not None:
+            self.mettre_en_pause() if m.get_playing() else self.lire()
+
+    def arreter(self):
+        m = self.lecteur.media()
+        if m is not None:
+            m.pause()
+            lecteur.quand_pret(m, lambda: m.seek(0))
+        lectures().terminer(self)
+
+    def aller_a(self, s):
+        self._aller_vis(s)
+
+    def regler_volume(self, v):
+        m = self.lecteur.media()
+        if m is not None:
+            m.set_volume(v)
+
+    def revenir(self):
+        self.fenetre.aller("ecoute")
+
+    def est_visible(self):
+        return self.fenetre.page_vue() is self
 
     # --- lecture du banc ---------------------------------------------------------------------------------------------
 
@@ -704,6 +775,8 @@ class PageEcoute(commun.Page):
             lecteur.quand_pret(m, lambda: m.seek(int(t * 1_000_000)))
 
     def _position_vis(self):
+        if not self.vis or not self.get_mapped():
+            return        # page cachée : rien à redessiner (montrer() remet les visualisations à la position)
         t, lecture = self._fournisseur()
         for w in self.vis.values():
             w.placer(t, lecture)

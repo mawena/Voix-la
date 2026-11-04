@@ -12,6 +12,7 @@ from .. import chemins, controle, formats, moteur
 from . import commun
 from .enregistreur import DialogueEnregistrement
 from .lecteur import media
+from .lecture import Apercu
 
 
 class PageVoix(commun.Page):
@@ -19,6 +20,8 @@ class PageVoix(commun.Page):
         super().__init__(fenetre, "Voix", "voix")
         self.lecture = None
         self.bouton_lecture = None
+        # préécoute d'une référence : coupe la musique en cours, et s'arrête si une autre lecture commence
+        self._apercu = Apercu(self.arreter_lecture)
         self.voix_chant = None
         menu = Gio.Menu()
         menu.append("Depuis un fichier audio ou vidéo…", "voix.fichier")
@@ -186,7 +189,7 @@ class PageVoix(commun.Page):
             self.arreter_lecture()
             return
         self.arreter_lecture()
-        self.lecture = media(fichier)
+        self.lecture = media(fichier, self._apercu)
         self.bouton_lecture = bouton
         bouton.set_icon_name("media-playback-stop-symbolic")
         self.lecture.connect("notify::ended", lambda m, _p: m.get_ended() and self.arreter_lecture())

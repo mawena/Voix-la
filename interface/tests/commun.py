@@ -86,7 +86,9 @@ class EssaiIsole(unittest.TestCase):
         env = {k: v for k, v in os.environ.items() if k not in VARIABLES and not k.startswith("FAUX_DOUBLER_")}
         env.update({"VOIXLA_DONNEES": str(self.donnees), "VOIXLA_CONFIG": str(self.config),
                     "VOIXLA_ETAT": str(self.etat), "VOIXLA_ECOUTE": str(self.tmp / "ecoute"),
-                    "VOIXLA_DOUBLER": commande_faux(), "FAUX_DOUBLER_VITESSE": self.vitesse})
+                    "VOIXLA_DOUBLER": commande_faux(), "FAUX_DOUBLER_VITESSE": self.vitesse,
+                    # pas de préparateur de pistes en tâche de fond lancé par l'exécuteur pendant les essais
+                    "VOIXLA_SANS_PREPARATION": "1"})
         rustine = mock.patch.dict(os.environ, env, clear=True)
         rustine.start()
         self.addCleanup(rustine.stop)

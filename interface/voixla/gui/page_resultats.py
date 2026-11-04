@@ -7,12 +7,14 @@ from pathlib import Path
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
-from .. import chemins, formats, moteur, pistes, rapports
+from .. import chemins, corbeille, formats, moteur, pistes, rapports
+from .. import lecture as regles
 from . import commun
 from . import visualisations as vis
 from .analyses import analyses
 from .frise import Frise, legende as legende_frise
 from .lecteur import Lecteur
+from .lecture import lectures
 from .vue_paroles import VueParoles
 
 PRODUITS_VIS = {"spectre": "spectre", "onde": "onde", "vumetre": "bandes"}
@@ -43,7 +45,14 @@ def sous_titre(res, maintenant=None):
 
 
 class PageDetail(Adw.NavigationPage):
-    """Un résultat : lecteur A/B, frise, informations, remix, durées."""
+    """Un résultat : lecteur A/B, frise, informations, remix, durées.
+
+    La page est aussi le propriétaire de sa lecture pour le coordinateur (gui/lecture.py) : une lecture durable. On
+    peut quitter la page pendant la lecture : la page qui joue (ou en pause) reste gardée, la barre « en cours de
+    lecture » de la fenêtre y ramène, et on la retrouve telle quelle (position, piste, lecture ou pause). Une page
+    quittée qui ne lit pas est oubliée : ses flux se ferment."""
+
+    durable = True
 
     def __init__(self, page, res):
         super().__init__(title=res.titre_court, tag="detail")
@@ -55,7 +64,10 @@ class PageDetail(Adw.NavigationPage):
         self._maj = False             # bascules mises à jour par le code (pas par un clic)
         self._preparation = False
         self._videos = set()          # pistes sans image dont la copie vidéo se prépare
+        self._avancement = {}         # piste → avancement de sa préparation (0 à 1), quand ffmpeg le donne
+        self._echecs = {}             # piste → raison d'une préparation ratée (bouton « Réessayer »)
         self._demandees = set()       # (fichier, produits) dont l'analyse a été demandée
+        self._oubliee = False         # page quittée et fermée (flux fermés, plus d'écoute des préférences)
         self.vue_paroles = None
         self.pistes_dispo = pistes.choisir_pistes(res, self.forme, self.source_choisie())
         vue = Adw.ToolbarView()
@@ -109,9 +121,16 @@ class PageDetail(Adw.NavigationPage):
         barre.append(groupe)
         corps.append(barre)
         self.note_piste = commun.legende("")
-        corps.append(self.note_piste)
+        self.note_piste.set_hexpand(True)
+        self.b_reessayer = commun.bouton("Réessayer", "view-refresh-symbolic", styles=("flat",),
+                                         valign=Gtk.Align.CENTER, visible=False, clic=self.reessayer,
+                                         infobulle="Relancer la préparation des pistes qui ont échoué")
+        ligne_note = Gtk.Box(spacing=8)
+        ligne_note.append(self.note_piste)
+        ligne_note.append(self.b_reessayer)
+        corps.append(ligne_note)
 
-        self.lecteur = Lecteur(hauteur=320, sur_position=self._position)
+        self.lecteur = Lecteur(hauteur=320, sur_position=self._position, proprietaire=self)
         corps.append(self.lecteur)
         # Visualisations du son (chacune s'allume et s'éteint par le menu « œil » ; préférences mémorisées)
         self.vis = {}                 # nom → widget
@@ -158,7 +177,9 @@ class PageDetail(Adw.NavigationPage):
         raccourcis.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string("space"),
                                                  Gtk.CallbackAction.new(lambda *_: (self.lecture_pause(), True)[1])))
         self.add_controller(raccourcis)
-        self.connect("hidden", lambda *_: self.lecteur.pause())
+        # quitter la page n'arrête pas la lecture ; une page quittée qui ne lit pas est oubliée
+        self.connect("hidden", lambda *_: self._cachee())
+        self.connect("shown", lambda *_: self.page.proteger_caches())
         self.changer_forme(self.forme)
         self.fenetre.ecouter("visualisations", self._maj_visualisations)
         self._maj_visualisations()
@@ -187,16 +208,51 @@ class PageDetail(Adw.NavigationPage):
         self._maj_bascules()
         self._maj_groupe_pistes()
         if self.voulue:
-            self._preparer_ma_voix()
-        self._preparer_video(self.piste)
+            self._preparer_ma_voix(prioritaire=True)
+        self._preparer_video(self.piste, prioritaire=True)
+        self._preparer_tout()
         self._appliquer_pistes()
+        self.page.proteger_caches()
+
+    def _preparer_tout(self):
+        """Dès l'ouverture, avant le moindre clic : ce qui manque se prépare en tâche de fond, une chose à la fois et
+        à faible priorité (beat seul, ma voix seule combinée puis copiée sur l'image, voix d'origine seule)."""
+        if self._oubliee:
+            return
+        for cle in pistes.SANS_IMAGE:
+            p = self.pistes_dispo.get(cle)
+            if p is None or cle in self._echecs:
+                continue
+            if cle == "ma_voix" and p.a_preparer:
+                self._preparer_ma_voix()      # puis sa copie vidéo
+            else:
+                self._preparer_video(cle)
+
+    def fichiers_caches(self):
+        """Les fichiers du cache que lit ce résultat (copies vidéo, ma voix seule) : la purge ne doit pas y toucher."""
+        if self._oubliee:
+            return []
+        cache = chemins.dossier_cache()
+        fichiers = [p.video for p in self.pistes_dispo.values() if p.video]
+        m = self.pistes_dispo.get("ma_voix")
+        if m is not None and m.fichier is not None and cache in Path(m.fichier).parents:
+            fichiers.append(m.fichier)
+        return fichiers
 
     def _note_bandeau(self, cle):
         """Bandeau d'une piste lue sans image, à côté d'une vidéo."""
         p = self.pistes_dispo.get(cle)
         if p is not None and (p.video_a_preparer or cle in self._videos):
-            return "préparation de la vidéo… (son seul, image arrêtée)"
+            a = self._avancement.get(cle)
+            return f"préparation de la vidéo… {round(100 * a)} % (son seul, image arrêtée)" if a else \
+                "préparation de la vidéo… (son seul, image arrêtée)"
         return "son seul, image arrêtée"
+
+    def _avance(self, cle, fraction):
+        self._avancement[cle] = fraction
+        self.lecteur.annoter(cle, self._note_bandeau(cle))
+        if (self.voulue or self.piste) == cle:
+            self._maj_note()
 
     def _maj_bascules(self):
         """État des bascules de pistes : grisées (avec la raison en infobulle) si la piste manque."""
@@ -224,8 +280,9 @@ class PageDetail(Adw.NavigationPage):
         elif p is None:
             return
         elif self.voulue:
-            texte = (f"Préparation de ma voix seule ({p.explication}), sous nice ; elle attend son tour si le poste "
-                     "est chargé. En attendant, le doublage continue.")
+            a = self._avancement.get("ma_voix_son")
+            texte = (f"Préparation de ma voix seule ({p.explication}){f', {round(100 * a)} %' if a else ''}, en tâche "
+                     "de fond. En attendant, le doublage continue.")
         elif c == "doublage":
             texte = ("Touche B : l’original à la même position." if o and o.fichier else
                      f"Original indisponible : {o.explication}." if o else "")
@@ -233,7 +290,11 @@ class PageDetail(Adw.NavigationPage):
             texte = f"Original : {p.explication}. Touche B : retour au doublage."
         else:
             texte = f"{p.libelle} : {p.explication}.{self._note_image(c, p)} Touche B : retour au doublage."
+        if self._echecs:
+            texte += " " + " ".join(f"{pistes.LIBELLES.get(k, k)} : préparation impossible ({m})."
+                                    for k, m in self._echecs.items())
         self.note_piste.set_label(texte)
+        self.b_reessayer.set_visible(bool(self._echecs))
 
     def _note_image(self, cle, p):
         """Ce qu'on voit pendant le beat ou une voix seule : la vidéo qui avance, sa préparation, ou pourquoi on s'en
@@ -243,8 +304,9 @@ class PageDetail(Adw.NavigationPage):
         if self.forme == "video" and p.video:
             return " Sur l’image de la vidéo doublée, qui avance avec le son."
         if self.forme == "video" and (p.video_a_preparer or cle in self._videos):
-            return (" Préparation de la vidéo (l’image de la vidéo doublée, copiée telle quelle, sous nice ; elle "
-                    "attend son tour si le poste est chargé) : en attendant, le son seul sur l’image arrêtée.")
+            a = self._avancement.get(cle)
+            return (" Préparation de la vidéo (l’image de la vidéo doublée, copiée telle quelle, en tâche de fond"
+                    + (f", {round(100 * a)} %" if a else "") + ") : en attendant, le son seul sur l’image arrêtée.")
         if p.sans_video:
             return f" Sans image : {p.sans_video}."
         return ""
@@ -260,7 +322,7 @@ class PageDetail(Adw.NavigationPage):
         if p.a_lire is None:
             self.voulue = cle
             self._maj_note()
-            self._preparer_ma_voix()
+            self._preparer_ma_voix(prioritaire=True)
             return
         self.voulue = None
         if cle not in self.lecteur.sources:   # on écoutait un extrait de comparaison : retour aux pistes
@@ -275,27 +337,36 @@ class PageDetail(Adw.NavigationPage):
         self.piste = self.lecteur.cle or cle
         if p.video and self.forme == "video":
             pistes.toucher(p.video)           # copie lue : la purge du cache la garde
-        self._preparer_video(cle)
+        self._preparer_video(cle, prioritaire=True)
         self._maj_note()
         self._appliquer_pistes()
 
-    def _preparer_video(self, cle):
-        """La copie vidéo d'une piste sans image (beat, voix seules), préparée une fois en cache, sous nice, dans la
-        file des analyses. En attendant, le son seul sur l'image arrêtée ; quand elle est prête, le lecteur y passe à
-        la même position. Si elle est impossible, le son seul reste, avec la raison."""
+    def _preparer_video(self, cle, prioritaire=False):
+        """La copie vidéo d'une piste sans image (beat, voix seules), préparée une fois en cache, en tâche de fond et à
+        faible priorité (jamais par file-attente, voir voixla/preparation.py). En attendant, le son seul sur l'image
+        arrêtée, avec l'avancement ; quand elle est prête, le lecteur y passe à la même position. Si elle est
+        impossible, le son seul reste, avec la raison et « Réessayer ». prioritaire : la piste qu'on vient de choisir
+        passe devant les préparations à l'avance."""
         p = self.pistes_dispo.get(cle)
-        if self.forme != "video" or p is None or not p.video_a_preparer or cle in self._videos:
+        if self.forme != "video" or p is None or not p.video_a_preparer or self._oubliee:
             return
         if cle == "ma_voix" and p.fichier is None:
             return                            # la voix seule se prépare d'abord (_preparer_ma_voix)
-        self._videos.add(cle)
         video = self.res.video
         voix = self.res.dossier_voix if cle == "ma_voix" else None
+        son = None if voix else p.fichier
+        if cle in self._videos:
+            if prioritaire:                   # déjà demandée à l'avance : elle passe devant
+                analyses().video(video, lambda *_: None, son=son, voix=voix, duree_s=self.res.duree_s,
+                                 prioritaire=True)
+            return
+        self._videos.add(cle)
 
         def pret(f, message):
-            if message == "attente":
+            if message == "attente" or self._oubliee:
                 return
             self._videos.discard(cle)
+            self._avancement.pop(cle, None)
             q = self.pistes_dispo.get(cle)
             if self.forme != "video" or q is None or self.res.video != video or q.video is not None:
                 return                        # forme changée entre-temps : la copie est en cache pour la prochaine
@@ -305,32 +376,39 @@ class PageDetail(Adw.NavigationPage):
             q.video_a_preparer = False
             if f is None:
                 q.sans_video = message or "copie vidéo impossible"
+                self._echecs[cle] = q.sans_video
                 self.lecteur.annoter(cle, "son seul, image arrêtée")
-                if self.piste == cle:
-                    self.fenetre.toast(f"{q.libelle} sans image : {q.sans_video}")
+                self.fenetre.toast(f"{q.libelle} sans image : {q.sans_video}", "Réessayer", self.reessayer, duree=10)
             else:
                 q.video = Path(f)
                 if self.piste != "comparaison":   # sinon, elle sera lue au retour aux pistes (changer_forme)
                     self.lecteur.ajouter(cle, (q.video, q.decalage, q.libelle), sans_image=False, ephemere=True)
                 if self.lecteur.cle == cle:
                     self.piste = cle
+                self.page.proteger_caches()
             self._maj_note()
         self.lecteur.annoter(cle, self._note_bandeau(cle))
-        analyses().video(video, pret, son=None if voix else p.fichier, voix=voix, duree_s=self.res.duree_s)
+        analyses().video(video, pret, son=son, voix=voix, duree_s=self.res.duree_s, prioritaire=prioritaire,
+                         avancement=lambda f, _e: not self._oubliee and self._avance(cle, f))
 
-    def _preparer_ma_voix(self):
-        if self._preparation or not self.res.dossier_voix:
+    def _preparer_ma_voix(self, prioritaire=False):
+        if self._preparation or not self.res.dossier_voix or self._oubliee:
+            if self._preparation and prioritaire:
+                analyses().ma_voix(self.res.dossier_voix, lambda *_: None, self.res.duree_s, prioritaire=True)
             return
         self._preparation = True
 
         def pret(f, message):
-            if message == "attente":
+            if message == "attente" or self._oubliee:
                 return
             self._preparation = False
+            self._avancement.pop("ma_voix_son", None)
             p = self.pistes_dispo.get("ma_voix")
             if f is None or p is None:
                 self.voulue = None
-                self.fenetre.toast(f"Ma voix seule : {message or 'indisponible'}")
+                self._echecs["ma_voix"] = message or "indisponible"
+                self.fenetre.toast(f"Ma voix seule : {message or 'indisponible'}", "Réessayer", self.reessayer,
+                                   duree=10)
                 self._maj_bascules()
                 return
             p.fichier, p.a_preparer = Path(f), False
@@ -340,11 +418,43 @@ class PageDetail(Adw.NavigationPage):
                 self.voulue = None
                 self.lecteur.basculer("ma_voix")
                 self.piste = self.lecteur.cle or "ma_voix"
-                self._preparer_video("ma_voix")     # puis sa copie vidéo, pour que l'image avance
+                self._preparer_video("ma_voix", prioritaire=True)   # puis sa copie vidéo, pour que l'image avance
+            else:
+                self._preparer_video("ma_voix")                     # à l'avance, pour le premier clic
             self._maj_bascules()
             self._maj_groupe_pistes()
             self._appliquer_pistes()
-        analyses().ma_voix(self.res.dossier_voix, pret, self.res.duree_s)
+            self.page.proteger_caches()
+
+        def avance(f, _etape):
+            if not self._oubliee:
+                self._avancement["ma_voix_son"] = f
+                if self.voulue == "ma_voix":
+                    self._maj_note()
+        analyses().ma_voix(self.res.dossier_voix, pret, self.res.duree_s, prioritaire=prioritaire, avancement=avance)
+
+    def reessayer(self):
+        """« Réessayer » : relance les préparations ratées (la piste écoutée d'abord)."""
+        if self._oubliee or not self._echecs:
+            return
+        echecs, self._echecs = self._echecs, {}
+        for cle in echecs:
+            q = self.pistes_dispo.get(cle)
+            if q is None:
+                continue
+            if cle == "ma_voix" and q.fichier is None:
+                q.a_preparer = True
+            elif self.forme == "video" and q.video is None and q.fichier is not None:
+                q.video_a_preparer, q.sans_video = True, ""
+        courante = self.voulue or self.piste
+        if courante in echecs:
+            if courante == "ma_voix" and self.pistes_dispo["ma_voix"].fichier is None:
+                self.voulue = "ma_voix"
+                self._preparer_ma_voix(prioritaire=True)
+            else:
+                self._preparer_video(courante, prioritaire=True)
+        self._preparer_tout()
+        self._maj_bascules()
 
     def source_choisie(self):
         """Vidéo source choisie à la main (préférences de l'interface) quand celle de source.json est introuvable."""
@@ -384,9 +494,129 @@ class PageDetail(Adw.NavigationPage):
             self.t_pistes[cible].set_active(True)
 
     def lecture_pause(self):
+        if self.lecteur.en_lecture():
+            self.mettre_en_pause()
+        else:
+            self.lire()
+
+    # --- lecture durable (coordinateur, barre « en cours de lecture », MPRIS) ----------------------------------------
+
+    def meme_resultat(self, res):
+        return res is not None and self.res.dossier == res.dossier and self.res.voix == res.voix
+
+    def dans_la_pile(self):
+        pile = self.fenetre.nav.get_navigation_stack()
+        return any(pile.get_item(i) is self for i in range(pile.get_n_items()))
+
+    def est_visible(self):
+        return self.fenetre.page_vue() is self
+
+    def _cachee(self):
+        if not self.dans_la_pile() and lectures().session is not self:
+            self.oublier()
+
+    def quitter_session(self):
+        """Une autre lecture durable a pris la place : si la page n'est plus affichée, elle est oubliée."""
+        if not self.dans_la_pile():
+            self.oublier()
+
+    def oublier(self):
+        """Ferme les flux et cesse d'écouter les préférences : la page ne reviendra plus."""
+        if self._oubliee:
+            return
+        self._oubliee = True
+        self.fenetre.oublier("visualisations", self._maj_visualisations)
+        for w in list(self.vis.values()) + ([self.vue_paroles] if self.vue_paroles is not None else []):
+            if getattr(w, "animateur", None):
+                w.animateur.arreter()
+        self.lecteur.liberer()
+        self.page.proteger_caches()
+
+    def couper(self):
+        self.lecteur.pause()
+
+    def etat_lecture(self):
         m = self.lecteur.media()
-        if m:
-            m.pause() if m.get_playing() else m.play()
+        if m is None or self._oubliee:
+            statut = regles.ARRET
+        elif self.lecteur.en_lecture():
+            statut = regles.LECTURE
+        elif m.get_ended():
+            statut = regles.ARRET
+        else:
+            statut = regles.PAUSE
+        r = self.res
+        if self.piste == "comparaison":
+            source = self.lecteur.sources.get("comparaison")
+            piste = f"comparaison {source[2]}".replace("_", " ") if source else "comparaison"
+            duree = self.lecteur.duree()
+        else:
+            piste = pistes.LIBELLES.get(self.piste, self.piste)
+            duree = r.duree_s or self._duree_ref()
+        return regles.Etat(statut=statut, position_s=self.lecteur.position_ref(), duree_s=duree, titre=r.titre_court,
+                           voix=r.voix_nom or (r.voix or ""), piste=piste, genre="resultat",
+                           cle=("resultat", str(r.dossier), r.voix or ""), video=str(r.video) if r.video else None,
+                           volume=m.get_volume() if m is not None else 1.0)
+
+    def _duree_ref(self):
+        d = self.lecteur.duree()
+        if d is None or self.lecteur.cle not in self.lecteur.sources:
+            return None
+        return max(0.0, d - (self.lecteur.sources[self.lecteur.cle][1] or 0.0))
+
+    def lire(self):
+        m = self.lecteur.media()
+        if m is None:
+            return
+        if m.get_ended():
+            self.lecteur.aller_a(0.0, lire=True)
+        else:
+            m.play()
+
+    def mettre_en_pause(self):
+        self.lecteur.pause()
+
+    def arreter(self):
+        """Stop (barre, MPRIS) : pause au début ; la lecture quitte la barre et MPRIS, et la page est oubliée si elle
+        n'est plus affichée."""
+        self.lecteur.pause()
+        if self.lecteur.media() is not None:
+            self.lecteur.aller_a(0.0)
+            self._position(0.0, False)
+        if self.dans_la_pile():
+            lectures().terminer(self)
+        else:
+            self.oublier()
+
+    def aller_a(self, s):
+        self.lecteur.aller_a(s)
+        self._position(s, self.lecteur.en_lecture())
+
+    def regler_volume(self, v):
+        m = self.lecteur.media()
+        if m is not None:
+            m.set_volume(v)
+
+    def revenir(self):
+        self.page.revenir_au_detail(self)
+
+    def passer_en_son(self):
+        """Fenêtre fermée : la piste en cours passe de la vidéo à son son seul (le MP3 du doublage, le son d'origine
+        extrait, le fichier du beat ou d'une voix seule), à la même position, pour ne pas décoder d'image pour rien."""
+        cle = self.lecteur.cle
+        if self._oubliee or self.forme != "video" or cle not in pistes.CLES or cle in self.lecteur.sans_image:
+            return
+        try:
+            son = regles.source_son(cle, pistes.choisir_pistes(self.res, "mp3", self.source_choisie()),
+                                    self.lecteur.sources.get(cle))
+        except (OSError, pistes.ErreurPistes):
+            return
+        if son is not None:
+            self.lecteur.passer_en_son(son)
+
+    def revenir_en_video(self):
+        if not self._oubliee:
+            self.lecteur.revenir_en_video()
 
     def _position(self, t, lecture):
         if self.frise:
@@ -844,6 +1074,20 @@ class PageDetail(Adw.NavigationPage):
         if action.startswith("aller-"):
             t = float(action.split("-", 1)[1])
             GLib.timeout_add(1500, lambda: (self.lecteur.aller_a(t), self._position(t, False), False)[2])
+        if action.startswith("puis-"):
+            # après « lire » : on quitte le résultat pendant la lecture (barre « en cours de lecture ») ; « liste » :
+            # retour à la liste des résultats, sinon une autre section
+            cible = action.split("-", 1)[1]
+            GLib.timeout_add(3200, lambda: (self.fenetre.nav.pop() if cible == "liste" else self.fenetre.aller(cible),
+                                            False)[1])
+        if action == "pause":
+            GLib.timeout_add(4200, lambda: (self.mettre_en_pause(), False)[1])
+        if action == "retour":
+            # après « puis-liste » : retour au résultat qui joue, comme par un clic dans la liste (état retrouvé)
+            GLib.timeout_add(5000, lambda: (self.page.ouvrir_detail(self.res), False)[1])
+        if action == "fermer":
+            # après « lire » : la fenêtre se ferme pendant la lecture (l'application reste, la musique continue)
+            GLib.timeout_add(3000, lambda: (self.fenetre.close(), False)[1])
         if action == "ab":
             def lire():
                 m = self.lecteur.media()
@@ -905,46 +1149,37 @@ class PageDetail(Adw.NavigationPage):
         commun.en_fil(lambda: moteur.remixer(r.video_source, r.voix, r.dossier, donnees, voix_db, reverb, v1), fini)
 
     def supprimer(self):
-        r = self.res
-        autres = []
-        try:
-            autres = [p.name for p in (r.travail).iterdir() if p.is_dir() and p.name != r.voix]
-        except OSError:
-            pass
-        if autres:
-            fichiers = [p for p in (r.video, r.mp3) if p] + pistes.exports_existants(r) \
-                + ([r.dossier_voix] if r.dossier_voix else [])
-            corps = (f"Le dossier contient aussi les voix {', '.join(autres)} : seuls les fichiers de la voix "
-                     f"{r.voix_nom} vont à la corbeille ({', '.join(p.name for p in fichiers)}).")
-        else:
-            fichiers = [r.dossier]
-            corps = f"Le dossier « {r.dossier.name} » va à la corbeille, avec son travail/ (sons extraits, voix " \
-                    "convertie). On peut le récupérer dans la corbeille."
+        """Bouton corbeille du détail : la même mise à la corbeille que la liste (PageResultats.mettre_a_la_corbeille),
+        puis retour à la liste."""
+        self.page.mettre_a_la_corbeille([self.res], apres=lambda ok: ok and self.dans_la_pile() and
+                                        self.fenetre.nav.pop())
+
+    def fermer_pour_corbeille(self):
+        """Ses fichiers vont à la corbeille : lecture arrêtée, flux fermés (copies vidéo en cache comprises) ; la page
+        n'est plus la lecture en cours, et elle est oubliée si elle n'est plus affichée."""
         self.lecteur.liberer()
-
-        def faire():
-            restants = list(fichiers)
-
-            def suivant(ok=True, message=""):
-                if not ok:
-                    self.fenetre.toast(f"Corbeille impossible : {message}")
-                    return
-                if not restants:
-                    self.fenetre.toast("Doublage mis à la corbeille")
-                    self.page.charger()
-                    self.fenetre.nav.pop()
-                    return
-                commun.corbeille(restants.pop(0), suivant)
-            suivant()
-        commun.confirmer(self.fenetre, "Mettre ce doublage à la corbeille ?", corps, "Mettre à la corbeille", faire)
+        if not self.dans_la_pile():
+            self.oublier()
 
 
 class PageResultats(commun.Page):
+    """La liste des doublages. Chaque ligne a un menu « ⋮ » (ouvrir le dossier, mettre à la corbeille) ; le mode
+    « Sélectionner » coche plusieurs lignes et les met à la corbeille d'un coup, avec une seule confirmation."""
+
     def __init__(self, fenetre):
         super().__init__(fenetre, "Résultats", "resultats")
         self.resultats = []
         self.remix_actif = False
         self.a_ouvrir = None
+        self.en_selection = False
+        self.selection = set()        # clés (Resultat.cle) des lignes cochées
+        self.cases = {}               # clé → case à cocher de sa ligne
+        actions = Gio.SimpleActionGroup()
+        for nom, rappel in (("dossier", self._ouvrir_dossier), ("corbeille", self._corbeille_ligne)):
+            a = Gio.SimpleAction.new(nom, GLib.VariantType.new("s"))
+            a.connect("activate", lambda _a, v, r=rappel: r(v.get_string()))
+            actions.add_action(a)
+        self.insert_action_group("resultats", actions)
         self.recherche = Gtk.SearchEntry(placeholder_text="Chercher un titre…", hexpand=True)
         self.recherche.connect("search-changed", lambda *_: self.rendre())
         barre = Gtk.SearchBar(child=Adw.Clamp(maximum_size=600, child=self.recherche), show_close_button=False)
@@ -953,6 +1188,10 @@ class PageResultats(commun.Page):
         b_cherche = Gtk.ToggleButton(icon_name="system-search-symbolic", tooltip_text="Chercher")
         b_cherche.bind_property("active", barre, "search-mode-enabled", 1 | 2)
         self.entete.pack_end(b_cherche)
+        # mode sélection (comme Fichiers ou Photos de GNOME) : cases à cocher, barre d'actions en bas
+        self.b_selection = Gtk.ToggleButton(icon_name="selection-mode-symbolic", tooltip_text="Sélectionner")
+        self.b_selection.connect("toggled", lambda b: self.selectionner(b.get_active()))
+        self.entete.pack_end(self.b_selection)
         self.entete.pack_end(commun.bouton(icone="view-refresh-symbolic", infobulle="Actualiser (F5)",
                                            clic=self.charger))
         self.entete.pack_start(commun.bouton(icone="folder-open-symbolic", infobulle="Ouvrir le dossier des sorties",
@@ -960,7 +1199,7 @@ class PageResultats(commun.Page):
                                                  fenetre, chemins.dossier_sorties(fenetre.donnees))))
         self.pile = Gtk.Stack()
         self.liste = Gtk.ListBox(css_classes=["boxed-list"], selection_mode=Gtk.SelectionMode.NONE)
-        self.liste.connect("row-activated", lambda _l, r: self.ouvrir_detail(r.res))
+        self.liste.connect("row-activated", lambda _l, r: self._ligne_activee(r))
         b = commun.boite(espace=12, marges=18)
         self.compte = commun.legende("")
         b.append(self.compte)
@@ -975,6 +1214,23 @@ class PageResultats(commun.Page):
                                         width_request=32, height_request=32), "attente")
         self.pile.set_visible_child_name("attente")
         self.contenu(self.pile)
+        # barre d'actions de la sélection : tout y rétrécit (fenêtre étroite de 360 px)
+        self.barre_selection = Gtk.ActionBar()
+        self.l_selection = Gtk.Label(css_classes=["caption", "chiffres"], ellipsize=Pango.EllipsizeMode.END)
+        self.barre_selection.pack_start(commun.bouton(icone="edit-select-all-symbolic", infobulle="Tout sélectionner",
+                                                      clic=self._tout_selectionner))
+        self.barre_selection.set_center_widget(self.l_selection)
+        self.b_corbeille = Gtk.Button(child=Adw.ButtonContent(label="Mettre à la corbeille…",
+                                                              icon_name="user-trash-symbolic", can_shrink=True),
+                                      css_classes=["destructive-action"])
+        self.b_corbeille.connect("clicked", lambda *_: self._corbeille_selection())
+        self.barre_selection.pack_end(self.b_corbeille)
+        self.vue.add_bottom_bar(self.barre_selection)
+        self.vue.set_reveal_bottom_bars(False)
+        raccourcis = Gtk.ShortcutController(scope=Gtk.ShortcutScope.MANAGED)
+        raccourcis.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string("Escape"),
+                                                 Gtk.CallbackAction.new(lambda *_: self._echap())))
+        self.add_controller(raccourcis)
         fenetre.ecouter("resultats", self.charger)
         fenetre.ecouter("donnees", self.charger)
         self._charge = False
@@ -983,6 +1239,10 @@ class PageResultats(commun.Page):
         super().montrer()
         if not self._charge:
             self.charger()
+
+    def cacher(self):
+        super().cacher()
+        self.b_selection.set_active(False)
 
     def actualiser(self):
         self.charger()
@@ -1004,8 +1264,11 @@ class PageResultats(commun.Page):
 
     def rendre(self):
         commun.vider(self.liste)
+        self.cases = {}
         filtre = self.recherche.get_text().strip().lower()
         vus = [r for r in self.resultats if not filtre or filtre in r.titre.lower() or filtre in (r.groupe or "").lower()]
+        self.selection &= {r.cle for r in self.resultats}
+        self._maj_selection()
         if not self.resultats:
             self.pile.set_visible_child_name("vide")
             return
@@ -1019,6 +1282,14 @@ class PageResultats(commun.Page):
             ligne = Adw.ActionRow(title=commun.echapper(r.titre_court), subtitle=commun.echapper(sous_titre(r)),
                                   activatable=True, title_lines=2)
             ligne.res = r
+            if self.en_selection:
+                case = Gtk.CheckButton(active=r.cle in self.selection, valign=Gtk.Align.CENTER,
+                                       css_classes=["selection-mode"])
+                case.update_property([Gtk.AccessibleProperty.LABEL], [f"Sélectionner {r.titre_court}"])
+                case.connect("toggled", lambda c, k=r.cle: self._cocher(k, c.get_active()))
+                ligne.add_prefix(case)
+                ligne.set_activatable_widget(case)
+                self.cases[r.cle] = case
             ligne.add_prefix(Gtk.Image(icon_name="video-x-generic-symbolic" if r.video else
                                        "audio-x-generic-symbolic" if r.mp3 else "dialog-warning-symbolic"))
             if not r.complet:
@@ -1029,11 +1300,143 @@ class PageResultats(commun.Page):
                 ligne.add_suffix(commun.badge("YingMusic", "neutre"))
             if r.mode:
                 ligne.add_suffix(commun.badge(r.mode, "neutre"))
-            ligne.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
+            if not self.en_selection:
+                # actions de la ligne dans un menu « ⋮ », comme sur les lignes de la page Voix : rien de destructif à
+                # un clic, à côté du chevron qui ouvre le détail
+                menu = Gio.Menu()
+                cible = GLib.Variant.new_string(r.cle)
+                for libelle, action in (("Ouvrir le dossier", "resultats.dossier"),
+                                        ("Mettre à la corbeille…", "resultats.corbeille")):
+                    item = Gio.MenuItem.new(libelle, None)
+                    item.set_action_and_target_value(action, cible)
+                    menu.append_item(item)
+                ligne.add_suffix(Gtk.MenuButton(icon_name="view-more-symbolic", menu_model=menu, css_classes=["flat"],
+                                                valign=Gtk.Align.CENTER, tooltip_text="Actions"))
+                ligne.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
             self.liste.append(ligne)
 
+    def proteger_caches(self):
+        """Les copies vidéo et la voix combinée des détails ouverts ou en lecture : jamais purgées (chemins.proteger,
+        lu par la purge des préparations, ici ou dans le préparateur en tâche de fond)."""
+        pile = self.fenetre.nav.get_navigation_stack()
+        details = [pile.get_item(i) for i in range(pile.get_n_items())] + [lectures().session]
+        fichiers = [str(f) for d in dict.fromkeys(d for d in details if isinstance(d, PageDetail))
+                    for f in d.fichiers_caches()]
+        commun.en_fil(lambda: chemins.proteger(fichiers))
+
+    # --- mise à la corbeille -------------------------------------------------------------------------------------
+
+    def _resultat(self, cle):
+        return next((r for r in self.resultats if r.cle == cle), None)
+
+    def _ouvrir_dossier(self, cle):
+        r = self._resultat(cle)
+        if r is not None:
+            commun.ouvrir_dossier(self.fenetre, r.dossier)
+
+    def _corbeille_ligne(self, cle):
+        r = self._resultat(cle)
+        if r is not None:
+            self.mettre_a_la_corbeille([r])
+
+    def mettre_a_la_corbeille(self, resultats, apres=None):
+        """La seule mise à la corbeille de doublages (détail, menu d'une ligne, sélection) : confirmation, puis la
+        lecture de ces doublages arrêtée et leurs flux fermés, puis l'envoi à la corbeille, un toast et la liste relue.
+        apres(ok) à la fin."""
+        liste = corbeille.plans(resultats)
+        if not liste:
+            return
+        pris = corbeille.occupes(liste, self.fenetre.file.travaux())
+        if pris:
+            self.fenetre.toast(f"Un doublage en cours écrit dans « {pris[0]} » : corbeille impossible pour l’instant")
+            return
+        titre, corps, bouton = corbeille.confirmation(liste)
+        n = sum(max(1, len(p.voix)) for p in liste)
+
+        def faire():
+            self._fermer_lectures(liste)
+
+            def fini(ok, message, faits):
+                if ok:
+                    self.fenetre.toast("Doublage mis à la corbeille" if n == 1 else
+                                       f"{n} doublages mis à la corbeille")
+                else:
+                    self.fenetre.toast(f"Corbeille impossible : {message}" +
+                                       (f" ({faits} sur {len(liste)} déjà à la corbeille)" if faits else ""))
+                self.b_selection.set_active(False)
+                self.charger()
+                if apres:
+                    apres(ok)
+            corbeille.enchainer(liste, commun.corbeille, fini)
+        commun.confirmer(self.fenetre, titre, corps, bouton, faire)
+
+    def _fermer_lectures(self, liste):
+        """Avant la corbeille : chaque détail ouvert sur ces fichiers (affiché, ou qui joue en arrière-plan) arrête
+        sa lecture et ferme ses flux, pour que rien ne lise un fichier qui part."""
+        pile = self.fenetre.nav.get_navigation_stack()
+        details = [pile.get_item(i) for i in range(pile.get_n_items())] + [lectures().session]
+        for d in dict.fromkeys(d for d in details if isinstance(d, PageDetail)):
+            if corbeille.concerne(liste, d.res.dossier, d.res.voix):
+                d.fermer_pour_corbeille()
+
+    # --- mode sélection ------------------------------------------------------------------------------------------
+
+    def selectionner(self, oui):
+        if oui == self.en_selection:
+            return
+        self.en_selection = oui
+        self.selection = set()
+        if self.b_selection.get_active() != oui:
+            self.b_selection.set_active(oui)
+        self.vue.set_reveal_bottom_bars(oui)
+        self.rendre()
+
+    def _echap(self):
+        if not self.en_selection:
+            return False
+        self.selectionner(False)
+        return True
+
+    def _ligne_activee(self, ligne):
+        if self.en_selection:
+            return            # la case de la ligne s'est cochée (widget d'activation)
+        self.ouvrir_detail(ligne.res)
+
+    def _cocher(self, cle, oui):
+        (self.selection.add if oui else self.selection.discard)(cle)
+        self._maj_selection()
+
+    def _tout_selectionner(self):
+        for case in self.cases.values():
+            case.set_active(True)
+
+    def _maj_selection(self):
+        n = len(self.selection)
+        self.l_selection.set_label(formats.pluriel(n, "doublage sélectionné", "doublages sélectionnés") if n else
+                                   "Cochez des doublages")
+        self.b_corbeille.set_sensitive(n > 0)
+
+    def _corbeille_selection(self):
+        choisis = [r for r in self.resultats if r.cle in self.selection]
+        if choisis:
+            self.mettre_a_la_corbeille(choisis)
+
     def ouvrir_detail(self, res):
+        """Le détail d'un résultat ; celui qui joue (ou en pause) en arrière-plan est retrouvé tel quel."""
+        s = lectures().session
+        if isinstance(s, PageDetail) and s.page is self and not s._oubliee and s.meme_resultat(res):
+            self.revenir_au_detail(s)
+            return
         self.fenetre.pousser(PageDetail(self, res))
+
+    def revenir_au_detail(self, detail):
+        """Remontre une page de détail gardée (barre « en cours de lecture », clic dans la liste)."""
+        if detail.dans_la_pile():
+            self.fenetre.split.set_show_content(True)
+        elif self.fenetre.nav.get_visible_page() is self:
+            self.fenetre.pousser(detail)
+        else:
+            self.fenetre.montrer_pile("resultats", detail)
 
     def ouvrir(self, dossier, voix=None):
         """Ouvre le détail d'un dossier de sortie (depuis la page Travaux)."""
@@ -1046,6 +1449,20 @@ class PageResultats(commun.Page):
         self.ouvrir_detail(r)
 
     def scenario(self, action):
+        """Essais : « detail », « detail-<mot>[:actions du détail] », « selection » (mode sélection, deux lignes
+        cochées), « corbeille » (confirmation pour la première ligne, sans rien envoyer), « corbeille-selection »."""
+        if action in ("selection", "corbeille-selection"):
+            def cocher():
+                self.selectionner(True)
+                for case in list(self.cases.values())[:2]:
+                    case.set_active(True)
+                if action == "corbeille-selection":
+                    self._corbeille_selection()
+                return False
+            GLib.timeout_add(900, cocher)
+        elif action == "corbeille":
+            GLib.timeout_add(900, lambda: (self.resultats and self.mettre_a_la_corbeille([self.resultats[0]]),
+                                           False)[1])
         if action == "detail":
             def ouvrir():
                 if self.resultats:

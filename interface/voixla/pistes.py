@@ -23,12 +23,16 @@ préparée une fois en cache (~/.cache/voix-la/videos/), avec le flux vidéo de 
 vidéo. Le son y commence exactement là où commence le son du doublage, lu dans la vidéo doublée (voir calage_video) :
 la copie a les mêmes temps que la vidéo doublée, et on y passe à la même position. Un seul décodage vidéo à la fois.
 
-En ligne de commande (lancée par l'interface sous nice, ou par file-attente quand c'est long) :
+En ligne de commande (lancée par l'interface et par le préparateur, voixla/preparation.py : tout de suite, sous
+nice -n 19 et ionice -c3, jamais par file-attente) :
   python3 -m voixla.pistes voix DOSSIER_VOIX
   python3 -m voixla.pistes video VIDEO_DOUBLEE (SON | --voix DOSSIER_VOIX)
   python3 -m voixla.pistes exporter (SOURCE | --voix DOSSIER_VOIX) SORTIE.mp3|.flac|.wav
+  python3 -m voixla.pistes miniature VIDEO_DOUBLEE     (une image de la vidéo, en cache, pour MPRIS)
 """
 
+import contextlib
+import fcntl
 import hashlib
 import json
 import math
@@ -59,7 +63,8 @@ FORMATS_EXPORT = {".mp3": ["-c:a", "libmp3lame", "-b:a", "320k", "-f", "mp3"],
                   ".wav": ["-c:a", "pcm_s24le", "-f", "wav"]}
 SANS_IMAGE = ("beat", "ma_voix", "voix_origine")    # pistes sans image, lues en vidéo par une copie (voir plus bas)
 VERSION_VIDEO = 1
-CACHE_VIDEO_MO = 2048           # au-delà, les copies vidéo les moins récemment lues sont effacées
+CACHE_VIDEO_MO = 2048           # au-delà, les copies vidéo les moins récemment lues sont effacées (réglable :
+                                # préférence cache_pistes_mo, Réglages > Doublage)
 CONTENEURS_VIDEO = (".mp4", ".m4v", ".mov", ".mkv", ".webm")    # ceux de doubler ; sinon .mkv, comme lui
 SON_VIDEO = {".webm": ["-c:a", "libopus", "-b:a", "192k"]}     # sinon AAC 256k (CONTENEURS de doubler.py)
 SON_VIDEO_DEFAUT = ["-c:a", "aac", "-b:a", "256k"]
@@ -206,19 +211,72 @@ def _tmp(sortie):
     return sortie.with_name(f".{sortie.stem}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp{sortie.suffix}")
 
 
-def _lancer(cmd, tmp, sortie):
+@contextlib.contextmanager
+def verrou_fichier(sortie):
+    """Un fichier du cache à la fois : deux préparations du même fichier (l'interface et le préparateur en tâche de
+    fond) ne se font pas en double ; la seconde attend, puis trouve le fichier prêt. Verrous dans <cache>/verrous/."""
+    d = chemins.dossier_cache() / "verrous"
+    d.mkdir(parents=True, exist_ok=True)
+    with open(d / f"{Path(sortie).parent.name}-{Path(sortie).name}.verrou", "a") as v:
+        fcntl.flock(v, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(v, fcntl.LOCK_UN)
+
+
+def avancement_cli(etape):
+    """Avec VOIXLA_AVANCEMENT=1 (l'interface) : l'avancement d'une préparation, en lignes JSON
+    {"avancement": 0.42, "etape": "video"} sur la sortie, tous les 5 % au plus ; sinon None."""
+    if not os.environ.get("VOIXLA_AVANCEMENT"):
+        return None
+    dernier = [-1.0]
+
+    def dire(f):
+        if f - dernier[0] >= 0.05 - 1e-9 or f >= 1.0:
+            dernier[0] = f
+            print(json.dumps({"avancement": round(f, 3), "etape": etape}), flush=True)
+    return dire
+
+
+def lire_progression(lignes, duree, avancement):
+    """Suit la sortie de ffmpeg -progress : out_time_us (ou out_time_ms, en µs elle aussi) rapporté à duree."""
+    for ligne in lignes:
+        cle, _, valeur = ligne.strip().partition("=")
+        if cle in ("out_time_us", "out_time_ms") and duree:
+            try:
+                avancement(max(0.0, min(1.0, int(valeur) / 1e6 / duree)))
+            except ValueError:
+                pass
+        elif cle == "progress" and valeur.strip() == "end":
+            avancement(1.0)
+
+
+def _lancer(cmd, tmp, sortie, duree=None, avancement=None):
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL)
-        if r.returncode:
-            raise ErreurPistes((r.stderr or r.stdout).strip()[-600:] or f"ffmpeg a échoué ({r.returncode})")
+        if avancement is not None and duree:
+            # -progress : l'avancement ligne à ligne (le fichier de sortie reste le dernier argument)
+            cmd = [*cmd[:-1], "-progress", "pipe:1", "-nostats", cmd[-1]]
+            with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                  stdin=subprocess.DEVNULL) as p:
+                lire_progression(p.stdout, duree, avancement)
+                erreur = p.stderr.read()
+                code = p.wait()
+            if code:
+                raise ErreurPistes(erreur.strip()[-600:] or f"ffmpeg a échoué ({code})")
+        else:
+            r = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+            if r.returncode:
+                raise ErreurPistes((r.stderr or r.stdout).strip()[-600:] or f"ffmpeg a échoué ({r.returncode})")
         os.replace(tmp, sortie)
     finally:
         if Path(tmp).exists():
             Path(tmp).unlink()
 
 
-def preparer_ma_voix(dossier_voix, rapport=None):
-    """Le fichier de « ma voix seule » : en cache (calculé au besoin), ou la voix brute d'un ancien doublage."""
+def preparer_ma_voix(dossier_voix, rapport=None, avancement=None):
+    """Le fichier de « ma voix seule » : en cache (calculé au besoin), ou la voix brute d'un ancien doublage.
+    avancement(fraction) pendant le calcul."""
     plan = plan_ma_voix(dossier_voix, rapport)
     if plan.direct is not None:
         return plan.direct
@@ -228,11 +286,14 @@ def preparer_ma_voix(dossier_voix, rapport=None):
     if sortie.is_file():
         os.utime(sortie)    # récemment écoutée : la purge la garde
         return sortie
-    sortie.parent.mkdir(parents=True, exist_ok=True)
-    tmp = _tmp(sortie)
-    duree = duree_audio(plan.instrumental) if plan.instrumental else None
-    _lancer(commande_ma_voix(plan, tmp, duree), tmp, sortie)
-    chemins.purger_dossier(sortie.parent, CACHE_VOIX_MO)
+    with verrou_fichier(sortie):
+        if sortie.is_file():
+            return sortie     # faite pendant qu'on attendait le verrou
+        sortie.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _tmp(sortie)
+        duree = duree_audio(plan.instrumental) if plan.instrumental else None
+        _lancer(commande_ma_voix(plan, tmp, duree), tmp, sortie, duree or duree_audio(plan.seche), avancement)
+        chemins.purger_dossier(sortie.parent, CACHE_VOIX_MO, garder=(sortie,))
     return sortie
 
 
@@ -478,12 +539,20 @@ def commande_video(video, son, sortie, calage):
     return cmd + [str(sortie)]
 
 
-def trop_lourde(video):
+def limite_cache_video_mo(prefs=None):
+    """Taille du cache des copies vidéo : la préférence cache_pistes_mo (Réglages), sinon CACHE_VIDEO_MO (2 Go)."""
+    prefs = chemins.lire_preferences() if prefs is None else prefs
+    v = _flottant(prefs.get("cache_pistes_mo"))
+    return v if v and v > 0 else CACHE_VIDEO_MO
+
+
+def trop_lourde(video, limite_mo=None):
     """La raison de ne pas copier une vidéo doublée plus lourde que tout le cache des copies, sinon "" (stat seul)."""
+    limite = limite_cache_video_mo() if limite_mo is None else limite_mo
     taille = Path(video).stat().st_size
-    if taille > CACHE_VIDEO_MO * 1024 * 1024:
+    if taille > limite * 1024 * 1024:
         return (f"vidéo doublée trop lourde pour le cache des copies ({taille / 1024 ** 3:.1f} Go, "
-                f"{CACHE_VIDEO_MO / 1024:.0f} Go au plus)")
+                f"{formats.nombre(limite / 1024, 1)} Go au plus ; réglable dans Réglages)")
     return ""
 
 
@@ -526,9 +595,10 @@ def toucher(f):
         pass
 
 
-def preparer_video(video, son=None, voix=None):
+def preparer_video(video, son=None, voix=None, avancement=None):
     """La copie vidéo d'une piste (en cache, calculée au besoin). son : le fichier de la piste ; voix : le dossier
-    d'une voix, pour « ma voix seule » (combinée d'abord, au besoin). Rien n'est écrit à côté de la vidéo doublée."""
+    d'une voix, pour « ma voix seule » (combinée d'abord, au besoin). Rien n'est écrit à côté de la vidéo doublée.
+    avancement(fraction) pendant la copie."""
     video = Path(video)
     if not video.is_file():
         raise ErreurPistes(f"vidéo doublée introuvable : {video}")
@@ -546,10 +616,71 @@ def preparer_video(video, son=None, voix=None):
     calage = calage_video(info, premier_paquet(video, son_doublage["index"]) if son_doublage else None)
     if voix is not None:
         son = preparer_ma_voix(voix)
+    with verrou_fichier(sortie):
+        if sortie.is_file():
+            return sortie     # faite pendant qu'on attendait le verrou
+        sortie.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _tmp(sortie)
+        _lancer(commande_video(video, son, tmp, calage), tmp, sortie, calage.fin - calage.debut_son, avancement)
+        chemins.purger_dossier(sortie.parent, limite_cache_video_mo(), garder=(sortie,))
+    return sortie
+
+
+# --- Miniature : une image de la vidéo doublée (MPRIS, barre « en cours de lecture ») -------------------------------
+
+VERSION_MINIATURE = 1
+CACHE_MINIATURES_MO = 20
+COTE_MINIATURE = 512
+
+
+def chemin_miniature(video):
+    """Miniature en cache (qu'elle existe ou non), nommée d'après le chemin, la taille et la date de la vidéo."""
+    cle = hashlib.sha1(f"{VERSION_MINIATURE}|{_signature(video)}".encode()).hexdigest()[:24]
+    return chemins.dossier_cache() / "miniatures" / f"{cle}.jpg"
+
+
+def miniature_prete(video):
+    """La miniature si elle est déjà en cache, sinon None ; ne calcule rien."""
+    try:
+        f = chemin_miniature(video)
+    except OSError:
+        return None
+    return f if f.is_file() else None
+
+
+def instant_miniature(duree):
+    """L'image prise au tiers de la vidéo (passé l'introduction souvent noire), à 1 s pour une vidéo très courte."""
+    d = _flottant(duree)
+    return max(0.0, d / 3) if d and d > 3 else min(1.0, max(0.0, (d or 0.0) / 2))
+
+
+def commande_miniature(video, sortie, instant):
+    """ffmpeg (sous nice) : une image carrée de COTE_MINIATURE px, prise à instant (recadrée au centre), en JPEG."""
+    c = COTE_MINIATURE
+    return ["nice", "-n", "10", "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+            "-ss", f"{max(0.0, instant):.3f}", "-i", str(video), "-map", "0:v:0", "-frames:v", "1",
+            "-vf", f"scale={c}:{c}:force_original_aspect_ratio=increase,crop={c}:{c}", "-q:v", "4",
+            "-f", "mjpeg", str(sortie)]
+
+
+def preparer_miniature(video):
+    """La miniature d'une vidéo doublée (en cache, calculée au besoin). Rien n'est écrit à côté de la vidéo."""
+    video = Path(video)
+    if not video.is_file():
+        raise ErreurPistes(f"vidéo introuvable : {video}")
+    sortie = chemin_miniature(video)
+    if sortie.is_file():
+        toucher(sortie)
+        return sortie
+    info = sonder(video)
+    if not any(f.get("codec_type") == "video" and not (f.get("disposition") or {}).get("attached_pic")
+               for f in info.get("streams") or []):
+        raise ErreurPistes("pas d’image dans cette vidéo")
     sortie.parent.mkdir(parents=True, exist_ok=True)
     tmp = _tmp(sortie)
-    _lancer(commande_video(video, son, tmp, calage), tmp, sortie)
-    chemins.purger_dossier(sortie.parent, CACHE_VIDEO_MO, garder=(sortie,))
+    _lancer(commande_miniature(video, tmp, instant_miniature((info.get("format") or {}).get("duration"))), tmp,
+            sortie)
+    chemins.purger_dossier(sortie.parent, CACHE_MINIATURES_MO, garder=(sortie,))
     return sortie
 
 
@@ -607,14 +738,16 @@ def main(argv=None):
     debut = time.time()
     try:
         if len(argv) == 2 and argv[0] == "voix":
-            f = preparer_ma_voix(argv[1])
+            f = preparer_ma_voix(argv[1], avancement=avancement_cli("voix"))
             print(json.dumps({"voix": str(f), "duree_s": round(time.time() - debut, 2)}, ensure_ascii=False))
             return 0
         if argv[:1] == ["video"] and len(argv) in (3, 4):
             if (len(argv) == 4) != (argv[2] == "--voix"):
                 print(__doc__)
                 return 2
-            f = preparer_video(argv[1], voix=argv[3]) if len(argv) == 4 else preparer_video(argv[1], son=argv[2])
+            av = avancement_cli("video")
+            f = preparer_video(argv[1], voix=argv[3], avancement=av) if len(argv) == 4 else \
+                preparer_video(argv[1], son=argv[2], avancement=av)
             print(json.dumps({"video": str(f), "duree_s": round(time.time() - debut, 2)}, ensure_ascii=False))
             return 0
         if argv[:1] == ["exporter"] and len(argv) in (3, 4):
@@ -630,6 +763,10 @@ def main(argv=None):
                 return 2
             exporter(source, sortie)
             print(json.dumps({"sortie": str(sortie), "duree_s": round(time.time() - debut, 2)}, ensure_ascii=False))
+            return 0
+        if len(argv) == 2 and argv[0] == "miniature":
+            f = preparer_miniature(argv[1])
+            print(json.dumps({"miniature": str(f), "duree_s": round(time.time() - debut, 2)}, ensure_ascii=False))
             return 0
     except (ErreurPistes, OSError) as e:
         print(f"erreur : {e}", file=sys.stderr)

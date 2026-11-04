@@ -4,7 +4,8 @@ Lancé par l'interface dans sa propre session (start_new_session) : il survit à
 les travaux en attente un par un (un seul doubler à la fois), lance chacun dans son propre groupe de processus, écrit
 etat.json, et tue le groupe si la marque « annuler » apparaît. Il s'arrête quand la file est vide. Un verrou flock
 (executeur.verrou) garantit qu'il n'en tourne qu'un. Si la fenêtre est fermée (verrou interface.verrou libre), il
-prévient par une notification du bureau (notify-send) à la fin de chaque travail.
+prévient par une notification du bureau (notify-send) à la fin de chaque travail. À la fin de chaque travail, il lance
+aussi la préparation des pistes séparées des doublages produits (voixla/preparation.py), en tâche de fond.
 """
 
 import fcntl
@@ -106,6 +107,33 @@ def executer(racine, d):
         notifier(racine, "Doublage fini", titre)
     elif statut == "echec":
         notifier(racine, "Doublage en échec", titre)
+    if statut in ("fini", "echec"):
+        try:
+            preparer_apres(d, demande)
+        except Exception as e:  # noqa: BLE001 — la file des travaux ne dépend pas de la préparation
+            journal(f"préparation impossible : {e}")
+
+
+def preparer_apres(d, demande, lancer=None):
+    """Les doublages produits (événements « sortie » du travail) : leurs pistes séparées se préparent tout de suite,
+    en tâche de fond et en priorité basse (voixla/preparation.py), que la fenêtre soit ouverte ou non. C'est
+    l'exécuteur qui s'en charge : il est seul à voir chaque fin de travail, et il tourne même sans l'interface. Il
+    n'attend pas : le travail suivant de la file part aussitôt. Même après un échec, les vidéos déjà finies d'un lot
+    sont préparées. Rend les dossiers concernés."""
+    from . import preparation
+    if os.environ.get("VOIXLA_SANS_PREPARATION"):
+        return []
+    ev = preparation.lire_evenements(demande.get("evenements") or d / "evenements.jsonl") \
+        if demande.get("evenements") else []
+    dossiers = preparation.dossiers_des_sorties(ev, demande)
+    if dossiers:
+        journal(f"préparation des pistes en tâche de fond : {len(dossiers)} dossier(s)")
+        args = (["--donnees", demande["donnees"]] if demande.get("donnees") else []) + dossiers
+        try:
+            (lancer or preparation.lancer_en_fond)(args)
+        except OSError as e:
+            journal(f"préparation impossible : {e}")
+    return dossiers
 
 
 def main(argv=None):

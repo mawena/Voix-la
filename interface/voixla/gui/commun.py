@@ -32,6 +32,10 @@ CSS = b"""
 .paroles-traduction { font-style: italic; opacity: 0.72; }
 .pastille { min-width: 12px; min-height: 12px; border-radius: 99px; }
 .etape-icone { min-width: 16px; }
+.barre-lecture-progres trough, .barre-lecture-progres trough > progress { min-height: 3px; border-radius: 0; }
+.barre-lecture-progres trough { background: alpha(currentColor, 0.08); }
+.barre-lecture-image { border-radius: 6px; background: alpha(currentColor, 0.08); }
+.barre-lecture-retour { padding: 4px 6px; }
 """
 
 

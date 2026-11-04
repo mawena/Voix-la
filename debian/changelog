@@ -1,3 +1,15 @@
+voix-la (0.4.0) unstable; urgency=medium
+
+  * Interface : la musique continue en arrière-plan (un seul lecteur, barre
+    « en cours de lecture », fenêtre fermée, contrôle MPRIS dans GNOME et
+    touches multimédia).
+  * Interface : mise à la corbeille depuis la liste des Résultats, une ligne
+    ou plusieurs.
+  * Interface : beat seul et voix seules préparés à l'avance, sans passer
+    par la file d'attente commune ; taille du cache réglable.
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Wed, 04 Nov 2026 21:30:00 +0000
+
 voix-la (0.3.1) unstable; urgency=medium
 
   * Interface : la vidéo avance sur « Beat seul », « Ma voix seule » et

@@ -26,7 +26,8 @@ Depends: ${misc:Depends},
          libgtk-4-media-gstreamer
 Recommends: gstreamer1.0-plugins-bad,
             pulseaudio-utils,
-            libnotify-bin
+            libnotify-bin,
+            x42-plugins
 Suggests: python3-venv
 Description: dub videos with a cloned voice, using the free Kaggle GPU
  Voix-là replaces the voice of a video (a song, a duet, rap or speech) with
@@ -39,7 +40,9 @@ Description: dub videos with a cloned voice, using the free Kaggle GPU
  YingMusic-SVC or Seed-VC. Mixing (following the dynamics of the original
  voice, de-esser, reverb, true-peak limiter) and putting the sound back on the
  video run locally with ffmpeg and numpy; picture and subtitles are copied
- without re-encoding.
+ without re-encoding. An optional auto-tune version, from subtle pitch
+ correction to a robotic effect in the key detected from the music, is made
+ locally too, with x42-autotune (recommended package x42-plugins).
  .
  Includes the `doubler` command and the "Voix-là" GTK 4 and libadwaita
  application: voices (from a file or the microphone), dubbing queue, results

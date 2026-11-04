@@ -64,6 +64,9 @@ toujours par Seed\-VC 22 kHz.
 .B \-\-sans\-nettoyage
 En chant, convertit la voix isolée complète, sans nettoyage (plus rapide).
 .TP
+.B \-\-sans\-paroles
+Ni transcription ni traduction des paroles, ni sous-titres, \fB.srt\fR ou \fB.lrc\fR (clé \fBparoles\fR, oui par défaut).
+.TP
 .BI \-\-voix\-db " dB"
 Niveau de la voix par rapport à celle de la vidéo (défaut : +4 en chant, 0 en
 parole).
@@ -108,7 +111,7 @@ Avec \fB\-\-voix\-liste\fR ou \fB\-\-config\fR : sortie en JSON.
 .BR \-\-config " [\fIclé valeur\fR]"
 Sans argument, affiche la configuration et les valeurs utilisées (données,
 commande kaggle, script du noyau, ancres de genre) ; avec \fIclé valeur\fR,
-écrit une clé : \fBdonnees\fR, \fBvoix\fR, \fBmoteur\fR, \fBkaggle.compte\fR,
+écrit une clé : \fBdonnees\fR, \fBvoix\fR, \fBmoteur\fR, \fBparoles\fR, \fBkaggle.compte\fR,
 \fBkaggle.jeu\fR, \fBkaggle.noyau\fR, \fBkaggle.outils\fR.
 .TP
 .B \-\-preparer\-outils

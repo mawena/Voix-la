@@ -337,28 +337,7 @@ def ecrire_produit(fichier, produit, r):
 def purger_cache(max_mo=CACHE_MAX_MO):
     """Garde le cache des pistes sous max_mo : efface les analyses les moins récemment utilisées (et les .tmp
     abandonnés). Rend le nombre de fichiers effacés."""
-    d = chemins.dossier_cache() / "pistes"
-    if not d.is_dir():
-        return 0
-    fichiers, efface = [], 0
-    for f in d.iterdir():
-        try:
-            st = f.stat()
-        except OSError:
-            continue
-        if ".tmp" in f.name and time.time() - st.st_mtime > 3600:
-            f.unlink(missing_ok=True)
-            efface += 1
-            continue
-        fichiers.append((max(st.st_atime, st.st_mtime), st.st_size, f))
-    total = sum(s for _t, s, _f in fichiers)
-    for _t, s, f in sorted(fichiers):
-        if total <= max_mo * 1024 * 1024:
-            break
-        f.unlink(missing_ok=True)
-        total -= s
-        efface += 1
-    return efface
+    return chemins.purger_dossier(chemins.dossier_cache() / "pistes", max_mo)
 
 
 def charger_produit(fichier, produit):

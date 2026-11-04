@@ -20,7 +20,7 @@ REPRISE*.md
 */REPRISE.md
 # Données personnelles et notes de travail : restent sur le poste, jamais dans le dépôt
 ROADMAP.md
-kaggle/ancres_genre.json
+kaggle/ancres_genre*.json
 .kaggle/
 # Banc d'essai et règle d'octave : seuls les scripts et les exemples sont publiés
 banc/cas.json

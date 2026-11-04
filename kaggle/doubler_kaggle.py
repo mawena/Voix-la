@@ -21,6 +21,13 @@
    YingMusic et le nettoyage tournent chacun dans leur propre processus (script_complet : YingMusic a son propre
    paquet « modules », homonyme de celui de Seed-VC, et le GPU est rendu à la sortie). Si YingMusic échoue, Seed-VC
    44 kHz prend le relais ; si le nettoyage échoue, la voix isolée complète est convertie (chaîne d'avant).
+   Passages perdus au nettoyage (zones_perdues : la voix complète sonne, voix principale et chœurs secs se taisent ;
+   typiquement un « oooh » de fond très réverbéré, jeté par le dereverb) : repris de la voix complète, mêmes coupes et
+   mêmes décalages, par une troisième piste « secours » dont la porte n'est ouverte que sur eux (rapport : secours).
+6. Paroles, sauf réglage paroles à false : Whisper large-v3 (transformers) sur la voix principale sèche, sinon la voix
+   isolée, seulement sur les phrases chantées, langue détectée phrase par phrase, horodatage par mot, garde-fous contre
+   les hallucinations ; traduction française (NLLB-200 distillé 600M) des lignes qui ne sont pas en français. Étape à
+   part, comme le nettoyage ; un échec n'empêche jamais le doublage.
 
 doubler.py remplace __REGLAGES__ (JSON en base64) et SOURCE (sa propre source en base64 : le noyau tourne en carnet,
 sans fichier, et en a besoin pour ses étapes à part), puis pousse ce noyau privé (GPU T4 + internet).
@@ -33,9 +40,12 @@ Sorties dans /kaggle/working/<id>/ pour chaque vidéo :
                              voix_source.flac.json (gain appliqué, que doubler.py retire au rapatriement)
   voix_convertie.flac        voix cible (44,1 kHz mono 24 bits, même nombre d'échantillons, calée sur l'échantillon 0)
   voix_convertie_<autre>.flac, voix_convertie_<N>pas.flac   variantes de comparaison (modèle, pas de diffusion)
-  rapport.json               mode et mesures, morceaux (hauteur, voix, décalage), moteur, nettoyage, temps
+  rapport.json               mode et mesures, morceaux (hauteur, voix, décalage), moteur, nettoyage, secours (zones
+                             récupérées : début, fin, durée, écart), paroles, temps
   courbes.json               mélodie de la voix isolée et de la voix convertie, décalage appliqué (format 1 : une
                              valeur toutes les 20 ms ; lu par l'interface, à ne pas changer sans la prévenir)
+  paroles.json               paroles horodatées par ligne et par mot, langue, traduction française (format 1 ; contrat
+                             avec l'interface) ; temps du son doublé, doubler.py les cale sur la vidéo de sortie
 et /kaggle/working/session.json (installation, séparation, nettoyage, chargement des modèles, temps total).
 """
 import base64
@@ -359,9 +369,11 @@ def preparer_outils():
         lancer(sys.executable, '-c', "from audio_separator.separator import Separator; "
                f"Separator(model_file_dir='/tmp/modeles_sep', output_dir='/tmp').load_model(model_filename='{modele}')")
     shutil.copytree('/tmp/modeles_sep', os.path.join(w, 'modeles_sep'))
+    paroles = preparer_paroles_outils(w)
     import platform
     sep = os.path.join(w, 'modeles_sep')
     fiche = {'commit': sha, 'python': platform.python_version(), 'torch': torch.__version__, 'paquets': PAQUETS,
+             'paroles': paroles,
              'wheels': sorted(os.listdir(os.path.join(w, 'wheels'))), 'date': time.strftime('%Y-%m-%d %H:%M'),
              'yingmusic': {'commit': YING_COMMIT, 'poids': f'yingmusic/{YING_POIDS[1]}',
                            'essai': {k: essai.get(k) for k in ('chargement_s', 'installation', 'erreur', 'code')}},
@@ -372,6 +384,108 @@ def preparer_outils():
     with open(os.path.join(w, 'outils.json'), 'w') as f:
         json.dump(fiche, f, ensure_ascii=False, indent=1)
     log('OUTILS prêts : ' + json.dumps(fiche, ensure_ascii=False))
+
+
+def copier_paroles(outils, dest='/tmp/paroles_modeles'):
+    """Copie, dans un fil à part, des modèles de paroles du montage d'outils vers le disque local. from_pretrained lit
+    les poids en mmap : sur /kaggle/input, les 3 Go de Whisper large-v3 ont mis 310 s à se charger (extrait d'essai du
+    04/11/2026), quand une lecture d'un trait (tar des autres poids) va dix fois plus vite. Lancée dès l'installation,
+    la copie se fait pendant la séparation, le nettoyage et la conversion. Rend l'état à passer à transcrire."""
+    import threading
+    fiche = (lire_outils(outils).get('paroles') or {}) if outils else {}
+    paires = {}
+    for cle in ('whisper', 'traducteur'):
+        rel = fiche.get(cle)
+        src = os.path.join(outils, rel) if outils and rel else None
+        if src and os.path.isfile(os.path.join(src, 'config.json')):
+            paires[cle] = (src, os.path.join(dest, os.path.basename(src.rstrip('/'))))
+    etat = {'paires': paires, 'copies': {}, 'duree_s': None, 'erreur': None, 'fil': None}
+    if not paires:
+        return etat
+
+    def copier():
+        t = time.time()
+        for cle, (src, dst) in paires.items():
+            try:
+                if not os.path.isfile(os.path.join(dst, 'config.json')):
+                    shutil.rmtree(dst + '.part', ignore_errors=True)
+                    shutil.copytree(src, dst + '.part')
+                    os.replace(dst + '.part', dst)
+                etat['copies'][cle] = dst
+            except Exception as e:  # noqa: BLE001 — disque plein… : le montage, plus lent
+                shutil.rmtree(dst + '.part', ignore_errors=True)
+                etat['erreur'] = f'{cle} : {e!r}'[:300]
+        etat['duree_s'] = round(time.time() - t, 1)
+    etat['fil'] = threading.Thread(target=copier, daemon=True)
+    etat['fil'].start()
+    return etat
+
+
+def chemins_paroles(etat, attendre=True):
+    """{'whisper': chemin, 'traducteur': chemin} à charger : la copie locale si elle est finie et complète, sinon le
+    montage (None : téléchargé depuis Hugging Face). Attend la fin de la copie ; rend aussi l'attente (s)."""
+    t = time.time()
+    if attendre and etat.get('fil') is not None:
+        etat['fil'].join()
+    chemins = {cle: etat['copies'].get(cle) or src for cle, (src, _) in etat.get('paires', {}).items()}
+    return chemins, round(time.time() - t, 1)
+
+
+def preparer_paroles_outils(w):
+    """Noyau « outils » : dossiers complets de Whisper large-v3 et de NLLB-200 distillé 600M (from_pretrained les lit
+    tels quels dans le montage ; sinon le noyau de doublage les télécharge), puis essai dans un processus à part :
+    chargement, transcription d'un exemple de Seed-VC (ou d'une note de synthèse) et traduction. Rend la fiche."""
+    from huggingface_hub import HfApi, snapshot_download
+    fiche = {}
+    for cle, (depot, nom) in (('whisper', WHISPER), ('traducteur', TRADUCTEUR)):
+        dest = os.path.join(w, 'paroles', nom)
+        t0 = time.time()
+        try:
+            fichiers = HfApi().list_repo_files(depot)
+            poids = 'model.safetensors' if 'model.safetensors' in fichiers else 'pytorch_model.bin'
+            garder = [f for f in fichiers if '/' not in f and f.endswith(('.json', '.txt', '.model'))
+                      and 'index' not in f] + [poids]
+            snapshot_download(depot, local_dir=dest, allow_patterns=garder)
+            fiche[cle] = f'paroles/{nom}'
+            fiche[f'{cle}_mo'] = round(sum(os.path.getsize(os.path.join(dest, f)) for f in os.listdir(dest)
+                                           if os.path.isfile(os.path.join(dest, f))) / 1e6)
+            log(f"outils : {nom} ({poids}, {fiche[f'{cle}_mo']} Mo) en {time.time() - t0:.0f} s")
+        except Exception as e:  # noqa: BLE001 — le noyau de doublage les téléchargera
+            fiche[f'{cle}_erreur'] = repr(e)[:300]
+            log(f'outils : {nom} indisponible ({e!r})')
+    import numpy as np
+    import soundfile as sf
+    exemples = sorted(glob.glob(os.path.join(SEEDVC, 'examples', '**', '*.wav'), recursive=True))
+    os.makedirs('/tmp/paroles', exist_ok=True)
+    audio = '/tmp/paroles/essai.wav'
+    try:
+        import librosa
+        x = librosa.load(exemples[0], sr=SR, mono=True)[0][:SR * 20]
+        fiche['essai_audio'] = os.path.relpath(exemples[0], SEEDVC)
+    except Exception:  # noqa: BLE001 — pas d'exemple : une note tenue suffit à éprouver le chargement et l'appel
+        x = (0.1 * np.sin(2 * np.pi * 220 * np.arange(SR * 4) / SR)).astype(np.float32)
+        fiche['essai_audio'] = 'note de synthèse'
+    sf.write(audio, x, SR, subtype='FLOAT')
+    d = round(len(x) / SR, 2)
+    travail = {'whisper': os.path.join(w, fiche['whisper']) if fiche.get('whisper') else None,
+               'traducteur': os.path.join(w, fiche['traducteur']) if fiche.get('traducteur') else None,
+               'cache': '/tmp/hf_paroles', 'resultat': '/tmp/paroles/essai_resultat.json', 'traduire_toujours': True,
+               'videos': [{'id': 'essai', 'audio': audio, 'piste': 'essai', 'phrases': [[0.0, d]], 'chant': [[0.0, d]],
+                           'sortie': '/tmp/paroles/essai_paroles.json'}]}
+    try:
+        essai = etape_a_part('paroles', travail)
+    except Exception as e:  # noqa: BLE001
+        essai = {'erreur': repr(e)}
+    sortie = lire_json('/tmp/paroles/essai_paroles.json', {}) or {}
+    fiche['essai'] = {k: essai.get(k) for k in ('implementation', 'whisper_origine', 'traducteur_origine', 'chargements_s',
+                                                'temps', 'erreur', 'erreur_traduction', 'code')}
+    fiche['essai'].update({'video': (essai.get('videos') or {}).get('essai'),
+                           'texte': ' / '.join(s['texte'] for s in sortie.get('segments', [])[:3])[:300],
+                           'traduction': ' / '.join(s['texte'] for s in ((sortie.get('traductions') or {}).get('fr') or {})
+                                                    .get('segments', [])[:3])[:300]})
+    shutil.rmtree('/tmp/hf_paroles', ignore_errors=True)
+    log('outils : essai des paroles : ' + json.dumps(fiche['essai'], ensure_ascii=False)[:1500])
+    return fiche
 
 
 def trouver(nom):
@@ -587,8 +701,9 @@ def meilleure_octave(f, centre, precedent=None, marge=0.0):
 # --- Octave en chant : une voix = un décalage (règle validée hors ligne : octave/decision.py, octave/rejouer.py,
 # octave/RESULTATS.md ; les fonctions ci-dessous en sont la copie exacte, en Python seul) ---------------------------------
 # Classe d'une voix : hauteur médiane < 240 Hz -> homme, > 330 Hz -> femme ; entre les deux, empreinte (genre_score
-# >= +0,03 homme ; <= -0,10 femme, mais seulement à partir de 281 Hz : plus bas, une voix d'homme éraillée a aussi une
-# empreinte de femme), puis notes graves (10e centile < 190 Hz -> homme), sinon la hauteur seule.
+# >= +0,03 homme ; <= -0,10 femme, mais seulement à partir de 255 Hz : plus bas, une voix d'homme éraillée peut avoir
+# une empreinte de femme), puis notes graves (10e centile < 190 Hz -> homme), sinon la hauteur seule (homme sous 281 Hz,
+# milieu géométrique de la zone, femme au-dessus : frontière fixe, qui ne dépend plus de la voix cible depuis la v2.2).
 # Duo seulement si deux groupes d'empreintes nettement séparés, chantant chacun en sections suivies, et de décalages
 # différents ; changement de voix par Viterbi, moins cher à une pause, sections de 6 s au moins.
 
@@ -597,9 +712,12 @@ OCTAVE_DEFAUT = {
     'zone_haute_hz': 330.0,          # au-dessus : voix de femme d'après la hauteur seule
     'genre_homme': 0.03,             # genre_score médian d'une voix, à partir duquel on la tient pour un homme
     'genre_femme': -0.10,            # ... en deçà duquel on la tient pour une femme
-    'femme_empreinte_min_hz': 281.0,  # ... et seulement à partir de cette hauteur (√(240 x 330)) : en dessous, une
-                                      # empreinte de femme peut venir d'une voix d'homme éraillée
+    'femme_empreinte_min_hz': 255.0,  # ... et seulement à partir de cette hauteur : en dessous, une empreinte de
+                                      # femme peut venir d'une voix d'homme éraillée (281 Hz jusqu'à la v2.2, pour
+                                      # des ancres faites d'une seule voix par genre ; 255 avec des ancres de parole)
     'grave_p10_hz': 190.0,           # 10e centile des hauteurs de morceaux sous lequel la voix est d'homme
+    'frontiere_hz': 281.0,           # faute d'indice sûr : homme en dessous, femme au-dessus (√(240 x 330), milieu
+                                     # géométrique de la zone ; ne dépend pas de la voix cible)
     'centre_homme_hz': 250.0,        # centre de chant typique d'un chanteur, d'une chanteuse
     'centre_femme_hz': 420.0,
     'voise_min_s': 0.8,              # temps voisé minimal d'un morceau pour compter dans les empreintes
@@ -625,6 +743,11 @@ def quantile_pondere(v, w, q):
         if c >= q * tot:
             return a
     return paires[-1][0]
+
+
+def classe_hauteur(f, R):
+    """Classe d'une voix sans indice sûr, d'après sa hauteur médiane seule (frontière fixe, hors voix cible)."""
+    return 'homme' if f < R['frontiere_hz'] else 'femme'
 
 
 def mesurer_voix(morceaux, R):
@@ -664,7 +787,9 @@ def classer(m, R, sur_seulement=False):
         empreinte = f"empreinte {'absente' if g is None else f'{g:+.3f}'} peu marquée"
     if sur_seulement:
         return None, f"{zone}, {empreinte}"
-    return None, f"{zone}, {empreinte} : d'après la hauteur seule"
+    cote = '<' if classe_hauteur(f, R) == 'homme' else '>='
+    return None, (f"{zone}, {empreinte} : d'après la hauteur seule ({f:.0f} Hz {cote} {R['frontiere_hz']:.0f}, "
+                  f"{classe_hauteur(f, R)})")
 
 
 def deux_moyennes(vals, poids, part_min=0.0):
@@ -768,9 +893,10 @@ def decider_octave(morceaux, centre, reglages=None, coupes_son=None):
     R = {**OCTAVE_DEFAUT, **(reglages or {})}
     dec_classe = {'homme': meilleure_octave(R['centre_homme_hz'], centre),
                   'femme': meilleure_octave(R['centre_femme_hz'], centre)}
-    info = {'regle': 'v2.1 (une voix = un décalage ; empreinte de femme ignorée sous 281 Hz)', 'centre_chant_cible_hz': round(centre, 1),
+    info = {'regle': 'v2.3 (une voix = un décalage ; empreinte de femme ignorée sous 255 Hz ; hauteur seule : '
+                     'frontière fixe de 281 Hz)', 'centre_chant_cible_hz': round(centre, 1),
             'decalage_par_classe': dec_classe,
-            'zone_ambigue_hz': [R['zone_basse_hz'], R['zone_haute_hz']],
+            'zone_ambigue_hz': [R['zone_basse_hz'], R['zone_haute_hz']], 'frontiere_hauteur_seule_hz': R['frontiere_hz'],
             'seuils_genre': {'homme': R['genre_homme'], 'femme': R['genre_femme']}}
     actifs_i = [i for i, s in enumerate(morceaux) if not s.get('muet') and s.get('voise_s', 0) > 0]
     if not actifs_i:
@@ -781,7 +907,7 @@ def decider_octave(morceaux, centre, reglages=None, coupes_son=None):
     tout = [morceaux[i] for i in actifs_i]
     mg = mesurer_voix(tout, R)
     classe_g, raison_g = classer(mg, R)
-    dec_g = dec_classe[classe_g] if classe_g else (meilleure_octave(mg['f0_med_hz'], centre) if mg.get('f0_med_hz') else 0)
+    dec_g = dec_classe[classe_g or classe_hauteur(mg['f0_med_hz'], R)] if mg.get('f0_med_hz') else 0
     info['voix_principale'] = {**mg, 'classe': classe_g, 'raison': raison_g, 'decalage': dec_g}
 
     # 2. Deux voix ?
@@ -821,7 +947,7 @@ def decider_octave(morceaux, centre, reglages=None, coupes_son=None):
                     # Sans indice sûr : la hauteur seule, si elle va dans le sens des empreintes (le groupe à l'empreinte
                     # la plus basse est le plus « femme » des deux) ; sinon, comme la voix principale.
                     attendue = 'femme' if k == 0 else 'homme'
-                    d = meilleure_octave(m['f0_med_hz'], centre) if m.get('f0_med_hz') else dec_g
+                    d = dec_classe[classe_hauteur(m['f0_med_hz'], R)] if m.get('f0_med_hz') else dec_g
                     if d == dec_classe[attendue]:
                         c, r = attendue, r + f", d'après la hauteur seule (empreinte plus {'basse' if k == 0 else 'haute'} que l'autre voix)"
                     else:
@@ -890,10 +1016,10 @@ def decider_chant(segs, R, centre, coupes_son=None):
     """Octave en chant (-12, 0, +12 : la musique garde sa tonalité) : un même chanteur garde un seul décalage sur toute
     la chanson ; on ne change d'octave que lorsque la voix change vraiment (duo), de préférence à une pause.
     Le genre de chaque passage (genre_score) est la projection de son empreinte CAMPPlus sur l'axe homme - femme de deux
-    ancres (voix chantées isolées) ; il ne départage que la zone ambiguë (240-330 Hz : dans un duo homme/femme, le
+    ancres (octave/ancres.py) ; il ne départage que la zone ambiguë (240-330 Hz : dans un duo homme/femme, le
     chanteur et la chanteuse peuvent y chanter tous deux ; une voix d'homme éraillée y passe pour une femme). Les
     ancres sont facultatives (R['ancres'] absent ou None) : sans elles, aucun genre_score, donc ni empreinte dans la
-    zone ambiguë (notes graves, sinon la hauteur seule) ni recherche de duo.
+    zone ambiguë (notes graves, sinon la hauteur seule : homme sous 281 Hz, femme au-dessus) ni recherche de duo.
     Décalage d'une classe : celui qui rapproche son centre de chant typique (homme 250 Hz, femme 420 Hz) du centre de
     chant de la voix cible (2 x sa hauteur de parole) : pour une voix cible d'homme (centre vers 200 Hz), 0 pour un
     chanteur et -12 pour une chanteuse.
@@ -1047,6 +1173,469 @@ def rms_actif(x, ref=None):
     if not act[:n].any():
         return float(np.sqrt(np.mean(x.astype(np.float64) ** 2)) + 1e-9)
     return float(np.sqrt(np.mean(10 ** (e[:n][act[:n]] / 10))) + 1e-9)
+
+
+# --- Passages perdus au nettoyage : piste de secours (numpy seul : sert aussi sur le PC, kaggle/secours_local.py) -----
+# Le dereverb prend parfois une voix de fond très réverbérée (un « oooh » de chœur) pour de la réverbération et la jette :
+# ni la voix principale sèche ni les chœurs secs ne la contiennent, rien n'est converti, et comme la voix complète est
+# retirée de la musique, il reste un trou. Ces zones sont reprises de la voix complète, avec les mêmes coupes et les
+# mêmes décalages, dans une troisième piste « secours » qui n'ouvre sa porte que sur elles.
+# Seuils (premier cas réel, 04/11/2026 : une chanson dont chaque refrain a un « oooh » de fond vers 263 Hz, perdu) :
+# - écart : sur les trames chantées, la somme des pistes nettoyées reste à moins de 1 dB de la voix complète (médiane
+#   0,03 dB, 90e centile 5,5 dB ; la reverb jetée est 8 dB sous la voix) ; les zones perdues ont 30 à 93 dB d'écart.
+#   15 dB : très au-delà de la reverb retirée d'une note chantée, et une voix 15 dB plus basse est inaudible sous la
+#   musique, donc perdue. Mêmes zones trouvées à 10, 15 et 20 dB ;
+# - niveau : la voix complète sonne à moins de 20 dB de son haut (95e centile de l'enveloppe) ; les zones perdues sont 5
+#   à 10 dB sous ce haut. Plus bas, le passage s'entendait à peine dans l'original, et c'est là que traînent les reverbs ;
+# - passage : les trames perdues séparées de moins de 0,4 s forment un seul passage (un « oooh » coupé par une syllabe
+#   que les pistes nettoyées ont gardée), jugé en entier ; durée 0,4 s au moins, mesurée sur l'enveloppe lissée (150 ms),
+#   soit environ 0,25 s de note : plus court, la porte des pistes nettoyées (élargie de 0,2 s) et les fondus couvrent
+#   déjà le trou (cas réel : passages perdus de 0,9 à 2,6 s) ;
+# - pas de doublon : dans un passage, la porte de secours reste fermée là où les pistes nettoyées portent la voix (moins
+#   de 6 dB d'écart : au moins la moitié de son amplitude), fondus de 80 ms ;
+# - voisement : 30 % des trames du passage au moins ont une hauteur RMVPE (passages perdus : 55 à 100 %) ; un bruit, un
+#   souffle ou une fuite de percussion n'en ont pas, et convertis ne rendraient que du bruit ;
+# - pente : une traîne de réverbération est voisée elle aussi (55 à 100 % des fins de phrase), mais décroît : -18 dB/s
+#   en médiane après une phrase, -39 dB/s au 10e centile ; une voix tenue reste stable (-3 à +8 dB/s dans les zones
+#   perdues). Une zone qui décroît de plus de 15 dB/s est une traîne, laissée de côté ;
+# - si plus de 40 % du temps où la voix sonne serait repris, le nettoyage a échoué : la voix complète est convertie
+#   seule (chaîne d'avant) plutôt que trois pistes.
+SECOURS_DEFAUT = {
+    'ecart_db': 15.0,
+    'sous_haut_db': 20.0,
+    'trou_max_s': 0.4,
+    'duree_min_s': 0.4,
+    'voise_min': 0.3,
+    'pente_min_db_s': -15.0,
+    'ecart_porte_db': 6.0,    # dans un passage, porte fermée là où les pistes nettoyées sonnent déjà
+    'fondu_s': 0.08,          # fondu (sinus²) centré sur chaque bord de porte
+    'ouvert_min_s': 0.05,     # ouvertures plus brèves ignorées, fermetures plus brèves que 0,1 s comblées
+    'part_max': 0.4,
+}
+
+
+def suites(masque):
+    """[(début, fin exclue)] des suites de True d'un masque."""
+    import numpy as np
+    m = np.asarray(masque, bool)
+    if not m.size or not m.any():
+        return []
+    d = np.diff(np.concatenate([[0], m.astype(np.int8), [0]]))
+    return list(zip(np.where(d == 1)[0].tolist(), np.where(d == -1)[0].tolist()))
+
+
+def a_longueur(v, k, remplissage=0.0):
+    """v recoupé ou complété (remplissage) à k valeurs."""
+    import numpy as np
+    v = np.asarray(v, np.float64)
+    return v[:k] if len(v) >= k else np.concatenate([v, np.full(k - len(v), remplissage)])
+
+
+def niveau_nettoye_db(nettes, k):
+    """Niveau (dBFS par trame de 10 ms, lissé comme lisser_db) de la somme des pistes nettoyées telles qu'elles sonneront :
+    nettes = [(lisse, gain_trames)] de chaque piste, porte comprise (une piste sous sa porte ne compte pas). Pistes
+    supposées sans corrélation : puissances additionnées."""
+    import numpy as np
+    lin = np.zeros(k)
+    for lisse_t, g_t in nettes:
+        lin += a_longueur(g_t, k) ** 2 * 10 ** (a_longueur(lisse_t, k, -120.0) / 10)
+    return 10 * np.log10(lin + 1e-12)
+
+
+def zones_perdues(env, lisse, seuil, f0, nettes, reglages=None):
+    """Zones où la voix complète sonne alors que voix principale sèche et chœurs secs ensemble sont bien plus bas (seuils :
+    SECOURS_DEFAUT). env, lisse, seuil : enveloppe, enveloppe lissée et seuil de silence de la voix complète ; f0 : sa
+    hauteur RMVPE (0 = non voisé), une trame toutes les 10 ms ; nettes : [(lisse, gain_trames)] des pistes nettoyées.
+    Rend (zones gardées, info) ; chaque zone : début, fin, durée, écart médian (dB), niveaux, voisement, hauteur, pente ;
+    info['ecartees'] : les candidates laissées de côté, avec la raison."""
+    import numpy as np
+    R = {**SECOURS_DEFAUT, **(reglages or {})}
+    lisse = np.asarray(lisse, np.float64)
+    k = len(lisse)
+    f0 = a_longueur(f0, k)
+    ln = niveau_nettoye_db(nettes, k)
+    ecart = lisse - ln
+    haut = float(np.percentile(env, 95)) if len(env) else -120.0
+    plancher = max(float(seuil), haut - R['sous_haut_db'])
+    brut = (lisse > plancher) & (ecart >= R['ecart_db'])
+    masque = brut.copy()
+    trou = int(round(R['trou_max_s'] / 0.01))
+    reg = suites(brut)
+    for (_, b0), (a1, _) in zip(reg, reg[1:]):
+        if a1 - b0 <= trou:
+            masque[b0:a1] = True
+    gardees, ecartees = [], []
+    for a, b in suites(masque):
+        v = f0[a:b] > 1
+        t = np.arange(b - a) * 0.01
+        pente = float(np.polyfit(t, lisse[a:b], 1)[0]) if b - a >= 3 else 0.0
+        perdues = brut[a:b]
+        # porte : ouverte là où les pistes nettoyées ne portent pas la voix ; fermetures brèves comblées, ouvertures
+        # brèves ignorées
+        ouvert = ecart[a:b] >= R['ecart_porte_db']
+        ferme = suites(~ouvert)
+        for c, d in ferme:
+            if 0 < c and d < b - a and d - c < 10:
+                ouvert[c:d] = True
+        ouvert_s = [[round((a + c) * 0.01, 2), round((a + d) * 0.01, 2)] for c, d in suites(ouvert)
+                    if (d - c) * 0.01 >= R['ouvert_min_s']]
+        z = {'debut_s': round(a * 0.01, 2), 'fin_s': round(b * 0.01, 2), 'duree_s': round((b - a) * 0.01, 2),
+             'ecart_db': round(float(np.median(ecart[a:b][perdues])), 1),
+             'niveau_voix_dbfs': round(float(np.median(lisse[a:b])), 1),
+             'niveau_nettoye_dbfs': round(float(np.median(ln[a:b])), 1),
+             'voise': round(float(v.mean()), 2), 'f0_hz': round(float(np.median(f0[a:b][v])), 1) if v.any() else None,
+             'pente_db_s': round(pente, 1), 'ouvert': ouvert_s,
+             'repris_s': round(sum(d - c for c, d in ouvert_s), 2)}
+        if z['duree_s'] < R['duree_min_s']:
+            z['raison'] = f"trop courte ({z['duree_s']:.2f} s < {R['duree_min_s']} s)"
+        elif z['voise'] < R['voise_min']:
+            z['raison'] = f"pas assez voisée ({z['voise']:.0%} < {R['voise_min']:.0%})"
+        elif pente < R['pente_min_db_s']:
+            z['raison'] = f"décroît comme une traîne de réverbération ({pente:.0f} dB/s < {R['pente_min_db_s']:.0f})"
+        (ecartees if z.get('raison') else gardees).append(z)
+    info = {'reglages': R, 'haut_voix_dbfs': round(haut, 1), 'plancher_dbfs': round(plancher, 1),
+            'trames_perdues_s': round(float(brut.sum()) * 0.01, 2), 'ecartees': ecartees}
+    return gardees, info
+
+
+def decider_secours(zones, voix_active_s, reglages=None):
+    """'secours' (piste de secours sur les zones), 'aucun' (rien de perdu : le mix ne change pas) ou 'voix_complete' (plus
+    de part_max du temps chanté perdu : nettoyage raté, la voix complète est convertie seule). Rend (décision, secondes)."""
+    R = {**SECOURS_DEFAUT, **(reglages or {})}
+    secondes = round(sum(z['duree_s'] for z in zones), 2)
+    if not zones:
+        return 'aucun', 0.0
+    if secondes > R['part_max'] * max(voix_active_s, 1e-9):
+        return 'voix_complete', secondes
+    return 'secours', secondes
+
+
+def porte_zones(zones, n, fondu_s=SECOURS_DEFAUT['fondu_s']):
+    """Porte de la piste de secours : 1 sur les parties ouvertes des zones (toute la zone si elle n'en précise pas), 0
+    ailleurs, fondus en sinus² de fondu_s centrés sur les bords. Rend le gain par échantillon et par trame de 10 ms."""
+    import numpy as np
+    g = np.zeros(n, np.float32)
+    f = max(int(fondu_s * SR), 2)
+    for z in zones:
+        for oa, ob in (z.get('ouvert') or [[z['debut_s'], z['fin_s']]]):
+            a, b = int(round(oa * SR)), int(round(ob * SR))
+            lo, hi = max(0, a - f), min(n, b + f)
+            if hi <= lo:
+                continue
+            tt = np.arange(lo, hi)
+            w = rampe(tt - a, f) * (1 - rampe(tt - b, f))
+            g[lo:hi] = np.maximum(g[lo:hi], w.astype(np.float32))
+    return g, g[::PAS].astype(np.float64)
+
+
+def morceaux_piste(segs, piste, fondus):
+    """Morceaux à convertir pour une piste : ceux de la voix complète (mêmes coupes, même décalage), sauf les muets ; une
+    piste nettoyée saute ceux où elle se tait, la piste de secours ne garde que ceux qui touchent une de ses zones (fondus
+    compris). [(i, début, fin, décalage, fondu au début, fondu à la fin)], en échantillons."""
+    out = []
+    marge = SECOURS_DEFAUT['fondu_s']
+    for s in segs:
+        if s['muet']:
+            continue
+        a, b = s['debut'], s['fin']
+        if piste['nom'] == 'secours':
+            if not any(z['debut_s'] - marge < b / SR and z['fin_s'] + marge > a / SR for z in piste['zones']):
+                continue
+        elif piste['nom'] != 'voix' and float(piste['lisse'][a // PAS:b // PAS + 1].max()) < piste['seuil']:
+            continue
+        out.append((s['i'], a, b, s['decalage'], fondus.get(a, 0), fondus.get(b, 0)))
+    return out
+
+
+def gain_secours(x, y, gain, borne_db=20.0):
+    """Gain qui ramène la piste de secours convertie (y, porte appliquée) au niveau de la voix complète (x) dans ses
+    zones (là où la porte est ouverte) ; borné à ±borne_db. 1 si la porte n'est ouverte nulle part."""
+    import numpy as np
+    m = np.asarray(gain) > 0.5
+    if not m.any():
+        return 1.0
+    sx = float(np.sqrt(np.mean(np.asarray(x, np.float64)[m] ** 2)))
+    sy = float(np.sqrt(np.mean(np.asarray(y, np.float64)[m] ** 2)))
+    if sy <= 1e-9 or sx <= 1e-9:
+        return 1.0
+    return float(np.clip(sx / sy, 10 ** (-borne_db / 20), 10 ** (borne_db / 20)))
+
+
+# --- Paroles : zones à transcrire, garde-fous contre les hallucinations, lignes (sans torch : testé sur le PC) --------
+# Transcription : Whisper large-v3 par transformers (déjà installé dans l'image Kaggle, avec le torch de Kaggle :
+# faster-whisper demanderait ctranslate2, construit pour CUDA 12 et cuDNN 9, quand l'image a CUDA 13), une seule fois par
+# phrase chantée détectée (hauteur RMVPE), jamais sur les silences ni les ponts instrumentaux. Traduction vers le
+# français : NLLB-200 distillé 600M (une seule maquette pour toutes les langues ; poids CC BY-NC 4.0, comme ceux de
+# YingMusic-SVC : usage non commercial), ligne par ligne, mêmes horodatages.
+WHISPER = ('openai/whisper-large-v3', 'whisper-large-v3')                 # poids Apache-2.0
+TRADUCTEUR = ('facebook/nllb-200-distilled-600M', 'nllb-200-distilled-600M')  # poids CC BY-NC 4.0
+PAROLES_DEFAUT = {
+    'marge_voise_s': 0.3,     # une trame qui sonne est chantée si une hauteur est trouvée à moins de 0,3 s (consonnes)
+    'trou_max_s': 0.6,        # pause plus courte : même phrase
+    'marge_s': 0.25,          # marge autour de chaque phrase (attaques, fins de mots)
+    'duree_min_s': 0.4,       # phrase plus courte : ignorée (un souffle, un « ah »)
+    'morceau_max_s': 25.0,    # Whisper lit 30 s à la fois
+    'pause_morceau_s': 2.0,   # pause plus longue (pont instrumental) : nouveau morceau
+    'langue_proba_min': 0.5,  # langue d'une phrase moins sûre, ou phrase de moins de 1,5 s : celle de ses voisines
+    'pause_ligne_s': 0.5,     # lignes : coupées aux pauses, à la ponctuation, à 50 caractères ou 7 s
+    'ligne_car_max': 50,
+    'ligne_duree_max_s': 7.0,
+    'mot_voise_min': 0.25,    # un mot dont moins d'un quart tombe dans le chant est inventé
+    'boucle_mot_min_s': 0.12,  # une suite répétée 3 fois ou plus, chantée à moins de 0,12 s par mot : inventée
+    'compression_max': 2.4,   # texte d'un morceau plus répétitif (zlib, critère d'OpenAI) : boucles retirées d'office
+}
+GARDE_FOUS_WHISPER = {'condition_on_prev_tokens': False, 'compression_ratio_threshold': 1.35,   # 1,35 : calculé par
+                      'no_speech_threshold': 0.6, 'logprob_threshold': -1.0,                   # transformers sur les
+                      'temperature': (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)}                           # jetons, pas le texte
+# Phrases que Whisper invente sur la musique ou le silence (génériques de sous-titres, appels à s'abonner…)
+HALLUCINATIONS = re.compile(r"amara\.org|sous-titr|subt[ií]tul|sottotitol|untertitel|legendas? (por|pela)|subtitles? by|"
+                            r"thanks? (you )?for watching|merci d'avoir regard|gracias por ver|suscr[ií]bete|"
+                            r"abonnez[- ]vous|like and subscribe|www\.|https?://|©|transcri(pt|bed) by|продолжение следует",
+                            re.I)
+MUSIQUE_SEULE = re.compile(r"^\W*(♪|musique|music|música|musica|instrumental|applaudissements|rires)?\W*$", re.I)
+NLLB = {'af': 'afr_Latn', 'am': 'amh_Ethi', 'ar': 'arb_Arab', 'az': 'azj_Latn', 'be': 'bel_Cyrl', 'bg': 'bul_Cyrl',
+        'bn': 'ben_Beng', 'bs': 'bos_Latn', 'ca': 'cat_Latn', 'cs': 'ces_Latn', 'cy': 'cym_Latn', 'da': 'dan_Latn',
+        'de': 'deu_Latn', 'el': 'ell_Grek', 'en': 'eng_Latn', 'es': 'spa_Latn', 'et': 'est_Latn', 'eu': 'eus_Latn',
+        'fa': 'pes_Arab', 'fi': 'fin_Latn', 'fr': 'fra_Latn', 'gl': 'glg_Latn', 'gu': 'guj_Gujr', 'ha': 'hau_Latn',
+        'he': 'heb_Hebr', 'hi': 'hin_Deva', 'hr': 'hrv_Latn', 'ht': 'hat_Latn', 'hu': 'hun_Latn', 'hy': 'hye_Armn',
+        'id': 'ind_Latn', 'is': 'isl_Latn', 'it': 'ita_Latn', 'ja': 'jpn_Jpan', 'jw': 'jav_Latn', 'ka': 'kat_Geor',
+        'kk': 'kaz_Cyrl', 'km': 'khm_Khmr', 'kn': 'kan_Knda', 'ko': 'kor_Hang', 'lb': 'ltz_Latn', 'ln': 'lin_Latn',
+        'lo': 'lao_Laoo', 'lt': 'lit_Latn', 'lv': 'lvs_Latn', 'mg': 'plt_Latn', 'mk': 'mkd_Cyrl', 'ml': 'mal_Mlym',
+        'mr': 'mar_Deva', 'ms': 'zsm_Latn', 'mt': 'mlt_Latn', 'my': 'mya_Mymr', 'ne': 'npi_Deva', 'nl': 'nld_Latn',
+        'nn': 'nno_Latn', 'no': 'nob_Latn', 'oc': 'oci_Latn', 'pa': 'pan_Guru', 'pl': 'pol_Latn', 'ps': 'pbt_Arab',
+        'pt': 'por_Latn', 'ro': 'ron_Latn', 'ru': 'rus_Cyrl', 'sd': 'snd_Arab', 'si': 'sin_Sinh', 'sk': 'slk_Latn',
+        'sl': 'slv_Latn', 'sn': 'sna_Latn', 'so': 'som_Latn', 'sq': 'als_Latn', 'sr': 'srp_Cyrl', 'su': 'sun_Latn',
+        'sv': 'swe_Latn', 'sw': 'swh_Latn', 'ta': 'tam_Taml', 'te': 'tel_Telu', 'tg': 'tgk_Cyrl', 'th': 'tha_Thai',
+        'tk': 'tuk_Latn', 'tl': 'tgl_Latn', 'tr': 'tur_Latn', 'tt': 'tat_Cyrl', 'uk': 'ukr_Cyrl', 'ur': 'urd_Arab',
+        'uz': 'uzn_Latn', 'vi': 'vie_Latn', 'yi': 'ydd_Hebr', 'yo': 'yor_Latn', 'yue': 'yue_Hant', 'zh': 'zho_Hans'}
+
+
+def intervalles_s(masque, marge=0.0, trou=0.0, duree_min=0.0, fin=None):
+    """Suites de True d'un masque par trames de 10 ms -> [[début, fin]] en secondes : trous plus courts que trou
+    comblés, puis élargies de marge (bornées à [0, fin]) et fusionnées, enfin celles de moins de duree_min retirées."""
+    reg = [[a * 0.01, b * 0.01] for a, b in suites(masque)]
+    fus = []
+    for a, b in reg:
+        if fus and a - fus[-1][1] <= trou:
+            fus[-1][1] = b
+        else:
+            fus.append([a, b])
+    fus = [z for z in fus if z[1] - z[0] >= duree_min]
+    fin = fin if fin is not None else len(masque) * 0.01
+    out = []
+    for a, b in fus:
+        a, b = max(0.0, a - marge), min(fin, b + marge)
+        if out and a <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return [[round(a, 2), round(b, 2)] for a, b in out]
+
+
+def zones_a_transcrire(lisse, seuil, f0, reglages=None):
+    """Phrases chantées d'une piste à transcrire (lisse et seuil : son enveloppe lissée et son seuil de silence ; f0 :
+    hauteur RMVPE de la voix complète, une trame par 10 ms) : là où elle sonne avec une hauteur à moins de marge_voise_s.
+    Rend (phrases, chant) en secondes : phrases (élargies, fusionnées, au plus morceau_max_s, coupées au creux le plus
+    bas), chant (trames chantées brutes, pour écarter ensuite les mots inventés hors du chant)."""
+    import numpy as np
+    R = {**PAROLES_DEFAUT, **(reglages or {})}
+    lisse = np.asarray(lisse, np.float64)
+    k = len(lisse)
+    voise = a_longueur(f0, k) > 1
+    m = int(round(R['marge_voise_s'] / 0.01))
+    pres = np.convolve(voise.astype(np.float64), np.ones(2 * m + 1), mode='same') > 0
+    chant = (lisse > seuil) & pres
+    fin = k * 0.01
+    phrases = intervalles_s(chant, R['marge_s'], R['trou_max_s'], R['duree_min_s'], fin)
+    coupees = []
+    for a, b in phrases:
+        while b - a > R['morceau_max_s']:
+            lo, hi = int((a + 0.6 * R['morceau_max_s']) / 0.01), int((a + R['morceau_max_s']) / 0.01)
+            fen = lisse[lo:hi]   # le creux le plus tardif (à 1 dB du plus bas), comme decouper
+            c = (lo + int(np.where(fen <= fen.min() + 1)[0][-1])) * 0.01 if hi > lo else a + R['morceau_max_s']
+            coupees.append([round(a, 2), round(c, 2)])
+            a = c
+        coupees.append([round(a, 2), round(b, 2)])
+    return coupees, intervalles_s(chant, fin=fin)
+
+
+def lisser_langues(langues, reglages=None):
+    """Langue de chaque phrase : [(code, probabilité, durée_s)] -> [code]. Une phrase peu sûre ou courte prend la langue
+    de la voisine sûre la plus proche (sinon celle qui domine la chanson) : une langue par passage chanté."""
+    R = {**PAROLES_DEFAUT, **(reglages or {})}
+    sures = [i for i, (c, p, d) in enumerate(langues) if c and p >= R['langue_proba_min'] and d >= 1.5]
+    poids = {}
+    for c, p, d in langues:
+        if c:
+            poids[c] = poids.get(c, 0.0) + p * d
+    dominante = max(poids, key=poids.get) if poids else None
+    out = []
+    for i, (c, p, d) in enumerate(langues):
+        if i in sures or not sures:
+            out.append(c or dominante)
+        else:
+            j = min(sures, key=lambda s: (abs(s - i), s))
+            out.append(langues[j][0])
+    return out
+
+
+def grouper_morceaux(phrases, langues, reglages=None):
+    """Phrases consécutives de même langue réunies en morceaux d'au plus morceau_max_s, coupés aux longues pauses.
+    Rend [(début, fin, langue, [indices des phrases])]."""
+    R = {**PAROLES_DEFAUT, **(reglages or {})}
+    out = []
+    for i, ((a, b), lg) in enumerate(zip(phrases, langues)):
+        if out:
+            d, f, l2, idx = out[-1]
+            if l2 == lg and a - f <= R['pause_morceau_s'] and b - d <= R['morceau_max_s']:
+                out[-1] = (d, b, lg, idx + [i])
+                continue
+        out.append((a, b, lg, [i]))
+    return out
+
+
+def taux_compression(texte):
+    """Longueur du texte sur sa longueur compressée (zlib) : au-delà de 2,4, une boucle de Whisper (critère d'OpenAI)."""
+    import zlib
+    b = texte.encode('utf-8')
+    return len(b) / len(zlib.compress(b)) if b else 0.0
+
+
+def mot_normal(m):
+    return re.sub(r"[^\w']+", '', m.lower())
+
+
+def recouvrement(a, b, intervalles):
+    """Part de [a, b] qui tombe dans les intervalles (triés, disjoints)."""
+    if b <= a:
+        return float(any(x <= a <= y for x, y in intervalles))
+    return sum(max(0.0, min(b, y) - max(a, x)) for x, y in intervalles) / (b - a)
+
+
+def retirer_boucles(mots, forcer=False, mot_min_s=PAROLES_DEFAUT['boucle_mot_min_s']):
+    """Une suite de 1 à 8 mots répétée au moins 3 fois d'affilée n'est gardée qu'une fois si elle est inventée : chantée
+    trop vite (moins de mot_min_s par mot) ou, avec forcer (texte trop répétitif), dans tous les cas. Un refrain chanté
+    (« no, no, no », un vers repris) garde ses répétitions. Rend (mots, nombre de mots retirés)."""
+    norm = [mot_normal(m['mot']) for m in mots]
+    out, i, retires = [], 0, 0
+    while i < len(mots):
+        meilleur = None
+        for n in range(1, 9):
+            motif = norm[i:i + n]
+            if len(motif) < n or not all(motif):
+                break
+            k = 1
+            while norm[i + k * n:i + (k + 1) * n] == motif:
+                k += 1
+            if k >= 3 and (meilleur is None or k * n > meilleur[0] * meilleur[1]):
+                meilleur = (k, n)
+        if meilleur:
+            k, n = meilleur
+            bloc = mots[i:i + k * n]
+            par_mot = (bloc[-1]['fin'] - bloc[0]['debut']) / len(bloc)
+            if forcer or par_mot < mot_min_s:
+                out += mots[i:i + n]
+                retires += (k - 1) * n
+                i += k * n
+                continue
+        out.append(mots[i])
+        i += 1
+    return out, retires
+
+
+def nettoyer_mots(mots, chant, texte_morceau='', reglages=None):
+    """Garde-fous après Whisper, sur les mots d'un morceau ([{debut, fin, mot, brut}] en secondes de la piste) :
+    mots vides ou hors du chant retirés, puis boucles inventées (retirer_boucles ; d'office si le texte du morceau est trop
+    répétitif). Rend (mots, compte des retraits)."""
+    R = {**PAROLES_DEFAUT, **(reglages or {})}
+    compte = {'hors_chant': 0, 'boucles': 0}
+    garde = []
+    for m in mots:
+        if not mot_normal(m['mot']):
+            continue
+        if recouvrement(m['debut'], m['fin'], chant) < R['mot_voise_min']:
+            compte['hors_chant'] += 1
+            continue
+        garde.append(m)
+    garde, compte['boucles'] = retirer_boucles(garde, taux_compression(texte_morceau) > R['compression_max'],
+                                               R['boucle_mot_min_s'])
+    return garde, compte
+
+
+def lignes_de_mots(mots, reglages=None):
+    """Mots -> lignes de paroles [{debut, fin, texte, langue, mots}] : nouvelle ligne à une pause, après une fin de phrase,
+    au-delà de ligne_car_max caractères ou de ligne_duree_max_s, ou quand la langue change."""
+    R = {**PAROLES_DEFAUT, **(reglages or {})}
+    lignes, cur = [], []
+
+    def texte(ms):
+        return re.sub(r'\s+', ' ', ''.join(m.get('brut', ' ' + m['mot']) for m in ms)).strip()
+    for m in mots:
+        if cur:
+            p = cur[-1]
+            if (m['debut'] - p['fin'] > R['pause_ligne_s'] or m.get('langue') != p.get('langue')
+                    or (re.search(r'[.!?…]["»”)]*$', p['mot']) and len(cur) >= 2)
+                    or len(texte(cur + [m])) > R['ligne_car_max'] or m['fin'] - cur[0]['debut'] > R['ligne_duree_max_s']):
+                lignes.append(cur)
+                cur = []
+        cur.append(m)
+    if cur:
+        lignes.append(cur)
+    return [{'debut': round(l[0]['debut'], 2), 'fin': round(max(m['fin'] for m in l), 2), 'texte': texte(l),
+             'langue': l[0].get('langue'),
+             'mots': [{'debut': round(m['debut'], 2), 'fin': round(m['fin'], 2), 'mot': m['mot'].strip()} for m in l]}
+            for l in lignes]
+
+
+def filtrer_lignes(lignes):
+    """Lignes inventées retirées (génériques de sous-titres, « musique » seule…), doublons exacts fusionnés. Rend (lignes,
+    nombre retiré)."""
+    out, retirees = [], 0
+    for l in lignes:
+        if not l['texte'] or HALLUCINATIONS.search(l['texte']) or MUSIQUE_SEULE.match(l['texte']):
+            retirees += 1
+            continue
+        if out and mot_normal(out[-1]['texte']) == mot_normal(l['texte']) and l['debut'] < out[-1]['fin']:
+            out[-1]['fin'] = max(out[-1]['fin'], l['fin'])
+            retirees += 1
+            continue
+        out.append(l)
+    return out, retirees
+
+
+def langue_principale(lignes):
+    """La langue chantée le plus longtemps (None sans paroles)."""
+    t = {}
+    for l in lignes:
+        if l.get('langue'):
+            t[l['langue']] = t.get(l['langue'], 0.0) + max(l['fin'] - l['debut'], 0.01)
+    return max(t, key=t.get) if t else None
+
+
+def mots_proportionnels(texte, debut, fin):
+    """Mots d'un segment sans horodatage par mot : durée partagée au prorata des lettres (repli)."""
+    brut = re.findall(r'\s*\S+', texte)
+    tot = sum(len(b.strip()) for b in brut) or 1
+    out, t = [], debut
+    for b in brut:
+        d = (fin - debut) * len(b.strip()) / tot
+        out.append({'debut': t, 'fin': t + d, 'mot': b.strip(), 'brut': b})
+        t += d
+    return out
+
+
+def paroles_json(lignes, traduction=None, source_traduction=None, piste=None):
+    """Contenu de paroles.json (format 1 ; contrat avec l'interface, à ne pas changer sans la prévenir). Temps en secondes
+    du son doublé ; doubler.py les cale ensuite sur la vidéo de sortie (decalage_s)."""
+    langue = langue_principale(lignes)
+    d = {'format': 1, 'langue': langue, 'source': WHISPER[1], 'segments': lignes, 'traductions': {}, 'decalage_s': 0.0}
+    if piste:
+        d['piste'] = piste
+    if traduction is not None:
+        d['traductions']['fr'] = {'source': source_traduction or TRADUCTEUR[1],
+                                  'segments': [{'debut': l['debut'], 'fin': l['fin'], 'texte': t}
+                                               for l, t in zip(lignes, traduction)]}
+    return d
 
 
 def ecrire_json(chemin, d):
@@ -1475,11 +2064,262 @@ def etape_ying(travail):
         ecrire_json(chemin, res)
 
 
+def depuis_hf(classe, sources, cache, demi=True, **options):
+    """classe.from_pretrained sur la première source qui se charge (montage d'outils, puis Hugging Face par internet),
+    en float16 (dtype=, ou torch_dtype= des transformers d'avant la 4.56). Une option refusée (TypeError ou ValueError
+    qui la nomme : API changée) est retirée avant l'essai suivant. Rend (objet, source utilisée, erreurs)."""
+    import torch
+    erreurs = []
+    essais = [{**options, 'dtype': torch.float16}, {**options, 'torch_dtype': torch.float16}, {'dtype': torch.float16},
+              {'torch_dtype': torch.float16}, {}] if demi else [dict(options), {}]
+    for src in [s for s in sources if s]:
+        for k in essais:
+            try:
+                return classe.from_pretrained(src, **k, cache_dir=cache), src, erreurs
+            except (TypeError, ValueError) as e:
+                erreurs.append(f'{src} ({", ".join(k) or "sans option"}) : {e!r}'[:300])
+                if not any(o in str(e) for o in [*k, 'keyword', 'argument']):
+                    break   # pas une option refusée : source suivante
+            except Exception as e:  # noqa: BLE001 — source suivante (montage incomplet : internet)
+                erreurs.append(f'{src} : {e!r}'[:300])
+                break
+    raise RuntimeError('chargement impossible : ' + ' | '.join(erreurs))
+
+
+def origine_modele(src, depot):
+    """D'où vient un modèle chargé : Hugging Face, copie locale du montage, ou montage."""
+    if not src or src == depot:
+        return 'Hugging Face'
+    return 'copie locale du montage' if str(src).startswith('/tmp/') else 'montage'
+
+
+def etape_paroles(travail):
+    """Paroles de toutes les vidéos, dans un processus à part (le GPU est rendu à la sortie) : Whisper large-v3 chargé une
+    fois, langue détectée phrase par phrase, transcription par morceaux de phrases de même langue (au plus 25 s, hors chant
+    rendu muet) avec horodatage par mot et garde-fous, puis NLLB-200 (chargé une fois) traduit vers le français les lignes
+    qui ne sont pas en français. Écrit paroles.json pour chaque vidéo ; rend les mesures et les temps dans le résultat."""
+    import numpy as np
+    torch = charger_torch()
+    import torchaudio
+    import transformers
+    from transformers import WhisperForConditionalGeneration, WhisperProcessor, pipeline
+    chemin, cache = travail['resultat'], travail.get('cache') or '/tmp/hf_paroles'
+    res = {'implementation': f'transformers {transformers.__version__} (pipeline, horodatage par mot)',
+           'modele': WHISPER[1], 'traducteur': TRADUCTEUR[1], 'chargements_s': {}, 'videos': {}, 'temps': {}}
+    t0 = time.time()
+    try:
+        proc, src_w, err = depuis_hf(WhisperProcessor, [travail.get('whisper'), WHISPER[0]], cache, demi=False)
+        # attention « eager » : les horodatages par mot lisent les poids d'attention croisée (sdpa ne les rend pas)
+        modele, src_w, err2 = depuis_hf(WhisperForConditionalGeneration, [src_w, WHISPER[0]], cache,
+                                        attn_implementation='eager')
+        modele = modele.to('cuda').eval()
+        pipe = pipeline('automatic-speech-recognition', model=modele, tokenizer=proc.tokenizer,
+                        feature_extractor=proc.feature_extractor, device=modele.device)
+        res.update({'whisper_origine': origine_modele(src_w, WHISPER[0]), 'erreurs_chargement': err + err2})
+    except Exception as e:  # noqa: BLE001 — pas de paroles, le doublage continue
+        import traceback
+        traceback.print_exc()
+        res['erreur'] = f'Whisper indisponible : {e!r}'[:500]
+        ecrire_json(chemin, res)
+        return
+    res['chargements_s']['whisper'] = round(time.time() - t0, 1)
+    log(f"PAROLES Whisper large-v3 chargé en {time.time() - t0:.0f} s ({res['whisper_origine']}) ; "
+        f"{res['implementation']}")
+    ecrire_json(chemin, res)
+    gc = modele.generation_config
+    l2i = dict(getattr(gc, 'lang_to_id', None) or {})
+
+    @torch.no_grad()
+    def langue(audio):
+        feats = proc.feature_extractor(audio, sampling_rate=16000, return_tensors='pt').input_features
+        feats = feats.to(modele.device, modele.dtype)
+        dec = torch.tensor([[gc.decoder_start_token_id]], device=modele.device)
+        logits = modele(input_features=feats, decoder_input_ids=dec).logits[0, -1].float()
+        codes, ids = list(l2i), torch.tensor(list(l2i.values()), device=logits.device)
+        p = torch.softmax(logits[ids], -1)
+        ordre = torch.argsort(p, descending=True)[:3].tolist()
+        return (codes[ordre[0]].strip('<|>'), float(p[ordre[0]]),
+                [[codes[j].strip('<|>'), round(float(p[j]), 3)] for j in ordre])
+
+    def transcrire(audio, lg):
+        """Le pipeline, des garde-fous complets à la transcription la plus simple : rend (sortie, mode, erreurs)."""
+        base = {'language': lg, 'task': 'transcribe'}
+        erreurs = []
+        for mode, ts, gk in (('mots', 'word', {**base, **GARDE_FOUS_WHISPER}), ('mots, garde-fous réduits', 'word', base),
+                             ('segments', True, {**base, **GARDE_FOUS_WHISPER}), ('segments, garde-fous réduits', True, base)):
+            try:
+                return pipe(audio.copy(), return_timestamps=ts, generate_kwargs=dict(gk)), mode, erreurs
+            except Exception as e:  # noqa: BLE001
+                erreurs.append(f'{mode} : {e!r}'[:300])
+        return None, None, erreurs
+
+    def lot_nllb(lg, lignes):
+        """Traduction vers le français d'un lot de lignes d'une langue (NLLB-200) ; None si la langue manque à NLLB."""
+        code = NLLB.get(lg)
+        if not code:
+            return None
+        if code not in toks:
+            toks[code] = AutoTokenizer.from_pretrained(src_t, src_lang=code, cache_dir=cache)
+        tok = toks[code]
+        enc = tok(lignes, return_tensors='pt', padding=True, truncation=True, max_length=200).to(mt.device)
+        with torch.no_grad():
+            out = mt.generate(**enc, forced_bos_token_id=tok.convert_tokens_to_ids('fra_Latn'), max_new_tokens=160,
+                              num_beams=4)
+        return tok.batch_decode(out, skip_special_tokens=True)
+
+    def seize_khz(chemin_audio):
+        x = lire_mono(chemin_audio)
+        return torchaudio.functional.resample(torch.from_numpy(x).float(), SR, 16000).numpy().astype(np.float32)
+
+    textes = {}
+    for v in travail['videos']:
+        t1 = time.time()
+        r = res['videos'][v['id']] = {}
+        try:
+            textes[v['id']] = transcrire_video(v, seize_khz(v['audio']), langue, transcrire, r)
+            log(f"PAROLES {v['id']} : {r['lignes']} lignes, langue {r['langue']} {r['langues_s']}, modes {r['modes']}, "
+                f"retraits {r['retraits']}, en {time.time() - t1:.0f} s")
+        except Exception as e:  # noqa: BLE001 — une vidéo ratée n'empêche pas les suivantes
+            import traceback
+            traceback.print_exc()
+            r['erreur'] = f'transcription : {e!r}'[:500]
+        ecrire_json(chemin, res)
+    res['temps']['transcription_s'] = round(time.time() - t0 - res['chargements_s']['whisper'], 1)
+    pipe = modele = None   # mémoire du GPU rendue avant le traducteur
+    import gc as ramasse
+    ramasse.collect()
+    torch.cuda.empty_cache()
+
+    # Traduction vers le français : seulement les lignes qui ne sont pas en français
+    traductions, toujours = None, bool(travail.get('traduire_toujours'))
+    if any(l['langue'] != 'fr' or toujours for lignes in textes.values() for l in lignes):
+        t2 = time.time()
+        try:
+            from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+            mt, src_t, err = depuis_hf(AutoModelForSeq2SeqLM, [travail.get('traducteur'), TRADUCTEUR[0]], cache)
+            res['erreurs_chargement_traducteur'] = err
+            mt, toks = mt.to('cuda').eval(), {}
+            res['traducteur_origine'] = origine_modele(src_t, TRADUCTEUR[0])
+            res['chargements_s']['traducteur'] = round(time.time() - t2, 1)
+            log(f"PAROLES traducteur {TRADUCTEUR[1]} chargé en {time.time() - t2:.0f} s ({res['traducteur_origine']})")
+            t3 = time.time()
+            traductions, info = traduire_lignes(textes, lot_nllb, toujours)
+            res.update(info)
+            res['temps']['traduction_s'] = round(time.time() - t3, 1)
+            mt = None
+            torch.cuda.empty_cache()
+        except Exception as e:  # noqa: BLE001 — les paroles restent, sans traduction
+            import traceback
+            traceback.print_exc()
+            res['erreur_traduction'] = f'traduction : {e!r}'[:500]
+            traductions = None
+    for v in travail['videos']:
+        if v['id'] not in textes:
+            continue
+        lignes = textes[v['id']]
+        traduites = traductions is not None and (any(l['langue'] != 'fr' for l in lignes) or toujours)
+        d = paroles_json(lignes, traductions[v['id']] if traduites else None, TRADUCTEUR[1], v.get('piste'))
+        ecrire_json(v['sortie'], d)
+        res['videos'][v['id']].update({'fichier': os.path.basename(v['sortie']), 'traduction': bool(d['traductions'])})
+    res['temps']['total_s'] = round(time.time() - t0, 1)
+    ecrire_json(chemin, res)
+
+
+def transcrire_video(v, x16, detecter, transcrire_morceau, r):
+    """Paroles d'une vidéo (sans torch : les modèles sont passés en fonctions). v : {phrases, chant, piste} ; x16 : sa
+    piste à 16 kHz ; detecter(audio) -> (langue, probabilité) ; transcrire_morceau(audio, langue) -> (sortie du pipeline
+    {text, chunks: [{text, timestamp}]}, mode, erreurs). Langue de chaque phrase, morceaux de même langue (hors des
+    phrases : muet), mots horodatés, garde-fous, lignes. Remplit r (mesures) et rend les lignes."""
+    import numpy as np
+    t1 = time.time()
+    r.update({'piste': v.get('piste'), 'phrases': len(v['phrases']),
+              'secondes_transcrites': round(sum(b - a for a, b in v['phrases']), 1), 'modes': {},
+              'retraits': {'hors_chant': 0, 'boucles': 0, 'lignes': 0}})
+    langues, tops = [], []
+    for a, b in v['phrases']:
+        seg = x16[int(a * 16000):int(b * 16000)]
+        d = detecter(seg) if len(seg) >= 1600 else (None, 0.0)
+        langues.append((d[0], d[1], b - a))
+        tops.append(d[2] if len(d) > 2 else None)   # les trois langues les plus probables, pour mémoire
+    choisies = lisser_langues(langues)
+    r['langues_phrases'] = [[a, b, c, round(p, 2), lg] + ([top] if top else [])
+                            for (a, b), (c, p, _), lg, top in zip(v['phrases'], langues, choisies, tops)]
+    r['temps_langue_s'] = round(time.time() - t1, 1)
+    mots = []
+    for a, b, lg, idx in grouper_morceaux(v['phrases'], choisies):
+        lo, hi = int(a * 16000), int(b * 16000)
+        audio = np.zeros(hi - lo, np.float32)
+        for i in idx:   # hors des phrases (bruits, fuites de musique) : muet, avec fondus de 20 ms
+            pa = max(int(v['phrases'][i][0] * 16000), lo)
+            pb = min(int(v['phrases'][i][1] * 16000), hi, len(x16))
+            if pb <= pa:
+                continue
+            w = np.ones(pb - pa, np.float32)
+            f = min(320, len(w) // 2)
+            if f:
+                w[:f], w[-f:] = np.linspace(0, 1, f), np.linspace(1, 0, f)
+            audio[pa - lo:pb - lo] = x16[pa:pb] * w
+        sortie, mode, erreurs = transcrire_morceau(audio, lg)
+        r['modes'][mode or 'échec'] = r['modes'].get(mode or 'échec', 0) + 1
+        if erreurs:
+            r.setdefault('erreurs', []).extend(erreurs[:2])
+        if not sortie:
+            continue
+        bruts = []
+        for c in sortie.get('chunks') or []:
+            d, f = (list(c.get('timestamp') or (None, None)) + [None, None])[:2]
+            if d is None or not isinstance(c.get('text'), str):
+                continue
+            f = f if f is not None and f >= d else min(d + 0.5, max(b - a, d))
+            if mode.startswith('mots'):
+                bruts.append({'debut': a + d, 'fin': a + f, 'mot': c['text'].strip(), 'brut': c['text']})
+            else:
+                bruts += [{**m, 'debut': a + m['debut'], 'fin': a + m['fin']} for m in mots_proportionnels(c['text'], d, f)]
+        for m in bruts:
+            m['langue'] = lg
+        garde, compte = nettoyer_mots(bruts, v['chant'], sortie.get('text') or '')
+        for cle, n in compte.items():
+            r['retraits'][cle] += n
+        mots += garde
+    lignes, r['retraits']['lignes'] = filtrer_lignes(lignes_de_mots(sorted(mots, key=lambda m: m['debut'])))
+    r.update({'lignes': len(lignes), 'mots': sum(len(l['mots']) for l in lignes), 'langue': langue_principale(lignes),
+              'langues_s': {}, 'transcription_s': round(time.time() - t1, 1)})
+    for l in lignes:
+        r['langues_s'][l['langue']] = round(r['langues_s'].get(l['langue'], 0) + l['fin'] - l['debut'], 1)
+    return lignes
+
+
+def traduire_lignes(textes, traduire_lot, toujours=False, taille_lot=16):
+    """Traduction vers le français, ligne par ligne, de toutes les vidéos ({id: lignes}) : les lignes en français sont
+    gardées telles quelles (sauf toujours), les autres traduites par lots d'une même langue (traduire_lot(langue,
+    [textes]) -> [traductions], ou None si la langue est inconnue du traducteur : la ligne reste dans sa langue). Rend
+    ({id: [texte de chaque ligne]}, mesures)."""
+    places = {}
+    for vid, lignes in textes.items():
+        for j, l in enumerate(lignes):
+            if l['langue'] != 'fr' or toujours:
+                places.setdefault(l['langue'], []).append((vid, j))
+    traductions = {vid: [l['texte'] for l in lignes] for vid, lignes in textes.items()}
+    info = {'lignes_traduites': 0}
+    for lg, liste in places.items():
+        for d in range(0, len(liste), taille_lot):
+            lot = liste[d:d + taille_lot]
+            sortie = traduire_lot(lg, [textes[vid][j]['texte'] for vid, j in lot])
+            if sortie is None:
+                info.setdefault('langues_sans_traduction', []).append(lg)
+                break
+            for (vid, j), t in zip(lot, sortie):
+                if isinstance(t, str) and t.strip():
+                    traductions[vid][j] = t.strip()
+                    info['lignes_traduites'] += 1
+    return traductions, info
+
+
 def etape_isolee(etape, chemin):
     """Point d'entrée d'une étape à part (python doubler_complet.py <étape> <travail.json>)."""
     if os.path.isdir(SOUCHES) and SOUCHES not in sys.path:
         sys.path.insert(0, SOUCHES)
-    {'nettoyer': etape_nettoyer, 'ying': etape_ying}[etape](lire_json(chemin))
+    {'nettoyer': etape_nettoyer, 'ying': etape_ying, 'paroles': etape_paroles}[etape](lire_json(chemin))
 
 
 def main():
@@ -1497,6 +2337,8 @@ def main():
     installer(outils)
     sha = cloner(outils)
     poids_depuis_outils(outils)
+    # modèles de paroles copiés sur le disque local pendant tout le reste (lus en mmap sur le montage : très lent)
+    copie_paroles = copier_paroles(outils) if R.get('paroles', True) else {}
     session['temps']['installation_s'] = round(time.time() - t, 1)
     os.environ['TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD'] = '1'   # points de contrôle officiels (pickle) de Seed-VC et RMVPE
     import numpy as np
@@ -1791,34 +2633,63 @@ def main():
             e['rapport']['nettoyage'] = info
         ecrire_session()
 
+    def piste_voix(e):
+        return {'nom': 'voix', 'chemin': e['tr']['voix'], 'x': e['x'], 'lisse': e['lisse'], 'seuil': e['seuil'],
+                'gain': e['gain']}
+
     def preparer_pistes(e):
         """Pistes à convertir : voix principale et chœurs secs (voix nettoyée), sinon la voix isolée complète. Chaque piste
-        a sa porte des silences (et, nettoyée, son propre seuil : des chœurs absents d'un morceau n'y sont pas convertis)."""
+        a sa porte des silences (et, nettoyée, son propre seuil : des chœurs absents d'un morceau n'y sont pas convertis).
+        Voix nettoyée : les passages perdus au nettoyage (zones_perdues) sont repris de la voix complète par une
+        troisième piste, « secours », dont la porte n'est ouverte que sur eux ; rien de perdu, rien ne change."""
         if not e.get('net'):
-            return [{'nom': 'voix', 'chemin': e['tr']['voix'], 'x': e['x'], 'lisse': e['lisse'], 'seuil': e['seuil'],
-                     'gain': e['gain']}]
+            return [piste_voix(e)]
         pistes = []
         for nom in ('lead_sec', 'choeurs_sec'):
             xt = lire_mono(e['net'][nom])
             xt = xt[:e['n']] if len(xt) >= e['n'] else np.pad(xt, (0, e['n'] - len(xt)))
             env_t = enveloppe_db(xt)
             lisse_t, seuil_t = lisser_db(env_t), seuil_silence(env_t)
+            gain_t, trames_t = porte(lisse_t, seuil_t, e['n'])
             pistes.append({'nom': nom, 'chemin': e['net'][nom], 'x': xt, 'lisse': lisse_t, 'seuil': seuil_t,
-                           'gain': porte(lisse_t, seuil_t, e['n'])[0]})
+                           'gain': gain_t, 'gain_trames': trames_t})
+        if R.get('secours', True) is False:
+            e['rapport']['secours'] = {'demande': False}
+            return pistes
+        t = time.time()
+        try:
+            zones, info = zones_perdues(enveloppe_db(e['x']), e['lisse'], e['seuil'], e['f0_tout'],
+                                        [(p['lisse'], p['gain_trames']) for p in pistes], R.get('secours_reglages'))
+        except Exception as ex:  # noqa: BLE001 — sans piste de secours : la voix nettoyée comme avant
+            import traceback
+            traceback.print_exc()
+            e['rapport']['secours'] = {'demande': True, 'decision': 'aucun', 'erreur': repr(ex)[:300]}
+            return pistes
+        voix_active_s = round(float((e['lisse'] > e['seuil']).sum()) * 0.01, 1)
+        decision, secondes = decider_secours(zones, voix_active_s, R.get('secours_reglages'))
+        e['rapport']['secours'] = {'demande': True, 'decision': decision, 'zones': zones, 'secondes': secondes,
+                                   'voix_active_s': voix_active_s, 'detection_s': round(time.time() - t, 2), **info}
+        if zones:
+            log(f"[{e['tr']['id']}] SECOURS {decision} : {len(zones)} zone(s) perdue(s) au nettoyage, {secondes:.1f} s : "
+                + ', '.join(f"{z['debut_s']:.2f}-{z['fin_s']:.2f} s (écart {z['ecart_db']:.0f} dB)" for z in zones))
+        if decision == 'voix_complete':
+            log(f"[{e['tr']['id']}] NETTOYAGE trop destructeur ({secondes:.0f} s perdues sur {voix_active_s:.0f} s de voix) : "
+                'voix isolée complète convertie seule')
+            e['net'] = None
+            e['rapport']['nettoyage'].update({'applique': False, 'raison': (
+                f'nettoyage trop destructeur : {secondes:.0f} s de voix perdues sur {voix_active_s:.0f} s (plus de '
+                f"{SECOURS_DEFAUT['part_max']:.0%}) : voix isolée complète convertie")})
+            return [piste_voix(e)]
+        if decision == 'secours':
+            gain_s, trames_s = porte_zones(zones, e['n'])
+            pistes.append({'nom': 'secours', 'chemin': e['tr']['voix'], 'x': e['x'], 'lisse': e['lisse'],
+                           'seuil': e['seuil'], 'gain': gain_s, 'gain_trames': trames_s, 'zones': zones})
         return pistes
 
     def plan(e, p, liste):
         """Morceaux d'une piste : ceux de la voix complète (mêmes coupes, même décalage), sauf les muets et ceux où cette
-        piste se tait. [(i, début, fin, décalage, fondu au début, fondu à la fin)]."""
-        out = []
-        for s in liste:
-            if s['muet']:
-                continue
-            a, b = s['debut'], s['fin']
-            if p['nom'] != 'voix' and float(p['lisse'][a // PAS:b // PAS + 1].max()) < p['seuil']:
-                continue
-            out.append((s['i'], a, b, s['decalage'], e['fondus'].get(a, 0), e['fondus'].get(b, 0)))
-        return out
+        piste se tait (secours : ceux qui touchent ses zones). [(i, début, fin, décalage, fondu au début, à la fin)]."""
+        return morceaux_piste(liste, p, e['fondus'])
 
     def variantes_de(e):
         tr, segs = e['tr'], e['segs']
@@ -1910,7 +2781,13 @@ def main():
                 secondes_p = sum(b - a for _, a, b, *_ in morceaux) / SR
                 d = {'morceaux': len(morceaux), 'secondes_converties': round(secondes_p, 1), 'conversion_s': round(conv, 1),
                      'rtf': round(conv / max(secondes_p, 1e-3), 3)}
-                if p['nom'] != 'voix' and morceaux:
+                if p['nom'] == 'secours' and morceaux:
+                    # la piste de secours reprend le niveau de la voix complète dans ses zones
+                    g = gain_secours(p['x'], y, p['gain'])
+                    y = (y * g).astype(np.float32)
+                    d.update({'gain_niveau_db': round(20 * math.log10(g), 2), 'zones': len(p['zones']),
+                              'secondes_zones': round(sum(z['duree_s'] for z in p['zones']), 2)})
+                elif p['nom'] != 'voix' and morceaux:
                     # chaque piste nettoyée reprend le niveau de sa source : l'équilibre voix principale / chœurs d'origine
                     g = rms_actif(p['x']) / max(rms_actif(y, p['x']), 1e-9)
                     y = (y * g).astype(np.float32)
@@ -1987,6 +2864,51 @@ def main():
                                                   + (rapport['temps'].get('nettoyage_s') or 0) + ying_s + time.time() - t_video, 1)
         return rapport
 
+    def transcrire(etats_v):
+        """Paroles de toutes les vidéos dans une seule étape à part (Whisper et le traducteur chargés une fois) : voix
+        principale sèche quand elle existe, sinon voix isolée complète ; seulement ses phrases chantées (hauteur RMVPE)."""
+        t = time.time()
+        chemins, attente = chemins_paroles(copie_paroles)
+        session['temps']['paroles_attente_copie_s'] = attente
+        session['temps']['paroles_copie_s'] = copie_paroles.get('duree_s')
+        if copie_paroles.get('erreur'):
+            log(f"PAROLES copie locale des modèles impossible ({copie_paroles['erreur']}) : lus sur le montage")
+        travail = {'whisper': chemins.get('whisper'), 'traducteur': chemins.get('traducteur'), 'cache': '/tmp/hf_paroles',
+                   'resultat': '/tmp/paroles/resultat.json', 'videos': []}
+        for e in etats_v:
+            p = next((q for q in e['pistes'] if q['nom'] == 'lead_sec'), None) or piste_voix(e)
+            phrases, chant = zones_a_transcrire(p['lisse'], p['seuil'], e['f0_tout'])
+            e['rapport']['paroles'] = {'piste': p['nom'], 'phrases': len(phrases),
+                                       'secondes_a_transcrire': round(sum(b - a for a, b in phrases), 1)}
+            if phrases:
+                travail['videos'].append({'id': e['tr']['id'], 'audio': p['chemin'], 'piste': p['nom'], 'phrases': phrases,
+                                          'chant': chant, 'sortie': os.path.join(e['tr']['dossier'], 'paroles.json')})
+            else:
+                ecrire_json(os.path.join(e['tr']['dossier'], 'paroles.json'), paroles_json([], piste=p['nom']))
+        if not travail['videos']:
+            return
+        log(f"PAROLES de {len(travail['videos'])} vidéo(s) : Whisper large-v3 "
+            f"({origine_modele(travail['whisper'], None)}), traduction {TRADUCTEUR[1]} "
+            f"({origine_modele(travail['traducteur'], None)}) ; attente de la copie locale {attente:.0f} s")
+        torch.cuda.empty_cache()
+        try:
+            res = etape_a_part('paroles', travail)
+        except Exception as ex:  # noqa: BLE001 — sans paroles : le doublage continue
+            res = {'erreur': repr(ex)}
+        session['temps']['paroles_total_s'] = round(time.time() - t, 1)
+        session['temps']['chargement_paroles_s'] = round(sum((res.get('chargements_s') or {}).values()), 1)
+        session['paroles'] = {k: res.get(k) for k in ('implementation', 'modele', 'traducteur', 'whisper_origine',
+                                                      'traducteur_origine', 'chargements_s', 'temps', 'erreur',
+                                                      'erreur_traduction', 'langues_sans_traduction', 'code', 'duree_s')}
+        for e in etats_v:
+            v = (res.get('videos') or {}).get(e['tr']['id'])
+            if v is not None:
+                e['rapport']['paroles'].update(v)
+            elif res.get('erreur') and e['rapport']['paroles'].get('phrases'):
+                e['rapport']['paroles']['erreur'] = res['erreur']
+            e['rapport']['temps']['paroles_s'] = (v or {}).get('transcription_s')
+        ecrire_session()
+
     def nettoyer_fichiers(e):
         tr = e['tr']
         if tr.get('voix_flac') and os.path.exists(tr['voix']):
@@ -2046,6 +2968,17 @@ def main():
         import traceback
         traceback.print_exc()
         ying = {'erreur': repr(ex)}
+    # 6. Paroles (avant la fin de chaque vidéo : la voix principale sèche est effacée avec ses fichiers de travail)
+    if R.get('paroles', True):
+        try:
+            transcrire(etats)
+        except Exception as ex:  # noqa: BLE001 — sans paroles : le doublage continue
+            import traceback
+            traceback.print_exc()
+            log(f'PAROLES impossibles : {ex!r}')
+    else:
+        for e in etats:
+            e['rapport']['paroles'] = {'demande': False}
     for e in etats:
         try:
             ecrire_rapport(e['tr'], finir_video(e, ying))
@@ -2060,7 +2993,7 @@ def main():
 
 
 if __name__ == '__main__':
-    if len(sys.argv) >= 3 and sys.argv[1] in ('nettoyer', 'ying'):
+    if len(sys.argv) >= 3 and sys.argv[1] in ('nettoyer', 'ying', 'paroles'):
         etape_isolee(sys.argv[1], sys.argv[2])
     else:
         main()

@@ -1,6 +1,9 @@
 """Analyses du son demandées par les pages : lues en cache si possible, sinon calculées dans un processus à part
 (python3 -m voixla.analyse, sous nice), une à la fois. Au-delà d'une minute de son (plus que quelques secondes de
-calcul), le calcul passe par file-attente, la file des travaux lourds du poste."""
+calcul), le calcul passe par file-attente, la file des travaux lourds du poste.
+
+La même file prépare « ma voix seule » et enregistre le beat ou la voix (python3 -m voixla.pistes), et extrait les
+sous-titres de la vidéo doublée (python3 -m voixla.paroles)."""
 
 import os
 import shutil
@@ -72,14 +75,69 @@ class Analyses:
                 rappel(None, raison)
         commun.en_fil(lire, lu, lambda e: rappel(None, f"courbe impossible : {e}"))
 
+    # --- pistes séparées : ma voix seule, enregistrements -------------------------------------------------------------
+
+    def ma_voix(self, dossier_voix, rappel, duree_s=None):
+        """rappel(fichier ou None, message) : « ma voix seule » en cache, sinon préparée (ffmpeg, sous nice)."""
+        dossier_voix = str(dossier_voix)
+
+        def lire():
+            from .. import pistes
+            return pistes.ma_voix_prete(dossier_voix)
+
+        def lu(f):
+            if f is not None:
+                rappel(f, "")
+                return
+            rappel(None, "attente")
+            self._demander(("ma_voix", dossier_voix), ["voix", dossier_voix], duree_s,
+                           lambda ok, sortie: commun.en_fil(lire, lambda f2: rappel(
+                               f2, "" if f2 is not None else
+                               f"préparation impossible : {sortie.strip()[-200:] or 'sans message'}")),
+                           module="voixla.pistes")
+        commun.en_fil(lire, lu, lambda e: rappel(None, f"préparation impossible : {e}"))
+
+    def exporter(self, source, sortie, rappel, duree_s=None, voix=False):
+        """Enregistre source (un fichier, ou le dossier d'une voix si voix=True) dans sortie ; rappel(ok, message)."""
+        argv = ["exporter", *(["--voix"] if voix else []), str(source), str(sortie)]
+        self._demander(("exporter", str(sortie)), argv, duree_s,
+                       lambda ok, s: rappel(ok, "" if ok else (s.strip()[-300:] or "sans message")),
+                       module="voixla.pistes")
+
+    # --- paroles : paroles.json, sinon sous-titres de la vidéo doublée ------------------------------------------------
+
+    def paroles(self, dossier_voix, video, rappel):
+        """rappel(paroles ou None, message) : paroles.json, sinon les sous-titres de la vidéo (extraits au besoin)."""
+        def lire():
+            from .. import paroles
+            if dossier_voix is None:
+                return paroles.sous_titres_en_cache(video) if video else (None, "doublage inachevé : pas de paroles")
+            return paroles.paroles_pour(dossier_voix, video)
+
+        def lu(r):
+            p, raison = r
+            if p is not None:
+                rappel(p, "")
+            elif raison == "a_extraire" and video:
+                rappel(None, "attente")
+                self._demander(("sous-titres", str(video)), ["sous-titres", str(video)], 1.0,
+                               lambda ok, sortie: commun.en_fil(lire, lambda r2: rappel(
+                                   r2[0], "" if r2[0] is not None else
+                                   (r2[1] if ok and r2[1] != "a_extraire" else
+                                    f"sous-titres illisibles : {sortie.strip()[-200:] or 'sans message'}"))),
+                               module="voixla.paroles")
+            else:
+                rappel(None, raison or "pas de paroles")
+        commun.en_fil(lire, lu, lambda e: rappel(None, f"paroles illisibles : {e}"))
+
     # --- processus ---------------------------------------------------------------------------------------------------
 
-    def _demander(self, cle, argv, duree_s, apres):
+    def _demander(self, cle, argv, duree_s, apres, module="voixla.analyse"):
         if cle in self.attentes:
             self.attentes[cle].append(apres)
             return
         self.attentes[cle] = [apres]
-        self.file.append({"cle": cle, "argv": argv, "duree_s": duree_s})
+        self.file.append({"cle": cle, "argv": argv, "duree_s": duree_s, "module": module})
         self._suivant()
 
     def _suivant(self):
@@ -87,7 +145,7 @@ class Analyses:
             return
         d = self.file.pop(0)
         self.en_cours = d
-        commande = ["nice", "-n", "10", sys.executable, "-m", "voixla.analyse", *d["argv"]]
+        commande = ["nice", "-n", "10", sys.executable, "-m", d.get("module", "voixla.analyse"), *d["argv"]]
         attente = shutil.which("file-attente")
         if attente and (d["duree_s"] is None or d["duree_s"] > SEUIL_FILE_S):
             commande = [attente, "voix-la-analyse", "1", "2", "--", *commande]

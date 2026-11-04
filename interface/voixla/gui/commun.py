@@ -24,6 +24,12 @@ CSS = b"""
 .compte-rebours { font-size: 4.5em; font-weight: 800; }
 .texte-a-lire { font-size: 1.12em; }
 .ecran-media { background: black; border-radius: 8px; }
+.bandeau-ecran { padding: 4px 10px; border-radius: 6px; }
+.paroles-ligne { padding: 2px 6px; border-radius: 6px; }
+.paroles-ligne:hover { background: alpha(currentColor, 0.06); }
+.paroles-courante { font-size: 1.22em; font-weight: 600; }
+.paroles-suivante { opacity: 0.62; }
+.paroles-traduction { font-style: italic; opacity: 0.72; }
 .pastille { min-width: 12px; min-height: 12px; border-radius: 99px; }
 .etape-icone { min-width: 16px; }
 """

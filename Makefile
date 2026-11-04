@@ -7,6 +7,7 @@ test: unit cli
 # Tests de l'interface (logique sans écran, faux doubler, sans réseau)
 unit:
 	cd interface && $(PYTHON) -m unittest discover -s tests -t .
+	$(PYTHON) -m unittest discover -s tests
 
 # Essai rapide de la commande doubler, directement et par son lanceur
 cli:

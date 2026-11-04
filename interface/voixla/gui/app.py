@@ -123,7 +123,7 @@ class Fenetre(Adw.ApplicationWindow):
                 self.get_application().set_accels_for_action(f"win.{nom}", raccourcis)
         # Visualisations du son : interrupteurs (cases du menu « œil »), mémorisés dans interface.json
         for nom, cle in (("vis-melodie", "vis_melodie"), ("vis-spectre", "vis_spectre"), ("vis-onde", "vis_onde"),
-                         ("vis-vumetre", "vis_vumetre"), ("melodie-hz", "melodie_hz")):
+                         ("vis-vumetre", "vis_vumetre"), ("melodie-hz", "melodie_hz"), ("paroles", "paroles")):
             a = Gio.SimpleAction.new_stateful(nom, None, GLib.Variant.new_boolean(bool(self.prefs.get(cle))))
             a.connect("change-state", lambda act, v, c=cle: self.basculer_visualisation(act, v, c))
             self.add_action(a)
@@ -144,11 +144,12 @@ class Fenetre(Adw.ApplicationWindow):
             groupe.add_shortcut(Gtk.ShortcutsShortcut(accelerator=acc, title=titre))
         section.add_group(groupe)
         lecture = Gtk.ShortcutsGroup(title="Résultats")
-        for acc, titre in (("b", "Basculer original ⇄ doublé"), ("space", "Lecture / pause")):
+        for acc, titre in (("b", "Basculer doublage ⇄ original"), ("space", "Lecture / pause")):
             lecture.add_shortcut(Gtk.ShortcutsShortcut(accelerator=acc, title=titre))
         section.add_group(lecture)
         lecture = Gtk.ShortcutsGroup(title="Écoute à l’aveugle")
-        for acc, titre in (("1 2 3 4 5", "Noter la version (0 ou retour arrière : effacer)"),):
+        for acc, titre in (("1 2 3 4 5", "Noter la version (0 ou retour arrière : effacer)"),
+                           ("v", "Basculer mix ⇄ voix seule de la version en cours")):
             lecture.add_shortcut(Gtk.ShortcutsShortcut(accelerator=acc, title=titre))
         section.add_group(lecture)
         fen.add_section(section)
@@ -162,7 +163,7 @@ class Fenetre(Adw.ApplicationWindow):
     def regler_visualisation(self, cle, actif):
         """Depuis les réglages : même effet qu'une case du menu."""
         nom = {"vis_melodie": "vis-melodie", "vis_spectre": "vis-spectre", "vis_onde": "vis-onde",
-               "vis_vumetre": "vis-vumetre", "melodie_hz": "melodie-hz"}[cle]
+               "vis_vumetre": "vis-vumetre", "melodie_hz": "melodie-hz", "paroles": "paroles"}[cle]
         self.lookup_action(nom).change_state(GLib.Variant.new_boolean(bool(actif)))
 
     def ouvrir_reglages(self, page=None):

@@ -8,12 +8,17 @@ change vraiment (duo), et de préférence à une pause.
      F < 240 Hz -> homme ; F > 330 Hz -> femme ;
    - entre les deux (zone ambiguë, où chantent aussi bien des hommes que des femmes), l'empreinte CAMPPlus
      (genre_score, projection sur l'axe homme - femme des ancres) : >= +0,03 -> homme ; <= -0,10 -> femme, mais
-     seulement dans la moitié haute de la zone (F >= 281 Hz, moyenne géométrique de 240 et 330) : plus bas, une voix
-     d'homme éraillée a aussi une empreinte de femme, parfois plus marquée que celle d'une voix de femme de la zone ;
+     seulement à partir de 255 Hz : plus bas, une voix d'homme éraillée peut avoir une empreinte de femme. Ce
+     plancher valait 281 Hz (milieu géométrique de la zone) avec des ancres faites d'une seule voix par genre, où un
+     chanteur éraillé de 262 Hz sortait à -0,16 ; avec des ancres bâties sur un corpus de parole (octave/ancres.py),
+     les chanteurs sortent tous nettement homme, et 281 Hz faisait ignorer l'empreinte de chanteuses graves ;
    - sinon, les notes graves : 10e centile des hauteurs des morceaux < 190 Hz -> homme (une chanteuse descend
      rarement si bas sur une phrase entière) ;
-   - sinon, faute d'indice sûr, la hauteur seule : le décalage qui rapproche le plus F du centre de chant de la voix
-     cible (p. ex. centre de 200 Hz : frontière 0 / -12 à 283 Hz, √2 fois le centre).
+   - sinon, faute d'indice sûr, la hauteur seule : homme sous 281 Hz (frontiere_hz, milieu géométrique de la zone),
+     femme au-dessus. Cette frontière ne dépend pas de la voix cible. Avant la v2.2, c'était celle du décalage qui
+     rapproche le plus F du centre de chant de la voix cible (√2 fois ce centre, p. ex. 255 Hz pour un centre de
+     180 Hz) : elle glissait vers le bas de la zone avec une voix cible grave, et classait alors femme un chanteur
+     aigu à l'empreinte peu marquée.
    Décalage d'une classe : celui qui rapproche le centre de chant typique de la classe (homme 250 Hz, femme 420 Hz)
    du centre de chant de la voix cible (voix cible d'homme : homme 0, femme -12 ; voix de femme : homme +12, femme 0).
 2. Une voix ou deux ? On regroupe les morceaux en deux par leur empreinte (k-moyennes à une dimension sur genre_score,
@@ -33,9 +38,12 @@ REGLAGES_DEFAUT = {
     'zone_haute_hz': 330.0,          # au-dessus : voix de femme d'après la hauteur seule
     'genre_homme': 0.03,             # genre_score médian d'une voix, à partir duquel on la tient pour un homme
     'genre_femme': -0.10,            # ... en deçà duquel on la tient pour une femme
-    'femme_empreinte_min_hz': 281.0,  # ... et seulement à partir de cette hauteur (√(240 x 330)) : en dessous, une
-                                      # empreinte de femme peut venir d'une voix d'homme éraillée
+    'femme_empreinte_min_hz': 255.0,  # ... et seulement à partir de cette hauteur : en dessous, une empreinte de
+                                      # femme peut venir d'une voix d'homme éraillée (281 Hz jusqu'à la v2.2, pour
+                                      # des ancres faites d'une seule voix par genre ; 255 avec des ancres de parole)
     'grave_p10_hz': 190.0,           # 10e centile des hauteurs de morceaux sous lequel la voix est d'homme
+    'frontiere_hz': 281.0,           # faute d'indice sûr : homme en dessous, femme au-dessus (√(240 x 330), milieu
+                                     # géométrique de la zone ; ne dépend pas de la voix cible)
     'centre_homme_hz': 250.0,        # centre de chant typique d'un chanteur, d'une chanteuse
     'centre_femme_hz': 420.0,
     'voise_min_s': 0.8,              # temps voisé minimal d'un morceau pour compter dans les empreintes
@@ -76,6 +84,11 @@ def meilleure_octave(f, centre):
     return min((-12, 0, 12), key=lambda d: distance_oct(f, centre, d))
 
 
+def classe_hauteur(f, R):
+    """Classe d'une voix sans indice sûr, d'après sa hauteur médiane seule (frontière fixe, hors voix cible)."""
+    return 'homme' if f < R['frontiere_hz'] else 'femme'
+
+
 def mesurer_voix(morceaux, R):
     """Hauteur médiane, 10e centile, empreinte médiane et temps voisé d'un ensemble de morceaux."""
     h = [s for s in morceaux if s.get('f0_med') and s.get('voise_s', 0) >= R['voise_hauteur_s']]
@@ -113,7 +126,9 @@ def classer(m, R, sur_seulement=False):
         empreinte = f"empreinte {'absente' if g is None else f'{g:+.3f}'} peu marquée"
     if sur_seulement:
         return None, f"{zone}, {empreinte}"
-    return None, f"{zone}, {empreinte} : d'après la hauteur seule"
+    cote = '<' if classe_hauteur(f, R) == 'homme' else '>='
+    return None, (f"{zone}, {empreinte} : d'après la hauteur seule ({f:.0f} Hz {cote} {R['frontiere_hz']:.0f}, "
+                  f"{classe_hauteur(f, R)})")
 
 
 def deux_moyennes(vals, poids, part_min=0.0):
@@ -217,9 +232,10 @@ def decider_octave(morceaux, centre, reglages=None, coupes_son=None):
     R = {**REGLAGES_DEFAUT, **(reglages or {})}
     dec_classe = {'homme': meilleure_octave(R['centre_homme_hz'], centre),
                   'femme': meilleure_octave(R['centre_femme_hz'], centre)}
-    info = {'regle': 'v2.1 (une voix = un décalage ; empreinte de femme ignorée sous 281 Hz)', 'centre_chant_cible_hz': round(centre, 1),
+    info = {'regle': 'v2.3 (une voix = un décalage ; empreinte de femme ignorée sous 255 Hz ; hauteur seule : '
+                     'frontière fixe de 281 Hz)', 'centre_chant_cible_hz': round(centre, 1),
             'decalage_par_classe': dec_classe,
-            'zone_ambigue_hz': [R['zone_basse_hz'], R['zone_haute_hz']],
+            'zone_ambigue_hz': [R['zone_basse_hz'], R['zone_haute_hz']], 'frontiere_hauteur_seule_hz': R['frontiere_hz'],
             'seuils_genre': {'homme': R['genre_homme'], 'femme': R['genre_femme']}}
     actifs_i = [i for i, s in enumerate(morceaux) if not s.get('muet') and s.get('voise_s', 0) > 0]
     if not actifs_i:
@@ -230,7 +246,7 @@ def decider_octave(morceaux, centre, reglages=None, coupes_son=None):
     tout = [morceaux[i] for i in actifs_i]
     mg = mesurer_voix(tout, R)
     classe_g, raison_g = classer(mg, R)
-    dec_g = dec_classe[classe_g] if classe_g else (meilleure_octave(mg['f0_med_hz'], centre) if mg.get('f0_med_hz') else 0)
+    dec_g = dec_classe[classe_g or classe_hauteur(mg['f0_med_hz'], R)] if mg.get('f0_med_hz') else 0
     info['voix_principale'] = {**mg, 'classe': classe_g, 'raison': raison_g, 'decalage': dec_g}
 
     # 2. Deux voix ?
@@ -270,7 +286,7 @@ def decider_octave(morceaux, centre, reglages=None, coupes_son=None):
                     # Sans indice sûr : la hauteur seule, si elle va dans le sens des empreintes (le groupe à l'empreinte
                     # la plus basse est le plus « femme » des deux) ; sinon, comme la voix principale.
                     attendue = 'femme' if k == 0 else 'homme'
-                    d = meilleure_octave(m['f0_med_hz'], centre) if m.get('f0_med_hz') else dec_g
+                    d = dec_classe[classe_hauteur(m['f0_med_hz'], R)] if m.get('f0_med_hz') else dec_g
                     if d == dec_classe[attendue]:
                         c, r = attendue, r + f", d'après la hauteur seule (empreinte plus {'basse' if k == 0 else 'haute'} que l'autre voix)"
                     else:

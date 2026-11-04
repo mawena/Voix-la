@@ -7,7 +7,7 @@
   "references[].douteux_genre_max": "facultatif : morceaux douteux (non comptés) si |genre_score| est sous ce seuil (chant à deux probable)",
   "references[].note": "texte affiché après « vérité : »",
   "synthetiques": "cas bâtis à partir des vrais, seulement si toutes leurs sources sont là ; « parties » recollées bout à bout (« recaler » : false garde les temps d'origine) ; « duo » : jusqu'à 10 % de faux tolérés dans --sensibilite ; « hors_sensibilite » : cas écarté de --sensibilite",
-  "synthetiques[].parties[]": "cas (motif du cas source), actifs (morceaux non muets seulement), avec_hauteur (f0_med non vide seulement), si_verite (morceaux dont la vérité du cas source vaut cette valeur), tranche [début, fin] (null : ouvert), verite (décalage attendu, ou « reference » : celui du cas source), transposer_dt (hauteurs transposées de tant de demi-tons), decaler_genre {si_verite, de} (genre_score + de, là où la vérité du cas source vaut si_verite)"
+  "synthetiques[].parties[]": "cas (nom exact du cas source, sinon motif de son nom), actifs (morceaux non muets seulement), avec_hauteur (f0_med non vide seulement), si_verite (morceaux dont la vérité du cas source vaut cette valeur), tranche [début, fin] (null : ouvert), verite (décalage attendu, ou « reference » : celui du cas source), transposer_dt (hauteurs transposées de tant de demi-tons), decaler_genre {si_verite, de} (genre_score + de, là où la vérité du cas source vaut si_verite), sans_empreinte (genre_score et empreinte effacés : une voix sans indice d'empreinte, quelles que soient les ancres)"
  },
  "centre_chant_hz": 200.0,
  "references": [
@@ -184,6 +184,39 @@
       null
      ],
      "verite": -12
+    }
+   ]
+  },
+  {
+   "nom": "chanteuse-1 transposée −3 dt (stress grave : risque inverse)",
+   "parties": [
+    {
+     "cas": "chanteuse-1",
+     "verite": -12,
+     "transposer_dt": -3
+    }
+   ]
+  },
+  {
+   "nom": "duo-1, chanteuse seule, empreinte effacée (stress)",
+   "parties": [
+    {
+     "cas": "duo-1",
+     "actifs": true,
+     "si_verite": -12,
+     "verite": -12,
+     "sans_empreinte": true
+    }
+   ]
+  },
+  {
+   "nom": "chanteur-2 transposé +1 dt (stress aigu)",
+   "recaler": false,
+   "parties": [
+    {
+     "cas": "chanteur-2",
+     "verite": 0,
+     "transposer_dt": 1
     }
    ]
   }

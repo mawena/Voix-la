@@ -676,10 +676,12 @@ ambiance, musique discrète) passe donc en parole. `--mode chant` ou `--mode par
 - Chaque voix reçoit une classe, homme ou femme, d'après des indices pris dans cet ordre :
   1. la hauteur médiane de la voix : sous 240 Hz, homme ; au-dessus de 330 Hz, femme ;
   2. entre les deux, l'empreinte de timbre CAMPPlus, comparée à deux ancres de genre, si elles sont là (voir
-     [Ancres de genre](#ancres-de-genre-facultatives)). Une empreinte de femme ne compte qu'à partir de 281 Hz, le
-     milieu de la zone : plus bas, une voix d'homme éraillée en donne une aussi ;
+     [Ancres de genre](#ancres-de-genre-facultatives)). Une empreinte de femme ne compte qu'à partir de 255 Hz :
+     plus bas, une voix d'homme éraillée peut en donner une aussi ;
   3. sinon les notes graves : si le 10e centile des hauteurs de ses passages est sous 190 Hz, homme ;
-  4. sinon la hauteur seule : le décalage qui rapproche la voix du centre de chant de la voix cible.
+  4. sinon la hauteur seule : homme sous 281 Hz, femme au-dessus. Cette frontière ne dépend pas de la voix cible
+     (jusqu'à la règle v2.1, elle suivait son centre de chant, et descendait avec une voix cible grave : un chanteur
+     aigu à l'empreinte peu marquée passait alors pour une femme).
 - La hauteur passe d'abord, car l'empreinte marque autant un timbre qu'un genre : une voix d'homme éraillée peut
   passer pour une femme. Mais la hauteur seule ne suffit pas entre 240 et 330 Hz, où un chanteur et une chanteuse
   peuvent chanter aussi haut l'un que l'autre.
@@ -693,9 +695,10 @@ ambiance, musique discrète) passe donc en parole. `--mode chant` ou `--mode par
 
 ### Ancres de genre (facultatives)
 
-Les ancres de genre sont deux empreintes CAMPPlus moyennes, l'une d'une voix d'homme chantée, l'autre d'une voix de
-femme chantée, sans aucun son : `{"homme": [192 nombres], "femme": [192 nombres]}`. `doubler` prend le premier de
-ces deux fichiers qui existe :
+Les ancres de genre sont deux vecteurs de 192 nombres, l'un pour les voix d'homme, l'autre pour les voix de femme,
+dans l'espace des empreintes CAMPPlus, sans aucun son : `{"homme": [192 nombres], "femme": [192 nombres]}`. Le genre
+d'un passage est la différence de ses ressemblances aux deux ancres. `doubler` prend le premier de ces deux fichiers
+qui existe :
 
 1. `~/.config/voix-la/ancres_genre.json`, à côté de la configuration (c'est là qu'elles vont avec le paquet
    Debian) ;
@@ -704,8 +707,14 @@ ces deux fichiers qui existe :
 `doubler --config` affiche celui qui est utilisé.
 
 Elles sont **facultatives**, et ne sont pas fournies avec le code : ce fichier reste local, hors du dépôt et du
-paquet. Aucune commande ne les produit pour l'instant. Sans elles, `doubler` le signale par une ligne au lancement,
-et la décision d'octave se passe d'empreinte :
+paquet. `octave/ancres.py` les bâtit sur un corpus public de parole lue dont le genre des locuteurs est connu (rangé
+comme LibriSpeech) : chaque ancre est la moyenne des empreintes des locuteurs d'un genre, chaque locuteur pesant
+autant. L'empreinte marque d'abord une personne, ensuite son genre : des ancres bâties sur une seule voix d'homme et
+une seule voix de femme, ou sur quelques chanteurs, donnent un axe qui sépare des personnes plus que des genres. Sur
+des dizaines de locuteurs, les personnes s'effacent et le genre reste. Aucune voix chantée n'y entre : toutes les
+chansons des cas restent des cas de validation (`octave/rejouer.py --ancres`).
+
+Sans ancres, `doubler` le signale par une ligne au lancement, et la décision d'octave se passe d'empreinte :
 
 - la hauteur, puis les notes graves, puis la hauteur seule ;
 - pas de recherche de duo : toute la chanson garde un seul décalage.

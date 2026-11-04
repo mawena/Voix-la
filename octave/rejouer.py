@@ -1,21 +1,33 @@
 """Rejoue l'ancienne et la nouvelle règle d'octave sur tous les rapport.json disponibles et compare à la vérité.
 
     python -I rejouer.py [--detail] [--sensibilite] [--kaggle] [--cas FICHIER] [--sorties DOSSIER]
+                         [--ancres FICHIER|aucune] [--empreintes DOSSIER]
     --kaggle : la nouvelle règle est la fonction intégrée (decider_chant de kaggle/doubler_kaggle.py, extraite sans
-    exécuter le reste du noyau), avec les réglages de doubler.py (lus, pas exécutés) et kaggle/ancres_genre.json.
+    exécuter le reste du noyau), avec les réglages de doubler.py (lus, pas exécutés) et les ancres de genre.
+    --ancres : recalcule le genre_score de chaque morceau à partir de son empreinte (rapport['empreintes'], ou
+    --empreintes) avec ces ancres ({"homme": [...], "femme": [...]}, ce que doubler.py enverrait) ; « aucune » :
+    décision sans empreinte, comme sans fichier d'ancres. Sans --ancres : genre_score tels que le noyau les a écrits
+    dans les rapports (et, avec --kaggle, les ancres que doubler.py prendrait : ~/.config/voix-la/ancres_genre.json,
+    sinon kaggle/ancres_genre.json, s'il y en a).
+    --empreintes : dossier d'empreintes calculées à part (« ancres.py rapports ») pour des rapports qui n'en ont pas
+    (fichiers JSON {"nom": <dossier du cas>, "morceaux": {numéro: base64}}, même format que rapport['empreintes']) ;
+    défaut : donnees/empreintes/ à côté du fichier des cas, s'il existe.
 
-Sources : <sorties>/*/travail/*/rapport.json (--sorties, défaut <données>/sorties ; les dossiers essais-* ne sont que des copies) et octave/donnees/*.json
-(F0 calculée en local, sans empreinte). La vérité de chaque cas et les cas synthétiques bâtis à partir des vrais
-morceaux (voix transposée, duos recollés, pour éprouver la règle hors des cas connus) sont décrits dans le fichier des
-cas : octave/cas.json, local et jamais publié (modèle : octave/cas.exemple.json), ou --cas FICHIER.
+Sources : <sorties>/*/travail/*/rapport.json (--sorties, défaut <données>/sorties ; les dossiers essais-* ne sont que
+des copies) et donnees/*.json à côté du fichier des cas (F0 calculée en local, sans empreinte). La vérité de chaque cas
+et les cas synthétiques bâtis à partir des vrais morceaux (voix transposée, duos recollés, pour éprouver la règle hors
+des cas connus) sont décrits dans le fichier des cas : octave/cas.json, local et jamais publié (modèle :
+octave/cas.exemple.json), ou --cas FICHIER.
 """
 import argparse
 import ast
+import base64
 import copy
 import glob
 import json
 import math
 import os
+import struct
 import sys
 
 ICI = os.path.dirname(os.path.abspath(__file__))
@@ -109,8 +121,8 @@ def charger_regle_kaggle():
     return espace
 
 
-OCTAVE_FONCTIONS = {'mediane_ponderee', 'quantile_pondere', 'distance_oct', 'meilleure_octave', 'mesurer_voix', 'classer',
-                    'deux_moyennes', 'z_suites', 'viterbi', 'sections', 'lisser_sections', 'muet_ou_sourd', 'decider_octave',
+OCTAVE_FONCTIONS = {'mediane_ponderee', 'quantile_pondere', 'distance_oct', 'meilleure_octave', 'classe_hauteur',
+                    'mesurer_voix', 'classer', 'deux_moyennes', 'z_suites', 'viterbi', 'sections', 'lisser_sections', 'muet_ou_sourd', 'decider_octave',
                     'decider_chant', 'frise', 'chrono'}
 
 
@@ -119,10 +131,10 @@ def nouvelle_regle_locale(morceaux, centre, coupes_son):
     return [r['decalage'] for r in res], res, info
 
 
-def fabrique_kaggle():
-    """La fonction intégrée elle-même (decider_chant du noyau), avec les ancres et les réglages envoyés par doubler.py."""
+def fabrique_kaggle(ancres):
+    """La fonction intégrée elle-même (decider_chant du noyau), avec les ancres et les réglages envoyés par doubler.py.
+    ancres : {'homme', 'femme'} ou None (le noyau décide alors sans empreinte)."""
     k = charger_regle_kaggle()
-    ancres = json.load(open(os.path.join(DEPOT, 'kaggle', 'ancres_genre.json'), encoding='utf-8'))
     src = open(os.path.join(DEPOT, 'doubler.py'), encoding='utf-8').read()
     arbre = ast.parse(src)
     noyau = next(n for n in arbre.body if isinstance(n, ast.Assign) and any(getattr(t, 'id', '') == 'NOYAU_REGLAGES' for t in n.targets))
@@ -130,11 +142,48 @@ def fabrique_kaggle():
 
     def regle(morceaux, centre, coupes_son):
         segs = copy.deepcopy(morceaux)
-        R = {**reglages, 'ancres': {'homme': ancres['homme'], 'femme': ancres['femme']}}
+        R = {**reglages, 'ancres': {'homme': ancres['homme'], 'femme': ancres['femme']} if ancres else None}
         info = k['decider_chant'](segs, R, centre, coupes_son)
         regle.frise = k['frise'](segs)
         return [s['decalage'] for s in segs], segs, info
     return regle
+
+
+def lire_ancres(chemin):
+    """Ancres {'homme': [192], 'femme': [192]} d'un fichier (autres clés ignorées, comme doubler.py)."""
+    a = json.load(open(chemin, encoding='utf-8'))
+    h, f = a['homme'], a['femme']
+    if not (len(h) == len(f) == 192):
+        raise SystemExit(f'{chemin} : « homme » et « femme » : 192 nombres chacun attendus')
+    return {'homme': [float(x) for x in h], 'femme': [float(x) for x in f]}
+
+
+def decoder_empreintes(d):
+    """{numéro de morceau: empreinte (192 float)} d'un dict {numéro: base64 de 192 float16 petit-boutistes}."""
+    return {int(i): list(struct.unpack('<192e', base64.b64decode(v))) for i, v in d.items()}
+
+
+def appliquer_ancres(cas, ancres):
+    """genre_score de chaque morceau chanté recalculé à partir de son empreinte (« emb ») avec ces ancres, comme le
+    noyau ; None sans empreinte ou sans ancres (les cas en parole gardent ceux du rapport : le noyau n'en calcule pas).
+    Rend les noms des cas chantés sans aucune empreinte."""
+    sans = []
+    for c in cas:
+        n = 0
+        for s in c['morceaux']:
+            e = s.pop('emb', None) if c['mode'] != 'chant' else s.get('emb')
+            if c['mode'] != 'chant':
+                continue
+            s.setdefault('genre_rapport', s.get('genre_score'))   # pour la vérité (douteux_genre_max)
+            if ancres and e is not None and not s['muet']:
+                s['genre_score'] = round(sum(x * (a - b) for x, a, b in zip(e, ancres['homme'], ancres['femme'])), 3)
+                n += 1
+            else:
+                s['genre_score'] = None
+                s.pop('emb', None)
+        if ancres and not n and c['mode'] == 'chant':
+            sans.append(c['nom'])
+    return sans
 
 
 # --- Vérité -------------------------------------------------------------------------------------------------------
@@ -158,7 +207,8 @@ def verite(nom, morceaux, references):
 
     Règle : {motifs, decalage, note, sections (facultatif) : [{debut_s, fin_s, decalage}] (un morceau couvert à plus de
     moitié par une section prend son décalage), douteux_genre_max (facultatif) : morceau douteux si son empreinte
-    |genre_score| est sous ce seuil (chant à deux probable : voix dominante incertaine)}."""
+    |genre_score| est sous ce seuil (chant à deux probable : voix dominante incertaine) ; c'est le genre_score du
+    rapport qui compte, pas celui que --ancres recalcule : la vérité ne bouge pas avec les ancres}."""
     n = len(morceaux)
     for r in references:
         if not any(m in nom for m in r['motifs']):
@@ -172,7 +222,7 @@ def verite(nom, morceaux, references):
                         if min(x['fin_s'], s['fin_s']) - max(x['debut_s'], s['debut_s']) > 0.5 * (s['fin_s'] - s['debut_s'])),
                        r['decalage'])
             att.append(dec)
-            g = s.get('genre_score')
+            g = s.get('genre_rapport', s.get('genre_score'))
             dout.append(r.get('douteux_genre_max') is not None and g is not None and abs(g) < r['douteux_genre_max'])
         return att, dout, r['note']
     return None
@@ -220,15 +270,25 @@ def evaluer(morceaux, decs, att, dout):
 
 # --- Cas ----------------------------------------------------------------------------------------------------------
 
-def charger_cas():
+def charger_cas(donnees=os.path.join(ICI, 'donnees'), empreintes=None):
+    """Cas réels : rapports de <sorties> et fichiers de donnees/. Chaque morceau reçoit son empreinte (« emb ») si le
+    rapport l'a gardée, sinon si le dossier --empreintes en a une pour ce cas."""
+    a_part = {}
+    for f in sorted(glob.glob(os.path.join(empreintes, '*.json'))) if empreintes else []:
+        d = json.load(open(f, encoding='utf-8'))
+        a_part[d['nom']] = decoder_empreintes(d['morceaux'])
     cas = []
     for f in sorted(glob.glob(os.path.join(SORTIES, '*', 'travail', '*', 'rapport.json'))):
         r = json.load(open(f, encoding='utf-8'))
         nom = f.split(os.sep)[-4]
+        emb = decoder_empreintes((r.get('empreintes') or {}).get('morceaux', {})) or a_part.get(nom, {})
+        for s in r['morceaux']:
+            if s['i'] in emb:
+                s['emb'] = emb[s['i']]
         cas.append({'nom': nom, 'mode': r.get('mode'), 'morceaux': r['morceaux'],
                     'centre': r.get('voix_cible', {}).get('centre_chant_hz') or r['decision_hauteur']['centre_chant_cible_hz'],
                     'coupes_son': r.get('coupes_dans_le_son_s'), 'R': r.get('reglages', {}), 'source': f})
-    for f in sorted(glob.glob(os.path.join(ICI, 'donnees', '*.json'))):
+    for f in sorted(glob.glob(os.path.join(donnees, '*.json'))):
         r = json.load(open(f, encoding='utf-8'))
         cas.append({'nom': r['id'], 'mode': 'chant', 'morceaux': r['morceaux'], 'centre': r['voix_cible']['centre_chant_hz'],
                     'coupes_son': None, 'R': {}, 'source': f})
@@ -254,11 +314,13 @@ def retimer(listes):
 def partie_synthetique(p, trouve, references):
     """Morceaux d'une partie d'un cas synthétique : [(morceau copié et transformé, vérité)] ; None si sa source manque.
 
-    Partie : {cas (motif du nom du cas source), actifs (non muets seulement), avec_hauteur (f0_med non vide seulement),
-    si_verite (morceaux dont la vérité du cas source vaut cette valeur), tranche [début, fin] (après les filtres),
+    Partie : {cas (nom exact du cas source, sinon motif de son nom), actifs (non muets seulement), avec_hauteur (f0_med
+    non vide seulement), si_verite (morceaux dont la vérité du cas source vaut cette valeur), tranche [début, fin] (après
+    les filtres),
     verite (décalage attendu, ou « reference » : celui du cas source, morceau par morceau), transposer_dt (f0_med
     transposée de tant de demi-tons), decaler_genre {si_verite, de} (genre_score + de, là où la vérité du cas source
-    vaut si_verite)}."""
+    vaut si_verite), sans_empreinte (genre_score et empreinte effacés : voix sans indice d'empreinte, quelles que
+    soient les ancres)}."""
     src = trouve(p['cas'])
     if src is None:
         return None
@@ -278,6 +340,10 @@ def partie_synthetique(p, trouve, references):
         dg = p.get('decaler_genre')
         if dg and a == dg['si_verite'] and s.get('genre_score') is not None:
             s['genre_score'] = round(s['genre_score'] + dg['de'], 3)
+            s.pop('emb', None)   # le noyau (--kaggle) ne doit pas recalculer le score décalé
+        if p.get('sans_empreinte'):
+            s['genre_score'] = None
+            s.pop('emb', None)
         sortie.append((s, a if p['verite'] == 'reference' else p['verite']))
     return sortie
 
@@ -289,7 +355,7 @@ def cas_synthetiques(cas, fichier_cas):
     renumérotés ; false : temps d'origine gardés), duo (tolérance des duos dans --sensibilite), hors_sensibilite
     (cas écarté de --sensibilite), centre_chant_hz (défaut : celui du fichier)}."""
     par = {c['nom']: c for c in cas}
-    trouve = lambda m: next((c for n, c in par.items() if m in n), None)
+    trouve = lambda m: par.get(m) or next((c for n, c in par.items() if m in n), None)   # nom exact d'abord
     refs = fichier_cas['references']
     out = []
     for d in fichier_cas['synthetiques']:
@@ -321,6 +387,7 @@ SENSIBILITE = {
     'genre_homme': [0.0, 0.02, 0.03, 0.05, 0.07], 'genre_femme': [-0.06, -0.08, -0.10, -0.12, -0.14],
     'femme_empreinte_min_hz': [240, 255, 265, 270, 275, 281, 285, 290, 300],   # 240 : la règle d'avant (sans plancher)
     'grave_p10_hz': [170, 180, 190, 200, 210], 'duo_ecart_genre': [0.10, 0.125, 0.15, 0.175, 0.20],
+    'frontiere_hz': [240, 255, 262, 268, 272, 276, 281, 286, 291, 296, 310, 324],   # 324 : √(250 x 420), entre les centres
     'duo_z_suites': [-1.5, -2.0, -2.5, -3.0], 'duo_part_min': [0.10, 0.15, 0.20],
     'cout_changement': [1.5, 3.0, 4.5, 6.0], 'cout_changement_pause': [0.5, 1.0, 2.0], 'section_min_s': [3, 6, 9, 12],
 }
@@ -353,12 +420,32 @@ def main():
     p.add_argument('--kaggle', action='store_true', help='nouvelle règle prise dans kaggle/doubler_kaggle.py')
     p.add_argument('--sorties', default=None, help=f'dossier des sorties de doubler (défaut : {SORTIES})')
     p.add_argument('--cas', default=CAS_DEFAUT, help='fichier des cas : vérité et cas synthétiques (défaut : octave/cas.json ; '
-                   'modèle : octave/cas.exemple.json)')
+                   'modèle : octave/cas.exemple.json) ; ses données locales (donnees/) sont à côté')
+    p.add_argument('--ancres', default=None, help='ancres de genre (JSON {homme, femme}) avec lesquelles recalculer les '
+                   'genre_score à partir des empreintes ; « aucune » : sans empreinte')
+    p.add_argument('--empreintes', default=None, help="dossier d'empreintes calculées à part, pour les rapports qui n'en ont "
+                   "pas (défaut : donnees/empreintes/ à côté du fichier des cas)")
     a = p.parse_args()
     SORTIES = a.sorties or SORTIES
     fichier_cas = lire_fichier_cas(a.cas)
-    nouvelle = fabrique_kaggle() if a.kaggle else nouvelle_regle_locale
-    cas = charger_cas()
+    donnees = os.path.join(os.path.dirname(os.path.abspath(a.cas)), 'donnees')
+    if a.empreintes is None and os.path.isdir(os.path.join(donnees, 'empreintes')):
+        a.empreintes = os.path.join(donnees, 'empreintes')
+    cas = charger_cas(donnees, a.empreintes)
+    if a.ancres:
+        ancres = None if a.ancres == 'aucune' else lire_ancres(a.ancres)
+        sans = appliquer_ancres(cas, ancres)
+        print(f"ancres : {'aucune (décision sans empreinte)' if ancres is None else a.ancres} ; genre_score recalculés")
+        if sans:
+            print(f"  sans empreinte (décision sans genre_score) : {', '.join(n[:40] for n in sans)}")
+    else:
+        defaut = next((f for f in (os.path.expanduser('~/.config/voix-la/ancres_genre.json'),   # comme doubler.py
+                                   os.path.join(DEPOT, 'kaggle', 'ancres_genre.json')) if os.path.isfile(f)), None)
+        ancres = lire_ancres(defaut) if defaut else None
+        for c in cas:   # genre_score des rapports, que le noyau ne recalcule donc pas
+            for s in c['morceaux']:
+                s.pop('emb', None)
+    nouvelle = fabrique_kaggle(ancres) if a.kaggle else nouvelle_regle_locale
     cas += cas_synthetiques(cas, fichier_cas)
     bilan = []
     for c in cas:

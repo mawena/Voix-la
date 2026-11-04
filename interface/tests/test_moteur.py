@@ -1,6 +1,7 @@
 """Essais de voixla.moteur : aide de doubler, commandes (avec et sans les options récentes), noms d'extraits, voix,
 config.json, événements (--evenements) et lecture de la sortie texte (LectureTexte), avec le faux doubler."""
 
+import json
 import os
 import shutil
 import subprocess
@@ -16,6 +17,7 @@ from voixla import chemins, moteur, suivi
 from .commun import FAUX_DOUBLER, VRAI_DOUBLER, EssaiIsole, commande_faux, creer_voix, lire_trace
 
 RECENTES = {"--evenements", "--donnees", "--config", "--json", "--mix-v1"}
+AVANT_LE_VRAI = {"--sans-paroles"}    # option de doubler ajoutée sur feature/paroles-et-secours
 REGLAGES = {"voix": "jules", "mode": "auto", "octave": "auto", "pas": 30, "voix_db": None, "reverb_db": -13.0}
 
 
@@ -47,7 +49,9 @@ class EssaiAide(unittest.TestCase):
         self.assertEqual(vrai.returncode, 0)
         options_vrai = moteur.analyser_aide(vrai.stdout)
         self.assertTrue(RECENTES <= options_vrai, "le vrai doubler a perdu une option suivie")
-        self.assertEqual(moteur.analyser_aide(faux.stdout), options_vrai)
+        # AVANT_LE_VRAI : options que le faux annonce déjà alors qu'elles arrivent dans doubler par une autre branche
+        # (à retirer de l'ensemble une fois la fusion faite) ; toutes les autres doivent être les mêmes
+        self.assertEqual(moteur.analyser_aide(faux.stdout) - AVANT_LE_VRAI, options_vrai - AVANT_LE_VRAI)
 
 
 class EssaiCapacites(EssaiIsole):
@@ -62,7 +66,8 @@ class EssaiCapacites(EssaiIsole):
         caps = moteur.capacites()
         # l'ancien doubler n'a ni les options récentes ni --reprendre (seules les options suivies sont comparées)
         self.assertEqual(caps & frozenset(moteur.OPTIONS_SUIVIES),
-                         frozenset(moteur.OPTIONS_SUIVIES) - RECENTES - {"--reprendre", "--moteur", "--sans-nettoyage"})
+                         frozenset(moteur.OPTIONS_SUIVIES) - RECENTES - {"--reprendre", "--moteur", "--sans-nettoyage",
+                                                                         "--sans-paroles"})
         self.assertTrue(moteur.disponible())
 
     def test_doubler_introuvable(self):
@@ -140,6 +145,66 @@ class EssaiMoteurEtNettoyage(EssaiIsole):
         a = moteur.args_doublage(["/v/A.mp4"], {"voix": "jules", "moteur": ""}, "/d",
                                  caps=frozenset(moteur.OPTIONS_SUIVIES))
         self.assertFalse(any(x.startswith("--moteur") for x in a))
+
+
+class EssaiParoles(EssaiIsole):
+    """--sans-paroles : passé seulement si doubler l'annonce ; défaut lu dans la clé « paroles » de sa configuration."""
+
+    def test_sans_paroles_annonce(self):
+        a = moteur.args_doublage(["/v/A.mp4"], {"voix": "jules", "sans_paroles": True}, "/d",
+                                 caps=frozenset(moteur.OPTIONS_SUIVIES))
+        self.assertIn("--sans-paroles", a)
+
+    def test_sans_paroles_absent_de_l_aide(self):
+        a = moteur.args_doublage(["/v/A.mp4"], {"voix": "jules", "sans_paroles": True}, "/d",
+                                 caps=frozenset(moteur.OPTIONS_SUIVIES) - {"--sans-paroles"})
+        self.assertNotIn("--sans-paroles", a)
+
+    def test_paroles_par_defaut(self):
+        a = moteur.args_doublage(["/v/A.mp4"], {"voix": "jules"}, "/d", caps=frozenset(moteur.OPTIONS_SUIVIES))
+        self.assertNotIn("--sans-paroles", a)
+
+    def test_le_faux_annonce_sans_paroles(self):
+        self.assertIn("--sans-paroles", moteur.capacites())
+        self.ancien_doubler()
+        self.assertNotIn("--sans-paroles", moteur.capacites())
+
+    def test_booleen(self):
+        for v in (True, "oui", "OUI", " vrai ", "true", "1", 1):
+            self.assertTrue(moteur.booleen(v, False), v)
+        for v in (False, "non", "Non", "faux", "false", "0", 0):
+            self.assertFalse(moteur.booleen(v, True), v)
+        for v in (None, "", "peut-être", [], {}):
+            self.assertTrue(moteur.booleen(v, True), v)
+            self.assertFalse(moteur.booleen(v, False), v)
+
+    def test_lecture_de_la_configuration(self):
+        self.assertTrue(moteur.paroles_par_defaut(None))
+        self.assertTrue(moteur.paroles_par_defaut({}))
+        self.assertTrue(moteur.paroles_par_defaut({"contenu": {}}))
+        self.assertFalse(moteur.paroles_par_defaut({"contenu": {"paroles": False}}))
+        self.assertFalse(moteur.paroles_par_defaut({"contenu": {"paroles": "non"}}))
+        self.assertFalse(moteur.paroles_par_defaut({"paroles": False}))          # « doubler --config --json »
+        self.assertTrue(moteur.paroles_par_defaut({"contenu": "abîmé", "paroles": "oui"}))
+
+    def test_ecriture_directe_en_booleen(self):
+        # VOIXLA_CONFIG (essais) : écrite directement, en vrai booléen, et relue comme telle
+        for texte, attendu in (("non", False), ("oui", True)):
+            ok, _ = moteur.ecrire_config("paroles", texte)
+            self.assertTrue(ok)
+            conf = chemins.lire_config()
+            self.assertIs(conf["paroles"], attendu)
+            self.assertIs(moteur.paroles_par_defaut(moteur.config_effective()), attendu)
+
+    def test_le_faux_ecrit_la_cle(self):
+        env = {**os.environ, "FAUX_DOUBLER_CONFIG": str(self.config)}
+        r = subprocess.run([sys.executable, str(FAUX_DOUBLER), "--config", "paroles", "non"], capture_output=True,
+                           text=True, timeout=30, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIs(json.loads((self.config / "config.json").read_text(encoding="utf-8"))["paroles"], False)
+        r = subprocess.run([sys.executable, str(FAUX_DOUBLER), "--config", "paroles", "bof"], capture_output=True,
+                           text=True, timeout=30, env=env)
+        self.assertNotEqual(r.returncode, 0)
 
 
 class EssaiCommandes(EssaiIsole):

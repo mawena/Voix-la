@@ -16,7 +16,7 @@ import warnings
 from pathlib import Path
 from unittest import mock
 
-from voixla import executeur, travaux
+from voixla import executeur, paroles, travaux
 from voixla.travaux import TERMINES, FileTravaux, Travail
 
 from .commun import FAUX_DOUBLER, EssaiIsole, attendre, creer_voix, lire_trace
@@ -164,6 +164,9 @@ class EssaiExecuteur(EssaiFile):
         self.assertEqual({n: av.etapes[n].etat for n in av.ordre}, ETATS_REUSSITE)
         self.assertEqual(len(av.sorties), 4)
         self.assertTrue(all(Path(p).exists() for p in av.sorties), av.sorties)
+        # l'événement « sortie » donne travail/<voix>/paroles.json, au format que lit la page Résultats
+        self.assertEqual(len(av.paroles), 2)
+        self.assertTrue(all(paroles.lire_paroles(p) is not None for p in av.paroles), av.paroles)
         self.assertIn("=== A.mp4 →", t.journal)
         self.assertIn("fini :", t.journal)
         self.assertIn("file vide, arrêt", (self.racine / "executeur.log").read_text(encoding="utf-8"))

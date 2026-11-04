@@ -301,6 +301,19 @@ class EssaiCourbesAnnoncees(unittest.TestCase):
         self.assertEqual(av.courbes, ["/s/A/travail/jules/courbes.json"])
         self.assertNotIn("/s/A/travail/jules/courbes.json", av.sorties)
 
+    def test_sortie_avec_paroles(self):
+        av = suivi.Avancement(1)
+        av.appliquer({"t": 1.0, "type": "sortie", "video": "A", "mp4": "/s/A/A.mp4", "mp3": "/s/A/A.mp3",
+                      "rapport": "/s/A/travail/jules/rapport.json", "paroles": "/s/A/travail/jules/paroles.json"})
+        self.assertEqual(av.paroles, ["/s/A/travail/jules/paroles.json"])
+        self.assertNotIn("/s/A/travail/jules/paroles.json", av.sorties)
+        self.assertEqual(av.sorties, ["/s/A/A.mp4", "/s/A/A.mp3"])
+
+    def test_sortie_sans_paroles(self):
+        av = suivi.Avancement(1)
+        av.appliquer({"t": 1.0, "type": "sortie", "video": "A", "mp4": "/s/A/A.mp4", "paroles": None})
+        self.assertEqual(av.paroles, [])
+
 
 if __name__ == "__main__":
     unittest.main()

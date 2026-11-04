@@ -61,6 +61,7 @@ class Avancement:
         self.kaggle = {}              # statut, depuis_s, estimation_s, t
         self.sorties = []
         self.courbes = []
+        self.paroles = []
         self.erreurs = []
         self.messages = []
         self.debut = debut
@@ -97,6 +98,8 @@ class Avancement:
                     self.sorties.append(chemin)
             if ev.get("courbes"):
                 self.courbes.append(ev["courbes"])     # travail/<voix>/courbes.json (courbe de mélodie)
+            if ev.get("paroles"):
+                self.paroles.append(ev["paroles"])     # travail/<voix>/paroles.json (paroles synchronisées)
         elif type_ == "erreur":
             msg = ev.get("message") or "erreur"
             if ev.get("video"):

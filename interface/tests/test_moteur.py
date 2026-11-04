@@ -17,7 +17,7 @@ from voixla import chemins, moteur, suivi
 from .commun import FAUX_DOUBLER, VRAI_DOUBLER, EssaiIsole, commande_faux, creer_voix, lire_trace
 
 RECENTES = {"--evenements", "--donnees", "--config", "--json", "--mix-v1"}
-AVANT_LE_VRAI = {"--sans-paroles"}    # option de doubler ajoutée sur feature/paroles-et-secours
+AVANT_LE_VRAI = set()    # options que le faux annonce avant le vrai doubler (aucune)
 REGLAGES = {"voix": "jules", "mode": "auto", "octave": "auto", "pas": 30, "voix_db": None, "reverb_db": -13.0}
 
 

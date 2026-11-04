@@ -248,6 +248,20 @@ class EssaiPreparateur(EssaiAvecCache):
             self.assertEqual(prep.preparer([r], faire=faire, etat=lambda: (1.0, 14, 4000), dormir=lambda s: None),
                              (3, 1))
 
+    def test_demarrage_les_derniers_quand_le_poste_est_calme(self):
+        # ce que lance l'interface au démarrage : --recents 5 --si-calme
+        for i in range(7):
+            r = self.doublage(titre=f"Chanson {i}", rapport=RAPPORT_CHANT)
+            os.utime(r.video, (1000 + i, 1000 + i))
+        vus = {}
+
+        def preparer(rs, si_calme=False):
+            vus.update(titres=[r.titre for r in rs], si_calme=si_calme)
+            return 0, 0
+        with mock.patch.object(prep, "preparer", preparer), mock.patch.object(prep, "_dire"):
+            self.assertEqual(prep.main(["--recents", "5", "--si-calme", "--donnees", str(self.donnees)]), 0)
+        self.assertEqual(vus, {"titres": [f"Chanson {i}" for i in (6, 5, 4, 3, 2)], "si_calme": True})
+
     @unittest.skipUnless(FFMPEG, "ffmpeg absent")
     def test_vraie_preparation(self):
         r = self.doublage(fichiers=["original.wav", "voix_source.wav"], rapport=RAPPORT_CHANT)

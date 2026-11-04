@@ -103,12 +103,15 @@ def executer(racine, d):
     ecrire_etat(d, {**etat, "statut": statut, "code": code, "fin": time.time()})
     journal(f"fin {d.name} : {statut} (code {code}, {time.time() - debut:.0f} s)")
     titre = demande.get("titre") or d.name
-    if statut in ("fini", "echec"):
-        preparer_apres(d, demande)
     if statut == "fini":
         notifier(racine, "Doublage fini", titre)
     elif statut == "echec":
         notifier(racine, "Doublage en échec", titre)
+    if statut in ("fini", "echec"):
+        try:
+            preparer_apres(d, demande)
+        except Exception as e:  # noqa: BLE001 — la file des travaux ne dépend pas de la préparation
+            journal(f"préparation impossible : {e}")
 
 
 def preparer_apres(d, demande, lancer=None):

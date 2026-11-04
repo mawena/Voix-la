@@ -432,10 +432,13 @@ class Fenetre(Adw.ApplicationWindow):
         quitte comme avant (les pages se ferment, le verrou de l'interface tombe avec le processus)."""
         self._prevenir_travaux()
         e = lectures().etat_courant()
-        if self.get_application().vie.fermer(e.statut if e.session else regles.ARRET) == "cacher":
+        app = self.get_application()
+        if app.vie.fermer(e.statut if e.session else regles.ARRET) == "cacher":
             self.cacher_dans_le_fond()
             return True
         self._fermer_pages()
+        if app.fenetre is self:
+            app.fenetre = None        # une relance éventuelle ouvrira une fenêtre neuve
         return False
 
     def _prevenir_travaux(self):

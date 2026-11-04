@@ -2,7 +2,7 @@
 
 Voix-là : votre vidéo, avec une autre voix. Et voilà.
 
-> **Version 0.3.1** : paquet Debian `.deb` joint à chaque [release](https://github.com/mawena/Voix-la/releases). Voir le
+> **Version 0.4.0** : paquet Debian `.deb` joint à chaque [release](https://github.com/mawena/Voix-la/releases). Voir le
 > [journal des modifications](CHANGELOG.md).
 
 `doubler` prend une vidéo (chanson d'une chanteuse ou d'un chanteur, duo, rap, ou vidéo parlée) et rend la même vidéo,
@@ -664,10 +664,15 @@ Pages écrites, encore en essai :
 |---|---|
 | Doubler | une ou plusieurs vidéos (sélecteur ou glisser-déposer), un extrait facultatif par vidéo réglé dans un petit lecteur, les réglages du doublage, dont l'interrupteur « Paroles » (si doubler connaît `--sans-paroles`), une estimation de la durée |
 | Travaux | la file, les étapes en direct avec le temps écoulé et le temps restant estimé, le journal, l'annulation |
-| Résultats | les doublages, la lecture avec le choix de ce qu'on écoute à la même position (doublage, original, beat seul, ma voix seule, voix d'origine seule ; touche B : doublage ⇄ original), les paroles synchronisées (`paroles.json` de doubler, sinon les sous-titres de la vidéo), la frise d'octave, les durées par étape, le remix rapide, l'enregistrement du beat ou de la voix seule |
+| Résultats | les doublages, la lecture avec le choix de ce qu'on écoute à la même position (doublage, original, beat seul, ma voix seule, voix d'origine seule ; touche B : doublage ⇄ original), les paroles synchronisées (`paroles.json` de doubler, sinon les sous-titres de la vidéo), la frise d'octave, les durées par étape, le remix rapide, l'enregistrement du beat ou de la voix seule ; la lecture continue quand on quitte la page ou qu'on ferme la fenêtre (barre « en cours de lecture », MPRIS pour le menu du haut de GNOME et les touches multimédia) ; mise à la corbeille depuis la liste, une ligne ou plusieurs |
 | Voix | écouter la référence, choisir la voix par défaut, ajouter une voix depuis un fichier ou au micro, renommer, mettre à la corbeille, prises de chant |
 | Écoute à l'aveugle | les versions du banc d'essai, notées de 1 à 5 sans savoir laquelle est laquelle ; interrupteur « voix seule » (touche V) |
 | État | Kaggle (présence du jeton, compte, noyaux), verrou de `doubler`, mémoire et charge du poste |
+
+Une seule lecture à la fois dans toute l'application : elle continue quand on change de page, et même fenêtre fermée
+(l'application reste alors en vie, sur le seul son de la piste, et quitte à la fin). Les pistes séparées (beat, voix
+seules) se préparent à l'avance, en tâche de fond et à faible priorité : à la fin de chaque doublage, à l'ouverture d'un
+résultat et au démarrage. Leur cache se règle dans les Réglages (2 Go par défaut).
 
 Les réglages, dans le menu principal, reprennent le dossier des données et les noms Kaggle, écrits par
 `doubler --config`.

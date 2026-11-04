@@ -80,20 +80,23 @@ def fichier_preferences():
 
 
 def dossier_cache():
-    """Caches des analyses du son (spectrogrammes, formes d'onde…) : ~/.cache/voix-la (VOIXLA_CACHE pour les essais)."""
+    """Caches (analyses du son, ma voix seule, copies vidéo des pistes…) : ~/.cache/voix-la (VOIXLA_CACHE pour les
+    essais)."""
     if os.environ.get("VOIXLA_CACHE"):
         return Path(os.environ["VOIXLA_CACHE"]).expanduser()
     base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
     return Path(base) / "voix-la"
 
 
-def purger_dossier(dossier, max_mo):
+def purger_dossier(dossier, max_mo, garder=()):
     """Garde un dossier du cache sous max_mo : efface les fichiers les moins récemment utilisés (et les .tmp
-    abandonnés depuis plus d'une heure). Rend le nombre de fichiers effacés."""
+    abandonnés depuis plus d'une heure), jamais ceux de garder (le fichier qu'on vient de faire). Rend le nombre de
+    fichiers effacés."""
     import time
     d = Path(dossier)
     if not d.is_dir():
         return 0
+    garder = {Path(g).name for g in garder}
     fichiers, efface = [], 0
     for f in d.iterdir():
         try:
@@ -111,6 +114,8 @@ def purger_dossier(dossier, max_mo):
     for _t, s, f in sorted(fichiers):
         if total <= max_mo * 1024 * 1024:
             break
+        if f.name in garder:
+            continue
         f.unlink(missing_ok=True)
         total -= s
         efface += 1

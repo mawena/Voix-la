@@ -17,8 +17,15 @@ additionnées (amix sans normalisation), puis passées au même limiteur (crête
 coupées à la durée de travail/instrumental.wav comme le mix. Le résultat va en cache, en FLAC, dans
 ~/.cache/voix-la/voix/, nommé d'après les fichiers et les gains (refait si un remix les change).
 
+En vidéo, le beat et les voix seules se lisent sur l'image de la vidéo doublée, qui avance avec le son : une copie
+préparée une fois en cache (~/.cache/voix-la/videos/), avec le flux vidéo de la vidéo doublée copié sans réencodage
+(-c:v copy) et le son de la piste encodé comme doubler le fait (AAC 256k, Opus 192k en webm), coupé à la fin de la
+vidéo. Le son y commence exactement là où commence le son du doublage, lu dans la vidéo doublée (voir calage_video) :
+la copie a les mêmes temps que la vidéo doublée, et on y passe à la même position. Un seul décodage vidéo à la fois.
+
 En ligne de commande (lancée par l'interface sous nice, ou par file-attente quand c'est long) :
   python3 -m voixla.pistes voix DOSSIER_VOIX
+  python3 -m voixla.pistes video VIDEO_DOUBLEE (SON | --voix DOSSIER_VOIX)
   python3 -m voixla.pistes exporter (SOURCE | --voix DOSSIER_VOIX) SORTIE.mp3|.flac|.wav
 """
 
@@ -50,6 +57,13 @@ CACHE_VOIX_MO = 300             # au-delà, les voix préparées les moins réce
 FORMATS_EXPORT = {".mp3": ["-c:a", "libmp3lame", "-b:a", "320k", "-f", "mp3"],
                   ".flac": ["-c:a", "flac", "-f", "flac"],
                   ".wav": ["-c:a", "pcm_s24le", "-f", "wav"]}
+SANS_IMAGE = ("beat", "ma_voix", "voix_origine")    # pistes sans image, lues en vidéo par une copie (voir plus bas)
+VERSION_VIDEO = 1
+CACHE_VIDEO_MO = 2048           # au-delà, les copies vidéo les moins récemment lues sont effacées
+CONTENEURS_VIDEO = (".mp4", ".m4v", ".mov", ".mkv", ".webm")    # ceux de doubler ; sinon .mkv, comme lui
+SON_VIDEO = {".webm": ["-c:a", "libopus", "-b:a", "192k"]}     # sinon AAC 256k (CONTENEURS de doubler.py)
+SON_VIDEO_DEFAUT = ["-c:a", "aac", "-b:a", "256k"]
+AMORCES = {"aac": 1024, "opus": 312}   # échantillons d'amorce de ces encodeurs de ffmpeg (aac, libopus à 48 kHz)
 # fichiers enregistrés par l'interface à côté des sorties : « <titre> - voix <Nom> (beat).mp3 »… (que
 # rapports.EXPORT_DANS_NOM écarte des sorties de doubler)
 SUFFIXES_EXPORT = {"beat": " (beat)", "ma_voix": " (voix seule)"}
@@ -241,10 +255,22 @@ class Piste:
     image: bool = False             # le fichier a une image
     explication: str = ""           # ce que la piste contient, ou pourquoi elle manque
     a_preparer: bool = False        # ma_voix : à combiner (en cache) avant de l'écouter
+    video: Path | None = None       # en vidéo : la copie en cache (image de la vidéo doublée, son de cette piste)
+    video_a_preparer: bool = False  # en vidéo : copie à faire pour lire cette piste sur l'image qui avance
+    sans_video: str = ""            # pourquoi cette piste se lit sans image (pas de vidéo doublée, copie impossible)
 
     @property
     def disponible(self):
-        return self.fichier is not None or self.a_preparer
+        return self.fichier is not None or self.a_preparer or self.video is not None
+
+    @property
+    def a_lire(self):
+        """Ce que lit le lecteur : la copie vidéo si elle est prête, sinon le son seul."""
+        return self.video or self.fichier
+
+    @property
+    def avec_image(self):
+        return self.image or self.video is not None
 
     @property
     def libelle(self):
@@ -300,7 +326,34 @@ def choisir_pistes(res, forme="video", source_choisie=None):
     vs = fichier_voix_source(res.travail)
     p["voix_origine"] = Piste("voix_origine", vs, explication=f"la voix d’origine isolée (travail/{vs.name})") if vs \
         else Piste("voix_origine", explication="travail/voix_source.wav manque")
+    for c in SANS_IMAGE:
+        _choisir_video(res, forme, p[c], plan)
     return {c: p[c] for c in CLES}
+
+
+def _choisir_video(res, forme, piste, plan):
+    """La copie vidéo d'une piste sans image : prête en cache, à préparer, ou la raison de s'en passer. Ne lit que la
+    taille et la date des fichiers (appelé dans le fil de l'interface)."""
+    if not piste.disponible:
+        return
+    if res.video is None:
+        piste.sans_video = "pas de vidéo doublée (MP3 seul)"
+        return
+    if forme != "video":
+        return
+    try:
+        trop = trop_lourde(res.video)
+        if trop:
+            piste.sans_video = trop
+            return
+        f = chemin_video(res.video, identite_plan(plan) if piste.cle == "ma_voix" else _signature(piste.fichier))
+    except (OSError, ErreurPistes) as e:
+        piste.sans_video = str(e) or "copie vidéo impossible"
+        return
+    if f.is_file():
+        piste.video = f
+    else:
+        piste.video_a_preparer = True
 
 
 def piste_apres_changement(pistes, voulue):
@@ -311,6 +364,193 @@ def piste_apres_changement(pistes, voulue):
     if pistes.get("doublage") and pistes["doublage"].fichier is not None:
         return "doublage"
     return next((c for c, x in pistes.items() if x.fichier is not None), None)
+
+
+# --- Pistes en vidéo : l'image de la vidéo doublée, le son de la piste ----------------------------------------------
+
+@dataclass
+class CalageVideo:
+    index: int                  # flux vidéo copié
+    debut_son: float            # instant (temps du fichier) où commence le son du doublage, donc celui de la piste
+    fin: float                  # fin de la vidéo doublée : le son de la piste y est coupé
+    taux: int | None = None     # fréquence du son du doublage (gardée en AAC)
+
+
+def _flottant(v, defaut=None):
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return defaut
+    return x if math.isfinite(x) else defaut
+
+
+def sonder(video):
+    """ffprobe de la vidéo doublée (format et flux, en JSON)."""
+    try:
+        r = subprocess.run(["ffprobe", "-v", "error", "-show_format", "-show_streams", "-of", "json", str(video)],
+                           capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise ErreurPistes(f"ffprobe impossible : {e}") from e
+    if r.returncode:
+        raise ErreurPistes(f"vidéo doublée illisible : {(r.stderr or '').strip()[-300:] or r.returncode}")
+    try:
+        return json.loads(r.stdout or "{}")
+    except ValueError as e:
+        raise ErreurPistes("vidéo doublée illisible : réponse de ffprobe incomprise") from e
+
+
+def flux_son(info):
+    """Le flux de son de la vidéo doublée (celui par défaut), ou None."""
+    sons = [f for f in info.get("streams") or [] if f.get("codec_type") == "audio"]
+    return next((f for f in sons if (f.get("disposition") or {}).get("default")), sons[0] if sons else None)
+
+
+def premier_paquet(video, index):
+    """Temps (s, temps du fichier) du premier paquet du flux index : celui qui porte l'amorce de l'encodeur."""
+    try:
+        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", str(index), "-show_entries", "packet=pts_time",
+                            "-read_intervals", "%+#1", "-of", "csv=p=0", str(video)],
+                           capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise ErreurPistes(f"ffprobe impossible : {e}") from e
+    for x in r.stdout.replace(",", " ").split():
+        t = _flottant(x)
+        if t is not None:
+            return t
+    raise ErreurPistes("premier paquet de son illisible dans la vidéo doublée")
+
+
+def calage_video(info, premier_son=None):
+    """Où va le son d'une piste dans sa copie, d'après la vidéo doublée : là où y commence le son du doublage.
+    doubler a remis le mix sur la vidéo avec un décalage (decalage_son de source.json ; pour un extrait, plus l'écart
+    entre l'image clé où part la copie de l'image et le début du son ; puis le conteneur peut tout décaler pour éviter
+    des temps négatifs) : on le lit dans le résultat au lieu de le recalculer.
+
+    premier_son : le temps du premier paquet du son doublé (premier_paquet). Ce paquet porte l'amorce de l'encodeur
+    (1024 échantillons d'AAC, 312 d'Opus à 48 kHz), placée avant le mix : on vise ce même temps pour le premier paquet
+    de la copie, encodée de la même façon. Le son commence donc à premier_son + amorce. L'amorce est celle que le
+    conteneur annonce (initial_padding, en mkv et webm), sinon celle des encodeurs de doubler (en mp4, une liste
+    d'édition la cache). Le temps de début du flux (start_time) ne convient pas : il compte l'amorce en mp4, pas
+    toujours en mkv. Avec -copyts, la copie garde les temps de la vidéo doublée : même image, même début du son, même
+    fin."""
+    images = [f for f in info.get("streams") or [] if f.get("codec_type") == "video"
+              and not (f.get("disposition") or {}).get("attached_pic")]
+    if not images:
+        raise ErreurPistes("pas d’image dans la vidéo doublée")
+    son = flux_son(info)
+    fmt = info.get("format") or {}
+    debut_fichier = _flottant(fmt.get("start_time"), 0.0)
+    duree = _flottant(fmt.get("duration"))
+    if duree is None or duree <= 0:
+        raise ErreurPistes("durée de la vidéo doublée inconnue")
+    taux = None
+    if son is None:     # pas de son à suivre : la piste part avec l'image
+        debut_son = _flottant(images[0].get("start_time"), debut_fichier)
+    else:
+        if premier_son is None:
+            raise ErreurPistes("premier paquet de son illisible dans la vidéo doublée")
+        taux = int(_flottant(son.get("sample_rate"), 0) or 0) or None
+        amorce = int(_flottant(son.get("initial_padding"), 0) or 0) or AMORCES.get(son.get("codec_name"), 0)
+        debut_son = premier_son + (amorce / taux if taux else 0.0)
+    return CalageVideo(int(images[0]["index"]), debut_son, debut_fichier + duree, taux)
+
+
+def ext_video(video):
+    ext = Path(video).suffix.lower()
+    return ext if ext in CONTENEURS_VIDEO else ".mkv"
+
+
+def commande_video(video, son, sortie, calage):
+    """ffmpeg (sous nice) qui écrit la copie : l'image de la vidéo doublée copiée telle quelle (mêmes paquets, mêmes
+    temps), le son de la piste placé au début du son du doublage et coupé à la fin de la vidéo, encodé comme doubler
+    (AAC 256k, Opus 192k en webm ; conteneur deviné par ffmpeg d'après l'extension, comme doubler)."""
+    ext = Path(sortie).suffix.lower()
+    cmd = ["nice", "-n", "10", "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+           "-copyts", "-i", str(video)]
+    if abs(calage.debut_son) > 1e-6:
+        cmd += ["-itsoffset", f"{calage.debut_son:.6f}"]
+    cmd += ["-t", f"{max(0.001, calage.fin - calage.debut_son):.6f}", "-i", str(son),
+            "-map", f"0:{calage.index}", "-map", "1:a:0", "-c:v", "copy"]
+    if ext in SON_VIDEO:
+        cmd += SON_VIDEO[ext]
+    else:
+        cmd += SON_VIDEO_DEFAUT + (["-ar", str(calage.taux)] if calage.taux else [])
+    return cmd + [str(sortie)]
+
+
+def trop_lourde(video):
+    """La raison de ne pas copier une vidéo doublée plus lourde que tout le cache des copies, sinon "" (stat seul)."""
+    taille = Path(video).stat().st_size
+    if taille > CACHE_VIDEO_MO * 1024 * 1024:
+        return (f"vidéo doublée trop lourde pour le cache des copies ({taille / 1024 ** 3:.1f} Go, "
+                f"{CACHE_VIDEO_MO / 1024:.0f} Go au plus)")
+    return ""
+
+
+def identite_plan(plan):
+    """Ce qui identifie « ma voix seule » : le nom de son fichier en cache (qui dépend déjà des fichiers et des
+    gains du mix), ou la signature de la voix brute d'un ancien doublage."""
+    if plan.direct is not None:
+        return _signature(plan.direct)
+    if plan.a_combiner:
+        return "voix:" + chemin_ma_voix(plan).name
+    raise ErreurPistes(plan.explication or "pas de voix à lire")
+
+
+def identite_son(son=None, voix=None, rapport=None):
+    """Ce qui identifie le son d'une copie : la signature du fichier, ou « ma voix seule » d'un dossier de voix."""
+    return identite_plan(plan_ma_voix(voix, rapport)) if voix is not None else _signature(son)
+
+
+def chemin_video(video, identite):
+    """Copie en cache (qu'elle existe ou non) pour cette vidéo doublée et ce son : nommée d'après leur chemin, leur
+    taille et leur date ; un remix (vidéo refaite) ou un son refait donnent un autre nom."""
+    cle = hashlib.sha1(f"{VERSION_VIDEO}|{_signature(video)}|{identite}".encode()).hexdigest()[:24]
+    return chemins.dossier_cache() / "videos" / f"{cle}{ext_video(video)}"
+
+
+def video_prete(video, son=None, voix=None, rapport=None):
+    """La copie si elle est déjà en cache, sinon None ; ne calcule rien."""
+    try:
+        f = chemin_video(video, identite_son(son, voix, rapport))
+    except (OSError, ErreurPistes):
+        return None
+    return f if f.is_file() else None
+
+
+def toucher(f):
+    """Copie lue : la purge la garde plus longtemps."""
+    try:
+        os.utime(f)
+    except OSError:
+        pass
+
+
+def preparer_video(video, son=None, voix=None):
+    """La copie vidéo d'une piste (en cache, calculée au besoin). son : le fichier de la piste ; voix : le dossier
+    d'une voix, pour « ma voix seule » (combinée d'abord, au besoin). Rien n'est écrit à côté de la vidéo doublée."""
+    video = Path(video)
+    if not video.is_file():
+        raise ErreurPistes(f"vidéo doublée introuvable : {video}")
+    trop = trop_lourde(video)
+    if trop:
+        raise ErreurPistes(trop)
+    if voix is None and (son is None or not Path(son).is_file()):
+        raise ErreurPistes(f"son introuvable : {son}")
+    sortie = chemin_video(video, identite_son(son, voix))
+    if sortie.is_file():
+        toucher(sortie)
+        return sortie
+    info = sonder(video)
+    son_doublage = flux_son(info)
+    calage = calage_video(info, premier_paquet(video, son_doublage["index"]) if son_doublage else None)
+    if voix is not None:
+        son = preparer_ma_voix(voix)
+    sortie.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _tmp(sortie)
+    _lancer(commande_video(video, son, tmp, calage), tmp, sortie)
+    chemins.purger_dossier(sortie.parent, CACHE_VIDEO_MO, garder=(sortie,))
+    return sortie
 
 
 # --- Noms des fichiers enregistrés -----------------------------------------------------------------------------------
@@ -369,6 +609,13 @@ def main(argv=None):
         if len(argv) == 2 and argv[0] == "voix":
             f = preparer_ma_voix(argv[1])
             print(json.dumps({"voix": str(f), "duree_s": round(time.time() - debut, 2)}, ensure_ascii=False))
+            return 0
+        if argv[:1] == ["video"] and len(argv) in (3, 4):
+            if (len(argv) == 4) != (argv[2] == "--voix"):
+                print(__doc__)
+                return 2
+            f = preparer_video(argv[1], voix=argv[3]) if len(argv) == 4 else preparer_video(argv[1], son=argv[2])
+            print(json.dumps({"video": str(f), "duree_s": round(time.time() - debut, 2)}, ensure_ascii=False))
             return 0
         if argv[:1] == ["exporter"] and len(argv) in (3, 4):
             if argv[1] == "--voix":

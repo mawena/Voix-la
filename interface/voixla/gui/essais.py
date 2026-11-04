@@ -1,7 +1,8 @@
 """Outils d'essai (développement) : scénarios et capture d'écran de la fenêtre sans rien ouvrir sur l'écran.
 
 VOIXLA_CAPTURE=/chemin.png : après VOIXLA_CAPTURE_DELAI secondes (défaut 4), la fenêtre est rendue dans ce PNG
-(Gtk.WidgetPaintable → Gsk), puis l'application se ferme. VOIXLA_SCENARIO=nom joue un scénario avant la capture
+(Gtk.WidgetPaintable → Gsk ; un peu plus tard si le rendu est vide, pris pendant une mise en page), puis
+l'application se ferme. VOIXLA_SCENARIO=nom joue un scénario avant la capture
 (voir SCENARIOS). VOIXLA_TAILLE=1180x800 fixe la taille de la fenêtre. À lancer sous xvfb-run (outils/capturer.sh).
 """
 
@@ -55,13 +56,26 @@ def preparer_capture(app, fenetre):
             traceback.print_exc()
         return False
 
+    essais = [0]
+
     def prendre():
         try:
             capturer(fenetre, os.environ["VOIXLA_CAPTURE"])
             print("capture :", os.environ["VOIXLA_CAPTURE"], flush=True)
+        except RuntimeError:
+            # fenêtre vide : rendu pris pendant une mise en page (bascule de piste…) ; on réessaie à l'image suivante
+            essais[0] += 1
+            if essais[0] < 10:
+                return True
+            traceback.print_exc()
         except Exception:  # noqa: BLE001
             traceback.print_exc()
         app.quit()
         return False
+
+    def commencer():
+        if prendre():
+            GLib.timeout_add(50, prendre)
+        return False
     GLib.timeout_add(800, jouer)
-    GLib.timeout_add(int(delai * 1000), prendre)
+    GLib.timeout_add(int(delai * 1000), commencer)

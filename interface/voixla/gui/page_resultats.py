@@ -54,6 +54,7 @@ class PageDetail(Adw.NavigationPage):
         self.voulue = None            # piste demandée qui se prépare encore (ma voix seule)
         self._maj = False             # bascules mises à jour par le code (pas par un clic)
         self._preparation = False
+        self._videos = set()          # pistes sans image dont la copie vidéo se prépare
         self._demandees = set()       # (fichier, produits) dont l'analyse a été demandée
         self.vue_paroles = None
         self.pistes_dispo = pistes.choisir_pistes(res, self.forme, self.source_choisie())
@@ -169,14 +170,17 @@ class PageDetail(Adw.NavigationPage):
         pos = self.lecteur.position_ref() if self.lecteur.media() else 0.0
         self.forme = forme
         self.pistes_dispo = pistes.choisir_pistes(self.res, forme, self.source_choisie())
-        sources = {c: (p.fichier, p.decalage, p.libelle) for c, p in self.pistes_dispo.items() if p.fichier}
-        sans_image = {c for c, p in self.pistes_dispo.items() if not p.image}
+        # le beat et les voix seules : leur copie vidéo si elle est prête (en cache), sinon le son seul
+        sources = {c: (p.a_lire, p.decalage, p.libelle) for c, p in self.pistes_dispo.items() if p.a_lire}
+        sans_image = {c for c, p in self.pistes_dispo.items() if not p.avec_image}
+        ephemeres = {c for c in pistes.SANS_IMAGE if self.pistes_dispo[c].video}
         cle = pistes.piste_apres_changement(self.pistes_dispo, self.voulue or self.piste)
-        if cle is not None and self.pistes_dispo[cle].fichier is None:
+        if cle is not None and self.pistes_dispo[cle].a_lire is None:
             # ma voix seule pas encore prête : on écoute le doublage pendant qu'elle se prépare
             self.voulue = cle
             cle = "doublage" if "doublage" in sources else next(iter(sources), None)
-        self.lecteur.definir(sources, cle, audio_seul=forme == "mp3", sans_image=sans_image)
+        self.lecteur.definir(sources, cle, audio_seul=forme == "mp3", sans_image=sans_image, ephemeres=ephemeres,
+                             notes={c: self._note_bandeau(c) for c in pistes.SANS_IMAGE})
         if pos:
             self.lecteur.aller_a(pos)
         self.piste = self.lecteur.cle or "doublage"
@@ -184,7 +188,15 @@ class PageDetail(Adw.NavigationPage):
         self._maj_groupe_pistes()
         if self.voulue:
             self._preparer_ma_voix()
+        self._preparer_video(self.piste)
         self._appliquer_pistes()
+
+    def _note_bandeau(self, cle):
+        """Bandeau d'une piste lue sans image, à côté d'une vidéo."""
+        p = self.pistes_dispo.get(cle)
+        if p is not None and (p.video_a_preparer or cle in self._videos):
+            return "préparation de la vidéo… (son seul, image arrêtée)"
+        return "son seul, image arrêtée"
 
     def _maj_bascules(self):
         """État des bascules de pistes : grisées (avec la raison en infobulle) si la piste manque."""
@@ -220,8 +232,22 @@ class PageDetail(Adw.NavigationPage):
         elif c == "original":
             texte = f"Original : {p.explication}. Touche B : retour au doublage."
         else:
-            texte = f"{p.libelle} : {p.explication}. Touche B : retour au doublage."
+            texte = f"{p.libelle} : {p.explication}.{self._note_image(c, p)} Touche B : retour au doublage."
         self.note_piste.set_label(texte)
+
+    def _note_image(self, cle, p):
+        """Ce qu'on voit pendant le beat ou une voix seule : la vidéo qui avance, sa préparation, ou pourquoi on s'en
+        passe."""
+        if cle not in pistes.SANS_IMAGE:
+            return ""
+        if self.forme == "video" and p.video:
+            return " Sur l’image de la vidéo doublée, qui avance avec le son."
+        if self.forme == "video" and (p.video_a_preparer or cle in self._videos):
+            return (" Préparation de la vidéo (l’image de la vidéo doublée, copiée telle quelle, sous nice ; elle "
+                    "attend son tour si le poste est chargé) : en attendant, le son seul sur l’image arrêtée.")
+        if p.sans_video:
+            return f" Sans image : {p.sans_video}."
+        return ""
 
     def choisir_piste(self, cle):
         """Clic sur une piste : on y passe à la même position (ma voix seule se prépare d'abord, au besoin)."""
@@ -231,7 +257,7 @@ class PageDetail(Adw.NavigationPage):
         if p is None or not p.disponible:
             self._maj_bascules()
             return
-        if p.fichier is None:
+        if p.a_lire is None:
             self.voulue = cle
             self._maj_note()
             self._preparer_ma_voix()
@@ -247,8 +273,50 @@ class PageDetail(Adw.NavigationPage):
             return
         self.lecteur.basculer(cle)
         self.piste = self.lecteur.cle or cle
+        if p.video and self.forme == "video":
+            pistes.toucher(p.video)           # copie lue : la purge du cache la garde
+        self._preparer_video(cle)
         self._maj_note()
         self._appliquer_pistes()
+
+    def _preparer_video(self, cle):
+        """La copie vidéo d'une piste sans image (beat, voix seules), préparée une fois en cache, sous nice, dans la
+        file des analyses. En attendant, le son seul sur l'image arrêtée ; quand elle est prête, le lecteur y passe à
+        la même position. Si elle est impossible, le son seul reste, avec la raison."""
+        p = self.pistes_dispo.get(cle)
+        if self.forme != "video" or p is None or not p.video_a_preparer or cle in self._videos:
+            return
+        if cle == "ma_voix" and p.fichier is None:
+            return                            # la voix seule se prépare d'abord (_preparer_ma_voix)
+        self._videos.add(cle)
+        video = self.res.video
+        voix = self.res.dossier_voix if cle == "ma_voix" else None
+
+        def pret(f, message):
+            if message == "attente":
+                return
+            self._videos.discard(cle)
+            q = self.pistes_dispo.get(cle)
+            if self.forme != "video" or q is None or self.res.video != video or q.video is not None:
+                return                        # forme changée entre-temps : la copie est en cache pour la prochaine
+            if message == "a_refaire":        # remix pendant la préparation : la copie suit les nouveaux fichiers
+                self._preparer_video(cle)
+                return
+            q.video_a_preparer = False
+            if f is None:
+                q.sans_video = message or "copie vidéo impossible"
+                self.lecteur.annoter(cle, "son seul, image arrêtée")
+                if self.piste == cle:
+                    self.fenetre.toast(f"{q.libelle} sans image : {q.sans_video}")
+            else:
+                q.video = Path(f)
+                if self.piste != "comparaison":   # sinon, elle sera lue au retour aux pistes (changer_forme)
+                    self.lecteur.ajouter(cle, (q.video, q.decalage, q.libelle), sans_image=False, ephemere=True)
+                if self.lecteur.cle == cle:
+                    self.piste = cle
+            self._maj_note()
+        self.lecteur.annoter(cle, self._note_bandeau(cle))
+        analyses().video(video, pret, son=None if voix else p.fichier, voix=voix, duree_s=self.res.duree_s)
 
     def _preparer_ma_voix(self):
         if self._preparation or not self.res.dossier_voix:
@@ -266,11 +334,13 @@ class PageDetail(Adw.NavigationPage):
                 self._maj_bascules()
                 return
             p.fichier, p.a_preparer = Path(f), False
-            self.lecteur.ajouter("ma_voix", (p.fichier, 0.0, p.libelle), sans_image=True)
+            if p.video is None:
+                self.lecteur.ajouter("ma_voix", (p.fichier, 0.0, p.libelle), sans_image=True)
             if self.voulue == "ma_voix":
                 self.voulue = None
                 self.lecteur.basculer("ma_voix")
                 self.piste = self.lecteur.cle or "ma_voix"
+                self._preparer_video("ma_voix")     # puis sa copie vidéo, pour que l'image avance
             self._maj_bascules()
             self._maj_groupe_pistes()
             self._appliquer_pistes()
@@ -352,7 +422,7 @@ class PageDetail(Adw.NavigationPage):
         if cle not in pistes.CLES or cle == "doublage":
             return r.mp3 or r.video
         p = self.pistes_dispo.get(cle)
-        return p.fichier if p else None
+        return (p.fichier or p.video) if p else None     # le son de la copie vidéo si la voix seule a quitté le cache
 
     def _maj_paroles(self):
         """Paroles allumées ou éteintes (menu « œil ») : sous le lecteur, chargées une fois."""

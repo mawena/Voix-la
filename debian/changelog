@@ -1,3 +1,18 @@
+voix-la (0.5.0) unstable; urgency=medium
+
+  * Une voix par chanteur : --voix homme:A,femme:B (duo mixte) ou
+    --voix chanteur1:A,chanteur2:B ; chaque piste de chaque passage prend la
+    voix du chanteur reconnu, octave décidée par couple chanteur -> voix.
+  * Duo mixte annoncé : les chanteurs peuvent se répondre phrase à phrase.
+  * Interface : une voix pour tous ou une voix par chanteur dans Doubler,
+    frise des voix de chaque passage dans Résultats.
+  * Interface : auto-tune (interrupteur, intensité, gamme) dans Doubler et
+    les Réglages ; bascule avec ou sans auto-tune (touche T) dans Résultats.
+  * Auto-tune (--autotune N) par x42-autotune, en plus de la version
+    normale, inchangée.
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Wed, 04 Nov 2026 23:00:00 +0000
+
 voix-la (0.4.0) unstable; urgency=medium
 
   * Interface : la musique continue en arrière-plan (un seul lecteur, barre

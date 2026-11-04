@@ -1,0 +1,636 @@
+"""Seul module qui connaît doubler : où le trouver, quelles options il accepte (détectées par « doubler --help »),
+comment construire ses commandes, et comment lire ce qu'il écrit.
+
+Options récentes, utilisées seulement si « doubler --help » les annonce, avec un repli sinon :
+- --evenements FICHIER : un événement JSON par ligne. Repli : lecture de la sortie texte (LectureTexte) ;
+- --donnees DOSSIER    : dossier de données. Repli : --sortie <données>/sorties et DOUBLER_VOIX=<données>/voix ;
+- --config [CLE VALEUR] : écriture de config.json. Repli : écriture directe du fichier (chemins.ecrire_cle_config) ;
+- --voix-liste --json  : liste des voix. Repli : lecture directe de voix/*/voix.json.
+VOIXLA_DOUBLER (essais) remplace la commande doubler, par exemple par un faux doubler.
+"""
+
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+from . import chemins
+
+OPTIONS_SUIVIES = ("--evenements", "--donnees", "--config", "--json", "--voix-liste", "--ajouter-voix", "--remix",
+                   "--debut", "--duree", "--pas", "--voix-db", "--reverb-db", "--octave", "--mode", "--sortie",
+                   "--mix-v1", "--comparer-pas", "--reprendre", "--moteur", "--sans-nettoyage")
+MOTEURS = (("yingmusic", "YingMusic-SVC"), ("seedvc", "Seed-VC 44 kHz"))
+NOM_VOIX = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")   # même règle que doubler --ajouter-voix
+EXTRAIT_NOM = re.compile(r" \(extrait (\d+)m(\d+(?:,\d+)?)(?:\+(\d+)m(\d+(?:,\d+)?))?\)$")
+ETAPES = ("extraction", "envoi", "attente", "kaggle", "rapatriement", "mix", "video", "fini")
+
+
+# --- La commande -----------------------------------------------------------------------------------------------------
+
+def commande():
+    """argv de doubler : VOIXLA_DOUBLER, sinon « doubler » du PATH, sinon doubler.py du dépôt."""
+    if os.environ.get("VOIXLA_DOUBLER"):
+        return shlex.split(os.environ["VOIXLA_DOUBLER"])
+    trouve = shutil.which("doubler")
+    if trouve:
+        return [trouve]
+    local = chemins.DEPOT / "doubler.py"
+    if local.exists():
+        return [sys.executable, str(local)]
+    return ["doubler"]
+
+
+def _fichier_commande(cmd):
+    """Le fichier qui porte le code (pour savoir s'il a changé) : le script après l'interpréteur, sinon l'exécutable."""
+    for morceau in reversed(cmd):
+        p = Path(morceau).expanduser()
+        if p.is_file():
+            return p.resolve()
+    w = shutil.which(cmd[0]) if cmd else None
+    return Path(w).resolve() if w else None
+
+
+_capacites = {"cle": None, "valeur": frozenset(), "aide": ""}
+
+
+def capacites(forcer=False):
+    """Options annoncées par « doubler --help » ; le résultat est gardé tant que le fichier de doubler ne change pas."""
+    cmd = commande()
+    f = _fichier_commande(cmd)
+    try:
+        cle = (tuple(cmd), f.stat().st_mtime if f else None)
+    except OSError:
+        cle = (tuple(cmd), None)
+    if not forcer and _capacites["cle"] == cle:
+        return _capacites["valeur"]
+    try:
+        r = subprocess.run(cmd + ["--help"], capture_output=True, text=True, timeout=30,
+                           env={**os.environ, "PYTHONUNBUFFERED": "1"})
+        texte = (r.stdout or "") + (r.stderr or "")
+    except (OSError, subprocess.SubprocessError) as e:
+        texte = ""
+        _capacites["erreur"] = str(e)
+    valeur = analyser_aide(texte)
+    _capacites.update({"cle": cle, "valeur": valeur, "aide": texte})
+    return valeur
+
+
+def analyser_aide(texte):
+    caps = {o for o in OPTIONS_SUIVIES if re.search(re.escape(o) + r"(?![\w-])", texte or "")}
+    if re.search(r"vid[ée]o@\d", texte or ""):
+        caps.add("extrait_par_video")   # « vidéo@60+40 » : un extrait propre à chaque vidéo d'un même lot
+    return frozenset(caps)
+
+
+def disponible():
+    """doubler répond-il ? (au moins --remix et --voix-liste dans son aide)"""
+    c = capacites()
+    return "--remix" in c and "--voix-liste" in c
+
+
+def environnement(donnees, caps=None):
+    """Variables à ajouter pour lancer doubler sur ce dossier de données."""
+    caps = capacites() if caps is None else caps
+    env = {"PYTHONUNBUFFERED": "1", "VOIXLA_DONNEES": str(donnees)}
+    if "--donnees" not in caps:
+        env["DOUBLER_VOIX"] = str(chemins.dossier_voix(donnees))   # repli : doubler.py lit DOUBLER_VOIX
+    return env
+
+
+def _nombre(x):
+    return f"{float(x):g}"
+
+
+def _donnees(donnees, caps):
+    return ["--donnees", str(donnees)] if "--donnees" in caps else []
+
+
+# --- Construction des commandes --------------------------------------------------------------------------------------
+
+def grouper_par_extrait(videos, caps=None):
+    """[(extrait, [vidéos])] : les vidéos qui partent dans un même appel doubler (une seule session Kaggle).
+    Si doubler accepte « vidéo@début+durée », toutes les vidéos vont ensemble (extrait None : chacune porte le sien) ;
+    sinon --debut/--duree valent pour tout l'appel, donc un appel par extrait identique."""
+    caps = capacites() if caps is None else caps
+    if "extrait_par_video" in caps:
+        return [(None, list(videos))] if videos else []
+    groupes = {}
+    for v in videos:
+        cle = v.get("extrait")
+        cle = (round(float(cle[0]), 3), None if cle[1] is None else round(float(cle[1]), 3)) if cle else None
+        groupes.setdefault(cle, []).append(v)
+    return list(groupes.items())
+
+
+def spec_extrait(extrait):
+    """(60, 40) → « 60+40 » ; (60, None) → « 60 » (jusqu'à la fin), pour « vidéo@… »."""
+    debut, duree = extrait
+    return f"{_nombre(debut or 0)}" + (f"+{_nombre(duree)}" if duree else "")
+
+
+def args_doublage(videos, reglages, donnees, extrait=None, evenements=None, caps=None):
+    """argv d'un doublage : toutes les vidéos dans un seul appel, donc une seule session Kaggle. videos : chemins, ou
+    dicts {chemin, extrait} (extrait propre à chaque vidéo si doubler accepte « vidéo@début+durée »)."""
+    caps = capacites() if caps is None else caps
+    a = [*commande()]
+    for v in videos:
+        if isinstance(v, dict):
+            chemin, ex = str(Path(v["chemin"])), v.get("extrait")
+            if ex and "extrait_par_video" in caps and not extrait:
+                chemin += "@" + spec_extrait(ex)
+            a.append(chemin)
+        else:
+            a.append(str(Path(v)))
+    if reglages.get("voix"):
+        a.append(f"--voix={reglages['voix']}")
+    if reglages.get("mode") and reglages["mode"] != "auto":
+        a.append(f"--mode={reglages['mode']}")
+    if reglages.get("octave") not in (None, "", "auto"):
+        o = str(reglages["octave"])
+        a.append(f"--octave={'+12' if o in ('12', '+12') else o}")
+    if reglages.get("pas"):
+        a.append(f"--pas={int(reglages['pas'])}")
+    if reglages.get("voix_db") is not None:
+        a.append(f"--voix-db={_nombre(reglages['voix_db'])}")
+    if reglages.get("reverb_db") is not None:
+        a.append(f"--reverb-db={_nombre(reglages['reverb_db'])}")
+    if reglages.get("mix_v1") and "--mix-v1" in caps:
+        a.append("--mix-v1")
+    if reglages.get("moteur") and "--moteur" in caps:
+        a.append(f"--moteur={reglages['moteur']}")
+    if reglages.get("sans_nettoyage") and "--sans-nettoyage" in caps:
+        a.append("--sans-nettoyage")
+    if extrait:
+        debut, duree = extrait
+        a.append(f"--debut={_nombre(debut or 0)}")
+        if duree:
+            a.append(f"--duree={_nombre(duree)}")
+    if "--donnees" in caps:
+        a += _donnees(donnees, caps)
+    else:
+        a.append(f"--sortie={chemins.dossier_sorties(donnees)}")
+    if evenements and "--evenements" in caps:
+        a.append(f"--evenements={evenements}")
+    return a
+
+
+def fmt_t(t):
+    """Même écriture que doubler pour le nom d'un dossier d'extrait (1m00,0)."""
+    return f"{int(t // 60)}m{t % 60:04.1f}".replace(".", ",")
+
+
+def nom_dossier(video, extrait=None):
+    """Nom du dossier de sortie que doubler donnera à cette vidéo."""
+    nom = Path(video).stem
+    if extrait:
+        debut, duree = extrait
+        nom += f" (extrait {fmt_t(debut or 0)}{'+' + fmt_t(duree) if duree else ''})"
+    return nom
+
+
+def extrait_du_nom(nom):
+    """« Titre (extrait 1m00,0+0m40,0) » → (60.0, 40.0) ; « (extrait 1m00,0) » → (60.0, None) ; sinon None."""
+    m = EXTRAIT_NOM.search(nom)
+    if not m:
+        return None
+    debut = int(m.group(1)) * 60 + float(m.group(2).replace(",", "."))
+    duree = int(m.group(3)) * 60 + float(m.group(4).replace(",", ".")) if m.group(3) else None
+    return debut, duree
+
+
+def args_remix(video_source, voix, dossier_resultat, donnees, voix_db=None, reverb_db=None, mix_v1=False, caps=None):
+    """argv d'un remix (mixage et remise sur la vidéo depuis travail/, sans Kaggle, quelques secondes).
+    doubler retrouve le dossier par le nom de la vidéo et l'extrait : on lui redonne les mêmes, et le dossier parent
+    du résultat comme --sortie (un résultat peut être rangé dans un sous-dossier de sorties/)."""
+    caps = capacites() if caps is None else caps
+    dossier_resultat = Path(dossier_resultat)
+    a = [*commande(), str(video_source), "--remix", f"--voix={voix}", f"--sortie={dossier_resultat.parent}"]
+    extrait = extrait_du_nom(dossier_resultat.name)
+    if extrait:
+        a.append(f"--debut={_nombre(extrait[0])}")
+        if extrait[1]:
+            a.append(f"--duree={_nombre(extrait[1])}")
+    if voix_db is not None:
+        a.append(f"--voix-db={_nombre(voix_db)}")
+    if reverb_db is not None:
+        a.append(f"--reverb-db={_nombre(reverb_db)}")
+    if mix_v1 and "--mix-v1" in caps:
+        a.append("--mix-v1")
+    a += _donnees(donnees, caps)
+    return a
+
+
+def remix_possible(video_source, dossier_resultat):
+    """(vrai, '') si doubler retrouvera ce dossier à partir de la vidéo source, sinon (faux, raison)."""
+    if not video_source:
+        return False, "la vidéo source n’est pas indiquée dans travail/source.json"
+    v = Path(video_source)
+    if not v.is_file():
+        return False, f"vidéo source introuvable : {v}"
+    attendu = nom_dossier(v.resolve(), extrait_du_nom(Path(dossier_resultat).name))
+    if attendu != Path(dossier_resultat).name:
+        return False, f"le dossier ne porte plus le nom que doubler attend (« {attendu} »)"
+    return True, ""
+
+
+def args_reprendre(donnees, evenements=None, caps=None):
+    """« doubler --reprendre » : finit la dernière session Kaggle interrompue (rapatriement, mix, vidéo ; sans GPU)."""
+    caps = capacites() if caps is None else caps
+    a = [*commande(), "--reprendre", *_donnees(donnees, caps)]
+    if evenements and "--evenements" in caps:
+        a.append(f"--evenements={evenements}")
+    return a
+
+
+def args_ajouter_voix(nom, fichier, donnees, caps=None):
+    caps = capacites() if caps is None else caps
+    return [*commande(), "--ajouter-voix", nom, str(fichier), *_donnees(donnees, caps)]
+
+
+def lancer(argv, env_plus=None, timeout=60, cwd=None):
+    """Lance une commande courte et rend (code, sortie complète). À appeler hors du fil de l'interface."""
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, cwd=cwd,
+                           env={**os.environ, **(env_plus or {})})
+        return r.returncode, (r.stdout or "") + (r.stderr or "")
+    except subprocess.TimeoutExpired:
+        return 124, f"pas de réponse en {timeout} s"
+    except OSError as e:
+        return 127, str(e)
+
+
+def ajouter_voix(nom, fichier, donnees):
+    """doubler --ajouter-voix : rend (ok, message, alertes)."""
+    code, sortie = lancer(args_ajouter_voix(nom, fichier, donnees), environnement(donnees), timeout=300)
+    alertes = [l.split("ATTENTION :", 1)[1].strip() for l in sortie.splitlines() if "ATTENTION :" in l]
+    lignes = [l.strip() for l in sortie.strip().splitlines() if l.strip()]
+    if code:
+        return False, (lignes[-1] if lignes else f"échec (code {code})"), alertes
+    message = next((l for l in lignes if l.startswith(f"voix {nom} ajoutée")), lignes[0] if lignes else "voix ajoutée")
+    return True, message, alertes
+
+
+def remixer(video_source, voix, dossier_resultat, donnees, voix_db=None, reverb_db=None, mix_v1=False):
+    """Remix : rend (ok, sortie complète)."""
+    code, sortie = lancer(args_remix(video_source, voix, dossier_resultat, donnees, voix_db, reverb_db, mix_v1),
+                          environnement(donnees), timeout=900)
+    return code == 0 and "ÉCHEC" not in sortie, sortie
+
+
+# --- Voix ------------------------------------------------------------------------------------------------------------
+
+def _fiche_voix(dossier):
+    fiche = dossier / "voix.json"
+    try:
+        f = json.loads(fiche.read_text(encoding="utf-8"))
+        if not isinstance(f, dict):
+            raise ValueError
+        alertes = list(f.get("alertes") or [])
+    except (OSError, ValueError):
+        f, alertes = {}, ["voix.json illisible"]
+    ref = dossier / str(f.get("reference") or "reference.wav")
+    if not ref.exists():
+        alertes.append("reference.wav absente")
+    if not f.get("hauteur_parole_mediane_hz") and "voix.json illisible" not in alertes:
+        alertes.append("hauteur de parole manquante")
+    return {
+        "id": dossier.name,
+        "nom": f.get("nom") or dossier.name.capitalize(),
+        "dossier": dossier,
+        "reference": ref,
+        "duree_s": f.get("duree_s"),
+        "hauteur_hz": f.get("hauteur_parole_mediane_hz"),
+        "hauteur_10_90": f.get("hauteur_parole_10_90_hz"),
+        "note": f.get("note_mediane"),
+        "date": f.get("date"),
+        "origine": f.get("origine"),
+        "consentement": f.get("consentement"),
+        "parole_s": f.get("parole_s"),
+        "snr_db": f.get("rapport_signal_bruit_db"),
+        "sonie_lufs": f.get("sonie_lufs"),
+        "alertes": alertes,
+        "fiche": f,
+    }
+
+
+def lister_voix(donnees, caps=None):
+    """Voix du dossier de données. Lecture directe de voix/*/voix.json ; si doubler a « --voix-liste --json », sa
+    liste fait foi pour l'ordre et les voix reconnues (les champs lus en direct complètent)."""
+    caps = capacites() if caps is None else caps
+    dossier = chemins.dossier_voix(donnees)
+    voix = {}
+    for fiche in sorted(dossier.glob("*/voix.json")):
+        voix[fiche.parent.name] = _fiche_voix(fiche.parent)
+    if "--json" in caps and "--voix-liste" in caps:
+        code, sortie = lancer([*commande(), "--voix-liste", "--json", *_donnees(donnees, caps)],
+                              environnement(donnees, caps), timeout=30)
+        liste = _lire_liste_json(sortie) if code == 0 else None
+        if liste is not None:
+            ordre = []
+            for e in liste:
+                ident = str(e.get("id") or e.get("voix") or e.get("dossier_nom") or "")
+                if not ident:
+                    continue
+                v = voix.get(ident) or _fiche_voix(dossier / ident)
+                v["defaut_doubler"] = bool(e.get("defaut"))
+                for cle_json, cle in (("nom", "nom"), ("duree_s", "duree_s"),
+                                      ("hauteur_parole_mediane_hz", "hauteur_hz"), ("alertes", "alertes")):
+                    if e.get(cle_json) not in (None, "", []):
+                        v[cle] = e[cle_json]
+                ordre.append(v)
+            if ordre:
+                return ordre
+    return list(voix.values())
+
+
+def _lire_liste_json(texte):
+    try:
+        d = json.loads(texte)
+    except ValueError:
+        # au cas où une ligne de texte précéderait le JSON
+        debut = min([i for i in (texte.find("["), texte.find("{")) if i >= 0] or [-1])
+        if debut < 0:
+            return None
+        try:
+            d = json.loads(texte[debut:])
+        except ValueError:
+            return None
+    if isinstance(d, dict):
+        d = d.get("voix", d.get("liste"))
+        if isinstance(d, dict):
+            d = [{"id": k, **(v if isinstance(v, dict) else {})} for k, v in d.items()]
+    return [e for e in d if isinstance(e, dict)] if isinstance(d, list) else None
+
+
+def voix_de_config(conf):
+    """Identifiant de la voix par défaut écrit dans une configuration, ou None. Accepte config.json (clé « voix ») et
+    la sortie de « doubler --config --json » (« voix_defaut », « voix » quand c'est un nom de voix et non le dossier
+    des voix, ou « voix » de « contenu »)."""
+    if not isinstance(conf, dict):
+        return None
+    contenu = conf.get("contenu") if isinstance(conf.get("contenu"), dict) else {}
+    for v in (conf.get("voix_defaut"), conf.get("voix"), contenu.get("voix")):
+        if isinstance(v, dict):
+            v = v.get("defaut") or v.get("id")
+        if isinstance(v, str) and NOM_VOIX.fullmatch(v.strip()):
+            return v.strip()
+    return None
+
+
+def voix_par_defaut(voix, conf=None):
+    """La voix que doubler prend sans --voix, parmi « voix » (liste de lister_voix) : celle qu'il annonce (« defaut »
+    de --voix-liste --json), sinon la clé « voix » de sa configuration (conf : config_effective() ou config.json),
+    sinon la seule voix présente. None s'il y en a plusieurs sans défaut : doubler demande alors --voix."""
+    ids = [v["id"] for v in voix]
+    annoncee = next((v["id"] for v in voix if v.get("defaut_doubler")), None)
+    if annoncee:
+        return annoncee
+    ident = voix_de_config(conf)
+    if ident in ids:
+        return ident
+    return ids[0] if len(ids) == 1 else None
+
+
+# --- config.json -----------------------------------------------------------------------------------------------------
+
+def config_effective():
+    """Configuration telle que doubler l'utilise : « doubler --config --json » s'il existe (dossier de données et sa
+    source, noms Kaggle complets, présence du jeton), sinon reconstruite depuis config.json. Le jeton n'est jamais lu."""
+    caps = capacites()
+    # doubler lit toujours ~/.config/voix-la/config.json : avec VOIXLA_CONFIG (essais), on lit le fichier d'essai
+    if "--config" in caps and "--json" in caps and not os.environ.get("VOIXLA_CONFIG"):
+        code, sortie = lancer([*commande(), "--config", "--json"], timeout=30)
+        if code == 0:
+            try:
+                d = json.loads(sortie[sortie.find("{"):])
+                if isinstance(d, dict):
+                    d["par_doubler"] = True
+                    return d
+            except ValueError:
+                pass
+    conf = chemins.lire_config()
+    k = chemins.kaggle(conf)
+    donnees = chemins.dossier_donnees(conf)
+    source = ("VOIXLA_DONNEES" if os.environ.get("VOIXLA_DONNEES") else
+              str(chemins.fichier_config()) if conf.get("donnees") else "défaut")
+    return {"config": str(chemins.fichier_config()), "donnees": str(donnees), "source_donnees": source,
+            "voix": str(chemins.dossier_voix(donnees)), "sorties": str(chemins.dossier_sorties(donnees)),
+            "kaggle": {"compte": k["compte"] or None, **{n: chemins.ref_kaggle(k["compte"], k[n])
+                                                         for n in ("jeu", "noyau", "outils")}},
+            "contenu": conf, "par_doubler": False}
+
+
+CLES_CONFIG = ("donnees", "kaggle.compte", "kaggle.jeu", "kaggle.noyau", "kaggle.outils", "moteur")
+
+
+def ecrire_config(cle, valeur):
+    """Écrit une clé de config.json : par « doubler --config CLE VALEUR » s'il existe, sinon directement.
+    Rend (ok, message)."""
+    caps = capacites()
+    if valeur in (None, ""):
+        # doubler --config ne sait pas effacer une clé (et prendrait "" pour le dossier courant)
+        try:
+            chemins.ecrire_cle_config(cle, None)
+            return True, ""
+        except OSError as e:
+            return False, str(e)
+    if "--config" in caps and not os.environ.get("VOIXLA_CONFIG"):
+        code, sortie = lancer([*commande(), "--config", cle, "" if valeur is None else str(valeur)], timeout=30)
+        if code == 0:
+            return True, sortie.strip()
+        return False, sortie.strip().splitlines()[-1] if sortie.strip() else f"doubler --config : code {code}"
+    try:
+        chemins.ecrire_cle_config(cle, valeur)
+        return True, ""
+    except OSError as e:
+        return False, str(e)
+
+
+# --- Événements ------------------------------------------------------------------------------------------------------
+
+def analyser_evenement(ligne):
+    """Une ligne de --evenements → dict normalisé, ou None si illisible."""
+    ligne = ligne.strip()
+    if not ligne:
+        return None
+    try:
+        e = json.loads(ligne)
+    except ValueError:
+        return None
+    if not isinstance(e, dict) or "type" not in e:
+        return None
+    e["t"] = lire_instant(e.get("t"))
+    if e.get("video") is not None:
+        e["video"] = str(e["video"])
+    return e
+
+
+def lire_instant(t):
+    """Instant d'un événement : heure ISO (« 2026-11-04T09:20:01.123+01:00 », ce qu'écrit doubler) ou secondes."""
+    if isinstance(t, (int, float)):
+        return float(t)
+    if isinstance(t, str) and t:
+        try:
+            return float(t)
+        except ValueError:
+            pass
+        try:
+            d = datetime.fromisoformat(t.replace("Z", "+00:00"))
+            return d.timestamp()
+        except ValueError:
+            pass
+    return time.time()
+
+
+HEURE = re.compile(r"^(\d\d):(\d\d):(\d\d) (.*)$")
+STATUT_KAGGLE = re.compile(r"^Kaggle : ([a-zA-Z_]+) \((\d+(?:[.,]\d+)?) min\)$")
+
+
+class LectureTexte:
+    """Repli quand doubler n'a pas --evenements : déduit les mêmes événements de sa sortie texte (« HH:MM:SS … »)."""
+
+    def __init__(self, debut_epoch=None):
+        self.base = debut_epoch or time.time()
+        self.dernier_t = self.base
+        self.ouvertes = {}         # (etape, video) → vrai si commencée et pas finie
+        self.video_locale = None   # vidéo en cours de mixage / remise sur la vidéo
+        self.attend_mp3 = None     # vidéo dont la ligne suivante donne le MP3
+        self.video_extraction = None
+
+    def _temps(self, h, m, s):
+        d = datetime.fromtimestamp(self.base).replace(hour=h, minute=m, second=s, microsecond=0).timestamp()
+        while d < self.dernier_t - 43200:   # passage à minuit
+            d += 86400
+        self.dernier_t = max(self.dernier_t, d)
+        return d
+
+    def _ev(self, t, type_, **k):
+        return {"t": t, "type": type_, **k}
+
+    def _debut(self, t, etape, video=None, message=None):
+        self.ouvertes[(etape, video)] = True
+        e = self._ev(t, "etape", etape=etape, etat="debut", video=video)
+        if message:
+            e["message"] = message
+        return [e]
+
+    def _fin(self, t, etape, video=None):
+        if self.ouvertes.pop((etape, video), None):
+            return [self._ev(t, "etape", etape=etape, etat="fin", video=video)]
+        return []
+
+    def _fermer_session(self, t, jusqu_a):
+        """Ferme les étapes de session ouvertes avant « jusqu_a »."""
+        evs = []
+        for etape in ETAPES[:ETAPES.index(jusqu_a)]:
+            for (e, v) in list(self.ouvertes):
+                if e == etape:
+                    evs += self._fin(t, e, v)
+        return evs
+
+    def ligne(self, texte):
+        """Une ligne de sortie → liste d'événements."""
+        texte = texte.rstrip("\n")
+        m = HEURE.match(texte)
+        if not m:
+            brut = texte.strip()
+            if self.attend_mp3 and brut.endswith(".mp3"):
+                v, self.attend_mp3 = self.attend_mp3, None
+                return [self._ev(self.dernier_t, "sortie", chemin=brut, video=v)]
+            if re.match(r"^\d+ vidéo\(s\) en échec", brut):
+                return [self._ev(self.dernier_t, "erreur", message=brut)]
+            return []
+        t = self._temps(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        corps = m.group(4).strip()
+        self.attend_mp3 = None
+
+        r = re.match(r"^=== (.+) \(remix, voix (.+)\)$", corps)
+        if r:
+            v = r.group(1)
+            self.video_locale = v
+            return self._debut(t, "mix", v, "remix")
+        r = re.match(r"^=== (.+?) → (.+)$", corps)
+        if r:
+            v = r.group(1)
+            evs = self._fin(t, "extraction", self.video_extraction) if self.video_extraction else []
+            self.video_extraction = v
+            return evs + self._debut(t, "extraction", v)
+        r = re.match(r"^=== (.+)$", corps)
+        if r:
+            v = r.group(1)
+            evs = self._fermer_session(t, "mix")
+            if self.video_locale:
+                evs += self._fin(t, "mix", self.video_locale) + self._fin(t, "video", self.video_locale)
+            self.video_locale = v
+            return evs + self._debut(t, "mix", v)
+        if corps.startswith("extrait : "):
+            return [self._ev(t, "message", message=corps, video=self.video_extraction)]
+        r = re.match(r"^ÉCHEC de la session Kaggle : (.*)$", corps)
+        if r:
+            etape = next((e for (e, _v) in self.ouvertes if e in ("envoi", "attente", "kaggle", "rapatriement")), "kaggle")
+            self.ouvertes = {k: v for k, v in self.ouvertes.items() if k[0] not in ("envoi", "attente", "kaggle")}
+            return [self._ev(t, "etape", etape=etape, etat="erreur", message=r.group(1)),
+                    self._ev(t, "erreur", message=r.group(1))]
+        r = re.match(r"^ÉCHEC (.+?) : (.*)$", corps)
+        if r:
+            v = Path(r.group(1)).name
+            ouvertes = [e for (e, vv) in self.ouvertes if vv == v]
+            evs = []
+            for e in ouvertes:
+                self.ouvertes.pop((e, v), None)
+                evs.append(self._ev(t, "etape", etape=e, etat="erreur", video=v, message=r.group(2)))
+            return evs + [self._ev(t, "erreur", message=r.group(2), video=v)]
+        if corps.startswith("Kaggle : envoi du son"):
+            evs = self._fin(t, "extraction", self.video_extraction) if self.video_extraction else []
+            self.video_extraction = None
+            return evs + self._debut(t, "envoi", None, corps.split(" : ", 1)[1])
+        if corps.startswith("Kaggle : sessions GPU toutes prises"):
+            return (self._fin(t, "envoi") + self._debut(t, "attente", None, "toutes les places GPU du compte sont prises")
+                    + [self._ev(t, "kaggle", statut="attente d’une place", depuis_s=0)])
+        if corps.startswith("Kaggle : noyau GPU lancé"):
+            evs = self._fin(t, "envoi")
+            if not self.ouvertes.get(("attente", None)):
+                evs += self._debut(t, "attente", None, "noyau envoyé, en attente de démarrage")
+            return evs
+        r = STATUT_KAGGLE.match(corps)
+        if r:
+            statut = r.group(1).lower()
+            depuis = float(r.group(2).replace(",", ".")) * 60
+            evs = [self._ev(t, "kaggle", statut=statut, depuis_s=depuis)]
+            if statut == "running":
+                evs = self._fin(t, "envoi") + self._fin(t, "attente") + evs
+                if not self.ouvertes.get(("kaggle", None)):
+                    evs += self._debut(t, "kaggle")
+            elif statut == "complete":
+                evs += self._fin(t, "attente") + self._fin(t, "kaggle") + self._debut(t, "rapatriement")
+            elif statut in ("error", "cancelacknowledged", "cancelrequested", "cancelled", "canceled"):
+                for etape in ("attente", "kaggle"):
+                    if self.ouvertes.pop((etape, None), None):
+                        evs.append(self._ev(t, "etape", etape=etape, etat="erreur", message=f"noyau Kaggle : {statut}"))
+            return evs
+        if corps.startswith("GPU Kaggle : "):
+            return self._fermer_session(t, "mix") + [self._ev(t, "message", message=corps)]
+        r = re.match(r"^mixage (chant|parole)(?: v\d+)? : (.*)$", corps)
+        if r:
+            v = self.video_locale
+            return (self._fin(t, "mix", v) + self._debut(t, "video", v)
+                    + [self._ev(t, "message", message=corps, video=v)])
+        if re.match(r"^mode (chant|parole) \(", corps) or corps.startswith("sous-titres non copiés") \
+                or corps.startswith("comparaison "):
+            return [self._ev(t, "message", message=corps, video=self.video_locale)]
+        r = re.match(r"^fini : (.+)$", corps)
+        if r:
+            v = self.video_locale
+            self.attend_mp3 = v
+            return self._fin(t, "video", v) + [self._ev(t, "sortie", chemin=r.group(1).strip(), video=v)]
+        return []
+
+    def terminer(self, t=None):
+        """Fin du processus : rien à déduire de plus (Avancement.terminer conclut avec le code de sortie)."""
+        return []

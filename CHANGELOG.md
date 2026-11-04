@@ -7,6 +7,16 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+### Corrigé
+
+- Interface, page Résultats : « Beat seul », « Ma voix seule » et « Voix d'origine seule » se lisent maintenant sur
+  l'image de la vidéo doublée, qui avance avec le son, au lieu de l'image arrêtée. Chaque piste a sa copie vidéo,
+  préparée une fois en cache (`~/.cache/voix-la/videos/`, 2 Go au plus) : l'image copiée sans réencodage, le son de la
+  piste calé au même échantillon que le mix. Pendant la préparation (7 à 14 s pour une chanson de 4 min, sous nice),
+  le son se lit sous l'image arrêtée, puis le lecteur passe sur la vidéo à la même position. Sans vidéo doublée, ou si
+  la copie est impossible, l'écoute reste sans image, avec la raison.
+- Interface, lecteur : une bascule faite avant que la piste précédente soit prête ne repart plus du début.
+
 ### Modifié
 
 - Interface, page Voix : bouton « Ajouter une voix » bien visible à côté du titre (depuis un fichier audio ou vidéo,

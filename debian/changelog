@@ -1,3 +1,13 @@
+voix-la (0.3.1) unstable; urgency=medium
+
+  * Interface : la vidéo avance sur « Beat seul », « Ma voix seule » et
+    « Voix d'origine seule » (copie vidéo en cache, son calé sur le mix).
+  * Interface : une bascule de piste ne repart plus du début.
+  * Interface : bouton « Ajouter une voix » visible et glisser-déposer sur
+    la page Voix.
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Wed, 04 Nov 2026 18:09:25 +0000
+
 voix-la (0.3.0) unstable; urgency=medium
 
   * Paroles à chaque doublage : transcription Whisper large-v3, traduction

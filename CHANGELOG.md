@@ -7,6 +7,23 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+## [0.3.1] - 2026-11-04
+
+### Corrigé
+
+- Interface, page Résultats : « Beat seul », « Ma voix seule » et « Voix d'origine seule » se lisent maintenant sur
+  l'image de la vidéo doublée, qui avance avec le son, au lieu de l'image arrêtée. Chaque piste a sa copie vidéo,
+  préparée une fois en cache (`~/.cache/voix-la/videos/`, 2 Go au plus) : l'image copiée sans réencodage, le son de la
+  piste calé au même échantillon que le mix. Pendant la préparation (7 à 14 s pour une chanson de 4 min, sous nice),
+  le son se lit sous l'image arrêtée, puis le lecteur passe sur la vidéo à la même position. Sans vidéo doublée, ou si
+  la copie est impossible, l'écoute reste sans image, avec la raison.
+- Interface, lecteur : une bascule faite avant que la piste précédente soit prête ne repart plus du début.
+
+### Modifié
+
+- Interface, page Voix : bouton « Ajouter une voix » bien visible à côté du titre (depuis un fichier audio ou vidéo,
+  ou au micro), et glisser-déposer d'un fichier sur la page ; le seul « + » de la barre de titre passait inaperçu.
+
 ## [0.3.0] - 2026-11-04
 
 ### Ajouté
@@ -134,7 +151,8 @@ Première version publique.
     `VOIXLA_DECODAGE_MATERIEL=1` remet le décodage matériel ;
   - les essais automatiques laissaient le son de l'application coupé.
 
-[Non publié]: https://github.com/mawena/Voix-la/compare/v0.3.0...HEAD
+[Non publié]: https://github.com/mawena/Voix-la/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/mawena/Voix-la/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/mawena/Voix-la/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/mawena/Voix-la/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/mawena/Voix-la/releases/tag/v0.1.0

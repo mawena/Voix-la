@@ -676,8 +676,8 @@ ambiance, musique discrète) passe donc en parole. `--mode chant` ou `--mode par
 - Chaque voix reçoit une classe, homme ou femme, d'après des indices pris dans cet ordre :
   1. la hauteur médiane de la voix : sous 240 Hz, homme ; au-dessus de 330 Hz, femme ;
   2. entre les deux, l'empreinte de timbre CAMPPlus, comparée à deux ancres de genre, si elles sont là (voir
-     [Ancres de genre](#ancres-de-genre-facultatives)). Une empreinte de femme ne compte qu'à partir de 281 Hz, le
-     milieu de la zone : plus bas, une voix d'homme éraillée en donne une aussi ;
+     [Ancres de genre](#ancres-de-genre-facultatives)). Une empreinte de femme ne compte qu'à partir de 255 Hz :
+     plus bas, une voix d'homme éraillée peut en donner une aussi ;
   3. sinon les notes graves : si le 10e centile des hauteurs de ses passages est sous 190 Hz, homme ;
   4. sinon la hauteur seule : homme sous 281 Hz, femme au-dessus. Cette frontière ne dépend pas de la voix cible
      (jusqu'à la règle v2.1, elle suivait son centre de chant, et descendait avec une voix cible grave : un chanteur

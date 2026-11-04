@@ -587,8 +587,8 @@ def meilleure_octave(f, centre, precedent=None, marge=0.0):
 # --- Octave en chant : une voix = un décalage (règle validée hors ligne : octave/decision.py, octave/rejouer.py,
 # octave/RESULTATS.md ; les fonctions ci-dessous en sont la copie exacte, en Python seul) ---------------------------------
 # Classe d'une voix : hauteur médiane < 240 Hz -> homme, > 330 Hz -> femme ; entre les deux, empreinte (genre_score
-# >= +0,03 homme ; <= -0,10 femme, mais seulement à partir de 281 Hz : plus bas, une voix d'homme éraillée a aussi une
-# empreinte de femme), puis notes graves (10e centile < 190 Hz -> homme), sinon la hauteur seule (homme sous 281 Hz,
+# >= +0,03 homme ; <= -0,10 femme, mais seulement à partir de 255 Hz : plus bas, une voix d'homme éraillée peut avoir
+# une empreinte de femme), puis notes graves (10e centile < 190 Hz -> homme), sinon la hauteur seule (homme sous 281 Hz,
 # milieu géométrique de la zone, femme au-dessus : frontière fixe, qui ne dépend plus de la voix cible depuis la v2.2).
 # Duo seulement si deux groupes d'empreintes nettement séparés, chantant chacun en sections suivies, et de décalages
 # différents ; changement de voix par Viterbi, moins cher à une pause, sections de 6 s au moins.
@@ -598,8 +598,9 @@ OCTAVE_DEFAUT = {
     'zone_haute_hz': 330.0,          # au-dessus : voix de femme d'après la hauteur seule
     'genre_homme': 0.03,             # genre_score médian d'une voix, à partir duquel on la tient pour un homme
     'genre_femme': -0.10,            # ... en deçà duquel on la tient pour une femme
-    'femme_empreinte_min_hz': 281.0,  # ... et seulement à partir de cette hauteur (√(240 x 330)) : en dessous, une
-                                      # empreinte de femme peut venir d'une voix d'homme éraillée
+    'femme_empreinte_min_hz': 255.0,  # ... et seulement à partir de cette hauteur : en dessous, une empreinte de
+                                      # femme peut venir d'une voix d'homme éraillée (281 Hz jusqu'à la v2.2, pour
+                                      # des ancres faites d'une seule voix par genre ; 255 avec des ancres de parole)
     'grave_p10_hz': 190.0,           # 10e centile des hauteurs de morceaux sous lequel la voix est d'homme
     'frontiere_hz': 281.0,           # faute d'indice sûr : homme en dessous, femme au-dessus (√(240 x 330), milieu
                                      # géométrique de la zone ; ne dépend pas de la voix cible)
@@ -778,7 +779,7 @@ def decider_octave(morceaux, centre, reglages=None, coupes_son=None):
     R = {**OCTAVE_DEFAUT, **(reglages or {})}
     dec_classe = {'homme': meilleure_octave(R['centre_homme_hz'], centre),
                   'femme': meilleure_octave(R['centre_femme_hz'], centre)}
-    info = {'regle': 'v2.2 (une voix = un décalage ; empreinte de femme ignorée sous 281 Hz ; hauteur seule : '
+    info = {'regle': 'v2.3 (une voix = un décalage ; empreinte de femme ignorée sous 255 Hz ; hauteur seule : '
                      'frontière fixe de 281 Hz)', 'centre_chant_cible_hz': round(centre, 1),
             'decalage_par_classe': dec_classe,
             'zone_ambigue_hz': [R['zone_basse_hz'], R['zone_haute_hz']], 'frontiere_hauteur_seule_hz': R['frontiere_hz'],

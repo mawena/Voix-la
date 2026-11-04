@@ -415,8 +415,18 @@ def lire_courbes(chemin):
     def ajuster(a):
         a = a[:n]
         return np.pad(a, (0, n - len(a))) if len(a) < n else a
+    # autotune_hz : la mélodie de la version auto-tune (doubler --autotune N) ; voix_par_trame : la voix cible entendue
+    # (-1 aucune, j la voix voix_cibles[j], len(voix_cibles) plusieurs ensemble ; une voix par chanteur)
+    at = _tableau(d.get("autotune_hz")) if d.get("autotune_hz") else None
+    vt = d.get("voix_par_trame")
+    voix_t = np.asarray([int(x) if isinstance(x, (int, float)) and x == x else -1 for x in _liste(vt)], np.int16) \
+        if vt else None
     return {"pas_s": pas, "source": ajuster(src), "convertie": ajuster(conv), "decalage": ajuster(dec),
             "choeurs": ajuster(ch) if ch is not None else None,
+            "autotune": ajuster(at) if at is not None and len(at) else None,
+            "voix": (np.pad(voix_t[:n], (0, max(0, n - len(voix_t))), constant_values=-1) if voix_t is not None
+                     else None),
+            "voix_cibles": [str(v) for v in d.get("voix_cibles") or []],
             "origine": d.get("origine") or ("doubler" if Path(chemin).name == "courbes.json" else "interface")}
 
 

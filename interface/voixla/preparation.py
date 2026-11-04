@@ -194,17 +194,21 @@ def taches(res):
     from . import pistes
     p = pistes.choisir_pistes(res, "video")
     t = []
-    for cle in pistes.SANS_IMAGE:
+    # ma_voix_at : la voix seule de la version auto-tune (la vidéo auto-tune, elle, existe déjà)
+    for cle in pistes.SANS_IMAGE_TOUTES:
         q = p.get(cle)
         if q is None:
             continue
+        voix = cle in ("ma_voix", "ma_voix_at")
+        at = ["--autotune"] if cle == "ma_voix_at" else []
         if q.video_a_preparer:
-            if cle == "ma_voix" and res.dossier_voix is not None and q.fichier is None:
-                t.append(Tache(cle, ["video", str(res.video), "--voix", str(res.dossier_voix)]))
+            if voix and res.dossier_voix is not None and q.fichier is None:
+                t.append(Tache(cle, ["video", str(res.video), "--voix", str(res.dossier_voix), *at]))
             elif q.fichier is not None:
-                t.append(Tache(cle, ["video", str(res.video), str(q.fichier)]))
-        elif cle == "ma_voix" and q.a_preparer and res.dossier_voix is not None:
-            t.append(Tache(cle, ["voix", str(res.dossier_voix)]))
+                t.append(Tache(cle, ["video", str(res.video), str(q.fichier)] if not voix else
+                               ["video", str(res.video), "--voix", str(res.dossier_voix), *at]))
+        elif voix and q.a_preparer and res.dossier_voix is not None:
+            t.append(Tache(cle, ["voix", str(res.dossier_voix), *at]))
     if res.video is not None and pistes.miniature_prete(res.video) is None:
         t.append(Tache("miniature", ["miniature", str(res.video)]))
     return t

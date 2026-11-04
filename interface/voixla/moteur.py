@@ -25,7 +25,8 @@ from . import chemins
 
 OPTIONS_SUIVIES = ("--evenements", "--donnees", "--config", "--json", "--voix-liste", "--ajouter-voix", "--remix",
                    "--debut", "--duree", "--pas", "--voix-db", "--reverb-db", "--octave", "--mode", "--sortie",
-                   "--mix-v1", "--comparer-pas", "--reprendre", "--moteur", "--sans-nettoyage", "--sans-paroles")
+                   "--mix-v1", "--comparer-pas", "--reprendre", "--moteur", "--sans-nettoyage", "--sans-paroles",
+                   "--autotune", "--sans-autotune", "--autotune-gamme")
 MOTEURS = (("yingmusic", "YingMusic-SVC"), ("seedvc", "Seed-VC 44 kHz"))
 NOM_VOIX = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")   # même règle que doubler --ajouter-voix
 EXTRAIT_NOM = re.compile(r" \(extrait (\d+)m(\d+(?:,\d+)?)(?:\+(\d+)m(\d+(?:,\d+)?))?\)$")
@@ -87,6 +88,8 @@ def analyser_aide(texte):
     caps = {o for o in OPTIONS_SUIVIES if re.search(re.escape(o) + r"(?![\w-])", texte or "")}
     if re.search(r"vid[ée]o@\d", texte or ""):
         caps.add("extrait_par_video")   # « vidéo@60+40 » : un extrait propre à chaque vidéo d'un même lot
+    if "homme:NOM,femme:NOM" in (texte or "") and "chanteur1:NOM,chanteur2:NOM" in (texte or ""):
+        caps.add("voix_par_chanteur")   # --voix homme:a,femme:b ou chanteur1:a,chanteur2:b : une voix par chanteur
     return frozenset(caps)
 
 
@@ -136,6 +139,91 @@ def spec_extrait(extrait):
     return f"{_nombre(debut or 0)}" + (f"+{_nombre(duree)}" if duree else "")
 
 
+# --- Une voix par chanteur (--voix homme:a,femme:b ou chanteur1:a,chanteur2:b), comme doubler.lire_spec_voix --------
+
+CLES_VOIX = {"genre": ("homme", "femme"), "ordre": ("chanteur1", "chanteur2")}
+
+
+def lire_spec_voix(spec):
+    """« a » → (None, [(None, « a »)]) ; « homme:a,femme:b » → (« genre », [(« homme », « a »), (« femme », « b »)]),
+    rangé dans l'ordre des clés ; None si illisible (doubler dira pourquoi)."""
+    spec = str(spec or "").strip()
+    if ":" not in spec:
+        return (None, [(None, spec)]) if NOM_VOIX.fullmatch(spec) else None
+    paires = []
+    for morceau in (m.strip() for m in spec.split(",") if m.strip()):
+        cle, _, nom = (x.strip() for x in morceau.partition(":"))
+        cle = cle.lower().replace(" ", "").replace("-", "").replace("_", "")
+        if not NOM_VOIX.fullmatch(nom) or cle in (c for c, _ in paires):
+            return None
+        paires.append((cle, nom))
+    mode = next((m for m, cles in CLES_VOIX.items() if paires and all(c in cles for c, _ in paires)), None)
+    if mode is None:
+        return None
+    return mode, sorted(paires, key=lambda p: CLES_VOIX[mode].index(p[0]))
+
+
+def spec_voix(mode, voix):
+    """« homme:a,femme:b » (mode genre) ou « chanteur1:a,chanteur2:b » (mode ordre) ; une seule voix différente :
+    son nom seul (doubler en fait alors un doublage à une voix)."""
+    if len(set(voix)) <= 1:
+        return voix[0] if voix else None
+    return ",".join(f"{c}:{v}" for c, v in zip(CLES_VOIX[mode], voix))
+
+
+def id_voix(spec):
+    """Le dossier travail/<id> que doubler donne à cette voix : le nom, ou « a+b » pour une voix par chanteur (dans
+    l'ordre des clés, quel que soit l'ordre donné)."""
+    lu = lire_spec_voix(spec)
+    if lu is None:
+        return spec
+    noms = list(dict.fromkeys(n for _, n in lu[1]))
+    return "+".join(noms)
+
+
+def membres_voix(ident):
+    """Les voix réelles d'un dossier travail/<id> : [« a »] ou [« a », « b »] (« a+b »)."""
+    return [m for m in str(ident or "").split("+") if m]
+
+
+def spec_de_rapport(ident, rapport):
+    """La spécification --voix d'un résultat (remix) : d'après voix_cibles du rapport (clé et nom de chaque voix),
+    sinon l'identifiant du dossier, tel quel."""
+    vc = (rapport or {}).get("voix_cibles") if isinstance(rapport, dict) else None
+    voix = (vc or {}).get("voix") if isinstance(vc, dict) else None
+    if isinstance(voix, list) and len(voix) >= 2 and all(isinstance(v, dict) and v.get("cle") and v.get("nom")
+                                                          for v in voix):
+        return ",".join(f"{v['cle']}:{v['nom']}" for v in voix)
+    return ident
+
+
+# --- Auto-tune -------------------------------------------------------------------------------------------------------
+
+AUTOTUNE_DEFAUT = 70
+TONIQUES = (("do", "do"), ("do#", "do♯"), ("re", "ré"), ("mib", "mi♭"), ("mi", "mi"), ("fa", "fa"), ("fa#", "fa♯"),
+            ("sol", "sol"), ("lab", "la♭"), ("la", "la"), ("sib", "si♭"), ("si", "si"))
+# (valeur de --autotune-gamme, libellé) : auto, chromatique, puis les 24 tonalités
+GAMMES = [("auto", "Auto (tonalité détectée)"), ("chromatique", "Chromatique (les 12 notes)")] + \
+    [(f"{v}-{m}", f"{l} {m}") for m in ("majeur", "mineur") for v, l in TONIQUES]
+
+
+def args_autotune(reglages, caps):
+    """Options d'auto-tune d'un doublage : --autotune=N (1 à 100) et sa gamme, ou --sans-autotune (désactivé alors que
+    la configuration de doubler l'allume) ; rien si doubler ne les connaît pas."""
+    if "--autotune" not in caps:
+        return []
+    n = reglages.get("autotune")
+    if isinstance(n, (int, float)) and not isinstance(n, bool) and n > 0:
+        a = [f"--autotune={int(round(min(100, n)))}"]
+        g = reglages.get("autotune_gamme")
+        if g and g != "auto" and "--autotune-gamme" in caps:
+            a.append(f"--autotune-gamme={g}")
+        return a
+    if reglages.get("sans_autotune") and "--sans-autotune" in caps:
+        return ["--sans-autotune"]
+    return []
+
+
 def args_doublage(videos, reglages, donnees, extrait=None, evenements=None, caps=None):
     """argv d'un doublage : toutes les vidéos dans un seul appel, donc une seule session Kaggle. videos : chemins, ou
     dicts {chemin, extrait} (extrait propre à chaque vidéo si doubler accepte « vidéo@début+durée »)."""
@@ -170,6 +258,7 @@ def args_doublage(videos, reglages, donnees, extrait=None, evenements=None, caps
         a.append("--sans-nettoyage")
     if reglages.get("sans_paroles") and "--sans-paroles" in caps:
         a.append("--sans-paroles")
+    a += args_autotune(reglages, caps)
     if extrait:
         debut, duree = extrait
         a.append(f"--debut={_nombre(debut or 0)}")
@@ -430,7 +519,8 @@ def config_effective():
             "contenu": conf, "par_doubler": False}
 
 
-CLES_CONFIG = ("donnees", "kaggle.compte", "kaggle.jeu", "kaggle.noyau", "kaggle.outils", "moteur", "paroles")
+CLES_CONFIG = ("donnees", "kaggle.compte", "kaggle.jeu", "kaggle.noyau", "kaggle.outils", "moteur", "paroles",
+               "autotune")
 CLES_BOOLEENNES = ("paroles",)      # « doubler --config paroles oui|non » ; un booléen dans config.json
 VRAI = ("oui", "vrai", "true", "1", "on", "yes")
 FAUX = ("non", "faux", "false", "0", "off", "no")
@@ -453,6 +543,29 @@ def paroles_par_defaut(conf):
     return booleen(contenu.get("paroles", conf.get("paroles")), True)
 
 
+def autotune_par_defaut(conf):
+    """Intensité de l'auto-tune de chaque doublage d'après la configuration de doubler (clé « autotune », 0 à 100 ;
+    0 ou absente : désactivé)."""
+    conf = conf if isinstance(conf, dict) else {}
+    contenu = conf.get("contenu") if isinstance(conf.get("contenu"), dict) else {}
+    v = conf.get("autotune", contenu.get("autotune"))
+    if isinstance(v, bool):
+        return AUTOTUNE_DEFAUT if v else 0
+    try:
+        return max(0, min(100, int(round(float(v)))))
+    except (TypeError, ValueError):
+        return 0
+
+
+def x42_autotune(conf):
+    """(connu, dossier) : doubler --config --json dit-il où est le greffon x42-autotune ? connu faux avec un ancien
+    doubler (on ne sait pas) ; dossier None si le greffon manque."""
+    conf = conf if isinstance(conf, dict) else {}
+    if "x42_autotune" not in conf:
+        return False, None
+    return True, conf.get("x42_autotune") or None
+
+
 def ecrire_config(cle, valeur):
     """Écrit une clé de config.json : par « doubler --config CLE VALEUR » s'il existe, sinon directement.
     Rend (ok, message)."""
@@ -471,6 +584,8 @@ def ecrire_config(cle, valeur):
         return False, sortie.strip().splitlines()[-1] if sortie.strip() else f"doubler --config : code {code}"
     if cle in CLES_BOOLEENNES:
         valeur = booleen(valeur)     # écrite directement : un vrai booléen, comme doubler --config
+    elif cle == "autotune":
+        valeur = autotune_par_defaut({"autotune": valeur})   # un entier de 0 à 100, comme doubler --config
     try:
         chemins.ecrire_cle_config(cle, valeur)
         return True, ""

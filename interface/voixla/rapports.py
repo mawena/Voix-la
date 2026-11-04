@@ -20,6 +20,7 @@ NOMS_MODELES = {"yingmusic": "YingMusic-SVC", "chant44k": "Seed-VC 44 kHz", "par
 NOMS_MOTEURS = {"yingmusic": "YingMusic-SVC", "seedvc": "Seed-VC"}
 VOIX_DANS_NOM = re.compile(r" - voix (.+)$")
 EXPORT_DANS_NOM = re.compile(r" \((?:beat|voix seule)\)$")   # même motif que voixla.pistes
+AUTOTUNE_DANS_NOM = re.compile(r" \(auto-tune\)$")           # version auto-tune de doubler : « … - voix X (auto-tune) »
 FRISE_LIGNE = re.compile(r"^(\d+):(\d+(?:\.\d+)?)–(\d+):(\d+(?:\.\d+)?)\s+(?:voix (\S+(?: \d)?))?\s*f0\s+(\d+) Hz\s+→\s+"
                          r"([+\-−]?\d+(?:\.\d+)?) dt\s+\((.*)\)$")
 
@@ -49,10 +50,42 @@ class Resultat:
     mp3: Path | None = None
     voix_nom: str = ""
     comparaisons: list = field(default_factory=list)
+    video_autotune: Path | None = None   # « … - voix X (auto-tune).<ext> » (doubler --autotune N)
+    mp3_autotune: Path | None = None
 
     @property
     def cle(self):
         return f"{self.dossier}|{self.voix}"
+
+    @property
+    def voix_membres(self):
+        """Les voix réelles : [« a »], ou [« a », « b »] pour une voix par chanteur (dossier « a+b »)."""
+        return moteur.membres_voix(self.voix)
+
+    @property
+    def plusieurs_voix(self):
+        return len(self.voix_membres) >= 2
+
+    @property
+    def voix_cibles(self):
+        """[{cle, nom, …}] des voix cibles du rapport (une voix par chanteur), sinon []."""
+        vc = (self.rapport or {}).get("voix_cibles")
+        voix = vc.get("voix") if isinstance(vc, dict) else None
+        return [v for v in voix if isinstance(v, dict)] if isinstance(voix, list) else []
+
+    @property
+    def autotune(self):
+        """La section « autotune » du rapport si la version auto-tune est valide (applique vrai), sinon None."""
+        at = (self.rapport or {}).get("autotune")
+        return at if isinstance(at, dict) and at.get("applique") else None
+
+    @property
+    def lrc_autotune(self):
+        if not self.autotune:
+            return None
+        nom = (self.autotune.get("fichiers") or {}).get("lrc")
+        p = self.dossier / nom if nom else None
+        return p if p is not None and p.is_file() else None
 
     @property
     def titre(self):
@@ -199,6 +232,11 @@ class Resultat:
         if r.get("mode") == "parole":
             v = d.get("voix")
             return f"parole, {v} voix" if v and v > 1 else "parole"
+        chanteurs = [c for c in d.get("chanteurs") or [] if isinstance(c, dict)]
+        if chanteurs:   # une voix par chanteur : chaque couple chanteur → voix cible et son décalage
+            couples = ", ".join(f"{c.get('nom') or c.get('classe') or 'voix'} → {c.get('voix')} "
+                                f"{formats.demi_tons(c.get('decalage') or 0)} dt" for c in chanteurs)
+            return ("duo : " if d.get("voix") == 2 else "voix seule : ") + couples
         par_genre = d.get("decalage_par_genre") or d.get("decalage_par_classe")
         if d.get("voix_seule"):
             dec = (par_genre or {}).get(d["voix_seule"])
@@ -211,9 +249,78 @@ class Resultat:
             return f"décalage global {formats.demi_tons(d['decalage_global'])} dt"
         return ""
 
+    def resume_voix_cibles(self):
+        """Une voix par chanteur : [phrases] (la décision, les voix entendues, les passages en duo), sinon []."""
+        r = self.rapport or {}
+        vc = r.get("voix_cibles")
+        if not isinstance(vc, dict):
+            return []
+        if vc.get("message"):
+            return [str(vc["message"])]
+        d = r.get("decision_hauteur") or {}
+        lignes = []
+        if d.get("message"):
+            texte = str(d["message"])
+            if d.get("voix") != 2 and d.get("pourquoi_une_voix"):
+                texte += f" ({d['pourquoi_une_voix']})"
+            lignes.append(texte)
+        aff = r.get("affectation") or {}
+        sec = aff.get("secondes_par_voix") or {}
+        if sec:
+            parts = [f"{v} {formats.duree(s)}" for v, s in sec.items() if v != "ensemble" and s]
+            if sec.get("ensemble"):
+                parts.append(f"ensemble {formats.duree(sec['ensemble'])}")
+            lignes.append("voix entendues : " + ", ".join(parts))
+        if aff.get("morceaux_en_duo"):
+            lignes.append(f"{formats.pluriel(aff['morceaux_en_duo'], 'passage')} où voix principale et chœurs chantent "
+                          "chacun dans sa voix")
+        if aff.get("erreur"):
+            lignes.append(f"reconnaissance des pistes impossible ({aff['erreur']}) : chaque piste a la voix du passage")
+        return lignes
+
+    def resume_autotune(self):
+        """Version auto-tune : (« fa majeur (détectée) », « écart médian aux notes 32 → 4 cents ; 85 % à 10 cents »),
+        ou None."""
+        at = self.autotune
+        if not at:
+            return None
+        g = at.get("gamme") or {}
+        if g.get("type") == "tonalite":
+            demande = str(g.get("demandee") or "auto").strip().lower()
+            ton = str(g.get("tonalite") or "") + (" (détectée)" if demande in ("auto", "automatique", "detectee")
+                                                  else " (imposée)")
+        else:
+            ton = "chromatique (les 12 notes)"
+        mes = at.get("mesures") or {}
+        av, ap = mes.get("avant") or {}, mes.get("apres") or {}
+        morceaux = []
+        if av.get("ecart_median_cents") is not None and ap.get("ecart_median_cents") is not None:
+            morceaux.append(f"écart médian aux notes {formats.nombre(av['ecart_median_cents'], 0)} → "
+                            f"{formats.nombre(ap['ecart_median_cents'], 0)} cents")
+        if ap.get("part_a_10_cents") is not None:
+            avant = (f"{formats.nombre(100 * av['part_a_10_cents'], 0)} % → "
+                     if av.get("part_a_10_cents") is not None else "")
+            morceaux.append(f"notes à 10 cents près : {avant}{formats.nombre(100 * ap['part_a_10_cents'], 0)} %")
+        return ton, " ; ".join(morceaux)
+
+
+def passages_voix(rapport):
+    """Une voix par chanteur : [{debut, fin, voix: [noms]}] des passages où chaque voix chante (« voix » à deux noms :
+    les deux ensemble), d'après l'affectation du rapport ; [] sinon."""
+    aff = (rapport or {}).get("affectation") if isinstance(rapport, dict) else None
+    sortie = []
+    for p in (aff or {}).get("passages") or []:
+        try:
+            sortie.append({"debut": float(p["debut_s"]), "fin": float(p["fin_s"]),
+                           "voix": [str(v) for v in p.get("voix") or []]})
+        except (KeyError, TypeError, ValueError):
+            continue
+    return sortie
+
 
 def _voix_des_medias(dossier):
-    """{nom affiché → {'video': Path, 'mp3': Path}} d'après « <titre> - voix <Nom>.<ext> »."""
+    """{nom affiché → {'video': Path, 'mp3': Path, 'video_at': Path, 'mp3_at': Path}} d'après « <titre> - voix
+    <Nom>.<ext> » (et sa version « (auto-tune) »)."""
     medias = {}
     for f in dossier.iterdir():
         if not f.is_file() or f.name.startswith("comparaison_"):
@@ -223,10 +330,21 @@ def _voix_des_medias(dossier):
             continue
         if EXPORT_DANS_NOM.search(f.stem):
             continue    # beat ou voix seule enregistrés par l'interface (« … - voix <Nom> (beat).mp3 »)
-        m = VOIX_DANS_NOM.search(f.stem)
+        stem, suffixe = f.stem, ""
+        if AUTOTUNE_DANS_NOM.search(stem):
+            stem, suffixe = AUTOTUNE_DANS_NOM.sub("", stem), "_at"   # la version auto-tune de la même voix
+        m = VOIX_DANS_NOM.search(stem)
         nom = m.group(1) if m else ""
-        medias.setdefault(nom, {})["mp3" if ext == ".mp3" else "video"] = f
+        medias.setdefault(nom, {})[("mp3" if ext == ".mp3" else "video") + suffixe] = f
     return medias
+
+
+def nom_affiche_voix(ident, noms_voix=None):
+    """« Jules », ou « Jules et Marie » pour un dossier « jules+marie » (comme doubler)."""
+    noms_voix = noms_voix or {}
+    if not ident:
+        return ""
+    return " et ".join(noms_voix.get(m) or m.capitalize() for m in moteur.membres_voix(ident))
 
 
 COMPARAISON_PAS = re.compile(r"^comparaison_(\d+)pas")
@@ -282,7 +400,7 @@ def lire_dossier(dossier, noms_voix=None, groupe="", voix_defaut=None):
     for vd in voix_dossiers:
         ident = vd.name
         rapport = _json(vd / "rapport.json")
-        nom = noms_voix.get(ident) or ident.capitalize()
+        nom = noms_voix.get(ident) or nom_affiche_voix(ident, noms_voix)
         m = medias.get(nom)
         if m is None and len(voix_dossiers) == 1 and len(medias) == 1:
             nom, m = next(iter(medias.items()))
@@ -292,7 +410,8 @@ def lire_dossier(dossier, noms_voix=None, groupe="", voix_defaut=None):
         comp = (comparaisons if len(voix_dossiers) <= 1 else
                 [c for c in comparaisons if c.stem.endswith(f" (voix {nom})")])
         resultats.append(Resultat(dossier=dossier, voix=ident, rapport=rapport, source=source, video=m.get("video"),
-                                  mp3=m.get("mp3"), voix_nom=nom, comparaisons=comp))
+                                  mp3=m.get("mp3"), voix_nom=nom, comparaisons=comp, video_autotune=m.get("video_at"),
+                                  mp3_autotune=m.get("mp3_at")))
     if len(voix_dossiers) > 1 and sans_suffixe:
         par_voix = {r.voix: r for r in resultats if r.voix}
         ident = _proprietaire_sans_suffixe(sans_suffixe, [(r.voix, r.rapport, bool(r.comparaisons))
@@ -371,8 +490,14 @@ def segments_frise(rapport):
             classe, voix = seule, seule
         elif classe == "inconnu" and m.get("voix") is None and rapport.get("mode") == "parole":
             classe, voix = "locuteur", "voix seule"   # parole sans regroupement de locuteurs : une seule voix
-        segs.append({"debut": debut, "fin": fin, "classe": classe, "voix": voix,
-                     "decalage": m.get("decalage"), "f0": m.get("f0_med"), "base": m.get("base") or ""})
+        seg = {"debut": debut, "fin": fin, "classe": classe, "voix": voix,
+               "decalage": m.get("decalage"), "f0": m.get("f0_med"), "base": m.get("base") or ""}
+        if m.get("voix_cible"):   # une voix par chanteur : la voix du passage, et celle de chaque piste
+            seg["voix_cible"] = str(m["voix_cible"])
+            vp = m.get("voix_pistes")
+            if isinstance(vp, dict):
+                seg["voix_pistes"] = {str(k): str(v) for k, v in vp.items()}
+        segs.append(seg)
     if segs:
         return segs
     for ligne in rapport.get("frise") or []:
@@ -452,6 +577,7 @@ def durees_etapes(rapport):
            ("Séparation de cette vidéo", tv.get("separation_s")),
            ("Analyse (mode, hauteur)", tv.get("analyse_s")),
            ("Nettoyage de cette vidéo", tv.get("nettoyage_s")),
+           ("Voix de chaque piste (une voix par chanteur)", tv.get("affectation_s")),
            (libelle_conversion(r), tv.get("conversion_s")),
            ("Courbes de mélodie", tv.get("courbes_s")),
            ("Noyau en tout", sk.get("total_s")),
@@ -462,7 +588,9 @@ def durees_etapes(rapport):
     ajouter("Rapatriement", tl.get("rapatriement_s"))
     ajouter("Décodage du retour (FLAC)", tl.get("decodage_retour_s"))
     ajouter("Reste (original − voix)", tl.get("reste_local_s"))
-    ajouter("Mixage", tl.get("mix_local_s"))
+    at = r.get("autotune") if isinstance(r.get("autotune"), dict) else {}
+    ajouter("Mixage", tl.get("mix_local_s"),
+            [("dont la version auto-tune", at.get("temps_s"))] if at.get("applique") else ())
     ajouter("Remise sur la vidéo", tl.get("remise_video_s"))
     return lignes
 

@@ -4,8 +4,9 @@ plusieurs en mode sélection).
 
 Un dossier de sortie peut contenir plusieurs voix (travail/<voix>/) :
 - si toutes ses voix partent (ou s'il n'en a qu'une), c'est le dossier entier qui va à la corbeille, avec travail/ ;
-- sinon, seulement les fichiers des voix choisies : vidéo et MP3 doublés, beat et voix seule enregistrés par
-  l'interface, travail/<voix>/. Les sons communs de travail/ restent pour les autres voix.
+- sinon, seulement les fichiers des voix choisies : vidéo et MP3 doublés, leur version « (auto-tune) » (vidéo, MP3,
+  .lrc), beat et voix seule enregistrés par l'interface, travail/<voix>/. Les sons communs de travail/ restent pour
+  les autres voix. Une voix par chanteur (« a+b ») est une voix comme une autre : ses fichiers « voix A et B ».
 Les caches (copies vidéo des pistes, ma voix seule, miniatures, analyses) ne sont pas touchés : ils sont nommés d'après
 les fichiers, ne servent plus, et leur purge les efface le moment venu. Rien n'en dépend ici.
 """
@@ -39,8 +40,19 @@ def voix_du_dossier(dossier):
         return []
 
 
+def fichiers_autotune(res):
+    """La version auto-tune d'une voix : « <titre> - voix <Nom> (auto-tune) » en vidéo, MP3 et .lrc (doubler)."""
+    base = f"{pistes.base_sorties(res)} (auto-tune)"
+    vus = [p for p in (getattr(res, "video_autotune", None), getattr(res, "mp3_autotune", None)) if p]
+    for ext in (*pistes.CONTENEURS_VIDEO, ".mp3", ".lrc"):
+        f = res.dossier / f"{base}{ext}"
+        if f.is_file() and f not in vus:
+            vus.append(f)
+    return vus
+
+
 def _fichiers_de_la_voix(res):
-    return [p for p in (res.video, res.mp3) if p] + pistes.exports_existants(res) + \
+    return [p for p in (res.video, res.mp3) if p] + fichiers_autotune(res) + pistes.exports_existants(res) + \
         ([res.dossier_voix] if res.dossier_voix else [])
 
 

@@ -7,6 +7,56 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+## [0.5.0] - 2026-11-04
+
+### Ajouté
+
+- Auto-tune (`--autotune [N]`, de 0 à 100, 70 sans valeur ; clé de configuration `autotune`, 0 ou absente :
+  désactivé). En plus de la version normale, inchangée au bit près : `<titre> - voix <Nom> (auto-tune)` en vidéo (mêmes
+  pistes de paroles et sous-titres d'origine), en mp3 et en `.lrc`. Fait sur le PC, sans GPU, par x42-autotune (paquet
+  `x42-plugins`, recommandé ; filtre `lv2` de ffmpeg) sur la voix sèche, avant la reverb, au même niveau que la version
+  normale. Bas : correction lente et partielle, vibrato gardé ; haut : correction totale, effet robotique (deux passes
+  au-delà de 80). Gamme détectée sur la musique seule, avec son accord, repli chromatique si elle est peu sûre ;
+  `--autotune-gamme` l'impose (`la-mineur`, `do#-majeur`, `Am`…). Hauteur avant et après dans `rapport.json`
+  (`autotune`), `autotune_hz` dans `courbes.json`, champ `autotune` de l'événement `sortie`. Sans le greffon, doubler le
+  dit et fait la version normale seule ; en parole, seulement sur demande explicite. `--sans-autotune` l'emporte ; avec
+  `--remix`, il met la version auto-tune à la corbeille, et un `--remix` sans option la garde à jour.
+- **Une voix par chanteur** : `--voix homme:jules,femme:marie` (duo mixte) ou `--voix chanteur1:jules,chanteur2:marie`
+  (duo de même genre, chanteurs pris dans l'ordre d'apparition) donne à chaque chanteur sa propre voix cible.
+  - Chaque piste de chaque passage (voix principale, chœurs, piste de secours) prend la voix du chanteur qu'on y
+    reconnaît, par sa hauteur et son empreinte : quand les deux chantent ensemble, voix principale et chœurs peuvent
+    chanter chacun dans sa voix. Une piste incertaine, ou trop faible (un reste du karaoké), prend la voix du passage.
+  - Duo mixte annoncé : les chanteurs peuvent se répondre phrase à phrase, et l'empreinte (nettement d'homme, nettement
+    de femme) l'emporte sur la hauteur (un chanteur qui monte à 345 Hz).
+  - Octave décidée pour chaque couple chanteur → voix cible, d'après le centre de chant de chaque voix.
+  - Une seule voix trouvée : tout prend la voix de sa classe, sinon la première, avec un message ; en parole, la
+    première voix seule.
+  - Sorties « <titre> - voix Jules et Marie.<ext> », `.mp3`, dossier `travail/jules+marie/` (mêmes noms quel que soit
+    l'ordre donné) ; `--remix`, `--reprendre`, les paroles, la piste de secours et l'auto-tune suivent.
+  - Rapport : voix cibles, chanteurs et décalage de chaque couple, voix de chaque piste sur chaque passage et sa raison,
+    passages par voix ; `courbes.json` gagne `voix_cibles` et `voix_par_trame` (format 1 inchangé) ; l'événement
+    `sortie` gagne `voix` (la liste des voix).
+  - Surcoût mesuré : environ 3 s par session (une référence de plus par moteur, reconnaissance des pistes).
+  - `--voix NOM` ne change pas : avec une seule voix, le résultat est le même qu'avant, au bit près.
+- Interface, page Doubler : « Une voix pour tous / Une voix par chanteur », duo mixte (Voix d'homme, Voix de femme) ou
+  de même genre (Chanteur 1, Chanteur 2).
+- Interface, page Doubler et Réglages : auto-tune (interrupteur, intensité de 1 à 100, 70 par défaut, gamme Auto,
+  Chromatique ou une tonalité) ; grisé, avec « installez x42-plugins », si `doubler` ne trouve pas le greffon ; défaut
+  de chaque doublage écrit par `doubler --config autotune N`.
+- Interface, page Résultats : bascule « Auto-tune » (touche T), à la même position, pour le doublage et la voix seule ;
+  « Ma voix seule (auto-tune) » dans les pistes séparées, préparée à l'avance comme les autres ; tonalité détectée et
+  écart aux notes avant et après ; courbe de la version auto-tune sur la mélodie (menu « œil » ou Réglages).
+- Interface, page Résultats : « Voix de chaque passage » sous la frise d'octave (une couleur par voix, bandeau partagé
+  quand les deux chantent ensemble) ; « Voix converties seules » au lieu de « Ma voix seule » pour une voix par
+  chanteur ; décision par chanteur dans les informations ; remix avec les mêmes voix.
+- Interface : la corbeille emporte aussi la version « (auto-tune) » d'une voix (vidéo, mp3, `.lrc`, voix seule
+  enregistrée).
+
+### Modifié
+
+- Choix d'octave : un duo mixte annoncé par `--voix homme:…,femme:…` est cherché sans l'épreuve des sections (les
+  chanteurs peuvent se répondre phrase à phrase). Sans voix par chanteur, la règle ne change pas.
+
 ## [0.4.0] - 2026-11-04
 
 ### Ajouté
@@ -188,7 +238,8 @@ Première version publique.
     `VOIXLA_DECODAGE_MATERIEL=1` remet le décodage matériel ;
   - les essais automatiques laissaient le son de l'application coupé.
 
-[Non publié]: https://github.com/mawena/Voix-la/compare/v0.4.0...HEAD
+[Non publié]: https://github.com/mawena/Voix-la/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/mawena/Voix-la/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/mawena/Voix-la/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/mawena/Voix-la/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/mawena/Voix-la/compare/v0.2.0...v0.3.0

@@ -25,9 +25,10 @@ la copie a les mêmes temps que la vidéo doublée, et on y passe à la même po
 
 En ligne de commande (lancée par l'interface et par le préparateur, voixla/preparation.py : tout de suite, sous
 nice -n 19 et ionice -c3, jamais par file-attente) :
-  python3 -m voixla.pistes voix DOSSIER_VOIX
-  python3 -m voixla.pistes video VIDEO_DOUBLEE (SON | --voix DOSSIER_VOIX)
-  python3 -m voixla.pistes exporter (SOURCE | --voix DOSSIER_VOIX) SORTIE.mp3|.flac|.wav
+  python3 -m voixla.pistes voix DOSSIER_VOIX [--autotune]
+  python3 -m voixla.pistes video VIDEO_DOUBLEE (SON | --voix DOSSIER_VOIX [--autotune])
+  python3 -m voixla.pistes exporter (SOURCE | --voix DOSSIER_VOIX [--autotune]) SORTIE.mp3|.flac|.wav
+  (--autotune : la voix seule de la version auto-tune, d'après seche_voix_autotune.wav et reverb_voix_autotune.wav)
   python3 -m voixla.pistes miniature VIDEO_DOUBLEE     (une image de la vidéo, en cache, pour MPRIS)
 """
 
@@ -62,6 +63,15 @@ FORMATS_EXPORT = {".mp3": ["-c:a", "libmp3lame", "-b:a", "320k", "-f", "mp3"],
                   ".flac": ["-c:a", "flac", "-f", "flac"],
                   ".wav": ["-c:a", "pcm_s24le", "-f", "wav"]}
 SANS_IMAGE = ("beat", "ma_voix", "voix_origine")    # pistes sans image, lues en vidéo par une copie (voir plus bas)
+# Une voix par chanteur : « ma voix seule » réunit les voix converties de tous les chanteurs
+LIBELLE_VOIX_CONVERTIES = "Voix converties seules"
+INFOBULLE_VOIX_CONVERTIES = "Les voix converties seules, comme dans le mix : voix sèches et leur réverbération"
+# Version auto-tune (doubler --autotune N, rapport « autotune » appliqué) : la même piste, auto-tunée, lue à la même
+# position par la bascule « Auto-tune » (touche T). Fichiers : « <titre> - voix X (auto-tune).<ext> » et .mp3 ; voix
+# seule d'après travail/<voix>/seche_voix_autotune.wav et reverb_voix_autotune.wav, aux gains du rapport.
+CLES_AUTOTUNE = {"doublage": "doublage_at", "ma_voix": "ma_voix_at"}
+SANS_IMAGE_TOUTES = SANS_IMAGE + ("ma_voix_at",)
+LIBELLES_AUTOTUNE = {"doublage_at": "Doublage (auto-tune)", "ma_voix_at": "Ma voix seule (auto-tune)"}
 VERSION_VIDEO = 1
 CACHE_VIDEO_MO = 2048           # au-delà, les copies vidéo les moins récemment lues sont effacées (réglable :
                                 # préférence cache_pistes_mo, Réglages > Doublage)
@@ -115,8 +125,10 @@ class PlanVoix:
         return self.seche is not None
 
 
-def plan_ma_voix(dossier_voix, rapport=None):
-    """Le plan de « ma voix seule » d'après travail/<voix>/ et rapport.json (lus sans y toucher)."""
+def plan_ma_voix(dossier_voix, rapport=None, autotune=False):
+    """Le plan de « ma voix seule » d'après travail/<voix>/ et rapport.json (lus sans y toucher). autotune : celle de
+    la version auto-tune (seche_voix_autotune.wav, reverb_voix_autotune.wav, gains de rapport.autotune), seulement si
+    cette version est valide (autotune.applique)."""
     if dossier_voix is None:
         return PlanVoix(explication="doublage inachevé : pas de dossier de voix dans travail/")
     tv = Path(dossier_voix)
@@ -126,6 +138,29 @@ def plan_ma_voix(dossier_voix, rapport=None):
     mix = mix if isinstance(mix, dict) else {}
     gains = mix.get("gains_db") if isinstance(mix.get("gains_db"), dict) else {}
     limite = 10 ** ((mix["limite_dbtp"] if _nombre(mix.get("limite_dbtp")) else LIMITE_DEFAUT_DBTP) / 20)
+    if autotune:
+        at = (rapport or {}).get("autotune") if isinstance(rapport, dict) else None
+        if not (isinstance(at, dict) and at.get("applique")):
+            return PlanVoix(explication="pas de version auto-tune valide pour ce doublage")
+        seche = _fichier(tv / "seche_voix_autotune.wav")
+        if seche is None:
+            return PlanVoix(explication="voix auto-tunée absente de travail/ (seche_voix_autotune.wav)")
+        g_at = at.get("gains_db") if isinstance(at.get("gains_db"), dict) else gains
+        gains = {**gains, **{k: v for k, v in g_at.items() if _nombre(v)}}
+        reverb = _fichier(tv / "reverb_voix_autotune.wav")
+        instrumental = _fichier(tv.parent / "instrumental.wav")
+        if not _nombre(gains.get("seche")):
+            return PlanVoix(seche=seche, limite=limite, instrumental=instrumental,
+                            explication="gains du mix absents du rapport : voix auto-tunée à son propre niveau")
+        plan = PlanVoix(seche=seche, gain_seche=float(gains["seche"]), limite=limite, instrumental=instrumental)
+        if _nombre(gains.get("reverb")) and reverb is not None:
+            plan.reverb, plan.gain_reverb, plan.exact = reverb, float(gains["reverb"]), True
+            plan.explication = (f"voix auto-tunée ({formats.db(plan.gain_seche)}) et sa réverbération "
+                                f"({formats.db(plan.gain_reverb)}), aux gains du mix")
+        else:
+            plan.exact = not _nombre(gains.get("reverb"))
+            plan.explication = f"voix auto-tunée au niveau du mix ({formats.db(plan.gain_seche)})"
+        return plan
     seche = _fichier(tv / "seche_voix_convertie.wav")
     reverb = _fichier(tv / "reverb_voix_convertie.wav")
     instrumental = _fichier(tv.parent / "instrumental.wav")
@@ -274,10 +309,10 @@ def _lancer(cmd, tmp, sortie, duree=None, avancement=None):
             Path(tmp).unlink()
 
 
-def preparer_ma_voix(dossier_voix, rapport=None, avancement=None):
-    """Le fichier de « ma voix seule » : en cache (calculé au besoin), ou la voix brute d'un ancien doublage.
-    avancement(fraction) pendant le calcul."""
-    plan = plan_ma_voix(dossier_voix, rapport)
+def preparer_ma_voix(dossier_voix, rapport=None, avancement=None, autotune=False):
+    """Le fichier de « ma voix seule » (de sa version auto-tune si autotune) : en cache (calculé au besoin), ou la
+    voix brute d'un ancien doublage. avancement(fraction) pendant le calcul."""
+    plan = plan_ma_voix(dossier_voix, rapport, autotune)
     if plan.direct is not None:
         return plan.direct
     if not plan.a_combiner:
@@ -297,9 +332,9 @@ def preparer_ma_voix(dossier_voix, rapport=None, avancement=None):
     return sortie
 
 
-def ma_voix_prete(dossier_voix, rapport=None):
+def ma_voix_prete(dossier_voix, rapport=None, autotune=False):
     """Le fichier de « ma voix seule » s'il est déjà prêt (cache ou voix brute), sinon None ; ne calcule rien."""
-    plan = plan_ma_voix(dossier_voix, rapport)
+    plan = plan_ma_voix(dossier_voix, rapport, autotune)
     if plan.direct is not None:
         return plan.direct
     f = chemin_ma_voix(plan) if plan.a_combiner else None
@@ -333,9 +368,11 @@ class Piste:
     def avec_image(self):
         return self.image or self.video is not None
 
+    nom: str = ""                   # libellé propre à ce résultat (« Voix converties seules »), sinon LIBELLES
+
     @property
     def libelle(self):
-        return LIBELLES.get(self.cle, self.cle)
+        return self.nom or LIBELLES.get(self.cle) or LIBELLES_AUTOTUNE.get(self.cle, self.cle)
 
 
 def fichier_voix_source(travail):
@@ -387,9 +424,46 @@ def choisir_pistes(res, forme="video", source_choisie=None):
     vs = fichier_voix_source(res.travail)
     p["voix_origine"] = Piste("voix_origine", vs, explication=f"la voix d’origine isolée (travail/{vs.name})") if vs \
         else Piste("voix_origine", explication="travail/voix_source.wav manque")
+    if getattr(res, "plusieurs_voix", False):
+        p["ma_voix"].nom = LIBELLE_VOIX_CONVERTIES
     for c in SANS_IMAGE:
         _choisir_video(res, forme, p[c], plan)
-    return {c: p[c] for c in CLES}
+    sortie = {c: p[c] for c in CLES}
+    sortie.update(pistes_autotune(res, forme))
+    return sortie
+
+
+def pistes_autotune(res, forme="video"):
+    """{doublage_at, ma_voix_at} si le doublage a une version auto-tune valide (rapport.autotune.applique), sinon {}."""
+    if not getattr(res, "autotune", None):
+        return {}
+    p = {}
+    media = res.video_autotune if forme == "video" else res.mp3_autotune
+    p["doublage_at"] = Piste("doublage_at", media, image=forme == "video",
+                             explication="la version auto-tune du doublage") if media else \
+        Piste("doublage_at", explication="fichier auto-tune absent du dossier")
+    plan = plan_ma_voix(res.dossier_voix, res.rapport, autotune=True) if res.dossier_voix else plan_ma_voix(None)
+    if plan.a_combiner:
+        f = chemin_ma_voix(plan)
+        prete = f is not None and f.is_file()
+        p["ma_voix_at"] = Piste("ma_voix_at", f if prete else None, explication=plan.explication, a_preparer=not prete)
+    else:
+        p["ma_voix_at"] = Piste("ma_voix_at", explication=plan.explication)
+    if getattr(res, "plusieurs_voix", False):
+        p["ma_voix_at"].nom = LIBELLE_VOIX_CONVERTIES + " (auto-tune)"
+    _choisir_video(res, forme, p["ma_voix_at"], plan)
+    return p
+
+
+def cle_ecoutee(cle, autotune):
+    """La piste réellement lue : sa version auto-tune si la bascule est allumée et qu'elle existe (doublage, ma voix
+    seule), sinon la piste elle-même."""
+    return CLES_AUTOTUNE.get(cle, cle) if autotune else cle
+
+
+def cle_de_base(cle):
+    """La piste d'une version auto-tune (« doublage_at » → « doublage »)."""
+    return next((b for b, a in CLES_AUTOTUNE.items() if a == cle), cle)
 
 
 def _choisir_video(res, forme, piste, plan):
@@ -407,7 +481,8 @@ def _choisir_video(res, forme, piste, plan):
         if trop:
             piste.sans_video = trop
             return
-        f = chemin_video(res.video, identite_plan(plan) if piste.cle == "ma_voix" else _signature(piste.fichier))
+        f = chemin_video(res.video, identite_plan(plan) if piste.cle in ("ma_voix", "ma_voix_at")
+                         else _signature(piste.fichier))
     except (OSError, ErreurPistes) as e:
         piste.sans_video = str(e) or "copie vidéo impossible"
         return
@@ -566,9 +641,9 @@ def identite_plan(plan):
     raise ErreurPistes(plan.explication or "pas de voix à lire")
 
 
-def identite_son(son=None, voix=None, rapport=None):
+def identite_son(son=None, voix=None, rapport=None, autotune=False):
     """Ce qui identifie le son d'une copie : la signature du fichier, ou « ma voix seule » d'un dossier de voix."""
-    return identite_plan(plan_ma_voix(voix, rapport)) if voix is not None else _signature(son)
+    return identite_plan(plan_ma_voix(voix, rapport, autotune)) if voix is not None else _signature(son)
 
 
 def chemin_video(video, identite):
@@ -578,10 +653,10 @@ def chemin_video(video, identite):
     return chemins.dossier_cache() / "videos" / f"{cle}{ext_video(video)}"
 
 
-def video_prete(video, son=None, voix=None, rapport=None):
+def video_prete(video, son=None, voix=None, rapport=None, autotune=False):
     """La copie si elle est déjà en cache, sinon None ; ne calcule rien."""
     try:
-        f = chemin_video(video, identite_son(son, voix, rapport))
+        f = chemin_video(video, identite_son(son, voix, rapport, autotune))
     except (OSError, ErreurPistes):
         return None
     return f if f.is_file() else None
@@ -595,10 +670,10 @@ def toucher(f):
         pass
 
 
-def preparer_video(video, son=None, voix=None, avancement=None):
+def preparer_video(video, son=None, voix=None, avancement=None, autotune=False):
     """La copie vidéo d'une piste (en cache, calculée au besoin). son : le fichier de la piste ; voix : le dossier
     d'une voix, pour « ma voix seule » (combinée d'abord, au besoin). Rien n'est écrit à côté de la vidéo doublée.
-    avancement(fraction) pendant la copie."""
+    avancement(fraction) pendant la copie. autotune : avec la voix seule de la version auto-tune."""
     video = Path(video)
     if not video.is_file():
         raise ErreurPistes(f"vidéo doublée introuvable : {video}")
@@ -607,7 +682,7 @@ def preparer_video(video, son=None, voix=None, avancement=None):
         raise ErreurPistes(trop)
     if voix is None and (son is None or not Path(son).is_file()):
         raise ErreurPistes(f"son introuvable : {son}")
-    sortie = chemin_video(video, identite_son(son, voix))
+    sortie = chemin_video(video, identite_son(son, voix, autotune=autotune))
     if sortie.is_file():
         toucher(sortie)
         return sortie
@@ -615,7 +690,7 @@ def preparer_video(video, son=None, voix=None, avancement=None):
     son_doublage = flux_son(info)
     calage = calage_video(info, premier_paquet(video, son_doublage["index"]) if son_doublage else None)
     if voix is not None:
-        son = preparer_ma_voix(voix)
+        son = preparer_ma_voix(voix, autotune=autotune)
     with verrou_fichier(sortie):
         if sortie.is_file():
             return sortie     # faite pendant qu'on attendait le verrou
@@ -696,15 +771,18 @@ def base_sorties(res):
 
 
 def nom_export(res, cle, extension=".mp3"):
-    """Nom d'un fichier enregistré à côté des sorties : « <titre> - voix <Nom> (beat).mp3 », « … (voix seule).mp3 »."""
+    """Nom d'un fichier enregistré à côté des sorties : « <titre> - voix <Nom> (beat).mp3 », « … (voix seule).mp3 » ;
+    voix seule de la version auto-tune : « <titre> - voix <Nom> (auto-tune) (voix seule).mp3 »."""
+    if cle == "ma_voix_at":
+        return f"{base_sorties(res)} (auto-tune){SUFFIXES_EXPORT['ma_voix']}{extension}"
     if cle not in SUFFIXES_EXPORT:
         raise ValueError(cle)
     return f"{base_sorties(res)}{SUFFIXES_EXPORT[cle]}{extension}"
 
 
 def exports_existants(res):
-    """Les fichiers déjà enregistrés pour ce doublage (pour la corbeille)."""
-    return [res.dossier / nom_export(res, cle, ext) for cle in SUFFIXES_EXPORT for ext in FORMATS_EXPORT
+    """Les fichiers déjà enregistrés pour ce doublage (pour la corbeille), version auto-tune comprise."""
+    return [res.dossier / nom_export(res, cle, ext) for cle in (*SUFFIXES_EXPORT, "ma_voix_at") for ext in FORMATS_EXPORT
             if (res.dossier / nom_export(res, cle, ext)).is_file()]
 
 
@@ -734,11 +812,14 @@ def exporter(source, sortie):
 # --- Ligne de commande -----------------------------------------------------------------------------------------------
 
 def main(argv=None):
-    argv = sys.argv[1:] if argv is None else argv
+    argv = list(sys.argv[1:] if argv is None else argv)
     debut = time.time()
+    # --autotune (n'importe où) : « ma voix seule » de la version auto-tune
+    autotune = "--autotune" in argv
+    argv = [a for a in argv if a != "--autotune"]
     try:
         if len(argv) == 2 and argv[0] == "voix":
-            f = preparer_ma_voix(argv[1], avancement=avancement_cli("voix"))
+            f = preparer_ma_voix(argv[1], avancement=avancement_cli("voix"), autotune=autotune)
             print(json.dumps({"voix": str(f), "duree_s": round(time.time() - debut, 2)}, ensure_ascii=False))
             return 0
         if argv[:1] == ["video"] and len(argv) in (3, 4):
@@ -746,7 +827,7 @@ def main(argv=None):
                 print(__doc__)
                 return 2
             av = avancement_cli("video")
-            f = preparer_video(argv[1], voix=argv[3], avancement=av) if len(argv) == 4 else \
+            f = preparer_video(argv[1], voix=argv[3], avancement=av, autotune=autotune) if len(argv) == 4 else \
                 preparer_video(argv[1], son=argv[2], avancement=av)
             print(json.dumps({"video": str(f), "duree_s": round(time.time() - debut, 2)}, ensure_ascii=False))
             return 0
@@ -755,7 +836,7 @@ def main(argv=None):
                 if len(argv) != 4:
                     print(__doc__)
                     return 2
-                source, sortie = preparer_ma_voix(argv[2]), argv[3]
+                source, sortie = preparer_ma_voix(argv[2], autotune=autotune), argv[3]
             elif len(argv) == 3:
                 source, sortie = argv[1], argv[2]
             else:

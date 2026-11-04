@@ -28,6 +28,11 @@
    isolée, seulement sur les phrases chantées, langue détectée phrase par phrase, horodatage par mot, garde-fous contre
    les hallucinations ; traduction française (NLLB-200 distillé 600M) des lignes qui ne sont pas en français. Étape à
    part, comme le nettoyage ; un échec n'empêche jamais le doublage.
+7. Plusieurs voix cibles, une par chanteur (réglage voix_cibles, chant seulement ; voir decider_chanteurs) : homme /
+   femme d'un duo mixte, ou chanteur 1 / chanteur 2 (ordre d'apparition) d'un duo de même genre ; décalage d'octave de
+   chaque couple chanteur -> voix cible ; chaque piste nettoyée de chaque morceau prend la voix du chanteur qu'on y
+   reconnaît (hauteur et empreinte de la piste), si bien que voix principale et chœurs peuvent chanter en duo. Chaque
+   modèle n'est chargé qu'une fois, chaque référence préparée une fois. Sans ce réglage, rien ne change.
 
 doubler.py remplace __REGLAGES__ (JSON en base64) et SOURCE (sa propre source en base64 : le noyau tourne en carnet,
 sans fichier, et en a besoin pour ses étapes à part), puis pousse ce noyau privé (GPU T4 + internet).
@@ -41,9 +46,12 @@ Sorties dans /kaggle/working/<id>/ pour chaque vidéo :
   voix_convertie.flac        voix cible (44,1 kHz mono 24 bits, même nombre d'échantillons, calée sur l'échantillon 0)
   voix_convertie_<autre>.flac, voix_convertie_<N>pas.flac   variantes de comparaison (modèle, pas de diffusion)
   rapport.json               mode et mesures, morceaux (hauteur, voix, décalage), moteur, nettoyage, secours (zones
-                             récupérées : début, fin, durée, écart), paroles, temps
+                             récupérées : début, fin, durée, écart), paroles, temps ; plusieurs voix cibles :
+                             voix_cibles, décision par chanteur (decision_hauteur.chanteurs : voix cible et décalage de
+                             chaque couple), affectation (chaque piste sur chaque morceau, sa raison, passages par voix)
   courbes.json               mélodie de la voix isolée et de la voix convertie, décalage appliqué (format 1 : une
-                             valeur toutes les 20 ms ; lu par l'interface, à ne pas changer sans la prévenir)
+                             valeur toutes les 20 ms ; lu par l'interface, à ne pas changer sans la prévenir) ;
+                             plusieurs voix cibles : voix_cibles et voix_par_trame en plus
   paroles.json               paroles horodatées par ligne et par mot, langue, traduction française (format 1 ; contrat
                              avec l'interface) ; temps du son doublé, doubler.py les cale sur la vidéo de sortie
 et /kaggle/working/session.json (installation, séparation, nettoyage, chargement des modèles, temps total).
@@ -1047,6 +1055,517 @@ def decider_chant(segs, R, centre, coupes_son=None):
     return info
 
 
+# --- Plusieurs voix cibles : une par chanteur (chant seulement) -------------------------------------------------------
+# doubler.py envoie, en plus de R['voix'] (la première voix : analyse, parole), R['voix_cibles'] = {'mode': 'genre' ou
+# 'ordre', 'voix': [{'cle', 'nom', 'fichier', 'f0_parole_hz', 'facteur_chant', 'affichage'}, …]}, avec au moins deux
+# voix différentes ; sans lui (ou avec une seule voix), tout reste comme avant, au bit près.
+#   genre : cle homme / femme. Le chanteur et la chanteuse d'un duo mixte sont trouvés par la règle d'octave v2.3 (axe
+#           homme - femme des ancres de genre) ; chacun prend la voix de sa classe.
+#   ordre : cle chanteur1 / chanteur2, pour un duo de même genre. Duo cherché d'abord sur l'axe du genre (un duo mixte y
+#           est bien plus sûr), sinon sur l'axe des empreintes de la chanson elle-même : les deux groupes des k-moyennes
+#           sphériques des empreintes CAMPPlus, score cos(e, c2) - cos(e, c1). Chanteur 1 : celui qui chante le premier.
+#           Calibrage (rapports locaux, 04/11/2026) : silhouette des deux groupes 0,18 à 0,24 pour une chanteuse seule
+#           (le style, couplet contre refrain, sépare aussi les empreintes : écart et sections n'y suffisent pas), 0,30
+#           à 0,46 pour quatre vrais duos ; seuil 0,27.
+# Une seule voix trouvée : tout prend la voix de sa classe (genre), sinon la première (ordre), avec un message.
+# Décalage de chaque couple chanteur -> voix cible : la règle d'octave (centre de chant typique de la classe du chanteur
+# rapproché du centre de chant de SA voix cible).
+# Ensuite (affecter_pistes), chaque piste nettoyée de chaque morceau prend la voix du chanteur qu'on y reconnaît, par la
+# hauteur et l'empreinte de la piste sur ce morceau (vraisemblances des deux chanteurs) ; incertain, ou piste trop faible
+# (reste du karaoké) : le chanteur du morceau.
+
+CHANTEURS_DEFAUT = {
+    'axe_silhouette_min': 0.27,      # ordre, axe des empreintes : silhouette minimale des deux groupes
+    'axe_ecart_min': 0.15,           # ... écart minimal des médianes des deux groupes (cos(e, c2) - cos(e, c1))
+    'marge_reconnaissance': 2.0,     # écart de log-vraisemblance pour reconnaître le chanteur d'une piste (e² ≈ 7 fois
+                                     # plus probable) ; en deçà : incertain, chanteur du morceau
+    'piste_min_db': -20.0,           # piste plus faible que la voix complète sur le morceau : chanteur du morceau
+    'sigma_hauteur_min_oct': 0.1,    # écart-type plancher de la hauteur d'un chanteur (octaves, hauteur par morceau)
+    # Mode genre (l'utilisateur annonce un duo mixte) : sur l'axe du genre, les chanteurs peuvent alterner phrase à
+    # phrase (essai réel du 04/11/2026 : une fin de duo où ils se répondent toutes les 3 à 7 s, z des suites +1,0, la
+    # voix la moins présente 11 s) ; pas d'épreuve des sections, 6 s voisées au moins par voix, sections de 2,5 s.
+    # Garde-fous : deux groupes de même classe ne font qu'une voix ; l'empreinte ne tranche la classe contre la
+    # hauteur (un chanteur à 345 Hz) que si un groupe est nettement d'homme (≥ genre_homme) et l'autre nettement de
+    # femme (≤ genre_femme) : une chanteuse seule dont les empreintes se partagent reste une voix (rapports locaux).
+    'genre_z_suites': None,
+    'genre_voise_min_s': 6.0,
+    'genre_section_min_s': 2.5,
+}
+
+
+def lire_cibles(R):
+    """Les voix cibles de R['voix_cibles'] ({'mode', 'voix': [...]}), ou None : une seule voix (cas d'avant). Deux voix
+    de même nom n'en font qu'une."""
+    vc = R.get('voix_cibles') or None
+    if not vc:
+        return None
+    voix, noms = [], set()
+    for v in vc.get('voix') or []:
+        if v.get('nom') and v.get('fichier') and v['nom'] not in noms:
+            voix.append(dict(v))
+            noms.add(v['nom'])
+    if len(voix) < 2:
+        return None
+    mode = vc.get('mode') or ('genre' if {v.get('cle') for v in voix} <= {'homme', 'femme'} else 'ordre')
+    if mode not in ('genre', 'ordre'):
+        raise ValueError(f'voix_cibles : mode {mode!r} inconnu (genre ou ordre)')
+    return {'mode': mode, 'voix': voix}
+
+
+def mediane_axe(morceaux, cle, R):
+    v = [(s[cle], s['voise_s']) for s in morceaux if s.get(cle) is not None and s.get('voise_s', 0) >= R['voise_min_s']]
+    return mediane_ponderee([a for a, _ in v], [b for _, b in v]) if v else None
+
+
+def chercher_duo(morceaux, actifs_i, cle, R, ecart_min):
+    """Essai de duo sur un axe (cle : genre_score, ou score_empreinte), mêmes épreuves que decider_octave : assez de
+    morceaux, deux groupes (k-moyennes à une dimension) d'écart suffisant, chacun chantant assez, en sections suivies.
+    Rend (duo, pourquoi, essai) ; duo = {'seuil', 'mu', 'sigma', 'groupes'} ou None."""
+    elig = [i for i in actifs_i if morceaux[i].get(cle) is not None and morceaux[i]['voise_s'] >= R['voise_min_s']]
+    if len(elig) < R['duo_morceaux_min']:
+        return None, f"{len(elig)} morceaux avec empreinte : trop peu pour chercher un duo", None
+    seuil, _ = deux_moyennes([morceaux[i][cle] for i in elig], [morceaux[i]['voise_s'] for i in elig], R['duo_part_min'])
+    if seuil is None:
+        return None, 'empreintes toutes égales', None
+    groupes = [[morceaux[i] for i in elig if (morceaux[i][cle] > seuil) == bool(k)] for k in (0, 1)]
+    mu = [mediane_axe(gr, cle, R) for gr in groupes]
+    voise = [sum(s['voise_s'] for s in gr) for gr in groupes]
+    tot = sum(voise)
+    ecart = mu[1] - mu[0]
+    z = z_suites([int(morceaux[i][cle] > seuil) for i in elig])
+    essai = {'axe': cle, 'seuil': round(seuil, 3), 'ecart': round(ecart, 3), 'z_suites': round(z, 2),
+             'parts': [round(v / tot, 3) for v in voise], 'mu': [round(m, 3) for m in mu]}
+    if ecart < ecart_min:
+        return None, f"empreintes trop proches (écart {ecart:.3f} < {ecart_min})", essai
+    if min(voise) < max(R['duo_part_min'] * tot, R['duo_voise_min_s']):
+        return None, (f"une des deux voix chante trop peu ({min(voise):.0f} s voisées, {min(essai['parts']):.0%} ; il en "
+                      f"faut {R['duo_part_min']:.0%} et {R['duo_voise_min_s']:.0f} s)"), essai
+    if R['duo_z_suites'] is not None and z > R['duo_z_suites']:
+        return None, f"empreintes mêlées dans le temps, pas en sections (z des suites {z:.1f} > {R['duo_z_suites']})", essai
+    sigma = []
+    for k, gr in enumerate(groupes):
+        v = [s[cle] for s in gr]
+        sigma.append(max(math.sqrt(sum((g - mu[k]) ** 2 for g in v) / len(v)) if v else 0.0, R['sigma_min']))
+    essai['sigma'] = [round(x, 3) for x in sigma]
+    return {'seuil': seuil, 'mu': mu, 'sigma': sigma, 'groupes': groupes}, None, essai
+
+
+def axe_empreintes(morceaux, actifs_i, R):
+    """Axe des chanteurs d'après les empreintes de la chanson (mode ordre, duo de même genre) : k-moyennes sphériques
+    (k = 2) des empreintes normées des morceaux assez voisés ; rend (vecteur c2 - c1, silhouette, morceaux) ou
+    (None, silhouette, n) s'il n'y a pas assez de morceaux."""
+    import numpy as np
+    elig = [i for i in actifs_i if morceaux[i].get('emb') is not None and morceaux[i]['voise_s'] >= R['voise_min_s']]
+    if len(elig) < R['duo_morceaux_min']:
+        return None, None, len(elig)
+    e = np.stack([np.asarray(morceaux[i]['emb'], np.float64) for i in elig])
+    lab, c = kmeans_cos(e, 2)
+    if len(set(lab.tolist())) < 2:
+        return None, None, len(elig)
+    return c[1] - c[0], silhouette_cos(e, lab), len(elig)
+
+
+def ordre_apparition(lab):
+    """Rang (0 : premier, 1 : second) de chaque groupe de voix (0 / 1) dans l'ordre d'apparition."""
+    premier = lab[0] if lab else 0
+    return {premier: 0, 1 - premier: 1}
+
+
+def decider_chanteurs(morceaux, cibles, reglages=None, coupes_son=None):
+    """Chanteur de chaque morceau et voix cible de chaque chanteur (plusieurs voix cibles, chant).
+
+    morceaux : comme pour decider_octave (genre_score si des ancres de genre), plus 'emb' (empreinte normée ou None).
+    cibles : {'mode': 'genre' | 'ordre', 'voix': [{'cle', 'nom', 'centre_hz', ...}, ...]} (centre de chant de chaque voix).
+    Rend (resultats, info, modele) : resultats[i] = {'decalage', 'voix' (nom du chanteur), 'base', 'k' (groupe 0 / 1 ou
+    None), 'cible' (indice de la voix cible), 'chanteur' (clé de la voix cible : homme, chanteur1…)} ; info pour le
+    rapport ; modele : de quoi reconnaître les chanteurs sur les pistes (None sans duo)."""
+    import numpy as np
+    R = {**OCTAVE_DEFAUT, **CHANTEURS_DEFAUT, **(reglages or {})}
+    mode, V = cibles['mode'], cibles['voix']
+    index_cle = {v.get('cle'): j for j, v in enumerate(V)}
+
+    def decalage(classe, j):
+        return meilleure_octave(R[f'centre_{classe}_hz'], V[j]['centre_hz'])
+    info = {'regle': 'v2.3, une voix cible par chanteur', 'mode': mode,
+            'voix_cibles': [{'cle': v.get('cle'), 'nom': v['nom'], 'centre_chant_hz': round(v['centre_hz'], 1)} for v in V],
+            'decalage_par_voix_et_classe': {v['nom']: {c: decalage(c, j) for c in ('homme', 'femme')} for j, v in enumerate(V)},
+            'zone_ambigue_hz': [R['zone_basse_hz'], R['zone_haute_hz']], 'frontiere_hauteur_seule_hz': R['frontiere_hz']}
+    actifs_i = [i for i, s in enumerate(morceaux) if not s.get('muet') and s.get('voise_s', 0) > 0]
+    tout = [morceaux[i] for i in actifs_i]
+    mg = mesurer_voix(tout, R) if tout else {}
+    classe_g, raison_g = classer(mg, R) if tout else (None, 'aucun morceau chanté')
+    co_g = classe_g or (classe_hauteur(mg['f0_med_hz'], R) if mg.get('f0_med_hz') else None)
+    info['voix_principale'] = {**mg, 'classe': classe_g, 'raison': raison_g}
+
+    # 1. Deux chanteurs ? Axe du genre d'abord (ancres), puis, en mode ordre, axe des empreintes de la chanson
+    duo, axe, pourquoi, essais = None, None, None, {}
+    # duo mixte annoncé (mode genre) : alternance phrase à phrase permise sur l'axe du genre (CHANTEURS_DEFAUT)
+    Rg = ({**R, 'duo_z_suites': R['genre_z_suites'], 'duo_voise_min_s': R['genre_voise_min_s'],
+           'section_min_s': R['genre_section_min_s']} if mode == 'genre' else R)
+    Rd = R
+    if not actifs_i:
+        pourquoi = 'aucun morceau chanté'
+    elif any(morceaux[i].get('genre_score') is not None for i in actifs_i):
+        duo, pourquoi, essais['genre'] = chercher_duo(morceaux, actifs_i, 'genre_score', Rg, R['duo_ecart_genre'])
+        axe, Rd = ('genre_score', Rg) if duo else (None, R)
+    else:
+        pourquoi = 'sans ancres de genre : pas de duo sur l\'axe du genre'
+    vecteur = None
+    if duo is None and mode == 'ordre' and actifs_i:
+        vecteur, sil, nb = axe_empreintes(morceaux, actifs_i, R)
+        essais['empreintes'] = {'morceaux': nb, 'silhouette': None if sil is None else round(sil, 3)}
+        if vecteur is None:
+            pourquoi += f" ; axe des empreintes : {nb} morceaux, trop peu"
+        elif sil < R['axe_silhouette_min']:
+            pourquoi += f" ; axe des empreintes : groupes trop peu séparés (silhouette {sil:.2f} < {R['axe_silhouette_min']})"
+            vecteur = None
+        else:
+            for i in actifs_i:
+                e = morceaux[i].get('emb')
+                morceaux[i]['score_empreinte'] = None if e is None else round(float(np.asarray(e, np.float64) @ vecteur), 3)
+            duo, p2, e2 = chercher_duo(morceaux, actifs_i, 'score_empreinte', R, R['axe_ecart_min'])
+            essais['empreintes'].update(e2 or {})
+            if duo:
+                axe = 'score_empreinte'
+            else:
+                pourquoi += f' ; axe des empreintes : {p2}'
+                vecteur = None
+    info['essai_duo'] = essais
+
+    # 2. Duo : chanteur de chaque morceau (Viterbi sur l'axe retenu, sections minimales), classe de chaque chanteur
+    lab, act, mes = None, None, None
+    if duo:
+        mu, sigma = duo['mu'], duo['sigma']
+        pause = [False]
+        for a, b in zip(actifs_i, actifs_i[1:]):
+            en_son = coupes_son is None or any(abs(morceaux[b]['debut_s'] - c) < 0.006 for c in coupes_son)
+            pause.append(b - a > 1 or not en_son)
+        act = [morceaux[i] for i in actifs_i]
+        sur_axe = [{**s, 'genre_score': s.get(axe)} for s in act]
+        lab = lisser_sections(sur_axe, viterbi(sur_axe, mu, sigma, pause, Rd), Rd)
+        voise = [sum(s['voise_s'] for s, k in zip(act, lab) if k == j) for j in (0, 1)]
+        if min(voise) < max(Rd['duo_part_min'] * sum(voise), Rd['duo_voise_min_s']):
+            pourquoi, duo = f"après attribution, une voix chante trop peu ({min(voise):.0f} s voisées)", None
+    if duo:
+        mes = [mesurer_voix(gr, R) for gr in duo['groupes']]
+        # duo mixte annoncé, empreintes nettement d'homme et de femme : l'empreinte donne la classe, même contre la
+        # hauteur (un chanteur qui monte à 345 Hz, une chanteuse grave)
+        g_med = [m.get('genre_med') for m in mes]
+        par_empreinte = (mode == 'genre' and axe == 'genre_score' and None not in g_med
+                         and g_med[1] >= R['genre_homme'] and g_med[0] <= R['genre_femme'])
+        for k, m in enumerate(mes):
+            c, r = classer(m, R, sur_seulement=True)
+            if par_empreinte:
+                c = 'femme' if k == 0 else 'homme'
+                r = (f"duo mixte d'après l'empreinte : {g_med[k]:+.3f} (" + ('femme' if k == 0 else 'homme')
+                     + (f", hauteur {m['f0_med_hz']:.0f} Hz" if m.get('f0_med_hz') else '') + ')')
+            elif c is None:
+                ch = classe_hauteur(m['f0_med_hz'], R) if m.get('f0_med_hz') else None
+                attendue = ('femme' if k == 0 else 'homme') if axe == 'genre_score' else ch
+                if ch is not None and ch == attendue:
+                    r += (", d'après la hauteur seule" + (f" (empreinte plus {'basse' if k == 0 else 'haute'} que l'autre "
+                                                          'voix)' if axe == 'genre_score' else ''))
+                    c = ch
+                else:
+                    c, r = co_g, r + ' : comme la voix principale'
+            m.update({'classe': c, 'raison': r, 'voise_attribue_s': round(voise[k], 1)})
+        if mode == 'genre' and mes[0]['classe'] == mes[1]['classe']:
+            pourquoi = (f"deux voix probables, toutes deux de classe {mes[0]['classe']} : une seule voix cible (pour une voix "
+                        'par chanteur dans un duo de même genre : chanteur1:…,chanteur2:…)')
+            duo = None
+
+    resultats = [None] * len(morceaux)
+    if duo is None:
+        j = index_cle.get(co_g, 0) if mode == 'genre' else 0
+        d = decalage(co_g, j) if co_g else 0
+        cle = V[j].get('cle')
+        if not actifs_i:
+            msg = f"aucun morceau chanté : voix {V[j]['nom']}"
+        elif mode == 'genre':
+            msg = (f"une seule voix détectée ({co_g or 'classe inconnue'}{'' if classe_g else ', d’après la hauteur'}) : "
+                   f"tout prend la voix {V[j]['nom']}" + ('' if co_g in index_cle else ' (la première : aucune voix pour cette classe)'))
+        else:
+            msg = f"une seule voix détectée : tout prend la voix du chanteur 1, {V[j]['nom']}"
+        info.update({'voix': 1 if actifs_i else 0, 'pourquoi_une_voix': pourquoi, 'message': msg,
+                     'chanteurs': [{'nom': co_g or 'voix', 'classe': co_g, 'raison': raison_g, 'cible': j, 'voix': V[j]['nom'],
+                                    'cle': cle, 'centre_chanteur_hz': R[f'centre_{co_g}_hz'] if co_g else None,
+                                    'centre_cible_hz': round(V[j]['centre_hz'], 1), 'decalage': d}]})
+        nom = f"voix seule ({co_g or 'd’après la hauteur'}) → {V[j]['nom']}"
+        for i, s in enumerate(morceaux):
+            resultats[i] = {'decalage': d, 'voix': classe_g, 'base': nom if i in actifs_i else muet_ou_sourd(s), 'k': None,
+                            'cible': j, 'chanteur': cle}
+        return resultats, info, None
+
+    # 3. Voix cible et décalage de chaque chanteur (couple chanteur -> voix cible)
+    rang = ordre_apparition(lab)
+    cls = [mes[k]['classe'] for k in (0, 1)]
+    if mode == 'genre':
+        cible = [index_cle.get(cls[k], 0) for k in (0, 1)]
+        noms = cls
+    else:
+        cible = [rang[k] for k in (0, 1)]
+        noms = cls if cls[0] != cls[1] else [f'{cls[k] or "voix"} {rang[k] + 1}' for k in (0, 1)]
+    decs = [decalage(cls[k], cible[k]) if cls[k] else 0 for k in (0, 1)]
+    chanteurs = []
+    for k in (0, 1):
+        j = cible[k]
+        chanteurs.append({**mes[k], 'nom': noms[k], 'rang': rang[k] + 1, 'cible': j, 'voix': V[j]['nom'], 'cle': V[j].get('cle'),
+                          'centre_chanteur_hz': R[f'centre_{cls[k]}_hz'] if cls[k] else None,
+                          'centre_cible_hz': round(V[j]['centre_hz'], 1), 'decalage': decs[k],
+                          'mu_axe': round(duo['mu'][k], 3), 'sigma_axe': round(duo['sigma'][k], 3)})
+    for j, i in enumerate(actifs_i):
+        k = lab[j]
+        g = morceaux[i].get(axe)
+        nette = g is not None and abs(g - duo['mu'][k]) <= abs(g - duo['mu'][1 - k])
+        resultats[i] = {'decalage': decs[k], 'voix': noms[k], 'k': k, 'cible': cible[k], 'chanteur': V[cible[k]].get('cle'),
+                        'base': f"duo, voix {noms[k]} → {V[cible[k]]['nom']}" + ('' if nette else ' (d’après les voisins)')}
+    dernier = None
+    for i in range(len(morceaux)):
+        if resultats[i] is None:
+            if dernier is None:
+                dernier = resultats[actifs_i[0]]
+            resultats[i] = {'decalage': dernier['decalage'], 'voix': None, 'base': muet_ou_sourd(morceaux[i]), 'k': dernier['k'],
+                            'cible': dernier['cible'], 'chanteur': dernier['chanteur']}
+        else:
+            dernier = resultats[i]
+    secs = sections(act, lab)
+    info.update({'voix': 2, 'axe': 'genre' if axe == 'genre_score' else 'empreintes', 'chanteurs': chanteurs,
+                 'message': 'duo : ' + ', '.join(f"{c['nom']} → {c['voix']} ({c['decalage']:+d})" for c in chanteurs),
+                 'changements': [{'a_s': act[d]['debut_s'], 'vers': noms[k], 'voix': V[cible[k]]['nom']} for d, _, k, _ in secs[1:]]})
+    # Modèle de chaque chanteur pour reconnaître les pistes : axe (moyenne, écart-type) et hauteur (log2, en octaves)
+    hauteur = []
+    for k in (0, 1):
+        f = [(math.log2(s['f0_med']), s['voise_s']) for s, kk in zip(act, lab)
+             if kk == k and s.get('f0_med') and s['voise_s'] >= R['voise_hauteur_s']]
+        if f:
+            m = mediane_ponderee([a for a, _ in f], [b for _, b in f])
+            sd = math.sqrt(sum(b * (a - m) ** 2 for a, b in f) / sum(b for _, b in f))
+            hauteur.append((m, max(sd, R['sigma_hauteur_min_oct'])))
+        else:
+            hauteur.append(None)
+    modele = {'axe': axe, 'vecteur': vecteur, 'mu': list(duo['mu']), 'sigma': list(duo['sigma']), 'hauteur': hauteur,
+              'cible': cible, 'decalage': decs, 'noms': noms}
+    info['modele_pistes'] = {'axe': info['axe'], 'mu': [round(x, 3) for x in duo['mu']],
+                             'sigma': [round(x, 3) for x in duo['sigma']],
+                             'hauteur_hz': [None if h is None else round(2 ** h[0], 1) for h in hauteur],
+                             'hauteur_sigma_oct': [None if h is None else round(h[1], 3) for h in hauteur]}
+    return resultats, info, modele
+
+
+def decider_chant_cibles(segs, R, cibles, coupes_son=None):
+    """decider_chant avec plusieurs voix cibles : genre_score (ancres) comme decider_chant, puis decider_chanteurs ;
+    chaque morceau reçoit decalage, base, voix (chanteur), cible, voix_cible et chanteur (clé). Rend (info, modele), le
+    modèle servant à reconnaître les chanteurs sur les pistes (vecteur de l'axe ajouté : ancres ou empreintes)."""
+    import numpy as np
+    ancres = R.get('ancres')
+    if ancres:
+        h, f = np.asarray(ancres['homme']), np.asarray(ancres['femme'])
+        for s in segs:
+            if not s['muet'] and s.get('emb') is not None:
+                s['genre_score'] = round(float(s['emb'] @ h - s['emb'] @ f), 3)
+    res, info, modele = decider_chanteurs(segs, cibles, {k: R[k] for k in {**OCTAVE_DEFAUT, **CHANTEURS_DEFAUT} if k in R},
+                                          coupes_son)
+    if not ancres:
+        info['empreinte'] = 'sans ancres de genre : pas de duo sur l’axe du genre (ni, en mode genre, de duo du tout)'
+    if modele is not None and modele['axe'] == 'genre_score':
+        modele['vecteur'] = np.asarray(ancres['homme'], np.float64) - np.asarray(ancres['femme'], np.float64)
+    for s, r in zip(segs, res):
+        s['decalage'], s['base'], s['cible'] = r['decalage'], r['base'], r['cible']
+        s['voix_cible'], s['chanteur'] = cibles['voix'][r['cible']]['nom'], r['chanteur']
+        s['k'] = r['k']
+        if r['voix'] is not None:
+            s['voix'] = r['voix']
+        else:
+            s.pop('voix', None)
+    vp = info['voix_principale']
+    info.update({'f0_mediane_globale_hz': vp.get('f0_med_hz'), 'voix_seule': vp.get('classe') if info['voix'] == 1 else None})
+    return info, modele
+
+
+def vraisemblances(m, modele, R):
+    """Log-vraisemblance de chaque chanteur (0, 1) pour une piste mesurée sur un morceau : score sur l'axe du duo
+    (empreinte de la piste) et hauteur médiane, chacun pondéré par le temps voisé (comme viterbi). Rend ([l0, l1], indices
+    utilisés)."""
+    l, indices = [0.0, 0.0], []
+    w = min(m.get('voise_s', 0) / 3.0, 1.0)
+    if m.get('voise_s', 0) < R['voise_hauteur_s']:
+        return l, indices
+    if m.get('score') is not None:
+        indices.append('empreinte')
+        for k in (0, 1):
+            mu, sg = modele['mu'][k], modele['sigma'][k]
+            l[k] += -w * (m['score'] - mu) ** 2 / (2 * sg ** 2) - w * math.log(sg)
+    if m.get('f0_med') and all(h is not None for h in modele['hauteur']):
+        indices.append('hauteur')
+        lf = math.log2(m['f0_med'])
+        for k in (0, 1):
+            mu, sg = modele['hauteur'][k]
+            l[k] += -w * (lf - mu) ** 2 / (2 * sg ** 2) - w * math.log(sg)
+    return l, indices
+
+
+def reconnaitre(m, modele, k_morceau, R):
+    """(chanteur 0 / 1, état, raison, marge) d'une piste sur un morceau ; k_morceau : chanteur du morceau (voix
+    complète) ; marge : log-vraisemblance de l'autre chanteur moins celle du chanteur du morceau. États : autre (l'autre
+    chanteur reconnu), meme (le chanteur du morceau reconnu), incertaine, faible (piste trop faible devant la voix
+    complète : un reste du karaoké, pas une voix à part), sans_indice ; les trois derniers gardent le chanteur du morceau."""
+    if k_morceau is None:
+        k_morceau = 0
+    if m is None:
+        return k_morceau, 'sans_indice', 'sans mesure : chanteur du morceau', None
+    if m.get('niveau_db') is not None and m['niveau_db'] < R['piste_min_db']:
+        return k_morceau, 'faible', (f"piste faible ({m['niveau_db']:.0f} dB devant la voix complète, seuil "
+                                     f"{R['piste_min_db']:.0f}) : chanteur du morceau"), None
+    l, indices = vraisemblances(m, modele, R)
+    if not indices:
+        return k_morceau, 'sans_indice', 'trop peu voisée pour être reconnue : chanteur du morceau', None
+    autre = 1 - k_morceau
+    marge = l[autre] - l[k_morceau]
+    par = ' et '.join(indices)
+    if marge >= R['marge_reconnaissance']:
+        return autre, 'autre', (f"reconnue ({par}) : {modele['noms'][autre]}, l'autre chanteur que le morceau "
+                                f"(marge {marge:.1f})"), round(marge, 2)
+    if marge <= -R['marge_reconnaissance']:
+        return k_morceau, 'meme', f"reconnue ({par}) : {modele['noms'][k_morceau]}, comme le morceau (marge {-marge:.1f})", round(marge, 2)
+    return k_morceau, 'incertaine', (f"incertaine ({par}, marge {abs(marge):.1f} < {R['marge_reconnaissance']}) : "
+                                     'chanteur du morceau'), round(marge, 2)
+
+
+def mesurer_piste(xp, f0p, x, morceaux, empreinte_fn=None, vecteur=None, porte_g=None):
+    """Hauteur, temps voisé, niveau (dB devant la voix complète x) et score d'empreinte d'une piste (xp, F0 f0p par
+    trame de 10 ms) sur chaque morceau [(i, début, fin)] (échantillons). porte_g (piste de secours) : seuls comptent les
+    échantillons où sa porte est ouverte. empreinte_fn(y) -> empreinte normée ; vecteur : axe du duo. Rend {i: mesure}."""
+    import numpy as np
+    xp, x, f0p = np.asarray(xp), np.asarray(x), np.asarray(f0p)
+    out = {}
+    for i, a, b in morceaux:
+        sel = slice(a, b)
+        yp, yx = xp[sel], x[sel]
+        f = f0p[a // PAS:b // PAS]
+        if porte_g is not None:
+            ouvert = np.asarray(porte_g[sel]) > 0.5
+            yp, yx = yp[ouvert], yx[ouvert]
+            g_t = np.asarray(porte_g[a:b:PAS]) > 0.5
+            f = f[:len(g_t)][g_t[:len(f)]]
+        v = f[f > 1]
+        m = {'voise_s': round(len(v) * 0.01, 2), 'f0_med': round(float(np.median(v)), 1) if len(v) else None}
+        ep, ex = float(np.sqrt(np.mean(np.asarray(yp, np.float64) ** 2))) if len(yp) else 0.0, \
+            float(np.sqrt(np.mean(np.asarray(yx, np.float64) ** 2))) if len(yx) else 0.0
+        m['niveau_db'] = round(20 * math.log10(ep / ex), 1) if ep > 1e-9 and ex > 1e-9 else (-120.0 if ex > 1e-9 else None)
+        if empreinte_fn is not None and vecteur is not None and len(yp) >= SR // 2 and m['voise_s'] > 0:
+            m['score'] = round(float(np.asarray(empreinte_fn(np.ascontiguousarray(yp, np.float32)), np.float64) @ vecteur), 3)
+        out[i] = m
+    return out
+
+
+def affecter_pistes(segs, noms_pistes, mesures, modele, cibles, octave_imposee=None, reglages=None):
+    """Voix cible et décalage de chaque piste sur chaque morceau. segs : morceaux décidés (k, cible, decalage) ; mesures :
+    {piste: {i: mesure}} (mesurer_piste ; la piste « voix », voix complète, n'en a pas besoin) ; modele : decider_chanteurs
+    (None : une seule voix trouvée, tout suit le morceau). Rend {piste: {i: {'chanteur', 'cible', 'voix', 'decalage',
+    'etat', 'raison', 'marge', 'mesure'}}} ; états : ceux de reconnaitre, plus voix_seule (une seule voix trouvée) et
+    voix_complete (piste « voix » : la décision du morceau elle-même)."""
+    R = {**OCTAVE_DEFAUT, **CHANTEURS_DEFAUT, **(reglages or {})}
+    V = cibles['voix']
+    res = {}
+    for nom in noms_pistes:
+        res[nom] = {}
+        for s in segs:
+            if s.get('muet'):
+                continue
+            i, k_m = s['i'], s.get('k')
+            m = (mesures.get(nom) or {}).get(i)
+            if modele is None:
+                k, etat, raison, marge = None, 'voix_seule', 'une seule voix trouvée : voix du morceau', None
+                j, d = s['cible'], s['decalage']
+            elif nom == 'voix':
+                k, etat, raison, marge = k_m, 'voix_complete', 'voix complète : chanteur du morceau', None
+                j, d = s['cible'], s['decalage']
+            else:
+                k, etat, raison, marge = reconnaitre(m, modele, k_m, R)
+                j, d = modele['cible'][k], modele['decalage'][k]
+            if octave_imposee in (-12, 0, 12):
+                d = octave_imposee
+            res[nom][i] = {'chanteur': None if k is None else modele['noms'][k], 'cible': j, 'voix': V[j]['nom'],
+                           'decalage': d, 'etat': etat, 'raison': raison, 'marge': marge, 'mesure': m}
+    return res
+
+
+def rapport_affectation(segs, aff, plans, cibles, info):
+    """Partie « affectation » du rapport (plusieurs voix cibles) : message, voix utilisées, et, pour chaque piste, chacun
+    des morceaux qu'elle convertit (plans : {piste: indices}) : voix, chanteur, décalage, état, raison, mesures ; un
+    résumé par piste (morceaux par voix, par état). Chaque morceau de segs reçoit voix_pistes ({piste: voix})."""
+    temps = {s['i']: (s['debut_s'], s['fin_s']) for s in segs}
+    pistes, resume, utilisees = {}, {}, []
+    for nom, par_i in aff.items():
+        lignes, r = [], {'morceaux': 0, 'par_voix': {}, 'etats': {}}
+        for i in sorted(par_i):
+            if i not in plans.get(nom, ()):
+                continue
+            a, m = par_i[i], par_i[i].get('mesure') or {}
+            lignes.append({'i': i, 'debut_s': temps[i][0], 'fin_s': temps[i][1], 'chanteur': a['chanteur'], 'voix': a['voix'],
+                           'decalage': a['decalage'], 'etat': a['etat'], 'raison': a['raison'], 'marge': a['marge'],
+                           **{k: m[k] for k in ('f0_med', 'voise_s', 'niveau_db', 'score') if m.get(k) is not None}})
+            r['morceaux'] += 1
+            r['par_voix'][a['voix']] = r['par_voix'].get(a['voix'], 0) + 1
+            r['etats'][a['etat']] = r['etats'].get(a['etat'], 0) + 1
+            if a['voix'] not in utilisees:
+                utilisees.append(a['voix'])
+        pistes[nom], resume[nom] = lignes, r
+    for s in segs:
+        vp = {nom: aff[nom][s['i']]['voix'] for nom in aff if s['i'] in plans.get(nom, ()) and s['i'] in aff[nom]}
+        if vp:
+            s['voix_pistes'] = vp
+    ordre = [v['nom'] for v in cibles['voix']]
+    duo_pistes = sum(1 for s in segs if len(set((s.get('voix_pistes') or {}).values())) >= 2)
+    return {'mode': cibles['mode'], 'message': info.get('message'), 'voix_utilisees': sorted(utilisees, key=ordre.index),
+            'morceaux_en_duo': duo_pistes, 'resume': resume, 'pistes': pistes}
+
+
+def voix_par_trames(pistes, lisse_voix, k, nv, piste_min_db=CHANTEURS_DEFAUT['piste_min_db']):
+    """Voix cible entendue à chaque trame de 10 ms (k trames) : -1 aucune voix convertie, j la seule voix j, nv (nombre de
+    voix cibles) plusieurs voix ensemble ; et le décalage de la piste dominante (la première de la liste qui sonne : voix
+    principale, chœurs, secours). pistes : [{'morceaux': [(i, a, b, dec, fa, fb, v)], 'gain_trames', 'lisse', 'secours'}].
+    Une piste compte là où sa porte est ouverte et, hors secours, à moins de piste_min_db sous la voix complète."""
+    import numpy as np
+    lisse_voix = a_longueur(lisse_voix, k, -120.0)
+    masque = []
+    dom_v, dom_d = np.full(k, -1, np.int64), np.zeros(k)
+    pris = np.zeros(k, bool)
+    for p in pistes:
+        v_t, d_t, couvert = np.full(k, -1, np.int64), np.zeros(k), np.zeros(k, bool)
+        for m in p['morceaux']:
+            a, b = m[1] // PAS, min(-(-m[2] // PAS), k)
+            v_t[a:b], d_t[a:b], couvert[a:b] = (m[6] if len(m) > 6 else 0), m[3], True
+        ouvert = (a_longueur(p['gain_trames'], k) > 0.5) & couvert
+        if not p.get('secours'):
+            ouvert &= a_longueur(p['lisse'], k, -120.0) >= lisse_voix + piste_min_db
+        masque.append((ouvert, v_t))
+        neuf = ouvert & ~pris
+        dom_v[neuf], dom_d[neuf] = v_t[neuf], d_t[neuf]
+        pris |= ouvert
+    present = np.zeros((max(nv, 1), k), bool)
+    for ouvert, v_t in masque:
+        for j in range(nv):
+            present[j] |= ouvert & (v_t == j)
+    combien = present.sum(0)
+    code = np.where(combien == 0, -1, np.where(combien >= 2, nv, np.argmax(present, axis=0)))
+    return code, dom_d
+
+
+def passages_voix(code, noms, pas_s=0.01, duree_min_s=0.0):
+    """Suites de trames de même code (voix_par_trames) : [{'debut_s', 'fin_s', 'voix': [noms]}], sans les silences (-1)."""
+    out = []
+    d = 0
+    for t in range(1, len(code) + 1):
+        if t == len(code) or code[t] != code[d]:
+            c = int(code[d])
+            if c >= 0 and (t - d) * pas_s >= duree_min_s:
+                out.append({'debut_s': round(d * pas_s, 2), 'fin_s': round(t * pas_s, 2),
+                            'voix': list(noms) if c >= len(noms) else [noms[c]]})
+            d = t
+    return out
+
+
 def decider_parole(segs, f0_cible, R):
     """Décalage libre (demi-tons, au demi-ton près) par voix : la médiane de chaque voix rejoint la hauteur de parole
     de la voix cible."""
@@ -1137,14 +1656,17 @@ def porte(lisse, seuil, n):
 def assembler(x, morceaux, pad, convertir_morceau, graine, torch):
     """Piste convertie, calée à l'échantillon près sur x : chaque morceau (i, début, fin, décalage, fondu au début,
     fondu à la fin ; en échantillons) est converti avec 0,25 s de marge de chaque côté, puis fondu aux coupes.
-    convertir_morceau(xs, décalage) rend autant d'échantillons que xs. La porte des silences reste à l'appelant."""
+    convertir_morceau(xs, décalage) rend autant d'échantillons que xs. La porte des silences reste à l'appelant.
+    Plusieurs voix cibles : un 7e élément, l'indice de la voix cible du morceau, passé en 3e argument
+    (convertir_morceau(xs, décalage, voix))."""
     import numpy as np
     n = len(x)
     sortie = np.zeros(n, np.float32)
-    for i, a, b, dec, fa, fb in morceaux:
+    for m in morceaux:
+        i, a, b, dec, fa, fb = m[:6]
         lo, hi = max(0, a - pad), min(n, b + pad)
         torch.manual_seed(graine + i)
-        y = convertir_morceau(x[lo:hi], dec)
+        y = convertir_morceau(x[lo:hi], dec) if len(m) < 7 else convertir_morceau(x[lo:hi], dec, m[6])
         tt = np.arange(lo, hi)
         w = np.ones(hi - lo)
         if a > 0:
@@ -1331,9 +1853,12 @@ def porte_zones(zones, n, fondu_s=SECOURS_DEFAUT['fondu_s']):
 def morceaux_piste(segs, piste, fondus):
     """Morceaux à convertir pour une piste : ceux de la voix complète (mêmes coupes, même décalage), sauf les muets ; une
     piste nettoyée saute ceux où elle se tait, la piste de secours ne garde que ceux qui touchent une de ses zones (fondus
-    compris). [(i, début, fin, décalage, fondu au début, fondu à la fin)], en échantillons."""
+    compris). [(i, début, fin, décalage, fondu au début, fondu à la fin)], en échantillons.
+    Plusieurs voix cibles : piste['affectation'] = {i: (voix cible, décalage)} (affecter_pistes) ; chaque morceau prend
+    alors le décalage de sa piste et un 7e élément, l'indice de sa voix cible."""
     out = []
     marge = SECOURS_DEFAUT['fondu_s']
+    aff = piste.get('affectation')
     for s in segs:
         if s['muet']:
             continue
@@ -1343,7 +1868,11 @@ def morceaux_piste(segs, piste, fondus):
                 continue
         elif piste['nom'] != 'voix' and float(piste['lisse'][a // PAS:b // PAS + 1].max()) < piste['seuil']:
             continue
-        out.append((s['i'], a, b, s['decalage'], fondus.get(a, 0), fondus.get(b, 0)))
+        if aff is None:
+            out.append((s['i'], a, b, s['decalage'], fondus.get(a, 0), fondus.get(b, 0)))
+        else:
+            v, dec = aff.get(s['i'], (s.get('cible', 0), s['decalage']))
+            out.append((s['i'], a, b, dec, fondus.get(a, 0), fondus.get(b, 0), v))
     return out
 
 
@@ -2029,7 +2558,10 @@ class MoteurYing:
 def etape_ying(travail):
     """Conversion YingMusic-SVC de toutes les pistes demandées (toutes vidéos et variantes), modèle chargé une fois.
     Chaque piste : son morceaux à convertir (mêmes coupes et décalages que la voix complète), assemblée sans porte ni
-    mise au niveau (le noyau les applique), écrite en WAV flottant mono. Sans pistes : simple essai de chargement."""
+    mise au niveau (le noyau les applique), écrite en WAV flottant mono. Sans pistes : simple essai de chargement.
+    Plusieurs voix cibles (travail['references'], la première étant la voix d'analyse) : le modèle est chargé une fois,
+    chaque référence préparée une fois (mel, style CAMPPlus, invite du régulateur de longueur), et chaque morceau prend
+    celle de sa voix (7e élément du morceau)."""
     import soundfile as sf
     chemin = travail['resultat']
     res = {'commit': YING_COMMIT, 'poids': os.path.basename(travail.get('checkpoint') or YING_POIDS[1]),
@@ -2037,7 +2569,16 @@ def etape_ying(travail):
     try:
         m = MoteurYing(travail.get('outils'), travail.get('checkpoint'))
         res.update({'installation': m.installation, 'chargement_s': m.chargement_s})
-        ref = m.preparer_ref(travail['reference']) if travail.get('reference') else None
+        if travail.get('references'):
+            refs, res['references_s'] = [], []
+            for c in travail['references']:
+                t0 = time.time()
+                refs.append(m.preparer_ref(c))
+                res['references_s'].append(round(time.time() - t0, 2))
+            ref = refs[0]
+        else:
+            ref = m.preparer_ref(travail['reference']) if travail.get('reference') else None
+            refs = [ref]
     except Exception as e:  # noqa: BLE001 — le noyau se repliera sur Seed-VC
         import traceback
         traceback.print_exc()
@@ -2051,7 +2592,7 @@ def etape_ying(travail):
         t0 = time.time()
         try:
             x = lire_mono(p['entree'])
-            y = assembler(x, p['morceaux'], travail['pad'], lambda xs, d: m.convertir_morceau(xs, ref, d, p['pas']),
+            y = assembler(x, p['morceaux'], travail['pad'], lambda xs, d, v=0: m.convertir_morceau(xs, refs[v], d, p['pas']),
                           REGLAGES['graine'], m.torch)
             sf.write(p['sortie'], y, SR, subtype='FLOAT')
             res['pistes'][p['cle']] = {'sortie': p['sortie'], 'conversion_s': round(time.time() - t0, 1), 'morceaux': len(p['morceaux'])}
@@ -2370,6 +2911,10 @@ def main():
                         'voix_flac': os.path.join(d, 'voix_source.flac') if flac else None,
                         'reste': f"/tmp/sep/{tr['id']}_reste.wav"})
     ref_chemin = trouver(R['voix']['fichier'])
+    cibles = lire_cibles(R)   # plusieurs voix cibles, une par chanteur (None : une seule voix, comme avant)
+    if cibles:
+        for v in cibles['voix']:
+            v['chemin'] = ref_chemin if v['fichier'] == R['voix']['fichier'] else trouver(v['fichier'])
     t = time.time()
     os.makedirs('/tmp/sep', exist_ok=True)
     with open('/tmp/separer.py', 'w') as f:
@@ -2422,9 +2967,11 @@ def main():
         return torch.cat(liste, dim=1)
 
     @torch.no_grad()
-    def preparer_ref(md):
+    def preparer_ref(md, chemin=None):
+        """Ce qui ne dépend que de la référence (une fois par voix et par modèle) : mel, style CAMPPlus, invite du
+        régulateur de longueur, hauteur médiane, empreinte."""
         import librosa
-        ref = librosa.load(ref_chemin, sr=md['sr'])[0][:md['sr'] * 25]
+        ref = librosa.load(chemin or ref_chemin, sr=md['sr'])[0][:md['sr'] * 25]
         ref_t = torch.tensor(ref).unsqueeze(0).float().to(device)
         ref16 = torchaudio.functional.resample(ref_t, md['sr'], 16000)
         mel2 = md['mel_fn'](ref_t)
@@ -2446,6 +2993,24 @@ def main():
                        'duree_reference_s': round(refs['chant44k']['duree'], 2), 'centre_chant_hz': round(centre, 1)}
     log(f"voix {R['voix']['nom']} : référence {refs['chant44k']['duree']:.2f} s, parole {f0_parole:.0f} Hz "
         f"(RMVPE sur la référence {refs['chant44k']['f0_mediane']:.0f} Hz), centre de chant {centre:.0f} Hz")
+    # Plusieurs voix cibles : la référence de chaque voix préparée une fois par modèle (refs_cibles[modèle][indice]),
+    # la première étant celle de l'analyse ; centre de chant de chaque voix (même règle que la voix seule)
+    refs_cibles = {}
+    if cibles:
+        t = time.time()
+        refs_cibles['chant44k'] = [refs['chant44k'] if v['chemin'] == ref_chemin else preparer_ref(chant, v['chemin'])
+                                   for v in cibles['voix']]
+        session['voix_cibles'] = {'mode': cibles['mode'], 'voix': []}
+        for v, rv in zip(cibles['voix'], refs_cibles['chant44k']):
+            f0_v = float(v.get('f0_parole_hz') or rv['f0_mediane'])
+            v['centre_hz'] = float(v.get('facteur_chant') or R['voix']['facteur_chant']) * f0_v
+            session['voix_cibles']['voix'].append({k: v.get(k) for k in ('cle', 'nom', 'affichage', 'fichier', 'f0_parole_hz')}
+                                                  | {'f0_rmvpe_reference_hz': round(rv['f0_mediane'], 1),
+                                                     'duree_reference_s': round(rv['duree'], 2),
+                                                     'centre_chant_hz': round(v['centre_hz'], 1)})
+            log(f"voix cible {v.get('cle')} : {v['nom']}, référence {rv['duree']:.2f} s, parole {f0_v:.0f} Hz, centre de "
+                f"chant {v['centre_hz']:.0f} Hz")
+        session['temps']['references_cibles_s'] = round(time.time() - t, 1)
     ecrire_session()
 
     @torch.no_grad()
@@ -2509,7 +3074,8 @@ def main():
                    'voix_cible': session['voix'], 'temps': {}}
         dur_sep = tr['voix'] + '.duree'
         if os.path.exists(dur_sep):
-            rapport['temps']['separation_s'] = float(open(dur_sep).read())
+            with open(dur_sep) as f:
+                rapport['temps']['separation_s'] = float(f.read())
             os.remove(dur_sep)
         rapport['transport'] = {'entree': os.path.basename(tr['chemin']), 'gain_entree': float(tr.get('gain_entree') or 1.0)}
         if tr.get('voix_flac') and os.path.exists(tr['voix_flac'] + '.json'):
@@ -2536,7 +3102,10 @@ def main():
             mode = tr['mode']
         rapport.update({'mesures_musique': m, 'mode': mode, 'mode_raisons': raisons, 'mode_force': tr['mode'] in ('chant', 'parole')})
         log(f"[{tr['id']}] MODE {mode} ({'imposé' if rapport['mode_force'] else 'détecté'}) : {json.dumps(m, ensure_ascii=False)}")
-        place = SR // 512 * 30 - refs['chant44k']['mel2'].size(2)
+        plusieurs = bool(cibles) and mode == 'chant'   # plusieurs voix cibles (en parole : la première seule)
+        # un morceau doit tenir, avec la référence, dans la fenêtre de 30 s du modèle : la plus longue des références
+        place = SR // 512 * 30 - (max(r['mel2'].size(2) for r in refs_cibles['chant44k']) if plusieurs
+                                  else refs['chant44k']['mel2'].size(2))
         coeur_max = place * 512 - 2 * pad - int(0.1 * SR)
         coupes = decouper(lisse, n, coeur_max, min(int(2 * SR), coeur_max // 2), seuil)
         segs = []
@@ -2550,13 +3119,23 @@ def main():
                 s['f0_med'] = round(float(np.median(v)), 1) if len(v) else None
                 s['emb'] = empreinte(en16(x[a:b])) if b - a >= SR // 2 else None
             segs.append(s)
-        if mode == 'chant':
+        chanteurs = None
+        if plusieurs:
+            info, chanteurs = decider_chant_cibles(segs, R, cibles, [round(c / SR, 3) for c in coupes[1:-1]
+                                                                     if lisse[c // PAS] >= seuil])
+            rapport['voix_cibles'] = session['voix_cibles']
+            log(f"[{tr['id']}] VOIX CIBLES ({cibles['mode']}) : {info['message']}")
+        elif mode == 'chant':
             info = decider_chant(segs, R, centre, [round(c / SR, 3) for c in coupes[1:-1] if lisse[c // PAS] >= seuil])
         else:
             info = decider_parole(segs, f0_parole, R)
             if R['modele_parole'] == 'parole22k':
                 info['note'] = ('modèle parole 22 kHz : la hauteur suit la voix cible d\'elle-même ; les décalages par voix '
                                 'ne servent qu\'à la variante f0')
+            if cibles:
+                rapport['voix_cibles'] = {**session['voix_cibles'], 'message': (
+                    f"parole : une seule voix cible, la première ({R['voix']['nom']}) ; la répartition par chanteur ne "
+                    'concerne que le chant')}
         if tr['octave'] in (-12, 0, 12):
             info['octave_imposee'] = tr['octave']   # la décision ci-dessus reste pour mémoire
             for s in segs:
@@ -2572,7 +3151,7 @@ def main():
         os.remove(tr['reste'])
         return {'tr': tr, 'rapport': rapport, 'x': x, 'n': n, 'mode': mode, 'segs': segs, 'coupes': coupes, 'lisse': lisse,
                 'seuil': seuil, 'fondus': fondus, 'gain': gain, 'gain_trames': gain_trames, 'coeur_max': coeur_max,
-                'f0_tout': f0_tout, 'duree_s': time.time() - debut_tr}
+                'f0_tout': f0_tout, 'duree_s': time.time() - debut_tr, 'plusieurs': plusieurs, 'chanteurs': chanteurs}
 
     def f0_piste(y):
         """F0 RMVPE de toute une piste, une trame toutes les 10 ms calée sur l'échantillon 0 (comme f0_tout)."""
@@ -2584,7 +3163,11 @@ def main():
         (celle de la décision d'octave, F0 de l'analyse) et de la voix convertie finale (voix principale + chœurs, une
         passe RMVPE de plus), une valeur toutes les 20 ms arrondie à 0,1 Hz (0 : non voisé), et le décalage appliqué à
         chaque trame (0 avec le modèle parole 22 kHz, qui suit la hauteur de la voix cible de lui-même). Temps 0 : début
-        de l'audio doublé (de l'extrait s'il y en a un)."""
+        de l'audio doublé (de l'extrait s'il y en a un).
+        Plusieurs voix cibles (même format 1, deux clés de plus) : voix_cibles (noms, dans l'ordre des indices) et
+        voix_par_trame (-1 : aucune voix convertie ; j : la voix voix_cibles[j] seule ; len(voix_cibles) : plusieurs
+        voix ensemble, un duo) ; decalage_dt est alors celui de la piste dominante (voix principale, sinon chœurs, sinon
+        secours)."""
         t0 = time.time()
         f_src, f_out = e['f0_tout'], f0_piste(sortie)
         k = min(len(f_src), len(f_out))
@@ -2594,9 +3177,18 @@ def main():
         if f0_modele:
             for s in e['segs']:
                 dec[(temps >= s['debut_s']) & (temps < s['fin_s'])] = s['decalage']
+        voix_t = None
+        if e.get('trames_voix') is not None:
+            code, dom_d = e['trames_voix']
+            voix_t = [int(v) for v in a_longueur(code, k, -1)[:k:2]]
+            if f0_modele:
+                d10 = a_longueur(dom_d, k)[:k:2]
+                dec = np.where(np.asarray(voix_t) >= 0, d10, dec)
         hz = lambda f: [round(float(v), 1) if v > 1 else 0 for v in f]
         courbes = {'format': 1, 'pas_s': 0.02, 'source_hz': hz(f_src), 'convertie_hz': hz(f_out),
                    'decalage_dt': [int(v) if float(v).is_integer() else round(float(v), 1) for v in dec]}
+        if voix_t is not None:
+            courbes.update({'voix_cibles': [v['nom'] for v in cibles['voix']], 'voix_par_trame': voix_t})
         with open(os.path.join(e['tr']['dossier'], 'courbes.json'), 'w') as f:
             json.dump(courbes, f, separators=(',', ':'))
         e['rapport']['courbes'] = {'fichier': 'courbes.json', 'trames': len(f_src), 'pas_s': 0.02,
@@ -2686,6 +3278,34 @@ def main():
                            'seuil': e['seuil'], 'gain': gain_s, 'gain_trames': trames_s, 'zones': zones})
         return pistes
 
+    def affecter(e):
+        """Plusieurs voix cibles, chant : voix et décalage de chaque piste sur chaque morceau. Duo : chaque piste nettoyée
+        est reconnue sur chaque morceau qu'elle convertit, par sa hauteur (RMVPE sur la piste) et son empreinte
+        (CAMPPlus sur la piste, projetée sur l'axe du duo) ; la piste de secours, sur ses seules zones ; la voix complète
+        suit la décision du morceau. Une seule voix trouvée : tout suit le morceau."""
+        t = time.time()
+        modele, segs = e['chanteurs'], e['segs']
+        mesures, plans = {}, {}
+        for p in e['pistes']:
+            liste = [(m[0], m[1], m[2]) for m in morceaux_piste(segs, p, e['fondus'])]
+            plans[p['nom']] = {i for i, _, _ in liste}
+            if modele is None or p['nom'] == 'voix':
+                continue
+            emb_fn = lambda y: empreinte(en16(y))
+            if p['nom'] == 'secours':
+                mesures[p['nom']] = mesurer_piste(e['x'], e['f0_tout'], e['x'], liste, emb_fn, modele['vecteur'], p['gain'])
+            else:
+                mesures[p['nom']] = mesurer_piste(p['x'], f0_piste(p['x']), e['x'], liste, emb_fn, modele['vecteur'])
+        octave = e['tr']['octave'] if e['tr']['octave'] in (-12, 0, 12) else None
+        aff = affecter_pistes(segs, [p['nom'] for p in e['pistes']], mesures, modele, cibles, octave, R)
+        for p in e['pistes']:
+            p['affectation'] = {i: (a['cible'], a['decalage']) for i, a in aff[p['nom']].items()}
+        e['rapport']['affectation'] = rapport_affectation(segs, aff, plans, cibles, e['rapport']['decision_hauteur'])
+        e['rapport']['affectation']['duree_s'] = round(time.time() - t, 2)
+        e['rapport']['temps']['affectation_s'] = round(time.time() - t, 2)
+        log(f"[{e['tr']['id']}] AFFECTATION en {time.time() - t:.1f} s : "
+            + json.dumps({nom: r for nom, r in e['rapport']['affectation']['resume'].items()}, ensure_ascii=False))
+
     def plan(e, p, liste):
         """Morceaux d'une piste : ceux de la voix complète (mêmes coupes, même décalage), sauf les muets et ceux où cette
         piste se tait (secours : ceux qui touchent ses zones). [(i, début, fin, décalage, fondu au début, à la fin)]."""
@@ -2727,14 +3347,19 @@ def main():
         t = time.time()
         torch.cuda.empty_cache()
         ck = poids_ying(outils)
+        travail = {'outils': outils, 'checkpoint': ck, 'reference': ref_chemin, 'pad': pad, 'pistes': pistes,
+                   'resultat': '/tmp/ying/resultat.json'}
+        if any(e.get('plusieurs') for e in etats_v):
+            travail['references'] = [v['chemin'] for v in cibles['voix']]   # indice = 7e élément de chaque morceau
         try:
-            res = etape_a_part('ying', {'outils': outils, 'checkpoint': ck, 'reference': ref_chemin, 'pad': pad,
-                                        'pistes': pistes, 'resultat': '/tmp/ying/resultat.json'})
+            res = etape_a_part('ying', travail)
         except Exception as ex:  # noqa: BLE001 — repli sur Seed-VC
             res = {'erreur': repr(ex)}
         session['temps']['yingmusic_total_s'] = round(time.time() - t, 1)
         session['temps']['chargement_yingmusic_s'] = round((res.get('chargement_s') or 0) + ((res.get('installation') or {}).get('duree_s') or 0), 1)
         session['yingmusic'] = {k: res.get(k) for k in ('commit', 'poids', 'poids_origine', 'installation', 'chargement_s', 'erreur', 'code')}
+        if res.get('references_s'):
+            session['yingmusic']['references_s'] = res['references_s']   # préparation de chaque référence (voix cibles)
         ecrire_session()
         return res
 
@@ -2762,16 +3387,21 @@ def main():
                     refs[nom] = preparer_ref(modeles[nom])
             f0 = nom != 'parole22k'
             total, details, duree = np.zeros(n, np.float32), {}, 0.0
+            plans_v = []   # (piste, morceaux) de cette variante : voix entendue à chaque trame (plusieurs voix cibles)
             for p in e['pistes']:
                 morceaux = plan(e, p, liste)
+                plans_v.append((p, morceaux))
                 if nom == 'yingmusic':
                     y, conv = lire_mono(infos[p['nom']]['sortie']), float(infos[p['nom']]['conversion_s'])
                     os.remove(infos[p['nom']]['sortie'])
                     ying_s += conv
                 elif morceaux:
-                    md, ref = modeles[nom], refs[nom]
+                    md = modeles[nom]
+                    # une référence par voix cible (préparée une fois), choisie par le 7e élément de chaque morceau
+                    refs_v = refs_cibles[nom] if e.get('plusieurs') and nom in refs_cibles else [refs[nom]]
                     t = time.time()
-                    y = assembler(p['x'], morceaux, pad, lambda xs, d: convertir(xs, md, ref, d if md['f0'] else 0, pas),
+                    y = assembler(p['x'], morceaux, pad,
+                                  lambda xs, d, v=0: convertir(xs, md, refs_v[v], d if md['f0'] else 0, pas),
                                   R['graine'], torch)
                     conv = time.time() - t
                 else:
@@ -2807,23 +3437,37 @@ def main():
             if repli:
                 mes['repli'] = repli
             if liste is segs:
-                # Mesures : ressemblance de timbre (CAMPPlus, cosinus avec la référence), hauteur obtenue
-                sims, sims_src, ecarts = [], [], []
+                # Mesures : ressemblance de timbre (CAMPPlus, cosinus avec la référence), hauteur obtenue. Plusieurs voix
+                # cibles : la voix et le décalage de la piste dominante du morceau (la première qui le convertit : voix
+                # principale, chœurs, secours), et la ressemblance avec chaque voix sur ses morceaux
+                dominante = {}
+                if e.get('plusieurs'):
+                    for p, morceaux in plans_v:
+                        for m in morceaux:
+                            dominante.setdefault(m[0], (m[6] if len(m) > 6 else 0, m[3]))
+                embs_v = [r['emb'] for r in refs_cibles['chant44k']] if e.get('plusieurs') else None
+                sims, sims_src, ecarts, par_voix = [], [], [], {}
                 for s in segs:
                     if s['muet'] or s['fin'] - s['debut'] < SR // 2:
                         continue
                     o16 = en16(total[s['debut']:s['fin']])
                     w = s['fin'] - s['debut']
-                    sims.append((float(empreinte(o16) @ ref_emb), w))
+                    j, dec_s = dominante.get(s['i'], (s.get('cible', 0), s['decalage']))
+                    emb_ref = embs_v[j] if embs_v is not None else ref_emb
+                    sims.append((float(empreinte(o16) @ emb_ref), w))
+                    if embs_v is not None:
+                        par_voix.setdefault(cibles['voix'][j]['nom'], []).append(sims[-1])
                     if s.get('emb') is not None:
-                        sims_src.append((float(s['emb'] @ ref_emb), w))
+                        sims_src.append((float(s['emb'] @ emb_ref), w))
                     if s['f0_med'] and s['voise_s'] >= 0.5:
                         fo = f0_fn(o16[0], thred=0.03)
                         fo = fo[fo > 1]
                         if len(fo):
-                            ecarts.append((12 * np.log2(np.median(fo) / s['f0_med']), s['decalage']))
+                            ecarts.append((12 * np.log2(np.median(fo) / s['f0_med']), dec_s))
                 moy = lambda l: round(sum(a * w for a, w in l) / max(sum(w for _, w in l), 1), 3) if l else None
                 mes.update({'ressemblance_timbre_sortie': moy(sims), 'ressemblance_timbre_source': moy(sims_src)})
+                if embs_v is not None:
+                    mes['ressemblance_timbre_par_voix'] = {v: moy(l) for v, l in par_voix.items()}
                 if ecarts:
                     mes['ecart_hauteur_obtenu_median_dt'] = round(float(np.median([e_ for e_, _ in ecarts])), 2)
                     if f0:
@@ -2832,6 +3476,21 @@ def main():
             rapport['variantes'][fichier] = mes
             if fichier == 'voix_convertie.flac':
                 rapport['modele'] = nom
+                if e.get('plusieurs'):
+                    try:
+                        # voix entendue à chaque trame de 10 ms (et décalage de la piste dominante) : courbes.json, frise
+                        k10 = len(e['f0_tout'])
+                        code, dom_d = voix_par_trames(
+                            [{'morceaux': m, 'gain_trames': p.get('gain_trames', e['gain_trames']), 'lisse': p['lisse'],
+                              'secours': p['nom'] == 'secours'} for p, m in plans_v], e['lisse'], k10, len(cibles['voix']))
+                        e['trames_voix'] = (code, dom_d)
+                        noms_v = [v['nom'] for v in cibles['voix']]
+                        aff_r = rapport.setdefault('affectation', {})
+                        aff_r['passages'] = passages_voix(code, noms_v, 0.01, 0.2)
+                        aff_r['secondes_par_voix'] = {**{v: round(float((code == j).sum()) * 0.01, 1) for j, v in enumerate(noms_v)},
+                                                      'ensemble': round(float((code == len(noms_v)).sum()) * 0.01, 1)}
+                    except Exception as ex:  # noqa: BLE001 — ne sert qu'à l'affichage
+                        log(f"[{tr['id']}] voix par trame impossible : {ex!r}")
                 try:
                     ecrire_courbes(e, total, f0)
                 except Exception as ex:  # noqa: BLE001 — les courbes ne servent qu'à l'affichage
@@ -2856,6 +3515,7 @@ def main():
             s.pop('emb', None)
             s.pop('debut', None)
             s.pop('fin', None)
+            s.pop('k', None)   # groupe interne du duo (plusieurs voix cibles) : le nom du chanteur est dans « voix »
         rapport.update({'echantillons': n, 'duree_s': round(n / SR, 3), 'seuil_silence_dbfs': round(seuil, 1),
                         'coeur_max_s': round(e['coeur_max'] / SR, 2), 'morceaux': segs, 'frise': frise(segs),
                         'coupes_dans_le_son_s': [round(c / SR, 2) for c in coupes[1:-1] if lisse[c // PAS] >= seuil],
@@ -2961,6 +3621,16 @@ def main():
             e['net'] = None
             e['rapport']['nettoyage'].update({'applique': False, 'raison': f'pistes nettoyées illisibles ({ex!r})'})
             e['pistes'] = preparer_pistes(e)
+        if e.get('plusieurs'):
+            try:
+                affecter(e)
+            except Exception as ex:  # noqa: BLE001 — sans reconnaissance des pistes : chaque piste suit le morceau
+                import traceback
+                traceback.print_exc()
+                log(f"[{e['tr']['id']}] AFFECTATION des pistes impossible ({ex!r}) : chaque piste prend la voix du morceau")
+                for p in e['pistes']:
+                    p['affectation'] = {s['i']: (s['cible'], s['decalage']) for s in e['segs'] if not s['muet']}
+                e['rapport']['affectation'] = {'erreur': repr(ex)[:300], 'message': 'chaque piste prend la voix du morceau'}
         e['variantes'] = variantes_de(e)
     try:
         ying = convertir_ying(etats)

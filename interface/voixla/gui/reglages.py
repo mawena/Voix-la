@@ -8,7 +8,10 @@ from gi.repository import Adw, Gio, GLib, Gtk
 from .. import chemins, formats, moteur, systeme
 from . import commun
 from .enregistreur import sources_micro
-from .page_doubler import MODES, OCTAVES, TEXTE_PAS
+from .page_doubler import MODES, OCTAVES, TEXTE_PAS, TEXTE_X42_ABSENT
+
+TEXTE_AUTOTUNE_DEFAUT = ("Clé « autotune » de config.json : une version « (auto-tune) » en plus de chaque doublage, la "
+                         "normale ne change pas ; la page Doubler peut l’allumer ou l’éteindre à chaque lancement")
 
 
 class DialogueReglages(Adw.PreferencesDialog):
@@ -65,6 +68,18 @@ class DialogueReglages(Adw.PreferencesDialog):
             self._paroles_relie = True
             self.r_paroles.connect("notify::active", lambda w, _p: self._ecrire(
                 "paroles", "oui" if w.get_active() else "non", lambda oui=w.get_active(): self._paroles_ecrites(oui)))
+        if getattr(self, "r_autotune", None) is not None and not getattr(self, "_autotune_relie", False):
+            n = moteur.autotune_par_defaut(conf)
+            self.r_autotune.set_enable_expansion(n > 0)
+            self.r_at_n.set_value(n or moteur.AUTOTUNE_DEFAUT)
+            connu, dossier = moteur.x42_autotune(conf)
+            if connu and dossier is None:
+                self.r_autotune.set_sensitive(n > 0)   # on peut encore l'éteindre
+                self.r_autotune.set_subtitle(TEXTE_X42_ABSENT)
+            self._autotune_relie = True
+            self._autotune_attente = None
+            self.r_autotune.connect("notify::enable-expansion", lambda *_: self._autotune_change())
+            self.r_at_n.connect("notify::value", lambda *_: self._autotune_change())
         k = (conf or {}).get("kaggle") or {}
         for cle, e in self.entrees.items():
             brut = chemins.valeur(contenu, f"kaggle.{cle}")
@@ -90,6 +105,24 @@ class DialogueReglages(Adw.PreferencesDialog):
         page = (getattr(self.fenetre, "pages", None) or {}).get("doubler")
         if page is not None and hasattr(page, "paroles_par_defaut_change"):
             page.paroles_par_defaut_change(oui)
+
+    def _autotune_change(self):
+        """Interrupteur ou intensité de l'auto-tune : écrit « doubler --config autotune N » (0 éteint), une fois le
+        réglage posé (un clic sur la flèche du compteur n'écrit pas à chaque pas)."""
+        if self._autotune_attente is not None:
+            GLib.source_remove(self._autotune_attente)
+
+        def ecrire():
+            self._autotune_attente = None
+            n = int(self.r_at_n.get_value()) if self.r_autotune.get_enable_expansion() else 0
+            self._ecrire("autotune", str(n), lambda: self._autotune_ecrit(n))
+            return False
+        self._autotune_attente = GLib.timeout_add(700, ecrire)
+
+    def _autotune_ecrit(self, n):
+        page = (getattr(self.fenetre, "pages", None) or {}).get("doubler")
+        if page is not None and hasattr(page, "autotune_par_defaut_change"):
+            page.autotune_par_defaut_change(n)
 
     def _ecrire(self, cle, valeur, apres=None):
         def fini(r):
@@ -195,6 +228,16 @@ class DialogueReglages(Adw.PreferencesDialog):
                                                     "traduction française ; la page Doubler peut les retirer d’un "
                                                     "lancement")
             g.add(self.r_paroles)
+        if "--autotune" in caps:
+            # clé « autotune » de doubler (0 : désactivé) ; grisée si doubler ne trouve pas x42-autotune
+            self.r_autotune = Adw.ExpanderRow(title="Auto-tune (configuration de doubler)", show_enable_switch=True,
+                                              subtitle=TEXTE_AUTOTUNE_DEFAUT)
+            self.r_at_n = Adw.SpinRow.new_with_range(1, 100, 5)
+            self.r_at_n.set_title("Intensité")
+            self.r_at_n.set_subtitle("Bas : notes juste rendues plus justes ; haut : effet robotique, sauts de note")
+            self.r_at_n.set_value(moteur.AUTOTUNE_DEFAUT)
+            self.r_autotune.add_row(self.r_at_n)
+            g.add(self.r_autotune)
         p.add(g)
 
         ge = Adw.PreferencesGroup(title="Enregistrement")
@@ -270,6 +313,8 @@ class DialogueReglages(Adw.PreferencesDialog):
                 ("vis_onde", "Forme d’onde", "Sous la frise d’octave, avec le curseur de lecture"),
                 ("vis_vumetre", "Vu-mètre", "Niveau par bande de fréquence, animé pendant la lecture"),
                 ("melodie_hz", "Mélodie en Hz", "Sinon en notes (do, ré, mi…, la3 = 440 Hz)"),
+                ("melodie_autotune", "Courbe de la version auto-tune",
+                 "Sur la mélodie, en ambre, pour les doublages qui ont une version auto-tune"),
                 ("paroles", "Paroles", "Ligne en cours et suivante sous le lecteur : paroles de doubler, sinon "
                                        "sous-titres de la vidéo")):
             r = Adw.SwitchRow(title=titre, subtitle=sous_titre, active=bool(self.prefs.get(cle)))

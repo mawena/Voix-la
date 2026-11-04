@@ -1,8 +1,10 @@
 #!/usr/bin/python3
 """doubler (Voix-là) : remplace la voix d'une vidéo par une voix clonée (YingMusic-SVC, Seed-VC ; GPU gratuit de Kaggle).
 
-  doubler <vidéo> [<vidéo>…] [--voix NOM] [--mode auto|chant|parole] [--octave auto|0|-12|+12] [--pas 30]
+  doubler <vidéo> [<vidéo>…] [--voix NOM | --voix homme:NOM,femme:NOM | --voix chanteur1:NOM,chanteur2:NOM]
+          [--mode auto|chant|parole] [--octave auto|0|-12|+12] [--pas 30]
           [--moteur yingmusic|seedvc] [--sans-nettoyage] [--sans-paroles] [--voix-db 4] [--reverb-db -13] [--mix-v1]
+          [--autotune [N]] [--autotune-gamme auto|chromatique|la-mineur…] [--sans-autotune]
           [--debut S --duree S] [--remix] [--sortie DIR] [--comparer-pas 50] [--donnees DIR] [--evenements FICHIER]
   doubler --ajouter-voix <nom> <enregistrement>      ajoute une voix (n'importe quel audio ou vidéo)
   doubler --voix-liste [--json]                      voix disponibles
@@ -29,6 +31,13 @@ Sorties : <sortie>/<titre>/<titre> - voix <Nom>.<conteneur d'origine> et .mp3, .
 .lrc (paroles synchronisées, à côté du mp3) ; travail/ (son d'origine, voix isolée, reste) et travail/<voix>/ (voix
 convertie, rapport.json avec les temps de chaque étape, paroles.json). --remix refait seulement le mixage et la remise
 sur la vidéo, paroles comprises. Seuls le son des vidéos et la référence de la voix choisie partent sur Kaggle.
+Une voix par chanteur (--voix homme:A,femme:B pour un duo mixte, chanteur1:A,chanteur2:B pour un duo de même genre) :
+chaque piste de chaque passage (voix principale, chœurs, secours) prend la voix du chanteur qu'on y reconnaît, l'octave
+se décide pour chaque couple chanteur -> voix ; sorties <titre> - voix A et B.<ext>, travail/A+B/.
+Auto-tune (--autotune [N], de 0 à 100, 70 sans valeur ; clé « autotune » de la configuration, 0 ou absente : désactivé) :
+en plus de la version normale, inchangée, <titre> - voix <Nom> (auto-tune).<conteneur>, .mp3 et .lrc, faits sur le PC
+par x42-autotune (paquet x42-plugins, filtre lv2 de ffmpeg) sur la voix sèche, avant la reverb, dans la gamme détectée
+sur la musique seule (--autotune-gamme). Bas : notes juste rendues plus justes ; haut : effet robotique, sauts de note.
 Données (voix/, sorties/) : --donnees, sinon $VOIXLA_DONNEES, sinon « donnees » de ~/.config/voix-la/config.json,
 sinon ~/Music/Voix-là. Voix par défaut : « voix » du même fichier (doubler --config voix NOM), sinon la seule voix de
 <données>/voix. Compte Kaggle : « kaggle.compte » (doubler --config kaggle.compte <nom>) ; moteur du chant par
@@ -52,7 +61,7 @@ import tempfile
 import time
 from pathlib import Path
 
-VERSION = '0.4.0'   # même version que le paquet Debian (debian/changelog) et l'interface (voixla.__version__)
+VERSION = '0.5.0'   # même version que le paquet Debian (debian/changelog) et l'interface (voixla.__version__)
 # Dossier du code : le dépôt, ou /usr/lib/voix-la une fois le paquet installé (/usr/bin/doubler lance ce fichier)
 DEPOT = Path(__file__).resolve().parent
 SCRIPT_NOYAU = DEPOT / 'kaggle' / 'doubler_kaggle.py'   # le noyau envoyé à Kaggle
@@ -65,7 +74,8 @@ DONNEES_DEFAUT = Path.home() / 'Music' / 'Voix-là'
 # Identifiants Kaggle : <compte>/<nom>, compte lu dans CONFIG (jamais dans le code : le dépôt est public)
 KAGGLE_DEFAUTS = {'jeu': 'doublage-voix-entrees', 'noyau': 'doublage-voix-gpu',
                   'outils': 'doublage-outils'}   # outils : wheels, Seed-VC, poids des modèles (doubler --preparer-outils)
-CLES_CONFIG = {'donnees': 'dossier des données (voix/, sorties/)', 'kaggle.compte': 'compte Kaggle (nom d\'utilisateur)',
+CLES_CONFIG = {'autotune': 'intensité de l\'auto-tune à chaque doublage, de 0 (désactivé, défaut) à 100',
+               'donnees': 'dossier des données (voix/, sorties/)', 'kaggle.compte': 'compte Kaggle (nom d\'utilisateur)',
                'kaggle.jeu': 'jeu de données privé des entrées', 'kaggle.noyau': 'noyau GPU privé du doublage',
                'kaggle.outils': 'noyau privé des outils préparés',
                'moteur': 'moteur de conversion du chant : yingmusic (défaut) ou seedvc',
@@ -160,6 +170,11 @@ def ecrire_config(cle, valeur):
         if booleen is None:
             raise SystemExit(f'paroles : oui ou non attendu (reçu : {valeur})')
         valeur = booleen
+    if cle == 'autotune':
+        try:
+            valeur = intensite_autotune(valeur)
+        except ValueError as e:
+            raise SystemExit(f'autotune : {e} ; 0 le désactive') from None
     conf = lire_config()
     d = conf
     *chemin, fin = cle.split('.')
@@ -279,9 +294,12 @@ def afficher_config(a, en_json=False):
     moteur = valeur_config(conf, 'moteur') or MOTEUR_DEFAUT
     ancres = fichier_ancres()
     paroles = paroles_config(conf)
+    autotune = autotune_config(conf)
+    fat1 = trouver_fat1()
     effectif = {'config': str(CONFIG), 'donnees': str(DONNEES), 'source_donnees': a.source_donnees, 'voix': str(VOIX),
                 'sorties': a.sortie, 'voix_defaut': VOIX_DEFAUT, 'source_voix_defaut': VOIX_DEFAUT_SOURCE,
-                'moteur': moteur, 'paroles': paroles, 'kaggle': {'compte': valeur_config(conf, 'kaggle.compte'), **noms},
+                'moteur': moteur, 'paroles': paroles, 'autotune': autotune,
+                'x42_autotune': str(fat1) if fat1 else None, 'kaggle': {'compte': valeur_config(conf, 'kaggle.compte'), **noms},
                 'jeton_kaggle': 'présent' if JETON.exists() else 'absent', 'commande_kaggle': str(KAGGLE),
                 'script_noyau': str(SCRIPT_NOYAU), 'ancres_genre': str(ancres) if ancres else None,
                 'contenu': masquer(conf)}
@@ -297,6 +315,8 @@ def afficher_config(a, en_json=False):
     print(f"  voix (défaut)  {VOIX_DEFAUT or '—'}  ({VOIX_DEFAUT_SOURCE})")
     print(f"  moteur (chant) {moteur}{'' if valeur_config(conf, 'moteur') else '  (défaut)'}")
     print(f"  paroles        {'oui' if paroles else 'non'}{'' if valeur_config(conf, 'paroles') is not None else '  (défaut)'}")
+    print(f"  auto-tune      {autotune or 'désactivé'}{'' if valeur_config(conf, 'autotune') is not None else '  (défaut)'}"
+          f" ; x42-autotune {fat1 or 'absent (sudo apt install x42-plugins)'}")
     for n in KAGGLE_DEFAUTS:
         print(f"  kaggle.{n:8s} {noms[n] or '— (kaggle.compte manque : doubler --config kaggle.compte <nom>)'}")
     print(f"  jeton Kaggle   {'présent' if JETON.exists() else 'absent'} ({JETON}, jamais affiché)")
@@ -371,8 +391,9 @@ def lancer(cmd, **k):
     return r.stdout
 
 
-def ff(*args):
-    lancer(['nice', '-n', '10', 'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', *map(str, args)])
+def ff(*args, env=None):
+    lancer(['nice', '-n', '10', 'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', *map(str, args)],
+           **({'env': env} if env is not None else {}))
 
 
 def sonder(video):
@@ -464,6 +485,111 @@ def charger_voix(nom):
     if not f0:
         raise SystemExit(f'{fiche} : hauteur_parole_mediane_hz manque')
     return {'id': nom, 'affichage': f.get('nom') or nom.capitalize(), 'reference': ref, 'f0': float(f0), 'fiche': f}
+
+
+# Une voix par chanteur : --voix homme:NOM,femme:NOM (duo mixte) ou chanteur1:NOM,chanteur2:NOM (duo de même genre,
+# chanteurs pris dans l'ordre d'apparition). Le noyau reçoit voix_cibles (kaggle/doubler_kaggle.py, decider_chanteurs).
+CLES_VOIX = {'genre': ('homme', 'femme'), 'ordre': ('chanteur1', 'chanteur2')}
+
+
+def lire_spec_voix(texte):
+    """« NOM » -> (None, [(None, NOM)]) ; « homme:a,femme:b » ou « chanteur1:a,chanteur2:b » -> (mode, [(clé, nom)]),
+    rangé dans l'ordre des clés (homme puis femme, chanteur1 puis chanteur2). ValueError si la syntaxe est fausse."""
+    texte = str(texte).strip()
+    if ':' not in texte and ',' not in texte:
+        if not re.fullmatch(NOM_VOIX, texte):
+            raise ValueError(f'nom de voix invalide : « {texte} » (minuscules, chiffres, - ou _)')
+        return None, [(None, texte)]
+    toutes = [c for cles in CLES_VOIX.values() for c in cles]
+    paires = []
+    for morceau in (m.strip() for m in texte.split(',')):
+        if not morceau:
+            continue
+        cle, sep, nom = (x.strip() for x in morceau.partition(':'))
+        cle = cle.lower().replace(' ', '').replace('-', '').replace('_', '')
+        if not sep or not nom:
+            raise ValueError(f'« {morceau} » : clé:voix attendu ({", ".join(f"{c}:NOM" for c in toutes)})')
+        if cle not in toutes:
+            raise ValueError(f'clé inconnue « {cle} » : homme et femme (duo mixte), ou chanteur1 et chanteur2 (duo de '
+                             'même genre)')
+        if not re.fullmatch(NOM_VOIX, nom):
+            raise ValueError(f'nom de voix invalide : « {nom} » (minuscules, chiffres, - ou _)')
+        if cle in (c for c, _ in paires):
+            raise ValueError(f'clé {cle} donnée deux fois')
+        paires.append((cle, nom))
+    if not paires:
+        raise ValueError('aucune voix')
+    modes = {m for m, cles in CLES_VOIX.items() for c, _ in paires if c in cles}
+    if len(modes) > 1:
+        raise ValueError('homme/femme et chanteur1/chanteur2 ne se mélangent pas : homme:…,femme:… pour un duo mixte, '
+                         'chanteur1:…,chanteur2:… pour un duo de même genre')
+    mode = modes.pop()
+    return mode, sorted(paires, key=lambda p: CLES_VOIX[mode].index(p[0]))
+
+
+def charger_voix_spec(texte):
+    """La voix de --voix : une voix (charger_voix, comme avant), ou plusieurs voix, une par chanteur, réunies en une voix
+    combinée : id « a+b » (dossier travail/a+b/), affichage « A et B » (« <titre> - voix A et B.<ext> »), référence et
+    hauteur de la première (celles de l'analyse), plus mode, membres (chacun avec sa clé) et spec (à garder pour
+    --reprendre). Une seule voix différente (« homme:a » seul, ou la même deux fois) : la voix seule, comme avant."""
+    try:
+        mode, paires = lire_spec_voix(texte)
+    except ValueError as e:
+        raise SystemExit(f'--voix {texte} : {e}') from None
+    noms = list(dict.fromkeys(n for _, n in paires))
+    if mode is None or len(noms) == 1:
+        v = charger_voix(noms[0])
+        if mode is not None:
+            dire(f'--voix {texte} : une seule voix différente ({noms[0]}) : doublage à une voix, comme --voix {noms[0]}')
+        return v
+    membres = [charger_voix(n) for n in noms]
+    for (cle, _), m in zip(paires, membres):
+        m['cle'] = cle
+    return {'id': '+'.join(noms), 'affichage': ' et '.join(m['affichage'] for m in membres),
+            'reference': membres[0]['reference'], 'f0': membres[0]['f0'], 'fiche': membres[0]['fiche'], 'mode': mode,
+            'membres': membres, 'spec': ','.join(f'{c}:{n}' for c, n in paires)}
+
+
+def voix_membres(voix):
+    """Les voix réelles d'une voix (combinée ou non)."""
+    return voix.get('membres') or [voix]
+
+
+def decrire_voix(voix):
+    """« jules », ou « homme → jules, femme → marie » (plusieurs voix)."""
+    if not voix.get('membres'):
+        return voix['id']
+    return ', '.join(f"{m['cle'].replace('chanteur', 'chanteur ')} → {m['id']}" for m in voix['membres'])
+
+
+def lignes_voix_cibles(rapport):
+    """Ce qu'il faut dire après un doublage à plusieurs voix (rapport du noyau) : la décision (duo, ou une seule voix
+    trouvée, avec la raison), puis les secondes chantées par chaque voix et les passages en duo. [] avec une seule voix."""
+    vc = rapport.get('voix_cibles')
+    if not isinstance(vc, dict):
+        return []
+    if vc.get('message'):   # parole : la première voix seule
+        return [f"voix cibles : {vc['message']}"]
+    dh = rapport.get('decision_hauteur') or {}
+    lignes = []
+    if dh.get('voix') == 2:
+        lignes.append(f"voix cibles, {'duo mixte' if vc.get('mode') == 'genre' else 'duo'} ("
+                      f"{'axe du genre' if dh.get('axe') == 'genre' else 'empreintes de la chanson'}) : "
+                      + ', '.join(f"{c.get('nom')} → {c.get('voix')} ({c.get('decalage', 0):+d} dt)"
+                                  for c in dh.get('chanteurs') or []))
+    elif dh.get('message'):
+        lignes.append(f"ATTENTION : {dh['message']}" + (f" ({dh['pourquoi_une_voix']})" if dh.get('pourquoi_une_voix') else ''))
+    aff = rapport.get('affectation') or {}
+    sec = aff.get('secondes_par_voix') or {}
+    if sec:
+        lignes.append('voix entendues : ' + ', '.join(f'{v} {s:.0f} s' for v, s in sec.items() if v != 'ensemble')
+                      + (f", ensemble {sec['ensemble']:.0f} s" if sec.get('ensemble') else '')
+                      + (f" ; {aff['morceaux_en_duo']} passage(s) en duo (voix principale et chœurs)"
+                         if aff.get('morceaux_en_duo') else ''))
+    if aff.get('erreur'):
+        lignes.append(f"ATTENTION : reconnaissance des pistes impossible ({aff['erreur']}) : chaque piste prend la voix "
+                      'du passage')
+    return lignes
 
 
 def liste_voix(en_json=False):
@@ -744,12 +870,14 @@ def preparer_source(video, info, debut, duree, travail):
 # --- Kaggle ----------------------------------------------------------------------------------------------------------
 
 def envoyer_jeu(travaux, voix, dossier):
-    """Une version du jeu de données privé par session : la référence de la voix choisie et le son des vidéos seulement,
-    en FLAC 24 bits (gain de chaque vidéo noté dans tr['gain_entree'], à transmettre au noyau)."""
+    """Une version du jeu de données privé par session : la référence de la voix choisie (de chaque voix, avec une voix
+    par chanteur) et le son des vidéos seulement, en FLAC 24 bits (gain de chaque vidéo noté dans tr['gain_entree'], à
+    transmettre au noyau)."""
     jeu = dossier / 'jeu'
     shutil.rmtree(jeu, ignore_errors=True)
     jeu.mkdir(parents=True)
-    shutil.copy2(voix['reference'], jeu / f"voix-{voix['id']}.wav")
+    for m in voix_membres(voix):
+        shutil.copy2(m['reference'], jeu / f"voix-{m['id']}.wav")
     taille, taille_wav = 0, 0
     for tr in travaux:
         tr['gain_entree'] = encoder_flac(tr['travail'] / 'original.wav', jeu / tr['entree'])
@@ -759,8 +887,9 @@ def envoyer_jeu(travaux, voix, dossier):
     with open(jeu / 'dataset-metadata.json', 'w') as f:
         json.dump({'title': JEU.split('/')[1], 'id': JEU, 'licenses': [{'name': 'unknown'}]}, f)
     existe = kaggle('datasets', 'status', JEU)[0] == 0
+    noms = [m['id'] for m in voix_membres(voix)]
     dire(f'Kaggle : envoi du son de {len(travaux)} vidéo(s) ({taille / 1e6:.0f} Mo en FLAC au lieu de {taille_wav / 1e6:.0f} Mo '
-         f'en WAV) et de la voix {voix["id"]} dans le jeu privé {JEU}')
+         f"en WAV) et de {'la voix ' + noms[0] if len(noms) == 1 else 'les voix ' + ' et '.join(noms)} dans le jeu privé {JEU}")
     code, texte = (kaggle('datasets', 'version', '-p', str(jeu), '-m', f"{len(travaux)} video(s), voix {voix['id']}") if existe
                    else kaggle('datasets', 'create', '-p', str(jeu)))
     if code or re.search(r'error|fail|invalid', texte, re.I):
@@ -778,7 +907,7 @@ def envoyer_jeu(travaux, voix, dossier):
     shutil.rmtree(jeu, ignore_errors=True)
 
 
-def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=MOTEUR_DEFAUT, paroles=True):
+def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=MOTEUR_DEFAUT, paroles=True, voix_cibles=1):
     """Durée probable d'une session (de l'envoi du noyau à sa fin), d'après la durée audio des vidéos et les rapports
     passés (rapport.json sous <sorties>/*/travail/*/) : démarrage + installation + chargement des modèles, puis par
     seconde d'audio la séparation et l'analyse, le nettoyage (chant) et la conversion (proportionnelle aux pas de
@@ -829,6 +958,9 @@ def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=
     if paroles:
         fixe += statistics.median(par_fixes) if par_fixes else 90.0   # Whisper large-v3 (3 Go) et NLLB-200 (2,5 Go)
         t_sep += statistics.median(par) if par else 0.25
+    if voix_cibles > 1 and chant:   # une voix par chanteur : chaque référence préparée par moteur, pistes reconnues
+        fixe += 20.0 * (voix_cibles - 1)
+        t_sep += 0.05
     return round(60 + fixe + sum(durees_s) * (t_sep + t_conv * pas))   # 60 s : file Kaggle et écriture des sorties
 
 
@@ -1229,19 +1361,33 @@ def mixer(t, tv, mode, voix_db, reverb_db, voix_fichier, sortie_wav, gains=None,
     g = dict(gains or {})
     if 'seche' not in g:
         g['seche'] = cible - moyenne_db(seche) + voix_db
-    entrees = ['-i', t / 'instrumental.wav', '-i', seche]
-    graphe = f"[1:a]volume={g['seche']:.2f}dB[s];"
+    rev = None
     if mode == 'chant':
-        ir = tv / 'reverb_ir.wav'
-        if not ir.exists():
-            ff('-f', 'lavfi', '-i', 'anoisesrc=d=1.6:c=pink:r=44100:a=0.5:seed=11', '-f', 'lavfi',
-               '-i', 'anoisesrc=d=1.6:c=pink:r=44100:a=0.5:seed=23', '-filter_complex',
-               '[0][1]join=inputs=2:channel_layout=stereo,afade=t=out:st=0:d=1.6:curve=exp,highpass=f=250,lowpass=f=6500', ir)
-        rev = tv / f'reverb_{voix_fichier.stem}.wav'
-        ff('-i', seche, '-i', ir, '-filter_complex', '[0:a]adelay=25|25[d];[d][1:a]afir[w]',
-           '-map', '[w]', '-t', f'{duree:.3f}', '-c:a', 'pcm_f32le', rev)
+        rev = reverb(tv, seche, f'reverb_{voix_fichier.stem}.wav', duree)
         if 'reverb' not in g:
             g['reverb'] = cible - moyenne_db(rev) + voix_db + reverb_db
+    assembler(t, seche, rev, g, sortie_wav)
+    return g, cible
+
+
+def reverb(tv, seche, nom, duree):
+    """Reverb synthétique de la voix sèche (réponse impulsionnelle tv/reverb_ir.wav, faite une fois), coupée à duree."""
+    ir = tv / 'reverb_ir.wav'
+    if not ir.exists():
+        ff('-f', 'lavfi', '-i', 'anoisesrc=d=1.6:c=pink:r=44100:a=0.5:seed=11', '-f', 'lavfi',
+           '-i', 'anoisesrc=d=1.6:c=pink:r=44100:a=0.5:seed=23', '-filter_complex',
+           '[0][1]join=inputs=2:channel_layout=stereo,afade=t=out:st=0:d=1.6:curve=exp,highpass=f=250,lowpass=f=6500', ir)
+    rev = tv / nom
+    ff('-i', seche, '-i', ir, '-filter_complex', '[0:a]adelay=25|25[d];[d][1:a]afir[w]',
+       '-map', '[w]', '-t', f'{duree:.3f}', '-c:a', 'pcm_f32le', rev)
+    return rev
+
+
+def assembler(t, seche, rev, g, sortie_wav):
+    """Mix final : musique seule + voix sèche (gain g['seche']) + reverb (g['reverb'], s'il y en a une), puis limiteur."""
+    entrees = ['-i', t / 'instrumental.wav', '-i', seche]
+    graphe = f"[1:a]volume={g['seche']:.2f}dB[s];"
+    if rev is not None:
         entrees += ['-i', rev]
         graphe += f"[2:a]volume={g['reverb']:.2f}dB[r];[0:a][s][r]amix=inputs=3:normalize=0:duration=first,"
     else:
@@ -1250,7 +1396,625 @@ def mixer(t, tv, mode, voix_db, reverb_db, voix_fichier, sortie_wav, gains=None,
     # retarde le mix de 5 ms (son en retard sur l'image)
     graphe += f'aresample={4 * 44100},alimiter=limit={LIMITE:.4f}:level=disabled:latency=1,aresample=44100[m]'
     ff(*entrees, '-filter_complex', graphe, '-map', '[m]', '-c:a', 'pcm_s24le', sortie_wav)
-    return g, cible
+
+
+# --- Auto-tune : x42-autotune (fat1) par le filtre lv2 de ffmpeg, sur la voix sèche, avant la reverb ------------------
+#
+# La voix sèche du mix (seche_voix_convertie.wav) passe dans fat1, puis la reverb et le mix sont refaits aux gains du
+# mix normal (même niveau : les deux versions se comparent à l'oreille) : seche_voix_autotune.wav,
+# reverb_voix_autotune.wav (chant), mix_autotune.wav, puis « <titre> - voix <Nom> (auto-tune).<ext> », .mp3 et .lrc.
+# La version normale n'est jamais touchée (mêmes commandes, mêmes fichiers qu'avant). Tout sur le PC, sans GPU.
+
+FAT1_URI = 'http://gareus.org/oss/lv2/fat1'   # x42-Autotune : masque de 12 notes (ports m00 à m11, do à si)
+# Dossiers LV2 cherchés après $LV2_PATH : ceux de lilv (la bibliothèque LV2 de ffmpeg), et les dossiers multiarch
+LV2_STANDARD = ['~/.lv2', '/usr/local/lib/lv2', '/usr/lib/lv2', '/usr/local/lib/*-linux-gnu*/lv2', '/usr/lib/*-linux-gnu*/lv2']
+AUTOTUNE_DEFAUT = 70   # --autotune sans valeur
+# Bornes déclarées des ports (fat1.ttl) : toujours respectées ; hors bornes, fat1 peut planter ffmpeg (filter 0,005 :
+# erreur de segmentation, essai du 04/11/2026)
+FAT1_BORNES = {'mode': (0, 2), 'tuning': (400.0, 480.0), 'bias': (0.0, 1.0), 'filter': (0.02, 0.5), 'corr': (0.0, 1.0),
+               'offset': (-2.0, 2.0), 'fastmode': (0, 1)}
+FAT1_LATENCE = 1056   # échantillons (44,1 et 48 kHz, tous réglages sauf fastmode) ; remesurée à chaque doublage
+# Krumhansl-Kessler (1982) : poids des 12 degrés en majeur et en mineur, depuis la tonique
+KK_MAJEUR = (6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88)
+KK_MINEUR = (6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17)
+GAMMES = {'majeur': (0, 2, 4, 5, 7, 9, 11), 'mineur': (0, 2, 3, 5, 7, 8, 10)}   # mineur naturel
+NOTES_FR = ['do', 'do#', 'ré', 'ré#', 'mi', 'fa', 'fa#', 'sol', 'sol#', 'la', 'la#', 'si']
+TONIQUES = {'majeur': ['do', 'réb', 'ré', 'mib', 'mi', 'fa', 'fa#', 'sol', 'lab', 'la', 'sib', 'si'],
+            'mineur': ['do', 'do#', 'ré', 'mib', 'mi', 'fa', 'fa#', 'sol', 'sol#', 'la', 'sib', 'si']}
+TONIQUES_EN = {'majeur': ['C', 'Db', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'],
+               'mineur': ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'G#', 'A', 'Bb', 'B']}
+LETTRES = {'do': 0, 're': 2, 'mi': 4, 'fa': 5, 'sol': 7, 'la': 9, 'si': 11,
+           'c': 0, 'd': 2, 'e': 4, 'f': 5, 'g': 7, 'a': 9, 'b': 11}
+GAMME_SYNTAXE = re.compile(r'(do|re|mi|fa|sol|la|si|[a-g])(#|b|-?diese|-?bemol)?'
+                           r'(?:-?(majeur|maj|major|mineur|min|minor|m))?')
+GAMME_AUTO = {'auto', 'automatique', 'detectee'}
+GAMME_CHROMATIQUE = {'chromatique', 'chromatic', 'aucune', 'toutes'}
+GAMME_AIDE = ('auto (défaut : tonalité détectée sur la musique seule), chromatique (les 12 notes), ou une tonalité : '
+              'tonique do ré mi fa sol la si (ou C D E F G A B), suivie de # ou b, puis -majeur ou -mineur '
+              '(alias maj, min, major, minor, m ; majeur si omis). Ex. : la-mineur, do#-majeur, sib, Am, C#m, Eb-minor')
+# Tonalité retenue si la corrélation au profil dépasse SEUIL_TONALITE et devance d'au moins SEUIL_ECART la meilleure
+# tonalité d'une autre gamme (la relative, mêmes notes, ne compte pas) ; sinon, gamme chromatique
+SEUIL_TONALITE = 0.6
+SEUIL_ECART = 0.05
+
+
+def borner_ports(ports):
+    """Valeurs ramenées dans les bornes déclarées de fat1 (FAT1_BORNES)."""
+    out = {}
+    for k, v in ports.items():
+        if k in FAT1_BORNES:
+            lo, hi = FAT1_BORNES[k]
+            v = min(max(v, lo), hi)
+        out[k] = v
+    return out
+
+
+def ports_autotune(intensite):
+    """Intensité (1 à 100) -> réglages de fat1, un dictionnaire par passe ([] à 0). Avec u = N/100 :
+      corr   = min(1 ; 0,2 + u)     part de l'écart corrigée ;
+      filter = 0,5 x 0,04^u        lissage de la correction tant que la note ne change pas, de 0,5 (lent, garde le
+                                   vibrato) à 0,02 (son minimum : suit tout, effet robot) ; à un changement de note, fat1
+                                   saute toujours d'un coup ;
+      bias   = 1 - u               préférence pour la note en cours (bas : moins de sauts parasites ; haut : accroche
+                                   la note la plus proche) ;
+      fastmode 0 (le direct ne sert à rien hors temps réel ; la latence est compensée), mode 0 (auto : note la plus
+      proche du masque), offset 0. Au-delà de 80, une deuxième passe en série (corr = (N - 80) / 20, autres ports
+      identiques) : une passe à filter 0,02 laisse 40 % du vibrato, deux passes 17 % (correction quasi totale à 100).
+    Mesures sur une voix de synthèse fausse de 29 cents (médiane), vibrato de 14 cents : README, rapport de la branche."""
+    n = max(0, min(100, int(round(float(intensite)))))
+    if not n:
+        return []
+    u = n / 100
+    p = {'mode': 0, 'tuning': 440.0, 'bias': round(1 - u, 3), 'filter': round(0.5 * 0.04 ** u, 4),
+         'corr': round(min(1.0, 0.2 + u), 3), 'offset': 0.0, 'fastmode': 0}
+    passes = [p]
+    if n > 80:
+        passes.append({**p, 'corr': round((n - 80) / 20, 3)})
+    return [borner_ports(q) for q in passes]
+
+
+def intensite_autotune(valeur):
+    """« 70 » -> 70 (entier de 0 à 100) ; oui -> AUTOTUNE_DEFAUT, non -> 0 ; ValueError sinon."""
+    if isinstance(valeur, bool):
+        return AUTOTUNE_DEFAUT if valeur else 0
+    s = str(valeur).strip().lower()
+    if s in OUI - {'1'}:
+        return AUTOTUNE_DEFAUT
+    if s in NON - {'0'}:
+        return 0
+    try:
+        v = float(str(valeur).replace(',', '.'))
+    except ValueError:
+        raise ValueError(f'intensité de 0 à 100 attendue (reçu : {valeur})') from None
+    if not (math.isfinite(v) and 0 <= v <= 100) or v != int(v):
+        raise ValueError(f'intensité de 0 à 100 attendue, nombre entier (reçu : {valeur})')
+    return int(v)
+
+
+def _intensite_option(texte):
+    try:
+        return intensite_autotune(texte)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from None
+
+
+def autotune_config(conf):
+    """Clé « autotune » de la configuration : intensité de 0 (désactivé, ou absente) à 100 ; illisible : 0, avec un avis."""
+    v = valeur_config(conf, 'autotune')
+    if v is None:
+        return 0
+    try:
+        return intensite_autotune(v)
+    except ValueError:
+        dire(f'attention : « autotune » de {CONFIG} illisible ({v!r}) : auto-tune désactivé (doubler --config autotune 0-100)')
+        return 0
+
+
+def normaliser_gamme(texte):
+    import unicodedata
+    s = unicodedata.normalize('NFD', str(texte).strip().lower())
+    s = ''.join(c for c in s if not unicodedata.combining(c)).replace('♯', '#').replace('♭', 'b')
+    return re.sub(r'-+', '-', re.sub(r'[\s_]+', '-', s)).strip('-')
+
+
+def lire_gamme(texte):
+    """--autotune-gamme -> {'type': 'auto'}, {'type': 'chromatique'} ou {'type': 'tonalite', 'tonique': 0-11 (do = 0),
+    'mode': 'majeur'|'mineur'} ; ValueError sinon (syntaxe : GAMME_AIDE). Accents, casse, espaces et ♯ ♭ indifférents."""
+    s = normaliser_gamme(texte)
+    if s in GAMME_AUTO:
+        return {'type': 'auto'}
+    if s in GAMME_CHROMATIQUE:
+        return {'type': 'chromatique'}
+    m = GAMME_SYNTAXE.fullmatch(s)
+    if not m:
+        raise ValueError(f'gamme illisible : {texte!r} ({GAMME_AIDE})')
+    note, alt, mode = m.groups()
+    pc = LETTRES[note] + ((1 if '#' in alt or 'diese' in alt else -1) if alt else 0)
+    return {'type': 'tonalite', 'tonique': pc % 12,
+            'mode': 'mineur' if mode in ('mineur', 'min', 'minor', 'm') else 'majeur'}
+
+
+def _gamme_option(texte):
+    try:
+        lire_gamme(texte)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from None
+    return texte
+
+
+def nom_tonalite(tonique, mode):
+    """(9, 'mineur') -> ('la mineur', 'Am')."""
+    return f'{TONIQUES[mode][tonique]} {mode}', TONIQUES_EN[mode][tonique] + ('m' if mode == 'mineur' else '')
+
+
+def masque_gamme(tonique, mode):
+    """Masque de 12 notes (do à si, 1 = note de la gamme) de fat1."""
+    return [1 if (k - tonique) % 12 in GAMMES[mode] else 0 for k in range(12)]
+
+
+def lire_blocs(fichier, sr, secondes=30.0, filtre=None):
+    """Son mono à sr Hz, par blocs de `secondes` (float64), lu en continu par ffmpeg (jamais tout en mémoire)."""
+    import numpy as np
+    cmd = ['nice', '-n', '10', 'ffmpeg', '-v', 'error', '-i', str(fichier), '-vn', '-ac', '1', '-ar', str(sr),
+           *(['-af', filtre] if filtre else []), '-f', 'f32le', '-']
+    taille = int(sr * secondes) * 4
+    with tempfile.TemporaryFile() as erreurs:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=erreurs)
+        fini, reste = False, b''
+        try:
+            while True:
+                b = proc.stdout.read(taille)
+                if not b:
+                    break
+                b = reste + b
+                k = len(b) // 4 * 4
+                reste = b[k:]
+                yield np.frombuffer(b[:k], np.float32).astype(np.float64)
+            fini = True
+        finally:
+            proc.stdout.close()
+            if not fini:
+                proc.kill()
+            code = proc.wait()
+        if fini and code:
+            erreurs.seek(0)
+            raise RuntimeError(f'lecture impossible : {fichier}\n{erreurs.read().decode(errors="replace")[-800:]}')
+
+
+def chroma_musique(fichier, sr=11025, n_fft=8192, pas=4096, fmin=80.0, fmax=1200.0, fmax_accord=2500.0):
+    """Profil des 12 notes (do = 0) de la musique et son accord, lus en continu. Chaque trame (743 ms, toutes les 371 ms ;
+    trames de moins de -55 dBFS écartées) : puissance du spectre de 80 Hz à 1,2 kHz (fondamentales des accords et de la
+    basse), rapportée au pic de la trame, répartie en 120 cases de 10 cents puis ramenée à une somme de 1 (un passage
+    fort ne compte pas plus qu'un faible). La puissance, et non l'amplitude compressée, pour que les harmoniques (quinte,
+    tierce majeure au-dessus de chaque note) ne fassent pas prendre un majeur pour le mineur de sa médiante (do majeur
+    pris pour mi mineur ; essai du 04/11/2026 sur 7 tonalités de synthèse : 3 sur 7 en log, 7 sur 7 en puissance).
+    Accord : écart des pics du spectre (150 Hz-2,5 kHz, à moins de 30 dB du plus fort, position affinée par
+    interpolation) aux demi-tons du la 440, en moyenne circulaire pondérée ; les 120 cases sont ensuite regroupées par
+    demi-ton autour de cet accord. Rend {chroma (12), accord_cents, accord_fiabilite (0-1), trames}."""
+    import numpy as np
+    k = np.arange(n_fft // 2 + 1)
+    f = k * sr / n_fft
+    bande = (f >= fmin) & (f <= fmax)
+    fin = np.round((12 * np.log2(f[bande] / 440.0) + 69) * 10).astype(int) % 120
+    fenetre = np.hanning(n_fft)
+    seuil = 10 ** (-55 / 20)
+    chroma_fin, S, W, trames = np.zeros(120), 0j, 0.0, 0
+    buf = np.zeros(0)
+    for bloc in lire_blocs(fichier, sr):
+        buf = np.concatenate([buf, bloc])
+        n = (len(buf) - n_fft) // pas + 1 if len(buf) >= n_fft else 0
+        if n <= 0:
+            continue
+        idx = np.arange(n)[:, None] * pas + np.arange(n_fft)[None, :]
+        x = buf[idx]
+        buf = buf[n * pas:]
+        x = x[np.sqrt((x ** 2).mean(1)) > seuil]
+        if not len(x):
+            continue
+        X = np.abs(np.fft.rfft(x * fenetre, axis=1))
+        mb = X[:, bande]
+        c = (mb / (mb.max(1, keepdims=True) + 1e-12)) ** 2
+        for ligne in c:
+            cf = np.bincount(fin, weights=ligne, minlength=120)
+            chroma_fin += cf / (cf.sum() + 1e-12)
+        trames += len(x)
+        # pics : maxima locaux à moins de 30 dB du plus fort de la trame (entre 150 Hz et fmax_accord)
+        zone = (f >= 150) & (f <= fmax_accord)
+        mx = X[:, zone].max(1, keepdims=True) + 1e-12
+        L = np.log(X + 1e-12)
+        centre = X[:, 1:-1]
+        pic = (centre > X[:, :-2]) & (centre >= X[:, 2:]) & (centre > mx * 10 ** (-30 / 20))
+        pic &= zone[1:-1][None, :]
+        i, j = np.nonzero(pic)
+        j = j + 1
+        a, b, cc = L[i, j - 1], L[i, j], L[i, j + 1]
+        den = a - 2 * b + cc
+        d = np.where(np.abs(den) > 1e-12, 0.5 * (a - cc) / np.where(np.abs(den) > 1e-12, den, 1), 0.0)
+        fp = (j + np.clip(d, -0.5, 0.5)) * sr / n_fft
+        ecart = (1200 * np.log2(fp / 440.0) + 50) % 100 - 50
+        w = X[i, j]
+        S += (w * np.exp(2j * np.pi * ecart / 100)).sum()
+        W += w.sum()
+    if not trames:
+        return {'chroma': None, 'accord_cents': 0.0, 'accord_fiabilite': 0.0, 'trames': 0}
+    cents = float(np.angle(S) / (2 * np.pi) * 100) if W > 0 else 0.0
+    fiab = float(abs(S) / W) if W > 0 else 0.0
+    decal = int(round(cents / 10))
+    chroma = np.array([sum(chroma_fin[(10 * n + decal + j) % 120] for j in range(-5, 5)) for n in range(12)]) / trames
+    return {'chroma': chroma, 'accord_cents': cents, 'accord_fiabilite': fiab, 'trames': trames}
+
+
+def tonalite_de(chroma):
+    """Corrélation (Pearson) du profil des 12 notes aux 24 tonalités de Krumhansl-Kessler. Rend la meilleure tonalité,
+    sa corrélation, l'écart à la meilleure tonalité d'une autre gamme (la relative, mêmes 7 notes, ne compte pas : la
+    gamme donnée à fat1 est la même) et les trois premières."""
+    import numpy as np
+    c = np.asarray(chroma, float)
+    cands = []
+    for mode, prof in (('majeur', KK_MAJEUR), ('mineur', KK_MINEUR)):
+        for t in range(12):
+            r = float(np.corrcoef(c, np.roll(prof, t))[0, 1]) if c.std() > 0 else 0.0
+            cands.append((r if math.isfinite(r) else 0.0, t, mode))
+    cands.sort(key=lambda x: -x[0])
+    r1, t1, m1 = cands[0]
+    notes1 = {(t1 + i) % 12 for i in GAMMES[m1]}
+    autre = next((r for r, t, m in cands[1:] if {(t + i) % 12 for i in GAMMES[m]} != notes1), 0.0)
+    return {'tonique': t1, 'mode': m1, 'correlation': round(r1, 3), 'ecart': round(r1 - autre, 3),
+            'candidates': [[nom_tonalite(t, m)[0], round(r, 3)] for r, t, m in cands[:3]]}
+
+
+def choisir_gamme(texte, musique):
+    """Gamme et accord donnés à fat1. Accord (port tuning) : celui de la musique seule s'il est fiable, sinon 440 Hz.
+    auto : tonalité détectée sur la musique seule, plus les notes hors gamme aussi présentes que la plus faible de la
+    gamme et qu'un quart de la plus forte (sensible d'un mineur harmonique, emprunts, tonalité voisine hésitante ; deux
+    au plus : une note de trop corrige un peu moins, une note qui manque fausse le chant), et repli chromatique si la
+    détection est peu sûre ;
+    chromatique : les 12 notes ; une tonalité : exactement ses 7 notes."""
+    demande = lire_gamme(texte or 'auto')
+    try:
+        ch = chroma_musique(musique)
+    except Exception as e:  # noqa: BLE001 — sans musique lisible : accord 440, gamme chromatique en auto
+        dire(f'attention : musique seule illisible pour la tonalité ({e})')
+        ch = {'chroma': None, 'accord_cents': 0.0, 'accord_fiabilite': 0.0, 'trames': 0}
+    fiable = ch['accord_fiabilite'] >= 0.2 and ch['trames'] >= 5
+    cents = round(ch['accord_cents'], 1) if fiable else 0.0
+    accord = round(min(max(440.0 * 2 ** (cents / 1200), FAT1_BORNES['tuning'][0]), FAT1_BORNES['tuning'][1]), 2)
+    g = {'demandee': texte or 'auto', 'accord_hz': accord, 'accord_cents': cents,
+         'accord_fiabilite': round(ch['accord_fiabilite'], 3), 'repli': None, 'notes_ajoutees': []}
+    det = None
+    if ch['chroma'] is not None:
+        det = tonalite_de(ch['chroma'])
+        det['tonalite'] = nom_tonalite(det['tonique'], det['mode'])[0]
+        det['sure'] = det['correlation'] >= SEUIL_TONALITE and det['ecart'] >= SEUIL_ECART
+        det['profil'] = [round(float(v) / float(max(ch['chroma'])), 3) for v in ch['chroma']]
+    g['detection'] = det
+    if demande['type'] == 'tonalite':
+        t, m = demande['tonique'], demande['mode']
+    elif demande['type'] == 'auto' and det and det['sure']:
+        t, m = det['tonique'], det['mode']
+    else:
+        if demande['type'] == 'auto':
+            g['repli'] = ('musique trop faible pour trouver la tonalité' if det is None else
+                          f"tonalité peu sûre ({det['tonalite']} : corrélation {det['correlation']:.2f}, écart "
+                          f"{det['ecart']:.2f} ; il faut {SEUIL_TONALITE} et {SEUIL_ECART}) : gamme chromatique")
+        masque = [1] * 12
+        return {**g, 'type': 'chromatique', 'tonalite': None, 'tonalite_en': None, 'tonique': None, 'mode': None,
+                'masque': masque, 'notes': list(NOTES_FR)}
+    masque = masque_gamme(t, m)
+    if demande['type'] == 'auto':
+        chroma = ch['chroma']
+        plancher = max(min(chroma[k] for k in range(12) if masque[k]), 0.25 * max(chroma))
+        ajout = sorted((k for k in range(12) if not masque[k] and chroma[k] >= plancher), key=lambda k: -chroma[k])[:2]
+        for k in ajout:
+            masque[k] = 1
+        g['notes_ajoutees'] = [NOTES_FR[k] for k in sorted(ajout)]
+    fr, en = nom_tonalite(t, m)
+    return {**g, 'type': 'tonalite', 'tonalite': fr, 'tonalite_en': en, 'tonique': t, 'mode': m, 'masque': masque,
+            'notes': [NOTES_FR[k] for k in range(12) if masque[k]]}
+
+
+def trouver_fat1():
+    """Dossier LV2 qui contient x42-autotune (fat1), cherché dans $LV2_PATH puis dans LV2_STANDARD ; None s'il manque."""
+    import glob
+    dossiers = [d for d in os.environ.get('LV2_PATH', '').split(':') if d]
+    for motif in LV2_STANDARD:
+        dossiers += sorted(glob.glob(os.path.expanduser(motif)))
+    for d in dossiers:
+        d = Path(d).expanduser()
+        if (d / 'fat1.lv2' / 'manifest.ttl').is_file():
+            return d
+        for m in sorted(d.glob('*.lv2/manifest.ttl')) if d.is_dir() else ():
+            try:
+                if f'<{FAT1_URI}>' in m.read_text(errors='replace'):
+                    return d
+            except OSError:
+                continue
+    return None
+
+
+def ffmpeg_lv2():
+    """ffmpeg a-t-il le filtre lv2 (compilé avec lilv) ?"""
+    r = subprocess.run(['ffmpeg', '-hide_banner', '-filters'], capture_output=True, text=True)
+    return bool(re.search(r'^\s*\S+\s+lv2\s', r.stdout, re.M))
+
+
+def filtre_fat1(ports, masque):
+    """Filtre lv2 de ffmpeg pour une passe de fat1 (URI et valeurs entre apostrophes : ni « : » ni « | » à échapper)."""
+    c = '|'.join([f'{k}={v:.6g}' for k, v in ports.items()] + [f'm{k:02d}={int(v)}' for k, v in enumerate(masque)])
+    return f"lv2=p='{FAT1_URI.replace(':', chr(92) + ':')}':c='{c}'"
+
+
+_LATENCES = {}
+
+
+def latence_fat1(dossier_lv2, sr=44100):
+    """Latence de fat1 en échantillons, mesurée sur 0,6 s de bruit (correction nulle : sortie = entrée retardée), par
+    corrélation ; FAT1_LATENCE si la mesure n'est pas nette. Une fois par dossier LV2."""
+    import numpy as np
+    cle = (str(dossier_lv2), sr)
+    if cle in _LATENCES:
+        return _LATENCES[cle]
+    lat = FAT1_LATENCE
+    try:
+        x = np.random.default_rng(1056).standard_normal(int(0.6 * sr)).astype(np.float32) * 0.05
+        x[:sr // 10] = 0
+        r = subprocess.run(['nice', '-n', '10', 'ffmpeg', '-v', 'error', '-f', 'f32le', '-ar', str(sr), '-ac', '1', '-i', '-',
+                            '-af', filtre_fat1({'mode': 0, 'corr': 0.0, 'fastmode': 0}, [1] * 12), '-f', 'f32le', '-'],
+                           input=x.tobytes(), capture_output=True, env={**os.environ, 'LV2_PATH': str(dossier_lv2)},
+                           timeout=60)
+        y = np.frombuffer(r.stdout, np.float32).astype(np.float64)
+        if not r.returncode and len(y) >= len(x):
+            a = x[sr // 10:].astype(np.float64)
+            c = np.correlate(y[sr // 10:], a[:len(a) - 4096], 'valid')
+            k = int(np.argmax(np.abs(c)))
+            if np.abs(c[k]) > 0.3 * (a[:len(a) - 4096] ** 2).sum():
+                lat = k
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pass
+    _LATENCES[cle] = lat
+    return lat
+
+
+def appliquer_fat1(entree, sortie, passes, masque, dossier_lv2, latence):
+    """entree (voix sèche stéréo, deux canaux identiques) -> sortie auto-tunée, même longueur à l'échantillon près et
+    calée dessus : silence ajouté à la fin (apad), passes de fat1 en série (mono), début retiré de la latence totale
+    (atrim), puis remise en stéréo."""
+    total = latence * len(passes)
+    chaine = ','.join(['pan=mono|c0=0.5*c0+0.5*c1', f'apad=pad_len={total}', *(filtre_fat1(p, masque) for p in passes),
+                       f'atrim=start_sample={total}', 'asetpts=PTS-STARTPTS', 'pan=stereo|c0=c0|c1=c0'])
+    ff('-i', entree, '-af', chaine, '-c:a', 'pcm_f32le', sortie, env={**os.environ, 'LV2_PATH': str(dossier_lv2)})
+
+
+def f0_fichier(fichier, sr=16000, fmin=60, fmax=1100, seuil=0.15):
+    """Hauteur YIN (Hz, 0 = non voisé) et niveau (dBFS) toutes les 10 ms, trame i centrée sur i x 10 ms (comme les
+    courbes du noyau), lu en continu : len(son) // 160 trames."""
+    import numpy as np
+    W, H, tmax = 640, 160, int(sr / fmin)
+    buf, n_son, f0s, niv = np.zeros(W // 2), 0, [], []
+    for bloc in lire_blocs(fichier, sr):
+        n_son += len(bloc)
+        buf = np.concatenate([buf, bloc])
+        n = (len(buf) - W - tmax) // H
+        if n > 0:
+            f, r = yin(buf[:n * H + W + tmax], sr, W, H, fmin, fmax, seuil)
+            f0s.append(f)
+            niv.append(r)
+            buf = buf[n * H:]
+    reste = n_son // H - sum(len(f) for f in f0s)
+    if reste > 0:
+        buf = np.concatenate([buf, np.zeros(reste * H + W + tmax)])
+        f, r = yin(buf[:reste * H + W + tmax], sr, W, H, fmin, fmax, seuil)
+        f0s.append(f)
+        niv.append(r)
+    f0 = np.concatenate(f0s)[:n_son // H] if f0s else np.zeros(0)
+    return f0, (np.concatenate(niv)[:n_son // H] if niv else np.zeros(0))
+
+
+def ecarts_gamme(f0, masque, accord_hz):
+    """Écart (cents, 0 à 600) de chaque hauteur à la note du masque la plus proche, dans l'accord donné."""
+    import numpy as np
+    notes = np.array([k for k in range(12) if masque[k]], float)
+    pc = (12 * np.log2(np.asarray(f0, float) / accord_hz) + 69) % 12
+    d = np.abs(pc[:, None] - notes[None, :])
+    return np.minimum(d, 12 - d).min(1) * 100
+
+
+def mesurer_autotune(seche, seche_at, gamme):
+    """Justesse de la voix sèche avant et après l'auto-tune : écart aux notes de la gamme (médiane, 90e centile, part
+    à 10 cents près) sur les trames voisées des deux (YIN ; niveau à moins de 30 dB du haut de la voix, et au-dessus de
+    -50 dBFS). Rend (mesures, hauteurs avant, hauteurs après) ; les hauteurs servent aussi à courbes.json."""
+    import numpy as np
+    fa, na = f0_fichier(seche)
+    fb, nb = f0_fichier(seche_at)
+    n = min(len(fa), len(fb))
+    fa, na, fb, nb = fa[:n], na[:n], fb[:n], nb[:n]
+
+    def voise(f, niv):
+        haut = float(np.percentile(niv, 95)) if len(niv) else -120.0
+        return (f > 0) & (niv > max(-50.0, haut - 30))
+    commun = voise(fa, na) & voise(fb, nb)
+    mes = {'trames_voisees': int(commun.sum()), 'secondes_voisees': round(float(commun.sum()) * 0.01, 1),
+           'accord_hz': gamme['accord_hz'], 'gamme': gamme['tonalite'] or 'chromatique'}
+    for nom, f in (('avant', fa), ('apres', fb)):
+        e = ecarts_gamme(f[commun], gamme['masque'], gamme['accord_hz']) if commun.any() else np.zeros(0)
+        mes[nom] = ({'ecart_median_cents': round(float(np.median(e)), 1),
+                     'ecart_p90_cents': round(float(np.percentile(e, 90)), 1),
+                     'part_a_10_cents': round(float((e < 10).mean()), 3)} if len(e) else None)
+    return mes, fa, fb
+
+
+def courbe_autotune(tv, fa, fb):
+    """Ajoute autotune_hz à courbes.json (format 1 gardé ; clé ajoutée en dernier, les autres inchangées) : la mélodie
+    convertie (convertie_hz, RMVPE du noyau) décalée, trame par trame (20 ms), de la correction mesurée (rapport des
+    hauteurs YIN de la voix auto-tunée et de la voix sèche ; interpolée là où YIN ne trouve rien ; au-delà de 1,5
+    demi-ton, erreur d'octave de YIN, écartée). 0 là où convertie_hz vaut 0. Rend le nombre de trames, ou None si
+    courbes.json manque."""
+    import numpy as np
+    chemin = tv / 'courbes.json'
+    try:
+        d = json.loads(chemin.read_text())
+        conv = np.asarray(d['convertie_hz'], float)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    pas = max(1, int(round(float(d.get('pas_s') or 0.02) / 0.01)))
+    a, b = fa[::pas], fb[::pas]
+    n = min(len(a), len(b))
+    c = np.full(len(conv), np.nan)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        r = 1200 * np.log2(b[:n] / a[:n])
+    ok = (a[:n] > 0) & (b[:n] > 0) & np.isfinite(r) & (np.abs(r) <= 150)
+    k = min(n, len(conv))
+    c[:k] = np.where(ok[:k], r[:k], np.nan)
+    v = np.nonzero(np.isfinite(c))[0]
+    c = np.interp(np.arange(len(conv)), v, c[v]) if len(v) else np.zeros(len(conv))
+    d['autotune_hz'] = [round(float(f * 2 ** (x / 1200)), 1) if f > 1 else 0 for f, x in zip(conv, c)]
+    tmp = chemin.with_name(chemin.name + '.tmp')
+    tmp.write_text(json.dumps(d, separators=(',', ':')))
+    os.replace(tmp, chemin)
+    return len(conv)
+
+
+def retirer_courbe_autotune(tv):
+    chemin = tv / 'courbes.json'
+    try:
+        d = json.loads(chemin.read_text())
+    except (OSError, ValueError):
+        return
+    if isinstance(d, dict) and 'autotune_hz' in d:
+        del d['autotune_hz']
+        tmp = chemin.with_name(chemin.name + '.tmp')
+        tmp.write_text(json.dumps(d, separators=(',', ':')))
+        os.replace(tmp, chemin)
+
+
+FICHIERS_AUTOTUNE_TRAVAIL = ('mix_autotune.wav', 'seche_voix_autotune.wav', 'reverb_voix_autotune.wav')
+
+
+def base_autotune(base):
+    return f'{base} (auto-tune)'
+
+
+def corbeille(fichiers):
+    """Fichiers mis à la corbeille du bureau (gio trash : récupérables), sinon effacés. Rend (à la corbeille, effacés)."""
+    fichiers = [Path(f) for f in fichiers if Path(f).exists()]
+    if fichiers and shutil.which('gio'):
+        subprocess.run(['gio', 'trash', '--', *map(str, fichiers)], capture_output=True, text=True)
+    jetes = [f for f in fichiers if not f.exists()]
+    effaces = []
+    for f in fichiers:
+        if f.exists():
+            f.unlink(missing_ok=True)
+            effaces.append(f)
+    return jetes, effaces
+
+
+def retirer_autotune(tv, dossier, base):
+    """--sans-autotune : la version auto-tune retirée. Vidéo, mp3 et .lrc « (auto-tune) » à la corbeille (récupérables ;
+    effacés s'il n'y a pas de corbeille), fichiers de travail effacés (refaits par --remix --autotune N), autotune_hz
+    retiré de courbes.json. Rend la section autotune du rapport."""
+    b = base_autotune(base)
+    sorties = [dossier / f'{b}{ext}' for ext in (*CONTENEURS, '.mp3', '.lrc')]
+    jetes, effaces = corbeille(sorties)
+    travail = [tv / n for n in FICHIERS_AUTOTUNE_TRAVAIL if (tv / n).exists()]
+    for f in travail:
+        f.unlink(missing_ok=True)
+    retirer_courbe_autotune(tv)
+    if jetes or effaces or travail:
+        dire('version auto-tune retirée : ' + ', '.join(
+            [f'{f.name} (corbeille)' for f in jetes] + [f'{f.name} (effacé, pas de corbeille)' for f in effaces]
+            + [f'travail/{tv.name}/{f.name} (effacé)' for f in travail]))
+    else:
+        dire('--sans-autotune : pas de version auto-tune à retirer')
+    return {'applique': False, 'intensite': 0, 'source': 'option --sans-autotune',
+            'raison': 'version auto-tune retirée (--sans-autotune)',
+            'retires': {'corbeille': [f.name for f in jetes], 'effaces': [f.name for f in effaces],
+                        'travail': [f.name for f in travail]}}
+
+
+def reglage_autotune(a, conf):
+    """Intensité de l'auto-tune demandée : --sans-autotune l'emporte, puis --autotune [N], puis la clé « autotune » de la
+    configuration (0 ou absente : désactivé). Rend {intensite, source, explicite, gamme, gamme_donnee, retirer}."""
+    gamme = getattr(a, 'autotune_gamme', None)
+    r = {'gamme': gamme or 'auto', 'gamme_donnee': gamme is not None, 'retirer': False, 'explicite': False}
+    if getattr(a, 'sans_autotune', False):
+        return {**r, 'intensite': 0, 'source': 'option --sans-autotune', 'retirer': True}
+    if getattr(a, 'autotune', None) is not None:
+        return {**r, 'intensite': int(a.autotune), 'source': 'option --autotune', 'explicite': True}
+    return {**r, 'intensite': autotune_config(conf), 'source': 'configuration (clé autotune)'}
+
+
+def reglage_pour(a, rapport):
+    """Réglage de l'auto-tune pour ce doublage. Sans --autotune ni --sans-autotune, un doublage qui a déjà sa version
+    auto-tune la garde à jour (--remix) : même intensité, même gamme demandée (sauf --autotune-gamme)."""
+    r = getattr(a, 'autotune_reglage', None) or {'intensite': 0, 'source': 'défaut', 'explicite': False,
+                                                 'gamme': 'auto', 'gamme_donnee': False, 'retirer': False}
+    prec = rapport.get('autotune') if isinstance(rapport.get('autotune'), dict) else {}
+    if r['retirer'] or r['explicite'] or not prec.get('applique') or not prec.get('intensite'):
+        return r
+    gamme = r['gamme'] if r['gamme_donnee'] else ((prec.get('gamme') or {}).get('demandee') or 'auto')
+    try:
+        lire_gamme(gamme)
+    except ValueError:
+        gamme = 'auto'
+    return {**r, 'intensite': int(prec['intensite']), 'source': 'doublage précédent (version auto-tune gardée à jour)',
+            'explicite': bool(prec.get('explicite')), 'gamme': gamme}
+
+
+def faire_autotune(t, tv, dossier, base, mode, gains, reglage):
+    """Version auto-tune, après le mix normal : voix sèche passée dans fat1, reverb, mix aux gains du mix normal, mp3.
+    N'échoue jamais : plugin absent, parole sans demande explicite ou erreur -> version normale seule, avec un message.
+    Rend la section autotune du rapport ('applique' vrai si la version existe)."""
+    n = reglage['intensite']
+    info = {'applique': False, 'intensite': n, 'source': reglage['source'], 'explicite': reglage['explicite'],
+            'moteur': 'x42-autotune (fat1, LV2)'}
+    t0 = time.time()
+    if mode == 'parole' and not reglage['explicite']:
+        dire(f"auto-tune non appliqué : c'est de la parole ({reglage['source']}) ; --autotune {n} l'impose")
+        return {**info, 'raison': 'parole : auto-tune seulement sur demande explicite (--autotune N)'}
+    if mode == 'parole':
+        dire(f'attention : auto-tune {n} sur de la parole, comme demandé : effet marqué (voix chantée artificielle)')
+    plugin = trouver_fat1()
+    if plugin is None or not ffmpeg_lv2():
+        raison = ('x42-autotune absent : installez x42-plugins : sudo apt install x42-plugins' if plugin is None
+                  else 'ffmpeg sans le filtre lv2 (compilé sans lilv)')
+        dire(f'ATTENTION : auto-tune demandé, mais {raison} ; version normale seule')
+        return {**info, 'raison': raison}
+    seche, seche_at = tv / 'seche_voix_convertie.wav', tv / 'seche_voix_autotune.wav'
+    b = base_autotune(base)
+    mp3 = dossier / f'{b}.mp3'
+    try:
+        gamme = choisir_gamme(reglage['gamme'], t / 'instrumental.wav')
+        if gamme['repli']:
+            dire(f"auto-tune : {gamme['repli']}")
+        passes = [{**p, 'tuning': gamme['accord_hz']} for p in ports_autotune(n)]
+        latence = latence_fat1(plugin)
+        appliquer_fat1(seche, seche_at, passes, gamme['masque'], plugin, latence)
+        rev = None
+        if 'reverb' in gains:
+            rev = reverb(tv, seche_at, 'reverb_voix_autotune.wav', duree_s(t / 'instrumental.wav'))
+        else:
+            (tv / 'reverb_voix_autotune.wav').unlink(missing_ok=True)
+        assembler(t, seche_at, rev, gains, tv / 'mix_autotune.wav')
+        ff('-i', tv / 'mix_autotune.wav', '-c:a', 'libmp3lame', '-b:a', '320k', mp3)
+    except Exception as e:  # noqa: BLE001 — l'auto-tune ne fait jamais échouer le doublage
+        for f in FICHIERS_AUTOTUNE_TRAVAIL:
+            (tv / f).unlink(missing_ok=True)
+        dire(f'ATTENTION : auto-tune impossible ({str(e).strip().splitlines()[0][:300]}) ; version normale seule')
+        return {**info, 'raison': f'erreur : {str(e).strip()[:500]}'}
+    info.update({'applique': True, 'gamme': gamme, 'passes': passes, 'latence_echantillons': latence,
+                 'plugin': {'uri': FAT1_URI, 'dossier_lv2': str(plugin)},
+                 'gains_db': {k: round(v, 2) for k, v in gains.items()},
+                 'fichiers': {'mp3': mp3.name, 'mix': 'mix_autotune.wav', 'seche': seche_at.name,
+                              'reverb': rev.name if rev else None}})
+    try:
+        mes, fa, fb = mesurer_autotune(seche, seche_at, gamme)
+        info['mesures'] = mes
+        trames = courbe_autotune(tv, fa, fb)
+        info['courbe'] = {'fichier': 'courbes.json', 'cle': 'autotune_hz', 'trames': trames} if trames else None
+    except Exception as e:  # noqa: BLE001 — mesures pour le rapport seulement
+        info['mesures'] = {'erreur': str(e)[:300]}
+    info['temps_s'] = round(time.time() - t0, 1)
+    return info
 
 
 RECUL_FFMPEG_S = 3 / 23   # ffmpeg recule de 3/23 s avant de chercher (formats sans recherche par pts, images B : mkv, webm)
@@ -1609,7 +2373,12 @@ def finir(tr, a, voix, temps_local=None):
     titre = tr['nom']
     debut = debut0 = time.time()
     info = {}
-    with Etape('mix', titre, f'mixage v{version} ({mode})'):
+    reglage = reglage_pour(a, rapport)
+    if not reglage['intensite'] and reglage['gamme_donnee'] and not reglage['retirer']:
+        dire('--autotune-gamme sans effet : auto-tune désactivé (--autotune N, ou doubler --config autotune N)')
+    info_at = None
+    with Etape('mix', titre, f'mixage v{version} ({mode})'
+               + (f", auto-tune {reglage['intensite']}" if reglage['intensite'] else '')):
         reste = calculer_reste(t)   # toujours recalculé et vérifié (jamais l'instrumental.wav d'une version précédente)
         gains, cible = mixer(t, tv, mode, voix_db, a.reverb_db, tv / 'voix_convertie.flac', tv / 'mix.wav', version=version, info=info)
         mp3 = dossier / f'{base}.mp3'
@@ -1634,6 +2403,11 @@ def finir(tr, a, voix, temps_local=None):
                 ff('-ss', f"{comp['debut_s']:.3f}", '-t', f"{comp['fin_s'] - comp['debut_s']:.3f}", '-i', mix,
                    '-af', 'afade=t=in:d=0.3', '-c:a', 'libmp3lame', '-b:a', '320k', sortie)
                 extraits.append(sortie)
+        # version auto-tune, en plus (la version normale ci-dessus ne dépend jamais de l'auto-tune)
+        if reglage['intensite']:
+            info_at = faire_autotune(t, tv, dossier, base, mode, gains, reglage)
+        elif reglage['retirer']:
+            info_at = retirer_autotune(tv, dossier, base)
     mix_s = time.time() - debut
     debut = time.time()
     paroles_on = getattr(a, 'paroles', True)
@@ -1657,25 +2431,53 @@ def finir(tr, a, voix, temps_local=None):
             pistes_st = []
             sortie = remettre_sur_video(t, tv / 'mix.wav', dossier, base, (), plan)
         info_paroles['pistes_video'] = [st['titre'] for st in pistes_st]
+        sortie_at = lrc_at = None
+        if info_at and info_at.get('applique'):
+            b_at = base_autotune(base)
+            try:   # mêmes pistes de paroles et sous-titres d'origine que la version normale
+                sortie_at = remettre_sur_video(t, tv / 'mix_autotune.wav', dossier, b_at, pistes_st, plan)
+                info_at['fichiers']['video'] = sortie_at.name
+            except Exception as e:  # noqa: BLE001 — le mp3 auto-tune reste
+                dire(f'ATTENTION : vidéo auto-tune impossible ({str(e).strip().splitlines()[-1][:200]}) : mp3 seul')
+                info_at['fichiers']['video'] = None
+                info_at['erreur_video'] = str(e).strip()[:500]
+            lrc = next((f for f in fichiers_paroles if f.suffix == '.lrc'), None)
+            if lrc is not None:
+                lrc_at = dossier / f'{b_at}.lrc'
+                shutil.copy2(lrc, lrc_at)
+            info_at['fichiers']['lrc'] = lrc_at.name if lrc_at else None
     video_s = time.time() - debut
     rapport['mix'] = {**info, 'musique_seule': reste, 'limite_dbtp': round(20 * math.log10(LIMITE), 2), 'voix_db': voix_db, 'reverb_db': a.reverb_db if mode == 'chant' else None,
                       'gains_db': {k: round(v, 2) for k, v in gains.items()}, 'voix_source_db': cible}
     rapport['paroles_sorties'] = info_paroles
+    if info_at is not None:
+        rapport['autotune'] = info_at
     if temps_local is not None:
         temps_local.update({'mix_local_s': round(mix_s, 1), 'remise_video_s': round(video_s, 1)})
         rapport['temps_local'] = temps_local
     (tv / 'rapport.json').write_text(json.dumps(rapport, ensure_ascii=False, indent=1))
     lrc = next((f for f in fichiers_paroles if f.suffix == '.lrc'), None)
+    ev_at = None
+    if info_at and info_at.get('applique'):
+        g_at = info_at.get('gamme') or {}
+        ev_at = {'mp4': str(sortie_at) if sortie_at else None, 'mp3': str(dossier / info_at['fichiers']['mp3']),
+                 'lrc': str(lrc_at) if lrc_at else None, 'mix': str(tv / 'mix_autotune.wav'),
+                 'seche': str(tv / 'seche_voix_autotune.wav'),
+                 'reverb': str(tv / info_at['fichiers']['reverb']) if info_at['fichiers'].get('reverb') else None,
+                 'intensite': info_at['intensite'], 'tonalite': g_at.get('tonalite'), 'gamme': g_at.get('type')}
     EV('sortie', titre, mp4=str(sortie), mp3=str(mp3), rapport=str(tv / 'rapport.json'),
        comparaisons=[str(e) for e in extraits] or None,
        courbes=str(tv / 'courbes.json') if (tv / 'courbes.json').exists() else None,
        paroles=str(tv / 'paroles.json') if paroles_on and (tv / 'paroles.json').exists() else None,
-       srt=[str(f) for f in fichiers_paroles if f.suffix == '.srt'] or None, lrc=str(lrc) if lrc else None)
+       srt=[str(f) for f in fichiers_paroles if f.suffix == '.srt'] or None, lrc=str(lrc) if lrc else None,
+       autotune=ev_at, voix=[v['id'] for v in voix_membres(voix)])
     m = rapport.get('mesures_musique', {})
     principale = rapport.get('variantes', {}).get('voix_convertie.flac', {})
     dire(f"mode {mode} ({'imposé' if rapport.get('mode_force') else 'détecté'} : musique sous la voix "
          f"{m.get('reste_sous_voix_db')} dB, tonalité {m.get('tonalite_reste')}, notes tenues {m.get('tenue')}) ; "
          f"modèle {rapport.get('modele')}, {principale.get('pas_diffusion')} pas")
+    for ligne in lignes_voix_cibles(rapport):
+        dire(ligne)
     net = rapport.get('nettoyage')
     if net is not None:   # rapports d'avant le 04/11/2026 : ni moteur ni nettoyage
         nom_moteur = {'yingmusic': 'YingMusic-SVC', 'seedvc': 'Seed-VC'}.get(rapport.get('moteur'), rapport.get('moteur'))
@@ -1701,13 +2503,27 @@ def finir(tr, a, voix, temps_local=None):
         else:
             kp = rapport.get('paroles') or {}
             dire(f"paroles : aucune ({kp.get('erreur') or info_paroles.get('raison') or 'rien de reconnu'})")
+    if info_at and info_at.get('applique'):
+        g_at, mes = info_at['gamme'], info_at.get('mesures') or {}
+        det = g_at.get('detection') or {}
+        if g_at['type'] == 'tonalite':
+            gamme_txt = g_at['tonalite'] + (f" (détectée, corrélation {det.get('correlation')})"
+                                            if lire_gamme(g_at['demandee'])['type'] == 'auto' else ' (imposée)')
+            if g_at.get('notes_ajoutees'):
+                gamme_txt += f", plus {', '.join(g_at['notes_ajoutees'])}"
+        else:
+            gamme_txt = 'chromatique'
+        av, ap = mes.get('avant') or {}, mes.get('apres') or {}
+        dire(f"auto-tune {info_at['intensite']} ({info_at['source']}) : gamme {gamme_txt}, accord {g_at['accord_hz']:g} Hz, "
+             f"{len(info_at['passes'])} passe(s) ; écart médian aux notes {av.get('ecart_median_cents')} → "
+             f"{ap.get('ecart_median_cents')} cents (90e centile {av.get('ecart_p90_cents')} → {ap.get('ecart_p90_cents')})")
     print('  hauteur par passage (dt = demi-tons) :', flush=True)
     for l in rapport.get('frise', []):
         print('   ', l, flush=True)
     if extraits:
         dire(f"comparaison {comp['pas'][0]} / {comp['pas'][1]} pas sur {fmt_t(comp['debut_s'])}–{fmt_t(comp['fin_s'])} : "
              + ', '.join(e.name for e in extraits))
-    dire(f'fini : {sortie}\n         {mp3}')
+    dire(f'fini : {sortie}\n         {mp3}' + ''.join(f'\n         {f}' for f in (sortie_at, ev_at and ev_at['mp3']) if f))
     EV('etape', titre, etape='fini', etat='fin', message=str(sortie), duree_s=round(time.time() - tr.get('debut_epoch', debut0), 1))
     return sortie
 
@@ -1897,6 +2713,34 @@ def lire_ancres():
     return {'homme': h, 'femme': f}
 
 
+def reglages_noyau(a, voix, ancres, travaux):
+    """Réglages du noyau (doubler_kaggle.py, REGLAGES) pour ces vidéos et cette voix. Une voix : ceux d'avant, tels quels.
+    Plusieurs voix (voix combinée de charger_voix_spec) : « voix » est la première (analyse, parole), et voix_cibles les
+    donne toutes, avec leur clé (homme, femme, chanteur1, chanteur2) et le mode (genre, ordre).
+    gain_entree : gain appliqué avant le FLAC (crête à -1 dBFS), retiré par le noyau à la lecture ; retour_flac : la voix
+    isolée revient en FLAC 24 bits (voix_source.flac et son gain dans voix_source.flac.json) ; moteur_chant, nettoyage :
+    chaîne du chant (YingMusic-SVC sur la voix nettoyée par défaut) ; ancres : None sans fichier d'ancres (ANCRES ; le
+    noyau décide alors l'octave sans empreinte) ; paroles : transcription (Whisper large-v3) et traduction française dans
+    le noyau (paroles.json)."""
+    v0 = voix_membres(voix)[0]
+    reglages = {**NOYAU_REGLAGES, 'pas': a.pas, 'ancres': ancres, 'paroles': bool(a.paroles),
+                'moteur_chant': a.moteur, 'nettoyage': not a.sans_nettoyage,
+                'voix': {'nom': v0['id'], 'fichier': f"voix-{v0['id']}.wav", 'f0_parole_hz': v0['f0'],
+                         'facteur_chant': FACTEUR_CHANT},
+                'travaux': [{'id': tr['id'], 'entree': tr['entree'], 'mode': a.mode,
+                             'octave': a.octave if a.octave == 'auto' else int(a.octave),
+                             'comparer_modeles': bool(a.comparer_modeles), 'comparer_pas': a.comparer_pas,
+                             'gain_entree': tr['gain_entree'], 'gain_entree_db': round(20 * math.log10(tr['gain_entree']), 3),
+                             'retour_flac': True} for tr in travaux]}
+    if voix.get('membres'):
+        reglages['voix_cibles'] = {'mode': voix['mode'], 'voix': [
+            {'cle': m['cle'], 'nom': m['id'], 'fichier': f"voix-{m['id']}.wav", 'f0_parole_hz': m['f0'],
+             'facteur_chant': FACTEUR_CHANT, 'affichage': m['affichage']} for m in voix['membres']]}
+    if a.modele_parole:
+        reglages['modele_parole'] = a.modele_parole
+    return reglages
+
+
 def traiter_lot(videos, a, voix):
     """Toutes les vidéos dans une seule session Kaggle, puis le mixage de chacune sur le PC."""
     if SESSION.exists():   # vérifié de nouveau sous le verrou ; ici, pour ne pas extraire le son pour rien
@@ -1927,37 +2771,28 @@ def traiter_lot(videos, a, voix):
         except Exception as e:  # noqa: BLE001
             return abandon(f'de l\'envoi sur Kaggle : {e}')
         envoi_s = round(time.time() - debut, 1)
-        # gain_entree : gain appliqué avant le FLAC (crête à -1 dBFS), retiré par le noyau à la lecture ;
-        # retour_flac : la voix isolée revient en FLAC 24 bits (voix_source.flac et son gain dans voix_source.flac.json)
-        # moteur_chant, nettoyage : chaîne du chant (YingMusic-SVC sur la voix nettoyée par défaut)
-        # ancres : None sans fichier d'ancres (ANCRES ; le noyau décide alors l'octave sans empreinte)
-        # paroles : transcription (Whisper large-v3) et traduction française dans le noyau (paroles.json)
-        reglages = {**NOYAU_REGLAGES, 'pas': a.pas, 'ancres': ancres, 'paroles': bool(a.paroles),
-                    'moteur_chant': a.moteur, 'nettoyage': not a.sans_nettoyage,
-                    'voix': {'nom': voix['id'], 'fichier': f"voix-{voix['id']}.wav", 'f0_parole_hz': voix['f0'],
-                             'facteur_chant': FACTEUR_CHANT},
-                    'travaux': [{'id': tr['id'], 'entree': tr['entree'], 'mode': a.mode,
-                                 'octave': a.octave if a.octave == 'auto' else int(a.octave),
-                                 'comparer_modeles': bool(a.comparer_modeles), 'comparer_pas': a.comparer_pas,
-                                 'gain_entree': tr['gain_entree'], 'gain_entree_db': round(20 * math.log10(tr['gain_entree']), 3),
-                                 'retour_flac': True} for tr in travaux]}
-        if a.modele_parole:
-            reglages['modele_parole'] = a.modele_parole
+        # réglages du noyau (reglages_noyau) ; voix_cibles seulement avec plusieurs voix (sinon ceux d'avant, tels quels)
+        reglages = reglages_noyau(a, voix, ancres, travaux)
         retour = kdir / 'retour'
         sources = [OUTILS] if (kdir / 'outils.json').exists() else []
         estimation = estimer_noyau_s([tr['duree_audio_s'] for tr in travaux], a.pas, a.sortie, not a.sans_nettoyage, a.mode,
-                                     a.moteur, a.paroles)
+                                     a.moteur, a.paroles, len(voix_membres(voix)))
         # limite du suivi : au moins le double de l'estimation (le nettoyage allonge beaucoup une longue chanson)
         attente_maxi = max((30 + 20 * len(travaux)) * 60, 2 * estimation + 30 * 60)
         dire(f"chaîne : chant → {'voix nettoyée' if not a.sans_nettoyage else 'voix complète (sans nettoyage)'}, "
              f"{'YingMusic-SVC' if a.moteur == 'yingmusic' else 'Seed-VC 44 kHz'} ; parole → Seed-VC 22 kHz ; "
              f"paroles → {'Whisper large-v3 et traduction française' if a.paroles else 'non'} ; "
              f"session estimée à {estimation / 60:.0f} min")
+        if voix.get('membres'):
+            dire(f"une voix par chanteur ({'duo mixte' if voix['mode'] == 'genre' else 'chanteurs dans l’ordre d’apparition'}) : "
+                 f"{decrire_voix(voix)} ; en parole, {voix['membres'][0]['id']} seule")
 
         def noter(pousse, version):
+            # voix : la spécification de --voix (homme:a,femme:b) avec plusieurs voix, pour que --reprendre la retrouve
             ecrire_session({'noyau': NOYAU, 'jeu': JEU, 'version_noyau': version, 'pousse_epoch': pousse,
                             'poussee_le': datetime.datetime.fromtimestamp(pousse).astimezone().isoformat(timespec='seconds'),
-                            'voix': voix['id'], 'sortie': str(Path(a.sortie).expanduser().resolve()), 'envoi_s': envoi_s,
+                            'voix': voix.get('spec') or voix['id'], 'sortie': str(Path(a.sortie).expanduser().resolve()),
+                            'envoi_s': envoi_s,
                             'estimation_s': estimation, 'attente_maxi_s': attente_maxi, 'pas': a.pas,
                             'moteur': a.moteur, 'nettoyage': not a.sans_nettoyage, 'paroles': bool(a.paroles),
                             'travaux': [{k: tr.get(k) for k in CHAMPS_SESSION} for tr in travaux]})
@@ -1995,7 +2830,7 @@ def reprendre(a):
             tr[k] = Path(tr[k])
         travaux.append(tr)
     titres = [tr['nom'] for tr in travaux]
-    voix = charger_voix(s['voix'])
+    voix = charger_voix_spec(s['voix'])   # un nom, ou la spécification homme:a,femme:b
     kdir = Path(s['sortie']) / '.kaggle'
     kdir.mkdir(parents=True, exist_ok=True)
     noyau = s['noyau']
@@ -2069,6 +2904,21 @@ def preparer_outils(a):
         dire('ATTENTION : paroles incomplètes dans les outils : les doublages les téléchargeront, ou se passeront de paroles')
 
 
+def arguments_autotune(argv):
+    """« --autotune clip.mp4 » : la vidéo n'est pas une intensité. « --autotune » suivi d'autre chose qu'une intensité
+    devient « --autotune=70 » (argparse prendrait sinon la vidéo pour la valeur et refuserait la commande)."""
+    out = list(argv)
+    for i, x in enumerate(out):
+        if x == '--':
+            break
+        if x == '--autotune' and i + 1 < len(out):
+            try:
+                intensite_autotune(out[i + 1])
+            except ValueError:
+                out[i] = f'--autotune={AUTOTUNE_DEFAUT}'
+    return out
+
+
 def main():
     p = argparse.ArgumentParser(prog='doubler', description=__doc__.split('\n')[0],
                                 formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__.split('\n', 1)[1])
@@ -2076,7 +2926,10 @@ def main():
                                               'vidéo (début+durée en s ou m:ss ; @60 jusqu\'à la fin, @+40 le début)')
     p.add_argument('--voix', default=None, metavar='NOM',
                    help='voix cible : un dossier de <données>/voix (défaut : clé « voix » de la configuration, '
-                        'sinon la seule voix présente)')
+                        'sinon la seule voix présente) ; une voix par chanteur : homme:NOM,femme:NOM (duo mixte) ou '
+                        'chanteur1:NOM,chanteur2:NOM (duo de même genre, dans l\'ordre d\'apparition) : sorties « voix A et '
+                        'B », dossier travail/A+B ; une seule voix trouvée dans la chanson : tout dans la voix de sa classe, '
+                        'sinon la première')
     p.add_argument('--mode', choices=['auto', 'chant', 'parole'], default='auto')
     p.add_argument('--octave', choices=['auto', '0', '-12', '+12', '12'], default='auto',
                    help="auto : en chant, un seul décalage par chanteur, choisi d'après la hauteur (avec les ancres de "
@@ -2097,6 +2950,18 @@ def main():
     p.add_argument('--reverb-db', type=float, default=-13, help='reverb sous la voix sèche, en chant (défaut -13)')
     p.add_argument('--mix-v1', action='store_true',
                    help="ancien mixage : sans suivi des nuances de la voix d'origine ni dé-esseur (défaut : mixage v2)")
+    p.add_argument('--autotune', nargs='?', type=_intensite_option, const=AUTOTUNE_DEFAUT, default=None, metavar='N',
+                   help=f'auto-tune de la voix, intensité N de 0 à 100 ({AUTOTUNE_DEFAUT} sans valeur ; 0 : désactivé) : '
+                        'bas, notes juste rendues plus justes ; haut, effet robotique, sauts de note francs. Version '
+                        '« (auto-tune) » de la vidéo, du mp3 et du .lrc en plus de la version normale, faite sur le PC par '
+                        'x42-autotune (paquet x42-plugins). Défaut : clé « autotune » de la configuration (0 sinon). En '
+                        'parole, seulement avec --autotune. Avec --remix, sans --autotune ni --sans-autotune, une version '
+                        'auto-tune existante est refaite à la même intensité')
+    p.add_argument('--sans-autotune', action='store_true',
+                   help="pas d'auto-tune (l'emporte sur --autotune et la configuration) ; avec --remix : version auto-tune "
+                        'retirée (vidéo, mp3 et .lrc à la corbeille)')
+    p.add_argument('--autotune-gamme', type=_gamme_option, default=None, metavar='GAMME',
+                   help=f'gamme de l\'auto-tune : {GAMME_AIDE}')
     p.add_argument('--debut', type=float, default=None, help="début de l'extrait (s), pour un essai")
     p.add_argument('--duree', type=float, default=None, help="durée de l'extrait (s)")
     p.add_argument('--remix', action='store_true', help='refaire seulement le mixage et la vidéo depuis travail/ (sans Kaggle)')
@@ -2123,7 +2988,7 @@ def main():
                    help='prépare une fois sur Kaggle les paquets et les modèles (installation plus rapide ensuite)')
     p.add_argument('--version', action='version', version=f'doubler (Voix-là) {VERSION}',
                    help='affiche la version et quitte')
-    a = p.parse_args()
+    a = p.parse_args(arguments_autotune(sys.argv[1:]))
     EV.ouvrir(a.evenements)
     code = 1
     try:
@@ -2171,6 +3036,7 @@ def executer(p, a):
         if not KAGGLE.exists() or not JETON.exists():
             sys.exit(f'Kaggle : commande ({KAGGLE}) ou clé (~/.kaggle/access_token) absente')
         a.paroles = not a.sans_paroles and paroles_config(conf)
+        a.autotune_reglage = reglage_autotune(a, conf)
         configurer_kaggle(conf)
         echecs = reprendre(a)
         if echecs:
@@ -2186,9 +3052,10 @@ def executer(p, a):
     moteur_donne = a.moteur is not None
     a.moteur = a.moteur or moteur_conf or MOTEUR_DEFAUT
     a.paroles = not a.sans_paroles and paroles_config(conf)
+    a.autotune_reglage = reglage_autotune(a, conf)
     if a.voix is None:
         a.voix = exiger_voix_defaut()
-    voix = charger_voix(a.voix)
+    voix = charger_voix_spec(a.voix)   # une voix, ou une par chanteur (homme:a,femme:b, chanteur1:a,chanteur2:b)
     if a.remix:
         if moteur_donne or a.sans_nettoyage:
             dire('--moteur et --sans-nettoyage sont sans effet avec --remix (le mixage repart de la voix déjà convertie)')
@@ -2200,7 +3067,7 @@ def executer(p, a):
                 tr = emplacements(chemin, debut_v, duree_v, a, voix)
                 titre = tr['nom']
                 tr['debut_epoch'] = time.time()
-                dire(f"=== {tr['video'].name} (remix, voix {voix['id']})")
+                dire(f"=== {tr['video'].name} (remix, voix {decrire_voix(voix)})")
                 finir(tr, a, voix)
             except Exception as e:  # noqa: BLE001
                 dire(f'ÉCHEC {v} : {e}')

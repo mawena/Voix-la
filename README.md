@@ -634,11 +634,11 @@ Pages écrites, encore en essai :
 
 | Page | Rôle |
 |---|---|
-| Doubler | une ou plusieurs vidéos (sélecteur ou glisser-déposer), un extrait facultatif par vidéo réglé dans un petit lecteur, les réglages du doublage, une estimation de la durée |
+| Doubler | une ou plusieurs vidéos (sélecteur ou glisser-déposer), un extrait facultatif par vidéo réglé dans un petit lecteur, les réglages du doublage, dont l'interrupteur « Paroles » (si doubler connaît `--sans-paroles`), une estimation de la durée |
 | Travaux | la file, les étapes en direct avec le temps écoulé et le temps restant estimé, le journal, l'annulation |
-| Résultats | les doublages, la lecture avec bascule original ⇄ doublé à la même position, la frise d'octave, les durées par étape, le remix rapide |
+| Résultats | les doublages, la lecture avec le choix de ce qu'on écoute à la même position (doublage, original, beat seul, ma voix seule, voix d'origine seule ; touche B : doublage ⇄ original), les paroles synchronisées (`paroles.json` de doubler, sinon les sous-titres de la vidéo), la frise d'octave, les durées par étape, le remix rapide, l'enregistrement du beat ou de la voix seule |
 | Voix | écouter la référence, choisir la voix par défaut, ajouter une voix depuis un fichier ou au micro, renommer, mettre à la corbeille, prises de chant |
-| Écoute à l'aveugle | les versions du banc d'essai, notées de 1 à 5 sans savoir laquelle est laquelle |
+| Écoute à l'aveugle | les versions du banc d'essai, notées de 1 à 5 sans savoir laquelle est laquelle ; interrupteur « voix seule » (touche V) |
 | État | Kaggle (présence du jeton, compte, noyaux), verrou de `doubler`, mémoire et charge du poste |
 
 Les réglages, dans le menu principal, reprennent le dossier des données et les noms Kaggle, écrits par

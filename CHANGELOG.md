@@ -7,6 +7,26 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+### Ajouté
+
+- Interface, page Résultats : choix de ce qu'on écoute à la même position : Doublage, Original, Beat seul, Ma voix
+  seule, Voix d'origine seule (touche B : doublage ⇄ original). « Ma voix seule » sonne comme dans le mix : voix sèche
+  et réverbération aux gains du rapport, même limiteur, préparée en cache sous nice. Sans image, une piste se lit sous
+  l'image arrêtée de la vidéo.
+- Interface : « Enregistrer le beat… » et « Enregistrer ma voix seule… », en MP3 ou FLAC, nommés
+  `<titre> - voix <Nom> (beat).mp3` et `<titre> - voix <Nom> (voix seule).mp3`.
+- Interface : paroles synchronisées sous le lecteur (ligne en cours avec le mot en cours, ligne suivante ; langue
+  d'origine, français ou les deux), depuis `travail/<voix>/paroles.json`, sinon les sous-titres de la vidéo doublée.
+- Interface : interrupteur « Paroles » dans la page Doubler (`--sans-paroles`) et réglage par défaut
+  (`doubler --config paroles oui|non`).
+- Interface, écoute à l'aveugle : interrupteur « voix seule » (touche V).
+
+### Modifié
+
+- Interface : sans la vidéo d'origine, l'original se lit d'après `travail/original.wav`, sans image, au lieu de
+  désactiver la bascule A/B.
+- Interface : le spectrogramme montre la piste écoutée.
+
 ## [0.2.0] - 2026-11-04
 
 ### Ajouté

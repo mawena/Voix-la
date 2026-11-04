@@ -1,3 +1,16 @@
+voix-la (0.3.0) unstable; urgency=medium
+
+  * Paroles à chaque doublage : transcription Whisper large-v3, traduction
+    française (NLLB-200) quand la chanson n'est pas en français, pistes de
+    sous-titres dans la vidéo, fichiers .srt et .lrc ; --sans-paroles.
+  * Passages chantés perdus au nettoyage repris de la voix complète.
+  * Règle d'octave v2.3 : ancres de genre bâties sur un corpus public de
+    parole ; un chanteur à voix haute n'est plus pris pour une femme.
+  * Interface : écouter le beat, sa voix ou la voix d'origine seuls, les
+    enregistrer ; paroles synchronisées sous le lecteur.
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Wed, 04 Nov 2026 15:39:40 +0000
+
 voix-la (0.2.0) unstable; urgency=medium
 
   * Paquet Debian : commandes doubler et voix-la dans /usr/bin, code dans

@@ -1,3 +1,17 @@
+voix-la (0.6.0) unstable; urgency=medium
+
+  * Deux GPU : la machine Kaggle T4 x2 partage le nettoyage et la
+    conversion YingMusic-SVC entre ses deux cartes (chanson de 3 min 48 :
+    26,6 -> 19,4 min de GPU), son identique au bit près ; --gpu auto|1|2.
+  * Cinq pistes audio dans la vidéo doublée : doublage (par défaut),
+    original, beat seul, voix convertie seule, voix d'origine seule ;
+    --pistes-audio toutes|doublage.
+  * Paroles d'un extrait mkv ou webm au temps réel de la vidéo doublée.
+  * Interface : choix « une voix par chanteur » gardé, paroles, frise et
+    mélodie calées sur la piste lue, estimation et réglage des cartes GPU.
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Thu, 05 Nov 2026 23:30:00 +0000
+
 voix-la (0.5.0) unstable; urgency=medium
 
   * Une voix par chanteur : --voix homme:A,femme:B (duo mixte) ou

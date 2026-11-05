@@ -100,8 +100,9 @@ Cartes GPU du noyau. La machine Kaggle demandée (\fBNvidiaTeslaT4\fR, « GPU T4
 x2 ») a deux cartes T4 : le nettoyage (karaoké sur une carte, dereverb de la
 voix principale et des chœurs chacun sur la sienne), la conversion YingMusic\-SVC
 (morceaux répartis entre les cartes) et la séparation d'un lot s'y partagent le
-travail. Le résultat est le même qu'avec une carte, au bit près : chaque morceau
-garde sa graine, et les pistes sont assemblées dans le même ordre. \fBauto\fR
+travail. Le son rendu est le même qu'avec une carte, au bit près : chaque
+morceau garde sa graine, et les pistes sont assemblées dans le même ordre. Sur
+une chanson de 3 min 48, la session GPU passe de 26,6 à 19,4 min. \fBauto\fR
 (défaut, clé \fBgpu\fR) : les cartes de la machine, deux au plus ; \fB1\fR : une
 carte, comme avant ; \fB2\fR : deux. Une machine à une seule carte, ou une carte
 qui s'arrête en route : repli automatique sur une carte. Le quota GPU

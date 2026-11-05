@@ -38,8 +38,10 @@
    dereverb (voix principale, chœurs) chacun sur la sienne (plan_nettoyage) ; YingMusic-SVC : les morceaux de toutes les
    pistes et de toutes les vidéos répartis entre les cartes (repartir_morceaux), puis chaque piste assemblée ici dans
    l'ordre de ses morceaux ; séparation d'un lot : les vidéos réparties. Chaque tâche ne dépend que de ses entrées et de
-   sa graine (une par morceau) : le résultat est celui d'une carte seule, au bit près. Une seule carte visible : la
-   chaîne d'avant ; une carte arrêtée en route : ce qu'elle n'a pas fait est repris sur la carte 0.
+   sa graine (une par morceau) : le son rendu est celui d'une carte seule, au bit près (essai du 05/11/2026 : voix
+   convertie, mix et mp3 identiques ; session de 26,6 à 19,4 min sur une chanson de 3 min 48). Les modèles se chargent
+   l'un après l'autre (TourDeChargement) : chargés ensemble, ils prennent deux à trois fois plus longtemps. Une seule
+   carte visible : la chaîne d'avant ; une carte arrêtée en route : ce qu'elle n'a pas fait est repris sur la carte 0.
 
 doubler.py remplace __REGLAGES__ (JSON en base64) et SOURCE (sa propre source en base64 : le noyau tourne en carnet,
 sans fichier, et en a besoin pour ses étapes à part), puis pousse ce noyau privé (GPU T4 + internet).

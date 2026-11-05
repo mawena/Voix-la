@@ -960,7 +960,9 @@ def envoyer_jeu(travaux, voix, dossier):
     shutil.rmtree(jeu, ignore_errors=True)
 
 
-FACTEURS_DEUX_CARTES = {'nettoyage': 0.70, 'conversion': 0.55}   # sans historique ; voir estimer_noyau_s
+# Sans historique (voir estimer_noyau_s) : part du temps de GPU (deux cartes additionnées) que le nettoyage et YingMusic-SVC
+# prennent en temps réel, chargements à part ; mesuré le 05/11/2026 sur une chanson de 3 min 48 : 0,69 et 0,55
+FACTEURS_DEUX_CARTES = {'nettoyage': 0.70, 'conversion': 0.55}
 
 
 def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=MOTEUR_DEFAUT, paroles=True, voix_cibles=1,

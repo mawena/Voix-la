@@ -44,8 +44,9 @@ def bruit(n, graine, niveau_db, bande=(150.0, 5000.0)):
     return y * 10 ** (niveau_db / 20) / np.sqrt(np.mean(y ** 2))
 
 
-def video(chemin, duree, retard=0.0, sous_titre=False):
-    """Vidéo de synthèse (image clé chaque seconde), son en espagnol (spa), en retard de retard s sur l'image."""
+def video(chemin, duree, retard=0.0, sous_titre=False, images_b=False):
+    """Vidéo de synthèse (image clé chaque seconde ; images B si images_b : ffmpeg recule alors de 0,13 s avant de
+    chercher dans un mkv), son en espagnol (spa), en retard de retard s sur l'image."""
     webm = chemin.suffix == '.webm'
     cmd = ['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i', f'testsrc=size=128x96:rate=25:duration={duree}',
            *(['-itsoffset', str(retard)] if retard else []),
@@ -57,6 +58,7 @@ def video(chemin, duree, retard=0.0, sous_titre=False):
         cmd += ['-i', str(srt)]
         cartes += ['-map', '2', '-c:s', 'mov_text' if chemin.suffix == '.mp4' else 'srt']
     cmd += [*cartes, *(['-c:v', 'libvpx', '-b:v', '300k'] if webm else ['-c:v', 'mpeg4']), '-g', '25',
+            *(['-bf', '2'] if images_b else []),
             '-c:a', 'libopus' if webm else 'aac', '-metadata:s:a:0', 'language=spa', str(chemin)]
     subprocess.run(cmd, check=True)
     return chemin
@@ -158,9 +160,9 @@ class PistesAudio(unittest.TestCase):
         self.D = charger_doubler(self.tmp / 'home')
 
     def doubler(self, nom, ext, voix=JULES, extrait=None, retard=0.0, duree=6.0, mode='chant', pistes='toutes',
-                ecart_voix=0, paroles=False, autotune=None):
+                ecart_voix=0, paroles=False, autotune=None, images_b=False):
         (self.tmp / 'videos').mkdir(exist_ok=True)
-        source = video(self.tmp / 'videos' / f'{nom}{ext}', duree, retard, sous_titre=paroles)
+        source = video(self.tmp / 'videos' / f'{nom}{ext}', duree, retard, sous_titre=paroles, images_b=images_b)
         dossier = self.tmp / 'sorties' / nom
         t, tv, src = travail(self.D, source, dossier, voix, extrait, mode, ecart_voix, paroles)
         a = argparse.Namespace(voix_db=None, mix_v1=False, reverb_db=-13.0, paroles=paroles, pistes_audio=pistes,
@@ -256,6 +258,18 @@ class PistesAudio(unittest.TestCase):
         self.assertEqual(len(st), 3)   # d'origine, espagnol, français : après les pistes audio
         self.assertEqual([s['index'] for s in st], [6, 7, 8])
         self.assertEqual([s['disposition']['default'] for s in st], [0, 0, 0])
+
+    def test_extrait_mkv_avec_images_b(self):
+        """ffmpeg recule de 0,13 s avant de chercher : le mix et les quatre autres pistes lui sont donnés décalés de
+        -0,13 s (decalage_son), le conteneur recale tout sur la première image ; les cinq pistes restent calées entre
+        elles, le doublage commence avec l'image, et les paroles avec lui (decalage_s 0)."""
+        sortie, t, tv, _ = self.doubler('Recul', '.mkv', extrait=(3.0, 4.0), duree=10.0, paroles=True, images_b=True)
+        plan = self.D.plan_video(t)
+        self.assertAlmostEqual(plan['decalage_son'], -0.1314, delta=0.001)
+        self.assertEqual(plan['debut_son'], 0.0)
+        self.verifier(sortie, t, tv, self.titres())
+        self.assertEqual(json.loads((tv / 'paroles.json').read_text())['decalage_s'], 0.0)
+        self.assertEqual(sorted(f.name for f in tv.glob('.*')), [])
 
     def test_son_d_origine_en_retard(self):
         sortie, t, tv, src = self.doubler('Retard', '.mp4', retard=0.5)

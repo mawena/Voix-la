@@ -127,13 +127,21 @@ def ecrire_flac(chemin, y, sr):
 
 
 if __name__ == '__main__':
+    import os
     from audio_separator.separator import Separator
     travaux, tmp = json.loads(sys.argv[1]), sys.argv[2]
+    # deux cartes : la seconde attend que la première ait chargé le modèle (chargés ensemble, ils sont bien plus lents)
+    attendre, signaler = (sys.argv[3:5] + ['', ''])[:2]
+    t_attente = time.time()
+    while attendre and not os.path.exists(attendre) and time.time() - t_attente < 300:
+        time.sleep(0.5)
     t0 = time.time()
     sep = Separator(model_file_dir='/tmp/modeles_sep', output_dir=tmp, output_format='WAV', use_soundfile=True,
                     normalization_threshold=1.0, sample_rate=44100,
                     mdxc_params={'segment_size': 801, 'override_model_segment_size': True, 'batch_size': 1, 'overlap': 4, 'pitch_shift': 0})
     sep.load_model(model_filename='vocals_mel_band_roformer.ckpt')
+    if signaler:
+        open(signaler, 'w').close()
     print(f'SEPARATION modèle chargé en {time.time() - t0:.0f} s', flush=True)
     for t in travaux:
         t1 = time.time()
@@ -1767,6 +1775,41 @@ def plan_nettoyage(videos, cartes):
     return [karaokes[k] + [t for _, t in sorted(dereverbs[k], key=lambda dt: dt[0])] for k in range(cartes)]
 
 
+class TourDeChargement:
+    """Chargement d'un modèle par une étape à part, quand plusieurs cartes travaillent : un chargement à la fois (verrou
+    commun dans le dossier d'état), et la carte k ne fait son premier chargement qu'après celui de la carte k-1 (ou sa
+    fin). Chargés en même temps, les modèles prennent deux à trois fois plus longtemps (essai du 05/11/2026 sur Kaggle :
+    dereverb 50 s au lieu de 9, YingMusic-SVC 73 s au lieu de 24) ; l'un après l'autre, la carte 1 charge pendant que la
+    carte 0 calcule. Le chargement ne change rien au résultat. Sans dossier d'état (une carte) : rien ne change."""
+    ATTENTE_MAXI_S = 600
+
+    def __init__(self, travail):
+        self.etat, self.carte = travail.get('etat'), int(travail.get('carte') or 0)
+        self.premier, self.verrou = True, None
+
+    def __enter__(self):
+        if not self.etat:
+            return self
+        if self.premier and self.carte > 0:
+            debut = time.time()
+            while (not any(os.path.exists(os.path.join(self.etat, f'{n}_{self.carte - 1}')) for n in ('charge', 'fin'))
+                   and time.time() - debut < self.ATTENTE_MAXI_S):
+                time.sleep(0.5)
+        import fcntl
+        self.verrou = open(os.path.join(self.etat, 'chargement.verrou'), 'w')
+        fcntl.flock(self.verrou, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        if self.verrou:
+            self.verrou.close()   # verrou rendu
+            self.verrou = None
+        if self.etat and self.premier:
+            open(os.path.join(self.etat, f'charge_{self.carte}'), 'w').close()
+        self.premier = False
+        return False
+
+
 def nom_tache(t):
     """Nom de fichier d'une tâche du nettoyage (témoins de fin) : karaoke_v1, dereverb_v1_lead…"""
     return '_'.join(str(x) for x in t)
@@ -1844,22 +1887,14 @@ def niveaux_nettoyage(x, lead, choeurs, lead_sec, ch_sec):
         ('reverb_jetee', x - lead_sec - ch_sec))}
 
 
-def repartir_morceaux(pistes, pad, cartes, invite_s=25.0):
-    """Morceaux à convertir par YingMusic-SVC (toutes pistes, toutes vidéos) répartis sur les cartes : [[piste,
-    morceau], …] par carte, rangés dans l'ordre des pistes puis des morceaux. Coût d'un morceau : sa durée marge comprise
-    plus l'invite de la référence (jusqu'à 25 s, convertie avec chaque fenêtre), fois les pas de diffusion ; le plus
-    coûteux d'abord, sur la carte la moins chargée."""
-    couts = []
-    for pi, p in enumerate(pistes):
-        for mi, m in enumerate(p['morceaux']):
-            couts.append(((m[2] - m[1] + 2 * pad) / SR + invite_s) * float(p.get('pas') or 30))
-    charge, parts = [0.0] * cartes, [[] for _ in range(cartes)]
-    ordre = [(pi, mi) for pi, p in enumerate(pistes) for mi in range(len(p['morceaux']))]
-    for j in sorted(range(len(ordre)), key=lambda j: -couts[j]):
-        k = min(range(cartes), key=lambda c: charge[c])
-        charge[k] += couts[j]
-        parts[k].append(list(ordre[j]))
-    return [sorted(p) for p in parts]
+def ordre_morceaux(pistes, pad, invite_s=25.0):
+    """Morceaux à convertir par YingMusic-SVC (toutes pistes, toutes vidéos), [[piste, morceau], …], le plus coûteux
+    d'abord : chaque carte prend le premier libre (ying_morceaux), les derniers pris sont donc les plus courts et les
+    cartes finissent ensemble. Coût d'un morceau : sa durée marge comprise plus l'invite de la référence (jusqu'à 25 s,
+    convertie avec chaque fenêtre), fois les pas de diffusion. À coût égal, l'ordre des pistes puis des morceaux."""
+    taches = [(((m[2] - m[1] + 2 * pad) / SR + invite_s) * float(p.get('pas') or 30), pi, mi)
+              for pi, p in enumerate(pistes) for mi, m in enumerate(p['morceaux'])]
+    return [[pi, mi] for _, pi, mi in sorted(taches, key=lambda t: (-t[0], t[1], t[2]))]
 
 
 def lire_mono(chemin):
@@ -2557,6 +2592,7 @@ def etape_nettoyer(travail):
             time.sleep(0.5)
 
     s, charge = None, None   # séparateur en mémoire, et son modèle : 'karaoke', 'dereverb' (None : aucun utilisable)
+    tour = TourDeChargement(travail)
     for t in taches:
         v = videos[t[1]]
         r = res['videos'].setdefault(v['id'], {'durees_s': {}})
@@ -2564,13 +2600,14 @@ def etape_nettoyer(travail):
         if t[0] == 'karaoke':
             if charge != 'karaoke':
                 s, charge = None, 'karaoke'
-                for nom in travail['karaoke']:
-                    try:
-                        s = separateur(nom)
-                        res['karaoke'] = nom
-                        break
-                    except Exception as e:  # noqa: BLE001
-                        log(f'NETTOYAGE {nom} : chargement impossible ({e!r}), modèle suivant')
+                with tour:
+                    for nom in travail['karaoke']:
+                        try:
+                            s = separateur(nom)
+                            res['karaoke'] = nom
+                            break
+                        except Exception as e:  # noqa: BLE001
+                            log(f'NETTOYAGE {nom} : chargement impossible ({e!r}), modèle suivant')
                 if s is None:
                     res['erreur'] = 'aucun modèle karaoké utilisable'
             if s is None:
@@ -2595,16 +2632,19 @@ def etape_nettoyer(travail):
                 temoin(t, 'erreur')
         else:
             piste = t[2]
-            if r.get('erreur') or not attendre_karaoke(v['id']):
-                continue   # karaoké ou voix principale ratés : vidéo en échec (ou reprise sur la carte 0)
-            t0 = time.time()
-            if charge != 'dereverb':
+            if r.get('erreur'):
+                continue   # karaoké ou voix principale ratés ici : vidéo en échec
+            if charge != 'dereverb':   # chargé avant d'attendre le karaoké de l'autre carte
                 s, charge = None, 'dereverb'
                 torch.cuda.empty_cache()
-                try:
-                    s = separateur(travail['dereverb'])
-                except Exception as e:  # noqa: BLE001
-                    res['erreur'] = f"dereverb {travail['dereverb']} indisponible : {e!r}"[:400]
+                with tour:
+                    try:
+                        s = separateur(travail['dereverb'])
+                    except Exception as e:  # noqa: BLE001
+                        res['erreur'] = f"dereverb {travail['dereverb']} indisponible : {e!r}"[:400]
+            if not attendre_karaoke(v['id']):
+                continue   # karaoké raté, ou carte arrêtée sans lui (reprise sur la carte 0)
+            t0 = time.time()
             if s is None:
                 temoin(t, 'erreur')
                 ecrire_json(chemin, res)
@@ -2662,7 +2702,12 @@ def separer_videos(liste, cartes):
     for k, part in enumerate(parts):
         if part:
             os.makedirs(f'/tmp/sep/carte{k}', exist_ok=True)
-            procs.append((k, part, subprocess.Popen([sys.executable, '/tmp/separer.py', json.dumps(part), f'/tmp/sep/carte{k}'],
+            charge = f'/tmp/sep/carte{k}/charge'
+            if os.path.exists(charge):
+                os.remove(charge)
+            # la carte k charge le modèle après la carte k-1 (témoin « charge »)
+            procs.append((k, part, subprocess.Popen([sys.executable, '/tmp/separer.py', json.dumps(part), f'/tmp/sep/carte{k}',
+                                                     f'/tmp/sep/carte{k - 1}/charge' if k else '', charge],
                                                     env={**os.environ, **env_carte(k, cartes)})))
     for k, part, p in procs:
         if p.wait():
@@ -2936,18 +2981,19 @@ def etape_ying(travail):
     res = {'commit': YING_COMMIT, 'poids': os.path.basename(travail.get('checkpoint') or YING_POIDS[1]),
            'poids_origine': 'montage' if travail.get('checkpoint') else 'Hugging Face', 'pistes': {}}
     try:
-        m = MoteurYing(travail.get('outils'), travail.get('checkpoint'))
-        res.update({'installation': m.installation, 'chargement_s': m.chargement_s})
-        if travail.get('references'):
-            refs, res['references_s'] = [], []
-            for c in travail['references']:
-                t0 = time.time()
-                refs.append(m.preparer_ref(c))
-                res['references_s'].append(round(time.time() - t0, 2))
-            ref = refs[0]
-        else:
-            ref = m.preparer_ref(travail['reference']) if travail.get('reference') else None
-            refs = [ref]
+        with TourDeChargement(travail):   # plusieurs cartes : une à la fois (une carte : rien ne change)
+            m = MoteurYing(travail.get('outils'), travail.get('checkpoint'))
+            res.update({'installation': m.installation, 'chargement_s': m.chargement_s})
+            if travail.get('references'):
+                refs, res['references_s'] = [], []
+                for c in travail['references']:
+                    t0 = time.time()
+                    refs.append(m.preparer_ref(c))
+                    res['references_s'].append(round(time.time() - t0, 2))
+                ref = refs[0]
+            else:
+                ref = m.preparer_ref(travail['reference']) if travail.get('reference') else None
+                refs = [ref]
     except Exception as e:  # noqa: BLE001 — le noyau se repliera sur Seed-VC
         import traceback
         traceback.print_exc()
@@ -2977,24 +3023,34 @@ def etape_ying(travail):
 
 
 def ying_morceaux(travail, m, refs, res):
-    """etape_ying sur une carte parmi plusieurs : seulement les morceaux de travail['taches'] ([piste, morceau]), chacun
-    avec sa graine, sa marge et sa référence comme dans assembler(), rendu tel quel dans <morceaux_dir>/<piste>_<morceau>.npy ;
-    le noyau assemble ensuite chaque piste (ying_sur_cartes). res['morceaux_faits'] : durée de conversion de chacun ;
-    res['morceaux_erreurs'] : erreur et carte de ceux qui ont échoué."""
+    """etape_ying sur une carte parmi plusieurs : les morceaux de travail['taches'] ([piste, morceau]), chacun avec sa
+    graine, sa marge et sa référence comme dans assembler(), rendu tel quel dans <morceaux_dir>/<piste>_<morceau>.npy ;
+    le noyau assemble ensuite chaque piste (ying_sur_cartes). Avec travail['reclamations'] (plusieurs cartes), toutes
+    les cartes parcourent la même liste et chacune prend le premier morceau libre (fichier réservé à son nom, créé une
+    seule fois) : la carte prête la première, ou la plus rapide, en fait davantage. res['morceaux_faits'] : durée de
+    conversion de chacun ; res['morceaux_erreurs'] : erreur et carte de ceux qui ont échoué."""
     import numpy as np
     chemin, dossier, carte = travail['resultat'], travail['morceaux_dir'], travail.get('carte', 0)
+    reclamations = travail.get('reclamations')
     os.makedirs(dossier, exist_ok=True)
     res.update({'carte': carte, 'morceaux_faits': {}, 'morceaux_erreurs': {}})
-    log(f"YINGMUSIC carte {carte} : chargé en {m.chargement_s:.0f} s ; {len(travail['taches'])} morceau(x) à convertir")
+    log(f"YINGMUSIC carte {carte} : chargé en {m.chargement_s:.0f} s ; "
+        + (f"morceaux pris parmi {len(travail['taches'])}" if reclamations else f"{len(travail['taches'])} morceau(x) à convertir"))
     ecrire_json(chemin, res)
-    t_carte, x, x_de = time.time(), None, None
+    t_carte, x_par_piste = time.time(), {}
     for pi, mi in travail['taches']:
         p = travail['pistes'][pi]
         mo = p['morceaux'][mi]
         cle, t0 = f'{pi}_{mi}', time.time()
+        if reclamations:
+            try:
+                os.close(os.open(os.path.join(reclamations, cle), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            except FileExistsError:
+                continue   # pris par une autre carte
         try:
-            if x_de != pi:
-                x, x_de = lire_mono(p['entree']), pi
+            if pi not in x_par_piste:
+                x_par_piste[pi] = lire_mono(p['entree'])
+            x = x_par_piste[pi]
             lo, hi = bornes_morceau(mo, travail['pad'], len(x))
             m.torch.manual_seed(REGLAGES['graine'] + mo[0])
             y = m.convertir_morceau(x[lo:hi], refs[mo[6] if len(mo) >= 7 else 0], mo[3], p['pas'])
@@ -3027,13 +3083,14 @@ def ying_sur_cartes(travail, cartes, invite_s=25.0):
         import traceback
         traceback.print_exc()
         return {'erreur': f'YingMusic-SVC indisponible : {e!r}'[:500]}
-    pistes, dossier = travail['pistes'], '/tmp/ying/morceaux'
-    shutil.rmtree(dossier, ignore_errors=True)
-    os.makedirs(dossier)
-    plans = repartir_morceaux(pistes, travail['pad'], cartes, invite_s)
-    log(f'YINGMUSIC sur {cartes} cartes : ' + ', '.join(f'carte {k} : {len(p)} morceau(x)' for k, p in enumerate(plans)))
-    travaux = [{**travail, 'taches': p, 'morceaux_dir': dossier, 'carte': k, 'resultat': f'/tmp/ying/resultat_{k}.json'}
-               for k, p in enumerate(plans) if p]
+    pistes, dossier, etat, reclamations = travail['pistes'], '/tmp/ying/morceaux', '/tmp/ying/etat', '/tmp/ying/reclamations'
+    for d in (dossier, etat, reclamations):
+        shutil.rmtree(d, ignore_errors=True)
+        os.makedirs(d)
+    ordre = ordre_morceaux(pistes, travail['pad'], invite_s)
+    log(f'YINGMUSIC sur {cartes} cartes : {len(ordre)} morceau(x), pris par la première carte libre, le plus long d\'abord')
+    travaux = [{**travail, 'taches': ordre, 'morceaux_dir': dossier, 'reclamations': reclamations, 'etat': etat, 'carte': k,
+                'resultat': f'/tmp/ying/resultat_{k}.json'} for k in range(cartes)] if ordre else []
     parts = etapes_a_part('ying', travaux, cartes) if travaux else []
     faits, erreurs = {}, {}
 

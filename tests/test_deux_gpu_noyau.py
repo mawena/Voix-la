@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import threading
+import time
 import types
 import unittest
 from pathlib import Path
@@ -147,26 +148,55 @@ class PlanDuNettoyage(unittest.TestCase):
         self.assertLess(max(charges) / sum(charges), 0.6)
 
 
-class RepartitionDesMorceaux(unittest.TestCase):
-    def test_chaque_morceau_une_fois_charges_proches(self):
+class OrdreDesMorceaux(unittest.TestCase):
+    def test_chaque_morceau_une_fois_le_plus_long_d_abord(self):
         rng = np.random.default_rng(3)
         pistes = []
         for nom, k in (('lead_sec', 30), ('choeurs_sec', 12), ('secours', 2)):
             debuts = np.cumsum(rng.integers(SR, 8 * SR, k))
-            pistes.append({'nom': nom, 'pas': 30, 'morceaux': [[i, int(a), int(a + rng.integers(SR // 2, 8 * SR)), 0, 0, 0]
-                                                               for i, a in enumerate(debuts)]})
-        parts = N.repartir_morceaux(pistes, 11025, 2, 25.0)
-        tout = sorted(tuple(t) for p in parts for t in p)
-        self.assertEqual(tout, sorted((pi, mi) for pi, p in enumerate(pistes) for mi in range(len(p['morceaux']))))
-        for p in parts:
-            self.assertEqual(p, sorted(p), 'dans l\'ordre des pistes puis des morceaux')
-        cout = lambda pi, mi: (pistes[pi]['morceaux'][mi][2] - pistes[pi]['morceaux'][mi][1]) / SR + 25.5
-        charges = [sum(cout(*t) for t in p) for p in parts]
-        self.assertLess(abs(charges[0] - charges[1]) / sum(charges), 0.05)
+            pistes.append({'nom': nom, 'pas': 30 if nom != 'secours' else 50,
+                           'morceaux': [[i, int(a), int(a + rng.integers(SR // 2, 8 * SR)), 0, 0, 0] for i, a in enumerate(debuts)]})
+        ordre = N.ordre_morceaux(pistes, 11025, 25.0)
+        self.assertEqual(sorted(tuple(t) for t in ordre),
+                         sorted((pi, mi) for pi, p in enumerate(pistes) for mi in range(len(p['morceaux']))))
+        cout = lambda pi, mi: ((pistes[pi]['morceaux'][mi][2] - pistes[pi]['morceaux'][mi][1]) / SR + 25.5) * pistes[pi]['pas']
+        couts = [cout(*t) for t in ordre]
+        self.assertEqual(couts, sorted(couts, reverse=True))
 
-    def test_un_seul_morceau(self):
-        parts = N.repartir_morceaux([{'pas': 30, 'morceaux': [[0, 0, SR, 0, 0, 0]]}], 1000, 2)
-        self.assertEqual(parts, [[[0, 0]], []])
+    def test_a_cout_egal_ordre_des_pistes(self):
+        pistes = [{'pas': 30, 'morceaux': [[0, 0, SR, 0, 0, 0], [1, SR, 2 * SR, 0, 0, 0]]},
+                  {'pas': 30, 'morceaux': [[1, SR, 2 * SR, 0, 0, 0]]}]
+        self.assertEqual(N.ordre_morceaux(pistes, 1000), [[0, 0], [0, 1], [1, 0]])
+
+
+class TourDeChargementEssai(unittest.TestCase):
+    def test_un_chargement_a_la_fois_la_carte_0_d_abord(self):
+        with Dossier() as d:
+            journal = []
+
+            def carte(k, retard):
+                time.sleep(retard)
+                tour = N.TourDeChargement({'etat': str(d), 'carte': k})
+                for n in range(2):
+                    with tour:
+                        journal.append(('debut', k, n))
+                        time.sleep(0.2)
+                        journal.append(('fin', k, n))
+            fils = [threading.Thread(target=carte, args=(1, 0.0)), threading.Thread(target=carte, args=(0, 0.3))]
+            for f in fils:
+                f.start()
+            for f in fils:
+                f.join(30)
+            self.assertEqual(journal[:2], [('debut', 0, 0), ('fin', 0, 0)], 'la carte 1, partie avant, attend la carte 0')
+            for i in range(0, 8, 2):
+                self.assertEqual((journal[i][0], journal[i + 1][0], journal[i][1:]), ('debut', 'fin', journal[i + 1][1:]),
+                                 'jamais deux chargements en même temps')
+
+    def test_une_carte_rien_ne_change(self):
+        with Dossier() as d:
+            with N.TourDeChargement({'carte': None}):
+                pass
+            self.assertEqual(list(Path(d).iterdir()), [])
 
 
 class LancementEnParallele(unittest.TestCase):
@@ -206,12 +236,14 @@ class SeparationDUnLot(unittest.TestCase):
         for i, taille in enumerate(tailles):
             Path(d, f'entree{i}.flac').write_bytes(b'x' * taille)
             liste.append({'id': f'v{i + 1}', 'entree': str(Path(d, f'entree{i}.flac'))})
-        lances, seuls = [], []
+        lances, seuls, attentes = [], [], []
+        self.attentes = attentes
 
         class Proc:
             def __init__(self, cmd, env):
                 self.k = len(lances)
                 lances.append(([t['id'] for t in json.loads(cmd[2])], cmd[3], env.get('CUDA_VISIBLE_DEVICES')))
+                attentes.append(tuple(cmd[4:6]))
                 self.returncode = codes[self.k]
 
             def wait(self):
@@ -227,6 +259,8 @@ class SeparationDUnLot(unittest.TestCase):
             lances, seuls = self.lancer(d, (100, 400, 300))
         self.assertEqual(lances, [(['v2'], f'{d}/t/sep/carte0', '0'), (['v3', 'v1'], f'{d}/t/sep/carte1', '1')])
         self.assertEqual(seuls, [])
+        self.assertEqual(self.attentes, [('', f'{d}/t/sep/carte0/charge'), (f'{d}/t/sep/carte0/charge', f'{d}/t/sep/carte1/charge')],
+                         'la carte 1 charge le modèle après la carte 0')
 
     def test_carte_en_echec(self):
         with Dossier() as d:
@@ -257,12 +291,13 @@ class AssemblageAuBitPres(unittest.TestCase):
 
 
 class EtapesYing(unittest.TestCase):
-    """etape_ying en morceaux sur deux cartes, puis assemblage : la piste d'une carte seule, au bit près."""
+    """etape_ying en morceaux sur deux cartes (chacune prend le premier morceau libre), puis assemblage : la piste d'une
+    carte seule, au bit près ; une carte arrêtée après avoir pris des morceaux : ils sont repris sur la carte 0."""
 
     class FauxMoteur:
         installation, chargement_s = {'origine': 'essai', 'duree_s': 0.0}, 1.0
-        graine = []
-        torch = types.SimpleNamespace(manual_seed=lambda g: EtapesYing.FauxMoteur.graine.__setitem__(slice(None), [g]),
+        local = threading.local()   # graine du fil (une carte = un fil)
+        torch = types.SimpleNamespace(manual_seed=lambda g: setattr(EtapesYing.FauxMoteur.local, 'graine', g),
                                       cuda=types.SimpleNamespace(empty_cache=lambda: None))
 
         def __init__(self, *a):
@@ -273,14 +308,15 @@ class EtapesYing(unittest.TestCase):
 
         def convertir_morceau(self, xs, ref, dec, pas):
             # dépend de la graine du morceau, comme la diffusion (bruit de départ tiré après manual_seed)
-            bruit = np.random.default_rng(EtapesYing.FauxMoteur.graine[0]).standard_normal(len(xs)).astype(np.float32)
+            time.sleep(0.15)   # le temps que l'autre carte prenne sa part
+            bruit = np.random.default_rng(EtapesYing.FauxMoteur.local.graine).standard_normal(len(xs)).astype(np.float32)
             return (np.tanh(xs * ref['f'] * (1 + dec / 24)) + 0.01 * bruit).astype(np.float32)
 
     def travail(self, d, pistes):
         return {'reference': 'ref-jules.wav', 'pad': 4000, 'resultat': f'{d}/t/ying/resultat.json', 'outils': None,
                 'checkpoint': None, 'pistes': pistes}
 
-    def lancer(self, d, cartes, panne=None, ordre=1):
+    def lancer(self, d, cartes, panne=None):
         m = noyau_dans(d)
         x = {nom: np.random.default_rng(i).standard_normal(4 * SR).astype(np.float32)
              for i, nom in enumerate(('lead_sec', 'choeurs_sec'))}
@@ -297,14 +333,26 @@ class EtapesYing(unittest.TestCase):
 
         def plusieurs(etape, travaux, n):
             res = [None] * len(travaux)
-            for k in list(range(len(travaux)))[::ordre]:
-                if k == panne:
-                    lancees.append(('panne', k, 0))
-                    res[k] = {'code': 1, 'duree_s': 0.1, 'carte': k}   # carte arrêtée avant toute conversion
-                    continue
-                lancees.append(('carte', k, len(travaux[k]['taches'])))
-                m.etape_ying(travaux[k])
-                res[k] = {**(m.lire_json(travaux[k]['resultat'], {}) or {}), 'code': 0, 'duree_s': 0.1, 'carte': k}
+            if panne is not None:   # la carte en panne a pris les deux premiers morceaux, puis s'est arrêtée
+                for pi, mi in travaux[panne]['taches'][:2]:
+                    Path(travaux[panne]['reclamations'], f'{pi}_{mi}').write_text('')
+
+            def carte(k):
+                try:
+                    if k == panne:
+                        res[k] = {'code': 1, 'duree_s': 0.1, 'carte': k}
+                        return
+                    m.etape_ying(travaux[k])
+                    res[k] = {**(m.lire_json(travaux[k]['resultat'], {}) or {}), 'code': 0, 'duree_s': 0.1, 'carte': k}
+                finally:
+                    Path(travaux[k]['etat'], f'fin_{k}').write_text('0')
+            fils = [threading.Thread(target=carte, args=(k,), daemon=True) for k in range(len(travaux))]
+            for f in fils:
+                f.start()
+            for f in fils:
+                f.join(60)
+                self.assertFalse(f.is_alive(), 'une carte attend sans fin')
+            lancees.extend(('carte' if r['code'] == 0 else 'panne', r['carte'], len(r.get('morceaux_faits') or {})) for r in res)
             return res
         os.makedirs(f'{d}/t/ying', exist_ok=True)
         with mock.patch.dict(sys.modules, {'soundfile': FAUX_SF}), \
@@ -319,15 +367,15 @@ class EtapesYing(unittest.TestCase):
         return res, sorties, lancees
 
     def test_deux_cartes_meme_pistes(self):
-        with Dossier() as d1, Dossier() as d2, Dossier() as d3:
+        with Dossier() as d1, Dossier() as d2:
             r1, s1, _ = self.lancer(d1, 1)
             r2, s2, l2 = self.lancer(d2, 2)
-            r3, s3, _ = self.lancer(d3, 2, ordre=-1)
         self.assertEqual([x[0] for x in l2], ['carte', 'carte'])
+        self.assertEqual(sum(x[2] for x in l2), 6, 'chaque morceau converti une fois')
+        self.assertTrue(all(x[2] >= 1 for x in l2), f'les deux cartes ont pris des morceaux : {l2}')
         self.assertEqual(sorted(s1), sorted(s2))
         for cle in s1:
             self.assertTrue(np.array_equal(s1[cle], s2[cle]), cle)
-            self.assertTrue(np.array_equal(s1[cle], s3[cle]), f'{cle} : ordre des cartes sans effet')
         self.assertEqual({c: p['morceaux'] for c, p in r1['pistes'].items()}, {c: p['morceaux'] for c, p in r2['pistes'].items()})
         self.assertEqual(r2['installation'], {'origine': 'essai', 'duree_s': 0.0})
         self.assertEqual(len(r2['cartes']), 2)
@@ -336,7 +384,8 @@ class EtapesYing(unittest.TestCase):
         with Dossier() as d1, Dossier() as d2:
             _, s1, _ = self.lancer(d1, 1)
             r2, s2, l2 = self.lancer(d2, 2, panne=1)
-        self.assertEqual([x[0] for x in l2], ['carte', 'panne', 'seule'])
+        self.assertEqual([x[:2] for x in l2], [('carte', 0), ('panne', 1), ('seule', 0)])
+        self.assertEqual(l2[-1][2], 2, 'les deux morceaux pris par la carte arrêtée, repris sur la carte 0')
         self.assertTrue(r2['cartes'][-1]['reprise'])
         for cle in s1:
             self.assertTrue(np.array_equal(s1[cle], s2[cle]), cle)

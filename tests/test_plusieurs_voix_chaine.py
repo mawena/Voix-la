@@ -18,6 +18,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import types
 import unittest
 import warnings
@@ -339,8 +340,8 @@ def reglages(timbres, moteur='seedvc', cibles=None, octave='auto'):
 
 def lancer_noyau(dossier, R, source=None, scene=SCENE, cartes=1):
     """Charge le noyau (chemins déplacés dans dossier), remplace ce qui touche au GPU, au réseau et aux modèles, lance
-    main() ; rend le dossier de sortie de la vidéo. cartes=2 : une machine à deux GPU, dont les étapes « en même temps »
-    tournent ici l'une après l'autre, la dernière carte d'abord (le résultat ne doit pas dépendre de l'ordre)."""
+    main() ; rend le dossier de sortie de la vidéo. cartes=2 : une machine à deux GPU, dont les étapes tournent ici en
+    même temps, une par fil (le résultat ne doit pas dépendre de la carte qui fait chaque morceau)."""
     src = source if source is not None else NOYAU.read_text(encoding='utf-8')
     src = src.replace("'__REGLAGES__'", repr(base64.b64encode(b'{}').decode()))
     src = src.replace('/tmp/', f'{dossier}/t/').replace('/kaggle/', f'{dossier}/kaggle/')   # dossier est lui-même sous /tmp
@@ -395,8 +396,20 @@ def lancer_noyau(dossier, R, source=None, scene=SCENE, cartes=1):
 
     def etapes(nom, travaux, n):
         res = [None] * len(travaux)
-        for k in reversed(range(len(travaux))):
-            res[k] = {**etape(nom, travaux[k]), 'carte': k}
+
+        def carte(k):
+            try:
+                res[k] = {**etape(nom, travaux[k]), 'carte': k}
+            finally:
+                if travaux[k].get('etat'):
+                    with open(os.path.join(travaux[k]['etat'], f'fin_{k}'), 'w') as f:
+                        f.write('0')
+        fils = [threading.Thread(target=carte, args=(k,), daemon=True) for k in reversed(range(len(travaux)))]
+        for f in fils:
+            f.start()
+        for f in fils:
+            f.join(120)
+            assert not f.is_alive(), 'une carte attend sans fin'
         return res
 
     if cartes > 1:

@@ -12,6 +12,18 @@ from .page_doubler import MODES, OCTAVES, TEXTE_PAS, TEXTE_X42_ABSENT
 
 TEXTE_AUTOTUNE_DEFAUT = ("Clé « autotune » de config.json : une version « (auto-tune) » en plus de chaque doublage, la "
                          "normale ne change pas ; la page Doubler peut l’allumer ou l’éteindre à chaque lancement")
+TEXTE_GPU = ("Clé « gpu » de config.json. Auto : les deux T4 de la machine Kaggle ; 1 : une carte, comme avant. "
+             "Même son, plus vite à deux : 19,4 min de GPU au lieu de 26,6 pour une chanson de 3 min 48")
+TEXTE_GPU_ABSENT = "doubler trop ancien, sans la clé « gpu » : une seule carte"
+
+
+def texte_gpu(conf):
+    """Explication du réglage des cartes GPU ; la machine Kaggle que doubler demande (clé « kaggle.machine ») quand ce
+    n'est pas celle à deux T4."""
+    machine = moteur.machine_kaggle(conf)
+    if machine == moteur.MACHINE_DEFAUT:
+        return TEXTE_GPU
+    return f"{TEXTE_GPU}. Machine Kaggle demandée : {machine} (clé « kaggle.machine »)"
 
 
 class DialogueReglages(Adw.PreferencesDialog):
@@ -80,6 +92,14 @@ class DialogueReglages(Adw.PreferencesDialog):
             self._autotune_attente = None
             self.r_autotune.connect("notify::enable-expansion", lambda *_: self._autotune_change())
             self.r_at_n.connect("notify::value", lambda *_: self._autotune_change())
+        if getattr(self, "r_gpu", None) is not None and "--gpu" in self.fenetre.caps:
+            self.r_gpu.set_subtitle(texte_gpu(conf))
+            if not getattr(self, "_gpu_relie", False):
+                ids = [c[0] for c in moteur.GPU_CHOIX]
+                self.r_gpu.set_selected(ids.index(moteur.gpu_par_defaut(conf)))
+                self._gpu_relie = True
+                self.r_gpu.connect("notify::selected", lambda w, _p: self._ecrire(
+                    "gpu", ids[w.get_selected()], lambda gpu=ids[w.get_selected()]: self._gpu_ecrit(gpu)))
         k = (conf or {}).get("kaggle") or {}
         for cle, e in self.entrees.items():
             brut = chemins.valeur(contenu, f"kaggle.{cle}")
@@ -123,6 +143,12 @@ class DialogueReglages(Adw.PreferencesDialog):
         page = (getattr(self.fenetre, "pages", None) or {}).get("doubler")
         if page is not None and hasattr(page, "autotune_par_defaut_change"):
             page.autotune_par_defaut_change(n)
+
+    def _gpu_ecrit(self, gpu):
+        """Nouvelle clé « gpu » : l'estimation de durée de la page Doubler suit (une ou deux cartes)."""
+        page = (getattr(self.fenetre, "pages", None) or {}).get("doubler")
+        if page is not None and hasattr(page, "gpu_par_defaut_change"):
+            page.gpu_par_defaut_change(gpu)
 
     def _ecrire(self, cle, valeur, apres=None):
         def fini(r):
@@ -238,6 +264,14 @@ class DialogueReglages(Adw.PreferencesDialog):
             self.r_at_n.set_value(moteur.AUTOTUNE_DEFAUT)
             self.r_autotune.add_row(self.r_at_n)
             g.add(self.r_autotune)
+        # cartes GPU du noyau (clé « gpu » de doubler) ; grisé si le doubler installé ne la connaît pas
+        self.r_gpu = Adw.ComboRow(title="Cartes GPU (configuration de doubler)", subtitle=texte_gpu({}),
+                                  model=Gtk.StringList.new([c[1] for c in moteur.GPU_CHOIX]))
+        if "--gpu" not in caps:
+            self.r_gpu.set_selected([c[0] for c in moteur.GPU_CHOIX].index("1"))   # ce que fait ce doubler-là
+            self.r_gpu.set_sensitive(False)
+            self.r_gpu.set_subtitle(TEXTE_GPU_ABSENT)
+        g.add(self.r_gpu)
         p.add(g)
 
         ge = Adw.PreferencesGroup(title="Enregistrement")

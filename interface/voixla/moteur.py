@@ -5,7 +5,8 @@ Options récentes, utilisées seulement si « doubler --help » les annonce, ave
 - --evenements FICHIER : un événement JSON par ligne. Repli : lecture de la sortie texte (LectureTexte) ;
 - --donnees DOSSIER    : dossier de données. Repli : --sortie <données>/sorties et DOUBLER_VOIX=<données>/voix ;
 - --config [CLE VALEUR] : écriture de config.json. Repli : écriture directe du fichier (chemins.ecrire_cle_config) ;
-- --voix-liste --json  : liste des voix. Repli : lecture directe de voix/*/voix.json.
+- --voix-liste --json  : liste des voix. Repli : lecture directe de voix/*/voix.json ;
+- --gpu auto|1|2       : cartes GPU du noyau, et clé « gpu » de la configuration. Sans elle : une carte, réglage grisé.
 VOIXLA_DOUBLER (essais) remplace la commande doubler, par exemple par un faux doubler. Sinon, « doubler » du PATH
 (/usr/bin/doubler avec le paquet Debian), puis doubler.py à côté du code : celui du dépôt, ou /usr/lib/voix-la.
 """
@@ -26,7 +27,7 @@ from . import chemins
 OPTIONS_SUIVIES = ("--evenements", "--donnees", "--config", "--json", "--voix-liste", "--ajouter-voix", "--remix",
                    "--debut", "--duree", "--pas", "--voix-db", "--reverb-db", "--octave", "--mode", "--sortie",
                    "--mix-v1", "--comparer-pas", "--reprendre", "--moteur", "--sans-nettoyage", "--sans-paroles",
-                   "--autotune", "--sans-autotune", "--autotune-gamme")
+                   "--autotune", "--sans-autotune", "--autotune-gamme", "--gpu")
 MOTEURS = (("yingmusic", "YingMusic-SVC"), ("seedvc", "Seed-VC 44 kHz"))
 NOM_VOIX = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")   # même règle que doubler --ajouter-voix
 EXTRAIT_NOM = re.compile(r" \(extrait (\d+)m(\d+(?:,\d+)?)(?:\+(\d+)m(\d+(?:,\d+)?))?\)$")
@@ -519,8 +520,8 @@ def config_effective():
             "contenu": conf, "par_doubler": False}
 
 
-CLES_CONFIG = ("donnees", "kaggle.compte", "kaggle.jeu", "kaggle.noyau", "kaggle.outils", "moteur", "paroles",
-               "autotune")
+CLES_CONFIG = ("donnees", "kaggle.compte", "kaggle.jeu", "kaggle.noyau", "kaggle.outils", "kaggle.machine", "moteur",
+               "paroles", "autotune", "gpu")
 CLES_BOOLEENNES = ("paroles",)      # « doubler --config paroles oui|non » ; un booléen dans config.json
 VRAI = ("oui", "vrai", "true", "1", "on", "yes")
 FAUX = ("non", "faux", "false", "0", "off", "no")
@@ -557,6 +558,44 @@ def autotune_par_defaut(conf):
         return 0
 
 
+# Cartes GPU du noyau (clé « gpu » de doubler, option --gpu) : (valeur, libellé)
+GPU_CHOIX = (("auto", "Auto"), ("1", "1"), ("2", "2"))
+MACHINE_DEFAUT = "NvidiaTeslaT4"    # machine Kaggle par défaut de doubler : GPU T4 x2, deux cartes
+
+
+def gpu_par_defaut(conf):
+    """Cartes GPU demandées par la configuration de doubler : « auto », « 1 » ou « 2 » (clé « gpu » ; auto si absente
+    ou illisible, comme doubler)."""
+    conf = conf if isinstance(conf, dict) else {}
+    contenu = conf.get("contenu") if isinstance(conf.get("contenu"), dict) else {}
+    v = conf.get("gpu", contenu.get("gpu"))
+    v = str(v).strip().lower() if v is not None and not isinstance(v, bool) else "auto"
+    return v if v in ("auto", "1", "2") else "auto"
+
+
+def machine_kaggle(conf):
+    """Machine Kaggle demandée par doubler (clé « kaggle.machine »), NvidiaTeslaT4 (deux T4) par défaut."""
+    conf = conf if isinstance(conf, dict) else {}
+    contenu = conf.get("contenu") if isinstance(conf.get("contenu"), dict) else {}
+    for k in (conf.get("kaggle"), contenu.get("kaggle")):
+        if isinstance(k, dict) and isinstance(k.get("machine"), str) and k["machine"].strip():
+            return k["machine"].strip()
+    return MACHINE_DEFAUT
+
+
+def cartes_prevues(conf, caps=None):
+    """Cartes que le noyau utilisera probablement (estimation de durée), comme doubler.cartes_prevues : 1 si doubler
+    ne connaît pas --gpu (une carte, comme avant) ou si « gpu » vaut 1 ; 2 si « gpu » vaut 2, ou en auto sur la
+    machine à deux T4 ; 1 sur une autre machine en auto (nombre de cartes inconnu)."""
+    caps = capacites() if caps is None else caps
+    if "--gpu" not in caps:
+        return 1
+    gpu = gpu_par_defaut(conf)
+    if gpu == "1":
+        return 1
+    return 2 if gpu == "2" or machine_kaggle(conf) == MACHINE_DEFAUT else 1
+
+
 def x42_autotune(conf):
     """(connu, dossier) : doubler --config --json dit-il où est le greffon x42-autotune ? connu faux avec un ancien
     doubler (on ne sait pas) ; dossier None si le greffon manque."""
@@ -586,6 +625,8 @@ def ecrire_config(cle, valeur):
         valeur = booleen(valeur)     # écrite directement : un vrai booléen, comme doubler --config
     elif cle == "autotune":
         valeur = autotune_par_defaut({"autotune": valeur})   # un entier de 0 à 100, comme doubler --config
+    elif cle == "gpu":
+        valeur = gpu_par_defaut({"gpu": valeur})             # « auto », « 1 » ou « 2 », comme doubler --config
     try:
         chemins.ecrire_cle_config(cle, valeur)
         return True, ""

@@ -1115,12 +1115,10 @@ class PageDetail(Adw.NavigationPage):
                 g.add(e)
             else:
                 g.add(commun.ligne_valeur(libelle, formats.duree(s, precis=True)))
-        attente = rapports.attente_gpu_probable(self.res.rapport)
-        if attente:
-            g.set_description(f"Dont environ {formats.duree(attente)} d’attente d’une place GPU ou de démarrage.")
-        tl = (self.res.rapport or {}).get("temps_local") or {}
-        if (tl.get("videos_dans_la_session") or 1) > 1:
-            g.set_description(f"Session Kaggle partagée par {tl['videos_dans_la_session']} vidéos.")
+        # attente d'une place GPU, session partagée, deux cartes T4 (temps de GPU additionnés) : toutes les notes
+        notes = rapports.notes_durees(self.res.rapport)
+        if notes:
+            g.set_description(commun.echapper(" ".join(notes)))
         return g
 
     def _groupe_comparaisons(self):

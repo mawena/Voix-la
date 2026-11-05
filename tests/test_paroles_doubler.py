@@ -124,13 +124,13 @@ class Lecture(Base):
 
     def test_calage_idempotent_et_extrait(self):
         d, _ = self.D.lire_paroles(self.ecrire(paroles()))
-        d = self.D.caler_paroles(d, -0.1315)   # extrait mkv : le mix commence 0,13 s avant l'image
+        d = self.D.caler_paroles(d, -0.1315)   # le calage des extraits mkv avant le 05/11/2026 (décalage donné à ffmpeg)
         self.assertAlmostEqual(d['segments'][0]['debut'], 0.8685, places=4)
         self.assertAlmostEqual(d['segments'][0]['mots'][1]['fin'], 1.6685, places=4)
         self.assertAlmostEqual(d['traductions']['fr']['segments'][2]['debut'], 7.8685, places=4)
         d2 = self.D.caler_paroles(json.loads(json.dumps(d)), -0.1315)   # --remix : rien ne bouge
         self.assertEqual(d2['segments'], d['segments'])
-        d3 = self.D.caler_paroles(d2, 0.0)                               # retour au temps du son
+        d3 = self.D.caler_paroles(d2, 0.0)          # --remix d'un ancien extrait mkv : retour au temps de la vidéo
         self.assertAlmostEqual(d3['segments'][0]['debut'], 1.0, places=6)
         d4 = self.D.caler_paroles(json.loads(json.dumps(d3)), -1.5)      # à cheval sur le début de l'image : rogné
         self.assertEqual(d4['segments'][0]['debut'], 0.0)
@@ -183,6 +183,39 @@ class Fichiers(Base):
         self.assertIn('le chat mange du pain', (sortie / 'Clip - voix Test.fr.srt').read_text())
         self.assertTrue(info['traduction'])
         self.assertEqual(json.loads((tv / 'paroles.json').read_text())['decalage_s'], 0.0)
+        self.assertEqual([p['fichier'] for p in pistes], [f for f in fichiers if f.suffix == '.srt'])
+        # même décalage pour ffmpeg : les pistes de la vidéo sont les .srt d'à côté
+        pistes, fichiers, _ = self.D.preparer_paroles(tv, sortie, 'Clip - voix Test', 0.0, 10.0, decalage_ffmpeg=0.0)
+        self.assertEqual([p['fichier'] for p in pistes], [f for f in fichiers if f.suffix == '.srt'])
+        self.assertEqual(list(tv.glob(self.D.PISTES_PAROLES_TEMP)), [])
+
+    def test_preparer_paroles_extrait_mkv(self):
+        """Extrait mkv ou webm : le mix commence avec l'image (debut_son 0) mais ffmpeg le reçoit décalé de -0,13 s
+        (decalage_son), comme l'image : paroles.json, .srt et .lrc au temps de la vidéo doublée, les pistes de la
+        vidéo à part, au temps de la coupe (le conteneur les recale avec l'image et le son)."""
+        tv, sortie = self.tmp / 'travail' / 'v', self.tmp / 'sortie'
+        tv.mkdir(parents=True)
+        sortie.mkdir()
+        p = paroles()
+        p['segments'].insert(0, {'debut': 0.05, 'fin': 0.1, 'texte': 'hola', 'langue': 'es'})
+        (tv / 'paroles.json').write_text(json.dumps(p))
+        pistes, fichiers, info = self.D.preparer_paroles(tv, sortie, 'Serie - voix Test', 0.0, 8.5,
+                                                         decalage_ffmpeg=-0.131435)
+        d = json.loads((tv / 'paroles.json').read_text())
+        self.assertEqual((d['decalage_s'], info['decalage_s']), (0.0, 0.0))
+        self.assertEqual([s['debut'] for s in d['segments']], [0.05, 1.0, 3.0, 8.0])
+        srt = (sortie / 'Serie - voix Test.es.srt').read_text()
+        self.assertTrue(srt.startswith('1\n00:00:00,050 --> 00:00:00,999\nhola\n\n2\n00:00:01,000 --> '), srt)
+        self.assertIn('00:00:08,000 --> 00:00:08,500\nla luna baila', srt)   # coupée à la fin de la vidéo
+        self.assertIn('[00:01.00]el gato come pan', (sortie / 'Serie - voix Test.lrc').read_text())
+        self.assertEqual(sorted(f.name for f in fichiers),
+                         ['Serie - voix Test.es.srt', 'Serie - voix Test.fr.srt', 'Serie - voix Test.lrc'])
+        self.assertEqual([(q['fichier'].parent, q['langue']) for q in pistes], [(tv, 'spa'), (tv, 'fre')])
+        self.assertEqual(sorted(tv.glob(self.D.PISTES_PAROLES_TEMP)), sorted(q['fichier'] for q in pistes))
+        video = pistes[0]['fichier'].read_text()
+        self.assertTrue(video.startswith('1\n00:00:00,869 --> '), video)       # « hola », avant la coupe : retiré
+        self.assertIn('00:00:07,869 --> 00:00:08,369\nla luna baila', video)   # fin de la vidéo au temps de la coupe
+        self.assertIn('le chat mange du pain', pistes[1]['fichier'].read_text())
 
     def test_preparer_paroles_francais_et_cas_vides(self):
         tv, sortie = self.tmp / 'tv', self.tmp / 's'

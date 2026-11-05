@@ -13,8 +13,9 @@ import numpy as np
 from commun import FFMPEG, SR, Dossier, charger_doubler, ecrire_wav, ffprobe, note
 
 
-def video(chemin, duree=4.0, sous_titre=True):
-    """Vidéo de synthèse (image clé chaque seconde), son, et une piste de sous-titres d'origine."""
+def video(chemin, duree=4.0, sous_titre=True, images_b=False):
+    """Vidéo de synthèse (image clé chaque seconde ; images B si images_b : ffmpeg recule alors de 0,13 s avant de
+    chercher dans un mkv), son, et une piste de sous-titres d'origine."""
     srt = chemin.with_suffix('.orig.srt')
     srt.write_text('1\n00:00:00,500 --> 00:00:01,500\nsous-titre d\'origine\n\n', encoding='utf-8')
     codec = 'mov_text' if chemin.suffix == '.mp4' else 'srt'
@@ -22,7 +23,7 @@ def video(chemin, duree=4.0, sous_titre=True):
            '-f', 'lavfi', '-i', f'sine=frequency=440:duration={duree}:sample_rate={SR}']
     if sous_titre:
         cmd += ['-i', str(srt), '-map', '0', '-map', '1', '-map', '2', '-c:s', codec, '-metadata:s:s:0', 'language=eng']
-    cmd += ['-c:v', 'mpeg4', '-g', '25', '-c:a', 'aac', str(chemin)]
+    cmd += ['-c:v', 'mpeg4', '-g', '25', *(['-bf', '2'] if images_b else []), '-c:a', 'aac', str(chemin)]
     subprocess.run(cmd, check=True)
     return chemin
 
@@ -63,7 +64,8 @@ class Video(unittest.TestCase):
     def remettre(self, source, extrait=None):
         t, tv = self.travail(source, extrait)
         plan = self.D.plan_video(t)
-        pistes, fichiers, info = self.D.preparer_paroles(tv, self.tmp, 'Essai - voix Test', plan['decalage_son'], 10.0)
+        pistes, fichiers, info = self.D.preparer_paroles(tv, self.tmp, 'Essai - voix Test', plan['debut_son'], 10.0,
+                                                         decalage_ffmpeg=plan['decalage_son'])   # comme finir()
         with contextlib.redirect_stdout(io.StringIO()):
             sortie = self.D.remettre_sur_video(t, t / 'original.wav', self.tmp, 'Essai - voix Test', pistes, plan)
         return sortie, plan
@@ -88,24 +90,30 @@ class Video(unittest.TestCase):
         self.verifier_pistes(sortie, 'subrip')
 
     def pts_paroles(self, sortie):
-        """Instant (s, depuis le début du fichier) de la première réplique de la piste des paroles."""
-        info = ffprobe(sortie, '-show_packets', '-show_format', '-select_streams', 's:1')
-        debut = float(info['format'].get('start_time') or 0)
+        """Instant (s, depuis la première image) de la première réplique de la piste des paroles."""
+        info = ffprobe(sortie, '-show_packets', '-select_streams', 's:1')
+        images = ffprobe(sortie, '-show_frames', '-select_streams', 'v:0', '-read_intervals', '%+#5')['frames']
+        image = min(float(f['best_effort_timestamp_time']) for f in images)
         pleins = [p for p in info['packets'] if int(p['size']) > 2]   # mp4 : échantillons vides entre les répliques
-        return float(pleins[0]['pts_time']) - debut
+        return float(pleins[0]['pts_time']) - image
 
     def test_extrait_cale_sur_la_video_de_sortie(self):
-        for ext in ('.mp4', '.mkv'):
+        """Extrait mp4, et mkv avec images B : ffmpeg y recule de 0,13 s avant de chercher, le mix lui est donné
+        décalé d'autant (decalage_son), mais le conteneur recale tout sur la première image : le son commence avec
+        elle (debut_son 0). paroles.json, le .srt d'à côté et la piste de la vidéo : la réplique 1 s après le début du
+        son, au même instant."""
+        for ext, recul in (('.mp4', 0.0), ('.mkv', -0.1314)):
             with self.subTest(ext=ext):
-                source = video(self.tmp / f'longue{ext}', duree=10.0)
+                source = video(self.tmp / f'longue{ext}', duree=10.0, images_b=True)
                 sortie, plan = self.remettre(source, (3.0, 4.0))
+                self.assertAlmostEqual(plan['decalage_son'], recul, delta=0.001)
+                self.assertEqual(plan['debut_son'], 0.0)
                 d = json.loads((self.tmp / 'travail' / 'test' / 'paroles.json').read_text())
-                self.assertAlmostEqual(d['decalage_s'], plan['decalage_son'], places=5)
-                attendu = 1.0 + plan['decalage_son']   # 1 s après le début du son doublé
-                self.assertAlmostEqual(self.pts_paroles(sortie), attendu, delta=0.06)
-                self.assertAlmostEqual(d['segments'][0]['debut'], max(attendu, 0.0), places=5)
+                self.assertEqual(d['decalage_s'], 0.0)
+                self.assertEqual(d['segments'][0]['debut'], 1.0)
+                self.assertAlmostEqual(self.pts_paroles(sortie), 1.0, delta=0.002)
                 srt = (self.tmp / 'Essai - voix Test.es.srt').read_text()
-                self.assertTrue(srt.startswith('1\n'), srt)
+                self.assertTrue(srt.startswith('1\n00:00:01,000 --> '), srt)
                 for f in (self.tmp / 'travail').iterdir():
                     if f.is_file():
                         f.unlink()

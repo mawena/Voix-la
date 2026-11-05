@@ -35,8 +35,9 @@ Sorties : <sortie>/<titre>/<titre> - voix <Nom>.<conteneur d'origine> et .mp3, .
 convertie, rapport.json avec les temps de chaque étape, paroles.json). La vidéo a cinq pistes audio, calées entre elles
 et sur l'image : Doublage (la première, seule jouée par défaut), Original, Beat seul, Voix convertie seule (telle
 qu'elle sonne dans le mix) et Voix d'origine seule ; --pistes-audio doublage (clé « pistes_audio ») : le doublage seul.
---remix refait seulement le mixage et la remise sur la vidéo, paroles et pistes audio comprises. Seuls le son des
-vidéos et la référence de la voix choisie partent sur Kaggle.
+Leur étiquette de langue est celle des paroles reconnues (la plus chantée, si la chanson en mêle deux), sinon celle du
+son d'origine. --remix refait seulement le mixage et la remise sur la vidéo, paroles et pistes audio comprises. Seuls
+le son des vidéos et la référence de la voix choisie partent sur Kaggle.
 Une voix par chanteur (--voix homme:A,femme:B pour un duo mixte, chanteur1:A,chanteur2:B pour un duo de même genre) :
 chaque piste de chaque passage (voix principale, chœurs, secours) prend la voix du chanteur qu'on y reconnaît, l'octave
 se décide pour chaque couple chanteur -> voix ; sorties <titre> - voix A et B.<ext>, travail/A+B/.
@@ -2232,7 +2233,7 @@ def echantillons(fichier):
     return int(s.get('duration_ts') or 0), int(s.get('sample_rate') or 0)
 
 
-def remettre_sur_video(t, mix, dossier, base, sous_titres=(), plan=None, pistes=(), titre=None):
+def remettre_sur_video(t, mix, dossier, base, sous_titres=(), plan=None, pistes=(), titre=None, langue=None):
     """Le mix remis sur la vidéo : image copiée sans réencodage, sous-titres d'origine gardés (ceux que le conteneur
     accepte tels quels), puis les pistes de sous_titres ajoutées ([{fichier (srt, au temps de la coupe, celui du
     décalage du mix decalage_son : le conteneur les recale avec l'image et le son), langue (ISO 639-2), titre}] :
@@ -2240,12 +2241,14 @@ def remettre_sur_video(t, mix, dossier, base, sous_titres=(), plan=None, pistes=
     Le mix est la première piste audio et la seule par défaut (l'interface et les lecteurs prennent la piste 0) ; titre :
     son titre (défaut « voix <Nom> », d'après base). pistes : pistes audio en plus, après lui, dans l'ordre ([{fichier,
     titre}], sons de l'extrait comme le mix), calées exactement comme lui (même -itsoffset, même coupe de l'image) et
-    ramenées à sa durée, à l'échantillon près. Toutes : codec de CONTENEURS, langue de la source quand elle est connue,
-    titre aussi dans handler_name en mp4 ; en mp4, ffmpeg les met dans le même alternate_group (une seule jouée)."""
+    ramenées à sa durée, à l'échantillon près. Toutes : codec de CONTENEURS, étiquette de langue langue (ISO 639-2/B ;
+    défaut : celle de la source, quand elle est connue), titre aussi dans handler_name en mp4 ; en mp4, ffmpeg les met
+    dans le même alternate_group (une seule jouée)."""
     p = plan or plan_video(t)
     src, video, info, ext, fv = p['src'], p['video'], p['info'], p['ext'], p['fv']
     audio, options, acceptes = CONTENEURS[ext]
     sortie = dossier / f'{base}{ext}'
+    langue = langue or src.get('langue')
     decalage = ['-itsoffset', f"{p['decalage_son']:.6f}"] if abs(p['decalage_son']) > 1e-6 else []
     sons = [{'fichier': mix, 'titre': titre or base.split(' - ', 1)[-1]}, *pistes]
     entrees, cartes = [], ['-map', f"0:{fv['index']}"]
@@ -2274,8 +2277,8 @@ def remettre_sur_video(t, mix, dossier, base, sous_titres=(), plan=None, pistes=
     meta = []
     for k, s in enumerate(sons):
         meta += [f'-metadata:s:a:{k}', f"title={s['titre']}", f'-disposition:a:{k}', 'default' if k == 0 else '0']
-        if src.get('langue'):
-            meta += [f'-metadata:s:a:{k}', f"language={src['langue']}"]
+        if langue:
+            meta += [f'-metadata:s:a:{k}', f'language={langue}']
         if ext in CONTENEURS_MP4:
             meta += [f'-metadata:s:a:{k}', f"handler_name={s['titre']}"]
         if k and n and sr:   # même durée que le mix : complétée de silence ou coupée à la fin, jamais décalée
@@ -2320,14 +2323,14 @@ def pistes_en_plus(t, tv, voix, gains, autotune=False):
             {'fichier': t / 'voix_source.wav', 'titre': titres['voix_origine']}]
 
 
-def video_avec_repli(t, mix, dossier, base, pistes_st, pistes_a, plan, titre):
-    """remettre_sur_video ; refusée par ffmpeg, elle est refaite sans les pistes audio en plus, puis aussi sans les
-    pistes de paroles : la vidéo doublée passe avant elles. Rend (vidéo, pistes de paroles gardées, pistes audio en plus
-    gardées)."""
+def video_avec_repli(t, mix, dossier, base, pistes_st, pistes_a, plan, titre, langue=None):
+    """remettre_sur_video (langue : étiquette des pistes audio) ; refusée par ffmpeg, elle est refaite sans les pistes
+    audio en plus, puis aussi sans les pistes de paroles : la vidéo doublée passe avant elles. Rend (vidéo, pistes de
+    paroles gardées, pistes audio en plus gardées)."""
     essais = [(pistes_st, pistes_a)] + [(pistes_st, [])] * bool(pistes_a) + [([], [])] * bool(pistes_st)
     for i, (st, pa) in enumerate(essais):
         try:
-            return remettre_sur_video(t, mix, dossier, base, st, plan, pa, titre), st, pa
+            return remettre_sur_video(t, mix, dossier, base, st, plan, pa, titre, langue), st, pa
         except Exception as e:  # noqa: BLE001
             if i == len(essais) - 1:
                 raise
@@ -2369,6 +2372,47 @@ LANGUES = {
 def langue_piste(code):
     """(étiquette ISO 639-2, nom français) d'une langue de Whisper ; ('und', code) si elle est inconnue."""
     return LANGUES.get(code or '', ('und', code or 'langue inconnue'))
+
+
+def langue_chantee(d):
+    """Langue principale de paroles lues (lire_paroles) : celle chantée le plus longtemps, en additionnant la durée de
+    ses lignes (fin - début, 0,01 s au moins), comme le noyau pour la langue de paroles.json. Une ligne sans langue
+    compte pour celle du fichier ; à égalité, la langue du fichier l'emporte, sinon la première chantée. Rend (code
+    Whisper ou None, {code: secondes chantées})."""
+    secondes = {}
+    for s in d.get('segments') or []:
+        lg = s.get('langue') if isinstance(s.get('langue'), str) and s.get('langue') else d.get('langue')
+        if lg:
+            secondes[lg] = secondes.get(lg, 0.0) + max(s['fin'] - s['debut'], 0.01)
+    secondes = {lg: round(x, 2) for lg, x in secondes.items()}
+    if not secondes:
+        return None, {}
+    egales = [lg for lg, x in secondes.items() if x == max(secondes.values())]
+    return (d['langue'] if d.get('langue') in egales else egales[0]), secondes
+
+
+def langue_pistes_audio(chantee, info_paroles, src):
+    """Étiquette de langue des pistes audio de la vidéo doublée, la même pour toutes (Original et Voix d'origine seule
+    comprises : la langue chantée est la même) : la langue principale des paroles reconnues (chantee : {langue,
+    secondes_par_langue} de preparer_paroles ; None sans paroles), sinon celle du son de la source (source.json : src),
+    sinon aucune. info_paroles : demande (paroles demandées), raison (pourquoi il n'y en a pas). Rend le résumé de
+    rapport.json (pistes_audio.langue) : etiquette (ISO 639-2/B, ou None), provenance (paroles, source ou None),
+    source ; avec les paroles : paroles (code Whisper), nom, secondes_par_langue ; sinon raison."""
+    source = src.get('langue') or None
+    code = (chantee or {}).get('langue')
+    if code in LANGUES:
+        etiquette, nom = LANGUES[code]
+        return {'etiquette': etiquette, 'provenance': 'paroles', 'paroles': code, 'nom': nom,
+                'secondes_par_langue': chantee.get('secondes_par_langue') or {}, 'source': source}
+    if not info_paroles.get('demande'):
+        raison = 'sans paroles'
+    elif code:
+        raison = f'langue des paroles inconnue ({code})'
+    elif chantee:
+        raison = 'langue des paroles non indiquée'
+    else:
+        raison = info_paroles.get('raison') or 'pas de paroles'
+    return {'etiquette': source, 'provenance': 'source' if source else None, 'source': source, 'raison': raison}
 
 
 def _segments_propres(segments, cle='texte', mots=False):
@@ -2520,7 +2564,8 @@ def preparer_paroles(tv, dossier, base, decalage, duree_video=None, decalage_ffm
     decalage_ffmpeg : le décalage du mix donné à ffmpeg (plan_video : decalage_son), s'il diffère (extrait mkv ou webm) :
     les pistes de sous-titres pour remettre_sur_video, que le conteneur recale avec l'image et le son, sont alors
     écrites à ce décalage dans travail/<voix>/.paroles_video_<n>.srt (à effacer après la vidéo). Rend (pistes de
-    sous-titres pour remettre_sur_video, fichiers écrits, résumé pour le rapport)."""
+    sous-titres pour remettre_sur_video, fichiers écrits, résumé pour le rapport ; avec des paroles, langue_chantee y
+    est en plus, pour langue_pistes_audio)."""
     chemin = tv / 'paroles.json'
     d, raison = lire_paroles(chemin)
     if d is None:
@@ -2533,6 +2578,8 @@ def preparer_paroles(tv, dossier, base, decalage, duree_video=None, decalage_ffm
             'traduction': bool((d['traductions'].get('fr') or {}).get('segments'))}
     if not d['segments']:
         return [], [], {**info, 'raison': 'aucune parole reconnue'}
+    principale, secondes = langue_chantee(d)
+    info['langue_chantee'] = {'langue': principale, 'secondes_par_langue': secondes}
     lg = d['langue'] or 'und'
     code, nom = langue_piste(d['langue'])
     a_ecrire = [(f'{base}.{lg}.srt', code, f'Paroles ({nom})', lambda x: x['segments'])]
@@ -2654,7 +2701,7 @@ def finir(tr, a, voix, temps_local=None):
     mix_s = time.time() - debut
     debut = time.time()
     paroles_on = getattr(a, 'paroles', True)
-    pistes_st, fichiers_paroles, info_paroles = [], [], {'demande': paroles_on}
+    pistes_st, fichiers_paroles, info_paroles, chantee = [], [], {'demande': paroles_on}, None
     with Etape('video', titre, 'son remis sur la vidéo (image copiée)' + (', paroles en sous-titres' if paroles_on else '')):
         plan = plan_video(t)
         if paroles_on:
@@ -2662,18 +2709,24 @@ def finir(tr, a, voix, temps_local=None):
                 pistes_st, fichiers_paroles, i_p = preparer_paroles(tv, dossier, base, plan['debut_son'],
                                                                     duree_s(tv / 'mix.wav') + plan['debut_son'],
                                                                     decalage_ffmpeg=plan['decalage_son'])
+                chantee = i_p.pop('langue_chantee', None)
                 info_paroles.update(i_p)
             except Exception as e:  # noqa: BLE001 — des paroles abîmées n'empêchent jamais la vidéo
                 info_paroles['raison'] = f'paroles inutilisables : {e}'
         # pistes audio : le doublage (piste 0, seule par défaut), puis original, beat seul, voix convertie seule, voix
-        # d'origine seule (sauf --pistes-audio doublage, ou la clé pistes_audio de la configuration)
+        # d'origine seule (sauf --pistes-audio doublage, ou la clé pistes_audio de la configuration) ; toutes étiquetées
+        # de la langue des paroles, sinon de celle de la source
         toutes = getattr(a, 'pistes_audio', None) != 'doublage'
-        info_pistes = {'reglage': 'toutes' if toutes else 'doublage'}
+        langue_a = langue_pistes_audio(chantee, info_paroles, plan['src'])
+        info_pistes = {'reglage': 'toutes' if toutes else 'doublage', 'langue': langue_a}
+        if langue_a['provenance'] == 'paroles' and langue_a['etiquette'] != langue_a['source']:
+            dire(f"pistes audio en {langue_a['nom']} ({langue_a['etiquette']}), la langue des paroles"
+                 f" (son d'origine : {langue_a['source'] or 'sans langue'})")
         try:
             pistes_a = pistes_en_plus(t, tv, voix, gains) if toutes else []
             demandees = pistes_st
             sortie, pistes_st, pistes_a = video_avec_repli(t, tv / 'mix.wav', dossier, base, pistes_st, pistes_a, plan,
-                                                           titres_pistes(voix)['doublage'])
+                                                           titres_pistes(voix)['doublage'], langue_a['etiquette'])
             if demandees and not pistes_st:
                 info_paroles['raison'] = 'pistes de sous-titres refusées par ffmpeg (fichiers .srt et .lrc gardés)'
             info_pistes['video'] = [titres_pistes(voix)['doublage'], *(p['titre'] for p in pistes_a)]
@@ -2684,7 +2737,8 @@ def finir(tr, a, voix, temps_local=None):
                 try:   # mêmes pistes de paroles et sous-titres d'origine que la version normale, pistes audio auto-tune
                     pistes_at = pistes_en_plus(t, tv, voix, gains, autotune=True) if toutes else []
                     sortie_at, _, pistes_at = video_avec_repli(t, tv / 'mix_autotune.wav', dossier, b_at, pistes_st,
-                                                               pistes_at, plan, titres_pistes(voix, True)['doublage'])
+                                                               pistes_at, plan, titres_pistes(voix, True)['doublage'],
+                                                               langue_a['etiquette'])
                     info_at['fichiers']['video'] = sortie_at.name
                     info_pistes['video_autotune'] = [titres_pistes(voix, True)['doublage'],
                                                      *(p['titre'] for p in pistes_at)]

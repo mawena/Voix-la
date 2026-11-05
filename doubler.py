@@ -2155,6 +2155,10 @@ def faire_autotune(t, tv, dossier, base, mode, gains, reglage):
 
 
 RECUL_FFMPEG_S = 3 / 23   # ffmpeg recule de 3/23 s avant de chercher (formats sans recherche par pts, images B : mkv, webm)
+# Conteneurs de sortie sans liste d'édition : rien n'y commence avant 0, le muxeur avance tous les temps (image, son,
+# sous-titres) d'autant que la première image copiée d'un extrait est avant la coupe. En mp4, m4v et mov, une liste
+# d'édition garde la coupe pour temps 0.
+RECALES_SUR_L_IMAGE = ('.mkv', '.webm')
 
 
 def premiere_image_copiee(video, info, fv, ss):
@@ -2172,22 +2176,29 @@ def premiere_image_copiee(video, info, fv, ss):
 def ajuster_coupe(video, info, fv, debut):
     """Valeur de -ss qui fait partir la copie de l'image sur l'image clé de l'extrait (debut - 0,001 s). En mp4, -ss debut
     y tombe ; en mkv ou webm, ffmpeg recule de 0,13 s avant de chercher et repartait de l'image clé précédente (1,9 s
-    d'image sans son sur un épisode de série) : on cherche alors 0,1315 s plus loin."""
+    d'image sans son sur un épisode de série) : on cherche alors 0,1315 s plus loin. Rend (-ss, instant de la première
+    image copiée depuis le début du fichier, None si ffmpeg ne l'a pas dit)."""
     p = premiere_image_copiee(video, info, fv, debut)
     if p is None or p >= debut - 0.02:
-        return debut
+        return debut, p
     ss = debut + RECUL_FFMPEG_S + 0.001
     p2 = premiere_image_copiee(video, info, fv, ss)
     if p2 is not None and abs(p2 - (debut - 0.001)) < 0.02:
-        return ss
+        return ss, p2
     dire(f'attention : la copie de l\'image commencera à {p:.3f} s au lieu de {debut:.3f} s (image sans son au début)')
-    return debut
+    return debut, p
 
 
 def plan_video(t):
-    """Où et comment le mix sera remis sur la vidéo : conteneur de sortie, coupe de l'extrait (-ss/-t) et décalage du
-    son dans la vidéo de sortie (decalage_son : instant de la vidéo de sortie où commence le mix ; 0 le plus souvent,
-    -0,13 s pour un extrait mkv ou webm, le retard du flux audio d'origine pour une vidéo entière)."""
+    """Où et comment le mix sera remis sur la vidéo : conteneur de sortie, coupe de l'extrait (-ss/-t), décalage du mix
+    donné à ffmpeg (decalage_son : -itsoffset, compté depuis la coupe ; 0 le plus souvent, -0,13 s pour un extrait mkv
+    ou webm, le retard du flux audio d'origine pour une vidéo entière) et instant de la vidéo doublée où le mix commence
+    vraiment (debut_son : celui des paroles, de paroles.json et des .srt).
+
+    Les deux diffèrent pour un extrait mkv ou webm (RECALES_SUR_L_IMAGE) : le conteneur recale tous les temps sur la
+    première image copiée, le mix commence donc avec elle (debut_son 0, pas -0,13 s), ou plus tard si la copie part d'une
+    image clé antérieure à celle de l'extrait (debut - 0,001 s ; repli d'ajuster_coupe, image sans son au début). En mp4,
+    m4v et mov, et pour une vidéo entière, ils sont égaux."""
     src = json.loads((t / 'source.json').read_text())
     video = Path(src['video'])
     info = sonder(video)
@@ -2196,12 +2207,17 @@ def plan_video(t):
         ext = '.mkv'
     fv = flux_video(info)
     coupe, decalage_son = [], float(src.get('decalage_son') or 0)
+    debut_son = decalage_son
     if 'debut' in src:
-        ss = ajuster_coupe(video, info, fv, src['debut'])
+        ss, image = ajuster_coupe(video, info, fv, src['debut'])
         # la vidéo commence à ss, le son du mix à debut : le mix est décalé d'autant (négatif si ss > debut)
         coupe = ['-ss', f'{ss:.6f}', '-t', f"{src['debut'] + src['duree'] - ss:.6f}"]
         decalage_son += src['debut'] - ss
-    return {'src': src, 'video': video, 'info': info, 'ext': ext, 'fv': fv, 'coupe': coupe, 'decalage_son': decalage_son}
+        debut_son = decalage_son
+        if ext in RECALES_SUR_L_IMAGE and image is not None:
+            debut_son = max(0.0, round(src['debut'] - 0.001 - image, 3))   # avance de la copie sur l'image clé (au ms)
+    return {'src': src, 'video': video, 'info': info, 'ext': ext, 'fv': fv, 'coupe': coupe, 'decalage_son': decalage_son,
+            'debut_son': debut_son}
 
 
 SOUS_TITRES_NOUVEAUX = {'.mp4': 'mov_text', '.m4v': 'mov_text', '.mov': 'mov_text', '.mkv': 'srt', '.webm': 'webvtt'}
@@ -2218,8 +2234,9 @@ def echantillons(fichier):
 
 def remettre_sur_video(t, mix, dossier, base, sous_titres=(), plan=None, pistes=(), titre=None):
     """Le mix remis sur la vidéo : image copiée sans réencodage, sous-titres d'origine gardés (ceux que le conteneur
-    accepte tels quels), puis les pistes de sous_titres ajoutées ([{fichier (srt, temps de la vidéo de sortie), langue
-    (ISO 639-2), titre}] : mov_text en mp4, srt en mkv, webvtt en webm), sans être affichées d'office.
+    accepte tels quels), puis les pistes de sous_titres ajoutées ([{fichier (srt, au temps de la coupe, celui du
+    décalage du mix decalage_son : le conteneur les recale avec l'image et le son), langue (ISO 639-2), titre}] :
+    mov_text en mp4, srt en mkv, webvtt en webm), sans être affichées d'office.
     Le mix est la première piste audio et la seule par défaut (l'interface et les lecteurs prennent la piste 0) ; titre :
     son titre (défaut « voix <Nom> », d'après base). pistes : pistes audio en plus, après lui, dans l'ordre ([{fichier,
     titre}], sons de l'extrait comme le mix), calées exactement comme lui (même -itsoffset, même coupe de l'image) et
@@ -2402,9 +2419,10 @@ def lire_paroles(chemin):
 
 
 def caler_paroles(d, decalage):
-    """Temps des paroles en secondes de la vidéo de sortie : le noyau les donne en temps du son doublé (decalage_s 0) ;
-    le mix commence à decalage s dans la vidéo. Idempotent (--remix) : decalage_s garde le décalage déjà appliqué.
-    Ce qui tomberait avant le début de la vidéo est rogné ou retiré."""
+    """Temps des paroles décalés de decalage s : le noyau les donne en temps du son doublé (decalage_s 0) ; pour
+    paroles.json et les .srt, decalage est l'instant de la vidéo doublée où commence le mix (plan_video : debut_son).
+    Idempotent (--remix) : decalage_s garde le décalage déjà appliqué, un ancien calage est donc corrigé. Ce qui
+    tomberait avant 0 est rogné ou retiré."""
     delta = float(decalage) - float(d.get('decalage_s') or 0.0)
 
     def decaler(segs, cle='texte', mots=False):
@@ -2492,9 +2510,16 @@ def ecrire_lrc(segments, chemin, decalage=0.0, titre=None, langue=None):
     return n
 
 
-def preparer_paroles(tv, dossier, base, decalage, duree_video=None):
-    """paroles.json calé sur la vidéo de sortie (réécrit), puis <base>.<langue>.srt, <base>.fr.srt (traduction ; ou
-    <base>.traduction.fr.srt si les paroles sont déjà en français) et <base>.lrc à côté des sorties. Rend (pistes de
+PISTES_PAROLES_TEMP = '.paroles_video_*.srt'   # dans travail/<voix>/ : pistes de paroles au temps de la coupe
+
+
+def preparer_paroles(tv, dossier, base, decalage, duree_video=None, decalage_ffmpeg=None):
+    """paroles.json calé sur la vidéo doublée (réécrit), puis <base>.<langue>.srt, <base>.fr.srt (traduction ; ou
+    <base>.traduction.fr.srt si les paroles sont déjà en français) et <base>.lrc à côté des sorties. decalage :
+    instant de la vidéo doublée où commence le mix (plan_video : debut_son) ; duree_video : sa fin, dans le même temps.
+    decalage_ffmpeg : le décalage du mix donné à ffmpeg (plan_video : decalage_son), s'il diffère (extrait mkv ou webm) :
+    les pistes de sous-titres pour remettre_sur_video, que le conteneur recale avec l'image et le son, sont alors
+    écrites à ce décalage dans travail/<voix>/.paroles_video_<n>.srt (à effacer après la vidéo). Rend (pistes de
     sous-titres pour remettre_sur_video, fichiers écrits, résumé pour le rapport)."""
     chemin = tv / 'paroles.json'
     d, raison = lire_paroles(chemin)
@@ -2510,16 +2535,25 @@ def preparer_paroles(tv, dossier, base, decalage, duree_video=None):
         return [], [], {**info, 'raison': 'aucune parole reconnue'}
     lg = d['langue'] or 'und'
     code, nom = langue_piste(d['langue'])
-    pistes, fichiers = [], []
-    srt = dossier / f'{base}.{lg}.srt'
-    ecrire_srt(d['segments'], srt, duree_video)
-    pistes.append({'fichier': srt, 'langue': code, 'titre': f'Paroles ({nom})'})
-    fichiers.append(srt)
+    a_ecrire = [(f'{base}.{lg}.srt', code, f'Paroles ({nom})', lambda x: x['segments'])]
     if info['traduction']:
-        srt_fr = dossier / (f'{base}.fr.srt' if lg != 'fr' else f'{base}.traduction.fr.srt')
-        ecrire_srt(d['traductions']['fr']['segments'], srt_fr, duree_video)
-        pistes.append({'fichier': srt_fr, 'langue': 'fre', 'titre': 'Paroles (français, traduction)'})
-        fichiers.append(srt_fr)
+        a_ecrire.append((f'{base}.fr.srt' if lg != 'fr' else f'{base}.traduction.fr.srt', 'fre',
+                         'Paroles (français, traduction)', lambda x: x['traductions']['fr']['segments']))
+    dv = fin_v = None
+    if decalage_ffmpeg is not None and abs(float(decalage_ffmpeg) - float(decalage)) > 1e-6:
+        dv = caler_paroles(json.loads(json.dumps(d)), decalage_ffmpeg)
+        fin_v = None if duree_video is None else duree_video - float(decalage) + float(decalage_ffmpeg)
+    pistes, fichiers = [], []
+    for n, (nom_f, code_f, titre, segments) in enumerate(a_ecrire):
+        srt = dossier / nom_f
+        ecrire_srt(segments(d), srt, duree_video)
+        fichiers.append(srt)
+        if dv is not None:
+            if not segments(dv):
+                continue
+            srt = tv / PISTES_PAROLES_TEMP.replace('*', str(n))
+            ecrire_srt(segments(dv), srt, fin_v)
+        pistes.append({'fichier': srt, 'langue': code_f, 'titre': titre})
     lrc = dossier / f'{base}.lrc'
     ecrire_lrc(d['segments'], lrc, decalage, base, d['langue'])
     fichiers.append(lrc)
@@ -2624,9 +2658,10 @@ def finir(tr, a, voix, temps_local=None):
     with Etape('video', titre, 'son remis sur la vidéo (image copiée)' + (', paroles en sous-titres' if paroles_on else '')):
         plan = plan_video(t)
         if paroles_on:
-            try:
-                pistes_st, fichiers_paroles, i_p = preparer_paroles(tv, dossier, base, plan['decalage_son'],
-                                                                    duree_s(tv / 'mix.wav') + plan['decalage_son'])
+            try:   # paroles.json, .srt : temps de la vidéo doublée ; pistes de la vidéo : temps de la coupe
+                pistes_st, fichiers_paroles, i_p = preparer_paroles(tv, dossier, base, plan['debut_son'],
+                                                                    duree_s(tv / 'mix.wav') + plan['debut_son'],
+                                                                    decalage_ffmpeg=plan['decalage_son'])
                 info_paroles.update(i_p)
             except Exception as e:  # noqa: BLE001 — des paroles abîmées n'empêchent jamais la vidéo
                 info_paroles['raison'] = f'paroles inutilisables : {e}'
@@ -2662,8 +2697,8 @@ def finir(tr, a, voix, temps_local=None):
                     lrc_at = dossier / f'{b_at}.lrc'
                     shutil.copy2(lrc, lrc_at)
                 info_at['fichiers']['lrc'] = lrc_at.name if lrc_at else None
-        finally:   # voix convertie seule : seulement le temps de la mettre dans la vidéo
-            for f in (tv / '.voix_seule.wav', tv / '.voix_seule_autotune.wav'):
+        finally:   # voix convertie seule, pistes de paroles au temps de la coupe : le temps de les mettre dans la vidéo
+            for f in (tv / '.voix_seule.wav', tv / '.voix_seule_autotune.wav', *tv.glob(PISTES_PAROLES_TEMP)):
                 f.unlink(missing_ok=True)
     video_s = time.time() - debut
     rapport['mix'] = {**info, 'musique_seule': reste, 'limite_dbtp': round(20 * math.log10(LIMITE), 2), 'voix_db': voix_db, 'reverb_db': a.reverb_db if mode == 'chant' else None,

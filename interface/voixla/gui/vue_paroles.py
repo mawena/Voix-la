@@ -64,15 +64,15 @@ class LigneParoles(Gtk.Box):
 class VueParoles(Gtk.Box):
     """Bloc « Paroles » : en-tête (source, choix de la langue), ligne en cours, ligne suivante.
 
-    placer() reçoit la position du lecteur ; avec_image() dit si la source en cours montre une image (temps de la vidéo
-    doublée) ou non (temps du son doublé), debut_son où le son doublé commence dans la vidéo doublée : voixla.paroles.
-    ecart_lecture passe de l'un à l'autre, et le clic sur une ligne rend une position du lecteur."""
+    placer() reçoit la position du lecteur, en temps du son doublé quelle que soit la piste (voixla.pistes.
+    source_lecteur) ; debut_son : où le son doublé commence dans la vidéo doublée, pour les sous-titres, en temps de la
+    vidéo. voixla.paroles.ecart_lecture passe de ce temps à celui des paroles, et le clic sur une ligne rend une
+    position du lecteur."""
 
-    def __init__(self, sur_clic, langue="deux", sur_langue=None, avec_image=None, debut_son=None):
+    def __init__(self, sur_clic, langue="deux", sur_langue=None, debut_son=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self.update_property([Gtk.AccessibleProperty.LABEL], ["Paroles synchronisées sur la lecture"])
         self.sur_clic = sur_clic
-        self.avec_image = avec_image or (lambda: True)
         self.debut_son = debut_son
         self.paroles = None
         self.langue = langue if langue in dict(CHOIX) else "deux"
@@ -148,7 +148,8 @@ class VueParoles(Gtk.Box):
     # --- lecture ---------------------------------------------------------------------------------------------------
 
     def _ecart(self):
-        return P.ecart_lecture(self.paroles, bool(self.avec_image()), self.debut_son)
+        # le lecteur compte en temps du son doublé, comme une piste sans image
+        return P.ecart_lecture(self.paroles, False, self.debut_son)
 
     def _clic(self, debut):
         """Clic sur une ligne : son début, rendu en position du lecteur."""

@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import chemins
+from .pistes import avance_piste, decalage_son  # noqa: F401  (decalage_son : lu dans travail/source.json)
 
 VERSION = 1                 # version du cache des sous-titres
 CACHE_MAX_MO = 20
@@ -233,35 +234,29 @@ def _decalage(v):
     return v if math.isfinite(v) else None
 
 
-def decalage_son(source):
-    """Où commence le son doublé dans la vidéo doublée (s) : « decalage_son » de travail/source.json (le retard du son
-    d'origine d'une vidéo entière, que doubler garde ; 0 pour un extrait, dont la vidéo commence sur son image), ou
-    None si source.json manque ou ne le dit pas."""
-    return _decalage(source.get("decalage_son")) if isinstance(source, dict) else None
-
-
 def ecart_lecture(paroles, avec_image=True, debut_son=None):
-    """Temps des paroles = position du lecteur + cet écart (s) ; retrancher l'écart d'un temps des paroles donne la
-    position où aller.
+    """Temps des paroles = position dans la piste lue + cet écart (s) ; retrancher l'écart d'un temps des paroles donne
+    la position où aller.
 
-    Le lecteur ne compte pas toujours dans le même temps :
+    La piste lue compte en temps du son doublé + pistes.avance_piste(avec_image, debut_son), la règle de passage du
+    temps du son au temps de la piste :
     - avec image (la vidéo doublée, ses copies des pistes séparées, qui gardent ses temps, et la vidéo d'origine au
       décalage de l'extrait) : le temps de la vidéo doublée, où le son doublé commence à debut_son
       (voir decalage_son) ;
     - sans image (le MP3, travail/original.wav, le beat ou une voix seule lus sans copie vidéo, le son seul quand la
-      fenêtre est fermée) : le temps du son doublé.
+      fenêtre est fermée) : le temps du son doublé. C'est aussi le temps du lecteur de la page d'un résultat, quelle
+      que soit la piste (pistes.Piste.decalage_lu).
     paroles.json est en temps du son + decalage_s (doubler.caler_paroles). Pour un extrait mkv ou webm, doubler
     décale le mix de −0,13 s (decalage_s), mais le conteneur recale tout à partir de la première image : dans la
     vidéo doublée, le son commence avec l'image (debut_son 0), pas 0,13 s avant. Les sous-titres de la vidéo doublée
-    sont en temps de la vidéo. debut_son None (source.json absent ou ancien) : decalage_s s'il est positif (vidéo
-    entière au son en retard), sinon 0."""
+    sont en temps de la vidéo : temps du son + debut_son. debut_son None (source.json absent ou sans decalage_son) :
+    decalage_s s'il est positif (vidéo entière au son en retard), sinon 0."""
     if paroles is None:
         return 0.0
     dec = paroles.decalage_s if paroles.origine == "paroles.json" else 0.0
     video = debut_son if debut_son is not None else max(0.0, dec)
-    if paroles.origine == "paroles.json":
-        return dec - (video if avec_image else 0.0)
-    return 0.0 if avec_image else video
+    # temps du son = position − avance_piste ; paroles.json : temps du son + decalage_s ; sous-titres : + video
+    return (dec if paroles.origine == "paroles.json" else video) - avance_piste(avec_image, video)
 
 
 # --- SRT -------------------------------------------------------------------------------------------------------------

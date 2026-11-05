@@ -47,7 +47,7 @@ flowchart TD
     R["Voix cible<br/>voix/nom/reference.wav<br/>(dossier des données)"] --> J
     X --> J["PC : envoi en FLAC 24 bits<br/>dans un jeu de données Kaggle privé"]
     J --> S
-    subgraph K["Kaggle : noyau privé, GPU T4"]
+    subgraph K["Kaggle : noyau privé, deux GPU T4"]
         S["1. Séparation voix / musique<br/>MelBand-Roformer"] --> M["2. Détection chant ou parole"]
         M --> O["3. Découpage aux silences<br/>et un décalage d'octave par chanteur"]
         O -->|chant| N["4. Nettoyage de la voix<br/>voix principale, chœurs, reverb retirée"]
@@ -81,6 +81,12 @@ flowchart TD
   - parole : Seed-VC 22 kHz, sur la voix isolée complète.
 
   Les passages sont réassemblés à l'échantillon près.
+- **Deux cartes (Kaggle).** La machine demandée (`NvidiaTeslaT4`, « GPU T4 x2 ») a deux cartes T4. Le nettoyage
+  (karaoké sur une carte, puis dereverb de la voix principale et des chœurs chacune sur la sienne), la conversion
+  YingMusic-SVC (morceaux pris par la première carte libre) et la séparation d'un lot s'y partagent le travail. Les
+  modèles se chargent l'un après l'autre. Chaque morceau garde sa graine et les pistes sont assemblées dans le même
+  ordre : le son est celui d'une carte seule, au bit près. `--gpu 1` revient à une carte. Avec une machine à une seule
+  carte, ou une carte arrêtée en route, le noyau se replie de lui-même sur une carte.
 - **Musique seule (PC).** Le reste (musique, bruits) vaut exactement l'original moins la voix isolée. Il est
   recalculé à chaque mixage, puis vérifié par trois garde-fous :
   - reconstruction : musique seule + voix redonnent l'original ;
@@ -232,11 +238,13 @@ doubler --config voix marie                     # choisir la voix par défaut
 | `kaggle.jeu` | jeu de données privé des entrées (son des vidéos, référence) | `doublage-voix-entrees` |
 | `kaggle.noyau` | noyau GPU privé du doublage | `doublage-voix-gpu` |
 | `kaggle.outils` | noyau privé des outils préparés (`--preparer-outils`) | `doublage-outils` |
+| `kaggle.machine` | machine Kaggle demandée à l'envoi du noyau (`machine_shape`) ; si Kaggle la refuse, `doubler` réessaie sur `NvidiaTeslaT4` | `NvidiaTeslaT4` (GPU T4 x2) |
 | `donnees` | dossier des données (`voix/`, `sorties/`) | `~/Music/Voix-là` |
 | `moteur` | moteur de conversion du chant : `yingmusic` ou `seedvc` (`--moteur` l'emporte) | `yingmusic` |
 | `voix` | voix cible par défaut, un dossier de `<données>/voix/` (`--voix` l'emporte) | la seule voix présente |
 | `paroles` | paroles à chaque doublage : oui ou non (`--sans-paroles` l'emporte) | oui |
 | `autotune` | intensité de l'auto-tune, de 0 (désactivé) à 100 : `doubler --config autotune 70` (`--autotune` et `--sans-autotune` l'emportent) | 0 |
+| `gpu` | cartes GPU du noyau : `auto` (les deux T4 de la machine, une seule si elle n'en a qu'une), `1` (une carte, comme avant) ou `2` (`--gpu` l'emporte) | `auto` |
 
 Le fichier ressemble à ceci :
 
@@ -255,13 +263,15 @@ Le fichier ressemble à ceci :
   besoin.
 - `--config CLE VALEUR` n'accepte que les clés du tableau. Il garde les autres clés du fichier et l'écrit d'un seul
   coup. `donnees` y est noté en chemin absolu ; `moteur` n'accepte que `yingmusic` ou `seedvc` ; `voix` n'accepte
-  qu'un nom de voix valide (minuscules, chiffres, `-` ou `_`), et prévient si cette voix n'existe pas encore.
+  qu'un nom de voix valide (minuscules, chiffres, `-` ou `_`), et prévient si cette voix n'existe pas encore ; `gpu`
+  n'accepte que `auto`, `1` ou `2` ; `kaggle.machine`, des lettres et des chiffres.
 - `--config` seul affiche le fichier, puis les valeurs utilisées : dossier des données et d'où il vient, dossiers des
   voix et des sorties, voix par défaut et d'où elle vient, noms Kaggle complets, présence du jeton, commande
   `kaggle`, script du noyau et fichier des ancres de genre utilisés. Le jeton n'est jamais affiché, seulement
   « présent » ou « absent ». En JSON (`--json`), la voix par défaut est dans `voix_defaut` (`null` s'il n'y en a pas)
   et sa provenance dans `source_voix_defaut` ; la commande `kaggle` dans `commande_kaggle`, le script du noyau dans
-  `script_noyau` et les ancres dans `ancres_genre` (`null` sans ancres).
+  `script_noyau` et les ancres dans `ancres_genre` (`null` sans ancres) ; les cartes GPU dans `gpu` et la machine
+  dans `kaggle.machine`.
 
 ### Dossier des données
 
@@ -490,6 +500,7 @@ Une étape en `erreur` est suivie d'un événement `erreur`. Les étapes commune
 | `--mode auto\|chant\|parole` | `auto` : chant s'il y a une musique sous la voix et que la voix chante, ou rappe sur un fond tonal ; sinon parole | `auto` |
 | `--octave auto\|0\|-12\|+12` | `auto` : un décalage par chanteur, choisi d'après sa hauteur et son timbre ; sinon décalage imposé partout (`12` vaut `+12`). Sans effet en parole avec le modèle 22 kHz | `auto` |
 | `--pas N` | pas de diffusion de la conversion ; 50 coûte environ 40 % de GPU de conversion en plus (au banc d'essai : aucun écart mesurable, oreille partagée) | `30` |
+| `--gpu auto\|1\|2` | cartes GPU du noyau : `auto`, les deux T4 de la machine Kaggle (une seule si elle n'en a qu'une) ; `1`, une carte, comme avant ; même son, plus vite à deux | clé `gpu` de la configuration, sinon `auto` |
 | `--moteur yingmusic\|seedvc` | moteur de conversion du chant : YingMusic-SVC ou Seed-VC 44,1 kHz ; sans effet en parole | clé `moteur` de la configuration, sinon `yingmusic` |
 | `--sans-nettoyage` | en chant, convertir la voix isolée complète sans séparer voix principale et chœurs ni retirer la reverb : la chaîne d'avant, plus rapide | nettoyage |
 | `--sans-paroles` | ni transcription ni traduction des paroles, ni pistes de sous-titres, `.srt` ou `.lrc` ; avec `--remix`, la vidéo est refaite sans les paroles | clé `paroles` de la configuration, sinon oui |
@@ -897,6 +908,19 @@ Mesures sur une voix de synthèse fausse de 29 cents (médiane), avec un vibrato
 
 Temps mesurés de bout en bout, à 30 pas, avec les outils préparés (`--preparer-outils`).
 
+Deux cartes T4, le 05/11/2026, une vidéo par session :
+
+| Vidéo | Durée | GPU Kaggle | Temps total |
+|---|---|---|---|
+| chanson entière, une carte (`--gpu 1`) | 3 min 48 | 26,6 min | 28,6 min |
+| chanson entière, deux cartes | 3 min 48 | 19,4 min | 21,7 min |
+| extrait, une carte | 0 min 48 | 9,0 min | 10,3 min |
+
+- À deux cartes, le nettoyage passe de 581 à 397 s et YingMusic-SVC de 561 à 304 s. La séparation et les paroles ne
+  changent pas.
+- Le nettoyage prend environ 0,7 fois son temps de GPU, et la conversion YingMusic-SVC 0,55 fois.
+- Le quota GPU se compte par heure de session, pas par carte : une chanson coûte moins de quota.
+
 Chaîne actuelle (chant : voix nettoyée, YingMusic-SVC), le 04/11/2026 :
 
 | Vidéos | Durée | Temps total | dont Kaggle |
@@ -921,7 +945,7 @@ Chaîne d'avant (`--moteur seedvc --sans-nettoyage`), une vidéo par session, av
   - conversion à 30 pas : environ 1,3 à 1,6 fois pour une piste ; en chant nettoyé, la voix principale et les chœurs
     font environ 2 à 3 fois, selon la place des chœurs (un passage où ils se taisent n'est pas converti).
 - Une chanson de 4 min en chant prend donc environ deux fois plus longtemps qu'avec la chaîne d'avant : de l'ordre de
-  25 min au lieu de 12 à 13. `--sans-nettoyage` retrouve à peu près les anciens temps.
+  20 min avec les deux cartes (26 avec une seule) au lieu de 12 à 13. `--sans-nettoyage` retrouve à peu près les anciens temps.
 - L'envoi et le retour en FLAC font gagner environ 1 min sur une chanson de 5 min.
 - Le mixage et la remise sur la vidéo prennent quelques secondes à une demi-minute sur le PC.
 - S'y ajoute l'attente d'une place GPU sur Kaggle, de zéro à quelques minutes.

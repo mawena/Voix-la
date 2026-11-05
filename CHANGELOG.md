@@ -9,9 +9,22 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ### Ajouté
 
+- Deux GPU : la machine Kaggle `NvidiaTeslaT4` (« GPU T4 x2 ») a deux cartes T4. Le nettoyage (dereverb de la voix
+  principale et des chœurs en même temps), la conversion YingMusic-SVC (morceaux répartis) et la séparation d'un lot
+  s'y partagent le travail. Le son est identique à celui d'une carte, au bit près. Chanson de 3 min 48 : session GPU de
+  26,6 à 19,4 min.
+- Clé `gpu` et option `--gpu auto|1|2` ; clé `kaggle.machine` (repli sur `NvidiaTeslaT4` si Kaggle refuse la machine
+  demandée).
+- Repli automatique sur une carte : machine à une seule carte, ou carte arrêtée en route.
 - Interface : le choix « Une voix pour tous / Une voix par chanteur », le duo (mixte ou même genre) et les deux voix
   choisies sont gardés d'une session à l'autre (`interface.json` : `voix_par_chanteur`, `duo_chanteurs`,
   `voix_chanteurs`). Une voix qui n'existe plus n'est pas présélectionnée.
+
+### Modifié
+
+- Estimation de durée à deux cartes. `rapport.json` : `temps_local.gpus`. `session.json` du noyau : `gpus`,
+  `nettoyage_gpu_s`, `yingmusic_gpu_s`. À deux cartes, `temps.nettoyage_s` et `conversion_s` additionnent le temps de
+  GPU des deux cartes.
 
 ### Corrigé
 

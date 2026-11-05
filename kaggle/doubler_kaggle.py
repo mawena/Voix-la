@@ -33,6 +33,15 @@
    chaque couple chanteur -> voix cible ; chaque piste nettoyée de chaque morceau prend la voix du chanteur qu'on y
    reconnaît (hauteur et empreinte de la piste), si bien que voix principale et chœurs peuvent chanter en duo. Chaque
    modèle n'est chargé qu'une fois, chaque référence préparée une fois. Sans ce réglage, rien ne change.
+8. Deux GPU (machine Kaggle NvidiaTeslaT4 : deux cartes T4 ; réglage gpus : auto, 1 ou 2) : un processus par carte,
+   chacun ne voyant que la sienne (CUDA_VISIBLE_DEVICES). Nettoyage : le karaoké d'une vidéo sur une carte, ses deux
+   dereverb (voix principale, chœurs) chacun sur la sienne (plan_nettoyage) ; YingMusic-SVC : les morceaux de toutes les
+   pistes et de toutes les vidéos répartis entre les cartes (repartir_morceaux), puis chaque piste assemblée ici dans
+   l'ordre de ses morceaux ; séparation d'un lot : les vidéos réparties. Chaque tâche ne dépend que de ses entrées et de
+   sa graine (une par morceau) : le son rendu est celui d'une carte seule, au bit près (essai du 05/11/2026 : voix
+   convertie, mix et mp3 identiques ; session de 26,6 à 19,4 min sur une chanson de 3 min 48). Les modèles se chargent
+   l'un après l'autre (TourDeChargement) : chargés ensemble, ils prennent deux à trois fois plus longtemps. Une seule
+   carte visible : la chaîne d'avant ; une carte arrêtée en route : ce qu'elle n'a pas fait est repris sur la carte 0.
 
 doubler.py remplace __REGLAGES__ (JSON en base64) et SOURCE (sa propre source en base64 : le noyau tourne en carnet,
 sans fichier, et en a besoin pour ses étapes à part), puis pousse ce noyau privé (GPU T4 + internet).
@@ -54,7 +63,8 @@ Sorties dans /kaggle/working/<id>/ pour chaque vidéo :
                              plusieurs voix cibles : voix_cibles et voix_par_trame en plus
   paroles.json               paroles horodatées par ligne et par mot, langue, traduction française (format 1 ; contrat
                              avec l'interface) ; temps du son doublé, doubler.py les cale sur la vidéo de sortie
-et /kaggle/working/session.json (installation, séparation, nettoyage, chargement des modèles, temps total).
+et /kaggle/working/session.json (installation, séparation, nettoyage, chargement des modèles, temps total ; gpus : cartes
+vues et utilisées ; nettoyage_gpu_s et yingmusic_gpu_s : temps de GPU de ces étapes, toutes cartes additionnées).
 """
 import base64
 import glob
@@ -119,13 +129,21 @@ def ecrire_flac(chemin, y, sr):
 
 
 if __name__ == '__main__':
+    import os
     from audio_separator.separator import Separator
     travaux, tmp = json.loads(sys.argv[1]), sys.argv[2]
+    # deux cartes : la seconde attend que la première ait chargé le modèle (chargés ensemble, ils sont bien plus lents)
+    attendre, signaler = (sys.argv[3:5] + ['', ''])[:2]
+    t_attente = time.time()
+    while attendre and not os.path.exists(attendre) and time.time() - t_attente < 300:
+        time.sleep(0.5)
     t0 = time.time()
     sep = Separator(model_file_dir='/tmp/modeles_sep', output_dir=tmp, output_format='WAV', use_soundfile=True,
                     normalization_threshold=1.0, sample_rate=44100,
                     mdxc_params={'segment_size': 801, 'override_model_segment_size': True, 'batch_size': 1, 'overlap': 4, 'pitch_shift': 0})
     sep.load_model(model_filename='vocals_mel_band_roformer.ckpt')
+    if signaler:
+        open(signaler, 'w').close()
     print(f'SEPARATION modèle chargé en {time.time() - t0:.0f} s', flush=True)
     for t in travaux:
         t1 = time.time()
@@ -1659,14 +1677,27 @@ def assembler(x, morceaux, pad, convertir_morceau, graine, torch):
     convertir_morceau(xs, décalage) rend autant d'échantillons que xs. La porte des silences reste à l'appelant.
     Plusieurs voix cibles : un 7e élément, l'indice de la voix cible du morceau, passé en 3e argument
     (convertir_morceau(xs, décalage, voix))."""
+    def convertir(k, m, lo, hi):
+        torch.manual_seed(graine + m[0])
+        return convertir_morceau(x[lo:hi], m[3]) if len(m) < 7 else convertir_morceau(x[lo:hi], m[3], m[6])
+    return poser_morceaux(len(x), morceaux, pad, convertir)
+
+
+def bornes_morceau(m, pad, n):
+    """Échantillons [lo, hi) convertis pour le morceau m : ses bornes élargies de pad, dans la piste de n échantillons."""
+    return max(0, m[1] - pad), min(n, m[2] + pad)
+
+
+def poser_morceaux(n, morceaux, pad, morceau_converti):
+    """Assemblage d'assembler(), dans l'ordre des morceaux : morceau_converti(k, m, lo, hi) rend les hi - lo
+    échantillons convertis du k-ième morceau (convertis ici, ou relus d'une étape qui les a convertis sur une autre carte :
+    les mêmes poids, la même somme, dans le même ordre, donc la même piste au bit près)."""
     import numpy as np
-    n = len(x)
     sortie = np.zeros(n, np.float32)
-    for m in morceaux:
+    for k, m in enumerate(morceaux):
         i, a, b, dec, fa, fb = m[:6]
-        lo, hi = max(0, a - pad), min(n, b + pad)
-        torch.manual_seed(graine + i)
-        y = convertir_morceau(x[lo:hi], dec) if len(m) < 7 else convertir_morceau(x[lo:hi], dec, m[6])
+        lo, hi = bornes_morceau(m, pad, n)
+        y = morceau_converti(k, m, lo, hi)
         tt = np.arange(lo, hi)
         w = np.ones(hi - lo)
         if a > 0:
@@ -1675,6 +1706,197 @@ def assembler(x, morceaux, pad, convertir_morceau, graine, torch):
             w *= 1 - rampe(tt - b, fb)
         sortie[lo:hi] += (y * w).astype(np.float32)
     return sortie
+
+
+# --- Deux GPU (machine Kaggle « GPU T4 x2 ») ---------------------------------------------------------------------------
+# La machine NvidiaTeslaT4 de Kaggle a deux cartes T4. Les étapes à part lourdes (nettoyage, YingMusic-SVC) s'y
+# partagent le travail : un processus par carte, chacun ne voyant que la sienne (CUDA_VISIBLE_DEVICES). Chaque tâche
+# (une séparation, un morceau converti) ne dépend que de ses entrées et de sa graine : le résultat ne dépend ni de la
+# carte ni de l'ordre. Une seule carte visible (ou le réglage gpus à 1) : la chaîne d'avant, inchangée.
+CARTES_MAXI = 2
+
+
+def compter_cartes(torch):
+    """Cartes vues par le noyau : (nombre, noms). Une erreur de CUDA compte pour une carte (la chaîne d'avant)."""
+    try:
+        n = int(torch.cuda.device_count())
+        return n, [str(torch.cuda.get_device_name(i)) for i in range(n)]
+    except Exception:  # noqa: BLE001
+        return 1, []
+
+
+def cartes_a_utiliser(demande, visibles):
+    """Nombre de cartes à utiliser : réglage gpus 'auto' (ou absent) → toutes celles qu'on voit, deux au plus ; 1 ou 2 → ce
+    nombre, borné par les cartes vues. Rend (nombre, repli) : repli dit pourquoi on en prend moins que demandé, ou None."""
+    visibles = max(int(visibles or 0), 0)
+    auto = demande in (None, '', 'auto')
+    voulu = CARTES_MAXI if auto else max(1, min(int(demande), CARTES_MAXI))
+    n = max(1, min(voulu, visibles))
+    if n >= voulu:
+        return n, None
+    return n, (f"{visibles} carte(s) GPU sur cette machine{'' if auto else f' au lieu de {voulu}'} : étapes une à une, "
+               'sur une carte')
+
+
+def env_carte(k, cartes):
+    """Variables d'environnement d'une étape à part sur la k-ième carte : CUDA_VISIBLE_DEVICES réduit à elle (avec une
+    seule carte utilisée, rien ne change : celle de toujours)."""
+    if cartes <= 1:
+        return {}
+    vues = [c.strip() for c in (os.environ.get('CUDA_VISIBLE_DEVICES') or '').split(',') if c.strip()]
+    if len(vues) < cartes:
+        vues = [str(i) for i in range(cartes)]
+    return {'CUDA_VISIBLE_DEVICES': vues[k]}
+
+
+def plan_nettoyage(videos, cartes):
+    """Tâches du nettoyage, par carte et dans l'ordre d'exécution. videos : [(id, durée en s)] dans l'ordre des vidéos.
+    Tâches : ['karaoke', id], puis ['dereverb', id, 'lead'] et ['dereverb', id, 'choeurs'], qui attendent le karaoké de
+    leur vidéo (karaoké et dereverb vont à peu près au même rythme, proportionnel à la durée).
+    Une carte : l'ordre d'avant (karaoké de toutes les vidéos, puis voix principale et chœurs de chacune). Deux cartes :
+    les karaokés d'abord, la plus longue vidéo sur la carte la moins chargée ; puis chaque dereverb, dans l'ordre où les
+    karaokés finissent, sur la carte où il finirait le plus tôt : les deux dereverb d'une vidéo seule partent chacun sur
+    sa carte. Chaque carte fait ses karaokés avant ses dereverb (un modèle chargé à la fois)."""
+    if cartes <= 1:
+        return [[['karaoke', v] for v, _ in videos]
+                + [['dereverb', v, p] for v, _ in videos for p in ('lead', 'choeurs')]]
+    duree = {v: float(d) for v, d in videos}
+    charge, fin_k = [0.0] * cartes, {}
+    karaokes, dereverbs = [[] for _ in range(cartes)], [[] for _ in range(cartes)]
+    for v, d in sorted(videos, key=lambda vd: -float(vd[1])):
+        k = min(range(cartes), key=lambda c: charge[c])
+        charge[k] += duree[v]
+        fin_k[v] = charge[k]
+        karaokes[k].append(['karaoke', v])
+    for v, _ in sorted(videos, key=lambda vd: fin_k[vd[0]]):
+        for piste in ('lead', 'choeurs'):
+            fins = [max(charge[c], fin_k[v]) + duree[v] for c in range(cartes)]
+            k = min(range(cartes), key=lambda c: fins[c])
+            dereverbs[k].append((fins[k] - duree[v], ['dereverb', v, piste]))
+            charge[k] = fins[k]
+    return [karaokes[k] + [t for _, t in sorted(dereverbs[k], key=lambda dt: dt[0])] for k in range(cartes)]
+
+
+class TourDeChargement:
+    """Chargement d'un modèle par une étape à part, quand plusieurs cartes travaillent : un chargement à la fois (verrou
+    commun dans le dossier d'état), et la carte k ne fait son premier chargement qu'après celui de la carte k-1 (ou sa
+    fin). Chargés en même temps, les modèles prennent deux à trois fois plus longtemps (essai du 05/11/2026 sur Kaggle :
+    dereverb 50 s au lieu de 9, YingMusic-SVC 73 s au lieu de 24) ; l'un après l'autre, la carte 1 charge pendant que la
+    carte 0 calcule. Le chargement ne change rien au résultat. Sans dossier d'état (une carte) : rien ne change."""
+    ATTENTE_MAXI_S = 600
+
+    def __init__(self, travail):
+        self.etat, self.carte = travail.get('etat'), int(travail.get('carte') or 0)
+        self.premier, self.verrou = True, None
+
+    def __enter__(self):
+        if not self.etat:
+            return self
+        if self.premier and self.carte > 0:
+            debut = time.time()
+            while (not any(os.path.exists(os.path.join(self.etat, f'{n}_{self.carte - 1}')) for n in ('charge', 'fin'))
+                   and time.time() - debut < self.ATTENTE_MAXI_S):
+                time.sleep(0.5)
+        import fcntl
+        self.verrou = open(os.path.join(self.etat, 'chargement.verrou'), 'w')
+        fcntl.flock(self.verrou, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        if self.verrou:
+            self.verrou.close()   # verrou rendu
+            self.verrou = None
+        if self.etat and self.premier:
+            open(os.path.join(self.etat, f'charge_{self.carte}'), 'w').close()
+        self.premier = False
+        return False
+
+
+def nom_tache(t):
+    """Nom de fichier d'une tâche du nettoyage (témoins de fin) : karaoke_v1, dereverb_v1_lead…"""
+    return '_'.join(str(x) for x in t)
+
+
+def taches_a_reprendre(plan_une_carte, etat):
+    """Tâches du nettoyage à refaire sur la carte 0 après les deux cartes : celles sans témoin de réussite, sauf celles
+    qui ont échoué sur la carte 0 elle-même (une erreur de contenu s'y répéterait) et les dereverb dont le karaoké a
+    échoué pour de bon. Dans l'ordre d'une carte seule (un karaoké avant ses dereverb)."""
+    def lire(t):
+        for fin in ('ok', 'erreur'):
+            chemin = os.path.join(etat, f'{nom_tache(t)}.{fin}')
+            if os.path.exists(chemin):
+                with open(chemin) as f:
+                    return fin, f.read().strip()
+        return None, None
+    reste, karaoke_perdu = [], set()
+    for t in plan_une_carte:
+        fin, carte = lire(t)
+        if fin == 'ok':
+            continue
+        if fin == 'erreur' and carte == '0':
+            if t[0] == 'karaoke':
+                karaoke_perdu.add(t[1])
+            continue
+        if t[0] == 'dereverb' and t[1] in karaoke_perdu:
+            continue
+        reste.append(t)
+    return reste
+
+
+def fusionner_nettoyage(parts):
+    """Résultats des étapes de nettoyage (une par carte, plus la reprise) réunis dans la forme d'une étape seule :
+    modèles, chargements (le plus long de chaque modèle : ils se chargent en même temps), et, pour chaque vidéo, ses
+    durées, ses pistes sèches, ses infos de séparation et sa première erreur ; durée de nettoyage d'une vidéo : la somme
+    de ses tâches (temps de GPU, quelle que soit la carte). La carte de chaque tâche va dans cartes."""
+    res = {'karaoke': None, 'dereverb': None, 'recouvrement': None, 'chargements_s': {}, 'videos': {}, 'cartes': []}
+    erreurs = []
+    for k, r in enumerate(parts):
+        for c in ('karaoke', 'dereverb', 'recouvrement'):
+            res[c] = res[c] or r.get(c)
+        for nom, s in (r.get('chargements_s') or {}).items():
+            res['chargements_s'][nom] = max(res['chargements_s'].get(nom, 0.0), s)
+        if r.get('erreur'):
+            erreurs.append(r['erreur'])
+        res['cartes'].append({'carte': r.get('carte', k), 'taches': r.get('taches_faites') or [],
+                              'duree_s': r.get('duree_s'), 'code': r.get('code')})
+        for vid, rv in (r.get('videos') or {}).items():
+            v = res['videos'].setdefault(vid, {'durees_s': {}})
+            v['durees_s'].update(rv.get('durees_s') or {})
+            if rv.get('dereverb'):
+                v.setdefault('dereverb', {}).update(rv['dereverb'])
+            for cle, val in rv.items():
+                if cle not in ('durees_s', 'dereverb', 'duree_s', 'erreur'):
+                    v.setdefault(cle, val)
+            if rv.get('erreur') and not v.get('erreur'):
+                v['erreur'] = rv['erreur']
+            v['duree_s'] = round(v.get('duree_s', 0.0) + (rv.get('duree_s') or 0.0), 1)
+    for v in res['videos'].values():
+        if v.get('erreur') and v.get('lead_sec') and v.get('choeurs_sec'):
+            del v['erreur']   # échec sur une carte, réussite à la reprise
+    if erreurs:
+        res['erreur'] = ' ; '.join(erreurs)[:400]
+    res['code'] = next((r.get('code') for r in parts if r.get('code')), 0)
+    return res
+
+
+def niveaux_nettoyage(x, lead, choeurs, lead_sec, ch_sec):
+    """Niveaux (dBFS, sur les trames où la voix sonne) de la voix et des pistes du nettoyage, comme au banc d'essai."""
+    import numpy as np
+    db = lambda v: round(20 * float(np.log10(v + 1e-12)), 1)
+    ref = x.mean(1)
+    return {nom: db(rms_actif(y.mean(1), ref)) for nom, y in (
+        ('voix', x), ('lead', lead), ('choeurs', choeurs), ('lead_sec', lead_sec), ('choeurs_sec', ch_sec),
+        ('reverb_jetee', x - lead_sec - ch_sec))}
+
+
+def ordre_morceaux(pistes, pad, invite_s=25.0):
+    """Morceaux à convertir par YingMusic-SVC (toutes pistes, toutes vidéos), [[piste, morceau], …], le plus coûteux
+    d'abord : chaque carte prend le premier libre (ying_morceaux), les derniers pris sont donc les plus courts et les
+    cartes finissent ensemble. Coût d'un morceau : sa durée marge comprise plus l'invite de la référence (jusqu'à 25 s,
+    convertie avec chaque fenêtre), fois les pas de diffusion. À coût égal, l'ordre des pistes puis des morceaux."""
+    taches = [(((m[2] - m[1] + 2 * pad) / SR + invite_s) * float(p.get('pas') or 30), pi, mi)
+              for pi, p in enumerate(pistes) for mi, m in enumerate(p['morceaux'])]
+    return [[pi, mi] for _, pi, mi in sorted(taches, key=lambda t: (-t[0], t[1], t[2]))]
 
 
 def lire_mono(chemin):
@@ -2220,6 +2442,39 @@ def etape_a_part(etape, travail):
     return res
 
 
+def etapes_a_part(etape, travaux, cartes):
+    """Plusieurs étapes à part en même temps, la k-ième sur la k-ième carte (env_carte), chacune dans son processus comme
+    etape_a_part. Quand l'une s'arrête, le témoin <etat>/fin_<k> le dit aux autres (une dereverb qui attend un karaoké de
+    cette carte cesse d'attendre ; la reprise s'en chargera). Rend leurs résultats, dans l'ordre des travaux."""
+    procs = []
+    for k, travail in enumerate(travaux):
+        resultat = travail['resultat']
+        os.makedirs(os.path.dirname(resultat), exist_ok=True)
+        if os.path.exists(resultat):
+            os.remove(resultat)
+        chemin = resultat + '.travail.json'
+        ecrire_json(chemin, travail)
+        env = {**os.environ, 'DOUBLER_DEBUT': repr(DEBUT), **env_carte(k, cartes)}
+        procs.append(subprocess.Popen([sys.executable, script_complet(), etape, chemin], env=env))
+    t0, durees = time.time(), [None] * len(procs)
+    while any(d is None for d in durees):
+        for k, p in enumerate(procs):
+            if durees[k] is None and p.poll() is not None:
+                durees[k] = round(time.time() - t0, 1)
+                if travaux[k].get('etat'):
+                    with open(os.path.join(travaux[k]['etat'], f'fin_{k}'), 'w') as f:
+                        f.write(str(p.returncode))
+        time.sleep(0.5)
+    res = []
+    for k, (travail, p) in enumerate(zip(travaux, procs)):
+        r = lire_json(travail['resultat'], {}) or {}
+        r.update({'code': p.returncode, 'duree_s': durees[k], 'carte': k})
+        if p.returncode:
+            log(f'ÉTAPE {etape} (carte {k}) : arrêtée avec le code {p.returncode}')
+        res.append(r)
+    return res
+
+
 def charger_torch():
     os.environ['TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD'] = '1'   # points de contrôle officiels (pickle) de Seed-VC, RMVPE…
     import torch
@@ -2234,6 +2489,14 @@ def charger_torch():
     return torch
 
 
+def lire_deux_canaux(f):
+    """Son en flottant 32 bits, deux canaux (un son mono est doublé, au-delà de deux canaux les deux premiers)."""
+    import numpy as np
+    import soundfile as sf
+    x = sf.read(f, dtype='float32', always_2d=True)[0]
+    return np.ascontiguousarray(x[:, :2] if x.shape[1] >= 2 else np.repeat(x, 2, axis=1))
+
+
 def etape_nettoyer(travail):
     """Voix principale et chœurs sans reverb, pour toutes les vidéos en chant (code du banc d'essai, etape_separer) :
     1. Roformer karaoké sur la voix isolée : piste « Vocals » = voix principale ; chœurs = voix - voix principale, en numpy
@@ -2241,16 +2504,28 @@ def etape_nettoyer(travail):
     2. Roformer dereverb sur les deux pistes : piste « noreverb » gardée ; la reverb d'origine est jetée (le mix remet
        la sienne).
     Chaque modèle n'est chargé qu'une fois. Entrée ramenée à un pic de 0,9 puis remise à l'échelle, comme la séparation.
-    Sorties : <dossier>/lead_sec.wav et choeurs_sec.wav (44,1 kHz stéréo flottant, même longueur que la voix)."""
+    Sorties : <dossier>/lead_sec.wav et choeurs_sec.wav (44,1 kHz stéréo flottant, même longueur que la voix).
+    Deux cartes (travail['taches'] de plan_nettoyage, travail['carte']) : l'étape ne fait que ses tâches, dans leur
+    ordre ; un dereverb dont le karaoké revient à l'autre carte attend son témoin (<etat>/karaoke_<id>.ok, ou .erreur,
+    ou la fin de cette carte) ; chaque tâche finie laisse un témoin (.ok, ou .erreur avec le numéro de la carte). Les
+    niveaux d'une vidéo sont mesurés par la carte qui a fait ses deux dereverb, sinon par le noyau
+    (nettoyer_sur_cartes). Sans tâches : toutes, dans l'ordre d'avant."""
     import numpy as np
     import soundfile as sf
     from audio_separator.separator import Separator
     torch = charger_torch()
-    tmp = '/tmp/net_sep'
+    carte = travail.get('carte')
+    tmp = '/tmp/net_sep' if carte is None else f'/tmp/net_sep{carte}'
     os.makedirs(tmp, exist_ok=True)
     chemin = travail['resultat']
     ov = int(travail.get('recouvrement') or 4)
     res = {'karaoke': None, 'dereverb': travail['dereverb'], 'recouvrement': ov, 'chargements_s': {}, 'videos': {}}
+    videos = {v['id']: v for v in travail['videos']}
+    taches = (travail['taches'] if travail.get('taches') is not None
+              else plan_nettoyage([(v['id'], 0.0) for v in travail['videos']], 1)[0])
+    etat, auteurs = travail.get('etat'), travail.get('auteurs') or {}
+    if carte is not None:
+        res.update({'carte': carte, 'taches_faites': []})
 
     def separateur(nom):
         t0 = time.time()
@@ -2260,7 +2535,7 @@ def etape_nettoyer(travail):
                                    'overlap': ov, 'pitch_shift': 0})
         s.load_model(model_filename=nom)
         res['chargements_s'][nom] = round(time.time() - t0, 1)
-        log(f'NETTOYAGE modèle {nom} chargé en {time.time() - t0:.0f} s')
+        log(f'NETTOYAGE modèle {nom} chargé en {time.time() - t0:.0f} s' + ('' if carte is None else f' (carte {carte})'))
         return s
 
     def separer(s, x, motif, etiquette):
@@ -2284,79 +2559,221 @@ def etape_nettoyer(travail):
         out[:n] = y[:n, :x.shape[1]] / g
         for f in glob.glob(f'{tmp}/*.wav'):
             os.remove(f)
-        log(f'NETTOYAGE {etiquette} : {noms} -> {os.path.basename(choisis[0])} ({time.time() - t0:.1f} s)')
+        log(f'NETTOYAGE {etiquette} : {noms} -> {os.path.basename(choisis[0])} ({time.time() - t0:.1f} s)'
+            + ('' if carte is None else f' (carte {carte})'))
         return out, {'pistes': noms, 'gardee': os.path.basename(choisis[0]), 'duree_s': round(time.time() - t0, 1)}
 
-    def lire2(f):
-        x = sf.read(f, dtype='float32', always_2d=True)[0]
-        return np.ascontiguousarray(x[:, :2] if x.shape[1] >= 2 else np.repeat(x, 2, axis=1))
+    def temoin(t, fin):
+        if etat:
+            with open(os.path.join(etat, f'{nom_tache(t)}.{fin}'), 'w') as f:
+                f.write(str(carte or 0))
 
-    db = lambda v: round(20 * float(np.log10(v + 1e-12)), 1)
-    s = None
-    for nom in travail['karaoke']:
-        try:
-            s = separateur(nom)
-            res['karaoke'] = nom
-            break
-        except Exception as e:  # noqa: BLE001
-            log(f'NETTOYAGE {nom} : chargement impossible ({e!r}), modèle suivant')
-    if s is None:
-        res['erreur'] = 'aucun modèle karaoké utilisable'
-        ecrire_json(chemin, res)
-        return
-    for v in travail['videos']:
-        r = res['videos'][v['id']] = {'durees_s': {}}
+    karaoke_ici, secs = {}, {}   # karaoké fait ici (réussi ou non) ; pistes sèches faites ici, par vidéo
+    paires_ici = {vid for vid in videos if all(['dereverb', vid, p] in taches for p in ('lead', 'choeurs'))}
+
+    def attendre_karaoke(vid):
+        """Karaoké de la vidéo prêt : fait ici, sinon témoin de l'autre carte ; False s'il a échoué, ou si la carte qui
+        devait le faire s'est arrêtée sans lui (la reprise sur la carte 0 s'en chargera)."""
+        if vid in karaoke_ici:
+            return karaoke_ici[vid]
+        if not etat:
+            return False
+        ok, ko = (os.path.join(etat, f"{nom_tache(['karaoke', vid])}.{fin}") for fin in ('ok', 'erreur'))
+        auteur = auteurs.get(vid)
+        attente, dit = time.time(), False
+        while True:
+            if os.path.exists(ok):
+                return True
+            if os.path.exists(ko) or auteur is None or auteur == carte:
+                return False
+            if os.path.exists(os.path.join(etat, f'fin_{auteur}')):
+                return os.path.exists(ok)
+            if not dit and time.time() - attente > 5:
+                log(f'NETTOYAGE carte {carte} : attente du karaoké de {vid} (carte {auteur})')
+                dit = True
+            time.sleep(0.5)
+
+    s, charge = None, None   # séparateur en mémoire, et son modèle : 'karaoke', 'dereverb' (None : aucun utilisable)
+    tour = TourDeChargement(travail)
+    for t in taches:
+        v = videos[t[1]]
+        r = res['videos'].setdefault(v['id'], {'durees_s': {}})
         t0 = time.time()
-        try:
-            os.makedirs(v['dossier'], exist_ok=True)
-            x = lire2(v['voix'])
-            lead, info = separer(s, x, MOTIF_KARAOKE, f"{v['id']}_karaoke")
-            sf.write(os.path.join(v['dossier'], 'lead.wav'), lead, 44100, subtype='FLOAT')
-            sf.write(os.path.join(v['dossier'], 'choeurs.wav'), x - lead, 44100, subtype='FLOAT')
-            r['durees_s']['karaoke'] = info['duree_s']
-            r['karaoke'] = info
-        except Exception as e:  # noqa: BLE001 — une vidéo ratée n'empêche pas les suivantes
-            import traceback
-            traceback.print_exc()
-            r['erreur'] = f'karaoké : {e!r}'[:400]
-        r['duree_s'] = round(time.time() - t0, 1)
-        ecrire_json(chemin, res)
-    del s
-    torch.cuda.empty_cache()
-    try:
-        s = separateur(travail['dereverb'])
-    except Exception as e:  # noqa: BLE001
-        res['erreur'] = f"dereverb {travail['dereverb']} indisponible : {e!r}"[:400]
-        ecrire_json(chemin, res)
-        return
-    for v in travail['videos']:
-        r = res['videos'][v['id']]
-        if r.get('erreur'):
-            continue
-        t0 = time.time()
-        try:
-            d = v['dossier']
-            x, lead, choeurs = lire2(v['voix']), lire2(os.path.join(d, 'lead.wav')), lire2(os.path.join(d, 'choeurs.wav'))
-            lead_sec, i1 = separer(s, lead, MOTIF_DEREVERB, f"{v['id']}_lead_dereverb")
-            ch_sec, i2 = separer(s, choeurs, MOTIF_DEREVERB, f"{v['id']}_choeurs_dereverb")
-            for nom, y in (('lead_sec', lead_sec), ('choeurs_sec', ch_sec)):
+        if t[0] == 'karaoke':
+            if charge != 'karaoke':
+                s, charge = None, 'karaoke'
+                with tour:
+                    for nom in travail['karaoke']:
+                        try:
+                            s = separateur(nom)
+                            res['karaoke'] = nom
+                            break
+                        except Exception as e:  # noqa: BLE001
+                            log(f'NETTOYAGE {nom} : chargement impossible ({e!r}), modèle suivant')
+                if s is None:
+                    res['erreur'] = 'aucun modèle karaoké utilisable'
+            if s is None:
+                r['erreur'], karaoke_ici[v['id']] = res['erreur'], False
+                temoin(t, 'erreur')
+                ecrire_json(chemin, res)
+                continue
+            t0 = time.time()   # durée de la vidéo : sans le chargement du modèle, comme avant
+            try:
+                os.makedirs(v['dossier'], exist_ok=True)
+                x = lire_deux_canaux(v['voix'])
+                lead, info = separer(s, x, MOTIF_KARAOKE, f"{v['id']}_karaoke")
+                sf.write(os.path.join(v['dossier'], 'lead.wav'), lead, 44100, subtype='FLOAT')
+                sf.write(os.path.join(v['dossier'], 'choeurs.wav'), x - lead, 44100, subtype='FLOAT')
+                r['durees_s']['karaoke'] = info['duree_s']
+                r['karaoke'] = info
+                karaoke_ici[v['id']] = True
+                temoin(t, 'ok')
+            except Exception as e:  # noqa: BLE001 — une vidéo ratée n'empêche pas les suivantes
+                import traceback
+                traceback.print_exc()
+                r['erreur'], karaoke_ici[v['id']] = f'karaoké : {e!r}'[:400], False
+                temoin(t, 'erreur')
+        else:
+            piste = t[2]
+            if r.get('erreur'):
+                continue   # karaoké ou voix principale ratés ici : vidéo en échec
+            if charge != 'dereverb':   # chargé avant d'attendre le karaoké de l'autre carte
+                s, charge = None, 'dereverb'
+                torch.cuda.empty_cache()
+                with tour:
+                    try:
+                        s = separateur(travail['dereverb'])
+                    except Exception as e:  # noqa: BLE001
+                        res['erreur'] = f"dereverb {travail['dereverb']} indisponible : {e!r}"[:400]
+            if not attendre_karaoke(v['id']):
+                continue   # karaoké raté, ou carte arrêtée sans lui (reprise sur la carte 0)
+            t0 = time.time()
+            if s is None:
+                temoin(t, 'erreur')
+                ecrire_json(chemin, res)
+                continue
+            try:
+                d = v['dossier']
+                nom = 'lead_sec' if piste == 'lead' else 'choeurs_sec'
+                y, info = separer(s, lire_deux_canaux(os.path.join(d, f'{piste}.wav')), MOTIF_DEREVERB,
+                                  f"{v['id']}_{piste}_dereverb")
                 sf.write(os.path.join(d, f'{nom}.wav'), y, 44100, subtype='FLOAT')
                 r[nom] = os.path.join(d, f'{nom}.wav')
-            ref = x.mean(1)
-            r['niveaux_db'] = {nom: db(rms_actif(y.mean(1), ref)) for nom, y in (
-                ('voix', x), ('lead', lead), ('choeurs', choeurs), ('lead_sec', lead_sec), ('choeurs_sec', ch_sec),
-                ('reverb_jetee', x - lead_sec - ch_sec))}
-            r['durees_s'].update({'dereverb_lead': i1['duree_s'], 'dereverb_choeurs': i2['duree_s']})
-            r['dereverb'] = {'lead': i1, 'choeurs': i2}
+                r['durees_s'][f'dereverb_{piste}'] = info['duree_s']
+                r.setdefault('dereverb', {})[piste] = info
+                if v['id'] in paires_ici:
+                    secs.setdefault(v['id'], {})[nom] = y
+                if len(secs.get(v['id']) or {}) == 2:   # les deux dereverb de la vidéo faits ici : niveaux, fichiers de travail effacés
+                    x, lead, choeurs = (lire_deux_canaux(f) for f in (v['voix'], os.path.join(d, 'lead.wav'),
+                                                                       os.path.join(d, 'choeurs.wav')))
+                    r['niveaux_db'] = niveaux_nettoyage(x, lead, choeurs, secs[v['id']]['lead_sec'], secs[v['id']]['choeurs_sec'])
+                    del secs[v['id']]
+                    for f in ('lead.wav', 'choeurs.wav'):
+                        os.remove(os.path.join(d, f))
+                    log(f"NETTOYAGE {v['id']} : niveaux (dBFS, trames où la voix sonne) {json.dumps(r['niveaux_db'])}")
+                temoin(t, 'ok')
+            except Exception as e:  # noqa: BLE001
+                import traceback
+                traceback.print_exc()
+                r['erreur'] = f'dereverb : {e!r}'[:400]
+                temoin(t, 'erreur')
+        r['duree_s'] = round(r.get('duree_s', 0) + time.time() - t0, 1)
+        if carte is not None:
+            res['taches_faites'].append([nom_tache(t), round(time.time() - t0, 1)])
+        ecrire_json(chemin, res)
+
+
+def separer_videos(liste, cartes):
+    """Séparation voix / reste de toutes les vidéos (SEPARER : un processus, un seul chargement du Roformer). Plusieurs
+    vidéos et deux cartes : partagées entre elles (la plus lourde d'abord, sur la carte la moins chargée), un processus
+    par carte, chacun dans son dossier de travail ; une carte arrêtée en échec : ses vidéos sont reprises sur la carte 0.
+    Une vidéo, une carte, ou un modèle encore à télécharger : un seul processus, comme avant."""
+    os.makedirs('/tmp/sep', exist_ok=True)
+    with open('/tmp/separer.py', 'w') as f:
+        f.write(SEPARER)
+    if cartes <= 1 or len(liste) < 2 or not modeles_presents('vocals_mel_band_roformer.ckpt'):
+        lancer(sys.executable, '/tmp/separer.py', json.dumps(liste), '/tmp/sep')
+        return
+    poids = {t['id']: os.path.getsize(t['entree']) for t in liste}
+    charge, parts = [0] * cartes, [[] for _ in range(cartes)]
+    for t in sorted(liste, key=lambda t: -poids[t['id']]):
+        k = min(range(cartes), key=lambda c: charge[c])
+        charge[k] += poids[t['id']]
+        parts[k].append(t)
+    log('SEPARATION sur deux cartes : ' + ' ; '.join(f"carte {k} : {', '.join(t['id'] for t in p)}" for k, p in enumerate(parts)))
+    procs = []
+    for k, part in enumerate(parts):
+        if part:
+            os.makedirs(f'/tmp/sep/carte{k}', exist_ok=True)
+            charge = f'/tmp/sep/carte{k}/charge'
+            if os.path.exists(charge):
+                os.remove(charge)
+            # la carte k charge le modèle après la carte k-1 (témoin « charge »)
+            procs.append((k, part, subprocess.Popen([sys.executable, '/tmp/separer.py', json.dumps(part), f'/tmp/sep/carte{k}',
+                                                     f'/tmp/sep/carte{k - 1}/charge' if k else '', charge],
+                                                    env={**os.environ, **env_carte(k, cartes)})))
+    for k, part, p in procs:
+        if p.wait():
+            log(f'SEPARATION carte {k} : arrêtée avec le code {p.returncode} ; ses vidéos reprises sur la carte 0')
+            lancer(sys.executable, '/tmp/separer.py', json.dumps(part), '/tmp/sep')
+
+
+def modeles_presents(*noms):
+    """Les modèles audio-separator sont-ils déjà sur le disque (montage d'outils) ? Sinon, deux étapes les
+    téléchargeraient en même temps au même endroit : elles se font alors sur une carte."""
+    return all(os.path.exists(os.path.join('/tmp/modeles_sep', n)) for n in noms)
+
+
+def nettoyer_sur_cartes(base, durees, cartes):
+    """Nettoyage sur plusieurs cartes (plan_nettoyage, une étape par carte), reprise sur la carte 0 de ce qui n'a pas été
+    fait (taches_a_reprendre), puis les niveaux des vidéos dont les deux dereverb se sont faits sur deux cartes.
+    base : le travail d'une étape seule, sans resultat. Rend le résultat d'une étape seule (fusionner_nettoyage)."""
+    t0 = time.time()
+    etat = '/tmp/net/etat'
+    shutil.rmtree(etat, ignore_errors=True)
+    os.makedirs(etat)
+    plan = plan_nettoyage(durees, cartes)
+    auteurs = {t[1]: k for k, taches in enumerate(plan) for t in taches if t[0] == 'karaoke'}
+    log(f'NETTOYAGE sur {cartes} cartes : ' + ' ; '.join(f"carte {k} : {', '.join(nom_tache(t) for t in taches) or 'rien'}"
+                                                     for k, taches in enumerate(plan)))
+    travaux = [{**base, 'taches': taches, 'etat': etat, 'auteurs': auteurs, 'carte': k, 'resultat': f'/tmp/net/resultat_{k}.json'}
+               for k, taches in enumerate(plan)]
+    try:
+        parts = etapes_a_part('nettoyer', travaux, cartes)
+    except Exception as ex:  # noqa: BLE001 — tout sera repris sur la carte 0
+        import traceback
+        traceback.print_exc()
+        parts = []
+    reste = taches_a_reprendre(plan_nettoyage(durees, 1)[0], etat)
+    if reste:
+        log(f"NETTOYAGE reprise sur la carte 0 : {', '.join(nom_tache(t) for t in reste)}")
+        for t in reste:
+            for fin in ('ok', 'erreur'):
+                if os.path.exists(os.path.join(etat, f'{nom_tache(t)}.{fin}')):
+                    os.remove(os.path.join(etat, f'{nom_tache(t)}.{fin}'))
+        r = etape_a_part('nettoyer', {**base, 'taches': reste, 'etat': etat, 'auteurs': {v: 0 for v in auteurs}, 'carte': 0,
+                                      'resultat': '/tmp/net/resultat_reprise.json'})
+        r['carte'] = 0
+        parts.append(r)
+    res = fusionner_nettoyage(parts)
+    for v in base['videos']:
+        rv = res['videos'].get(v['id']) or {}
+        if rv.get('erreur') or rv.get('niveaux_db') or not (rv.get('lead_sec') and rv.get('choeurs_sec')):
+            continue
+        try:
+            d = v['dossier']
+            x, lead, choeurs, lead_sec, ch_sec = (lire_deux_canaux(f) for f in (
+                v['voix'], os.path.join(d, 'lead.wav'), os.path.join(d, 'choeurs.wav'), rv['lead_sec'], rv['choeurs_sec']))
+            rv['niveaux_db'] = niveaux_nettoyage(x, lead, choeurs, lead_sec, ch_sec)
             for f in ('lead.wav', 'choeurs.wav'):
                 os.remove(os.path.join(d, f))
-            log(f"NETTOYAGE {v['id']} : niveaux (dBFS, trames où la voix sonne) {json.dumps(r['niveaux_db'])}")
-        except Exception as e:  # noqa: BLE001
+            log(f"NETTOYAGE {v['id']} : niveaux (dBFS, trames où la voix sonne) {json.dumps(rv['niveaux_db'])}")
+        except Exception as ex:  # noqa: BLE001 — comme sur une carte : vidéo en échec, voix isolée complète convertie
             import traceback
             traceback.print_exc()
-            r['erreur'] = f'dereverb : {e!r}'[:400]
-        r['duree_s'] = round(r.get('duree_s', 0) + time.time() - t0, 1)
-        ecrire_json(chemin, res)
+            rv['erreur'] = f'dereverb : {ex!r}'[:400]
+    res['duree_s'] = round(time.time() - t0, 1)
+    return res
 
 
 def installer_ying(outils=None):
@@ -2567,24 +2984,27 @@ def etape_ying(travail):
     res = {'commit': YING_COMMIT, 'poids': os.path.basename(travail.get('checkpoint') or YING_POIDS[1]),
            'poids_origine': 'montage' if travail.get('checkpoint') else 'Hugging Face', 'pistes': {}}
     try:
-        m = MoteurYing(travail.get('outils'), travail.get('checkpoint'))
-        res.update({'installation': m.installation, 'chargement_s': m.chargement_s})
-        if travail.get('references'):
-            refs, res['references_s'] = [], []
-            for c in travail['references']:
-                t0 = time.time()
-                refs.append(m.preparer_ref(c))
-                res['references_s'].append(round(time.time() - t0, 2))
-            ref = refs[0]
-        else:
-            ref = m.preparer_ref(travail['reference']) if travail.get('reference') else None
-            refs = [ref]
+        with TourDeChargement(travail):   # plusieurs cartes : une à la fois (une carte : rien ne change)
+            m = MoteurYing(travail.get('outils'), travail.get('checkpoint'))
+            res.update({'installation': m.installation, 'chargement_s': m.chargement_s})
+            if travail.get('references'):
+                refs, res['references_s'] = [], []
+                for c in travail['references']:
+                    t0 = time.time()
+                    refs.append(m.preparer_ref(c))
+                    res['references_s'].append(round(time.time() - t0, 2))
+                ref = refs[0]
+            else:
+                ref = m.preparer_ref(travail['reference']) if travail.get('reference') else None
+                refs = [ref]
     except Exception as e:  # noqa: BLE001 — le noyau se repliera sur Seed-VC
         import traceback
         traceback.print_exc()
         res['erreur'] = f'YingMusic-SVC indisponible : {e!r}'[:500]
         ecrire_json(chemin, res)
         return
+    if travail.get('taches') is not None:
+        return ying_morceaux(travail, m, refs, res)
     log(f"YINGMUSIC chargé en {m.chargement_s:.0f} s (installation {m.installation['origine']}, poids {res['poids_origine']}) ; "
         f"{len(travail.get('pistes', []))} piste(s) à convertir")
     ecrire_json(chemin, res)
@@ -2603,6 +3023,126 @@ def etape_ying(travail):
             res['pistes'][p['cle']] = {'erreur': repr(e)[:500]}
         m.torch.cuda.empty_cache()
         ecrire_json(chemin, res)
+
+
+def ying_morceaux(travail, m, refs, res):
+    """etape_ying sur une carte parmi plusieurs : les morceaux de travail['taches'] ([piste, morceau]), chacun avec sa
+    graine, sa marge et sa référence comme dans assembler(), rendu tel quel dans <morceaux_dir>/<piste>_<morceau>.npy ;
+    le noyau assemble ensuite chaque piste (ying_sur_cartes). Avec travail['reclamations'] (plusieurs cartes), toutes
+    les cartes parcourent la même liste et chacune prend le premier morceau libre (fichier réservé à son nom, créé une
+    seule fois) : la carte prête la première, ou la plus rapide, en fait davantage. res['morceaux_faits'] : durée de
+    conversion de chacun ; res['morceaux_erreurs'] : erreur et carte de ceux qui ont échoué."""
+    import numpy as np
+    chemin, dossier, carte = travail['resultat'], travail['morceaux_dir'], travail.get('carte', 0)
+    reclamations = travail.get('reclamations')
+    os.makedirs(dossier, exist_ok=True)
+    res.update({'carte': carte, 'morceaux_faits': {}, 'morceaux_erreurs': {}})
+    log(f"YINGMUSIC carte {carte} : chargé en {m.chargement_s:.0f} s ; "
+        + (f"morceaux pris parmi {len(travail['taches'])}" if reclamations else f"{len(travail['taches'])} morceau(x) à convertir"))
+    ecrire_json(chemin, res)
+    t_carte, x_par_piste = time.time(), {}
+    for pi, mi in travail['taches']:
+        p = travail['pistes'][pi]
+        mo = p['morceaux'][mi]
+        cle, t0 = f'{pi}_{mi}', time.time()
+        if reclamations:
+            try:
+                os.close(os.open(os.path.join(reclamations, cle), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            except FileExistsError:
+                continue   # pris par une autre carte
+        try:
+            if pi not in x_par_piste:
+                x_par_piste[pi] = lire_mono(p['entree'])
+            x = x_par_piste[pi]
+            lo, hi = bornes_morceau(mo, travail['pad'], len(x))
+            m.torch.manual_seed(REGLAGES['graine'] + mo[0])
+            y = m.convertir_morceau(x[lo:hi], refs[mo[6] if len(mo) >= 7 else 0], mo[3], p['pas'])
+            np.save(os.path.join(dossier, f'{cle}.npy'), y)
+            res['morceaux_faits'][cle] = round(time.time() - t0, 2)
+        except Exception as e:  # noqa: BLE001 — sa piste se repliera sur Seed-VC (après une reprise sur la carte 0)
+            import traceback
+            traceback.print_exc()
+            res['morceaux_erreurs'][cle] = {'erreur': repr(e)[:500], 'carte': carte}
+        ecrire_json(chemin, res)
+    m.torch.cuda.empty_cache()
+    res['conversion_s'] = round(time.time() - t_carte, 1)
+    log(f"YINGMUSIC carte {carte} : {len(res['morceaux_faits'])} morceau(x) en {time.time() - t_carte:.0f} s"
+        + (f", {len(res['morceaux_erreurs'])} en échec" if res['morceaux_erreurs'] else ''))
+    ecrire_json(chemin, res)
+
+
+def ying_sur_cartes(travail, cartes, invite_s=25.0):
+    """YingMusic-SVC sur plusieurs cartes. L'installation se fait ici, une fois (deux étapes la feraient en même temps
+    dans le même dossier) ; les morceaux de toutes les pistes sont répartis (repartir_morceaux), une étape par carte ; ce
+    qui n'a pas été converti (carte arrêtée, erreur sur une autre carte que la 0) est repris sur la carte 0 ; enfin
+    chaque piste est assemblée dans l'ordre de ses morceaux (poser_morceaux : la piste qu'aurait rendue une carte seule)
+    et écrite comme etape_ying l'écrit. Rend le résultat d'une étape seule, plus cartes (morceaux, chargement et durée
+    de chacune) ; conversion_s d'une piste : la somme de ses morceaux (temps de GPU)."""
+    import numpy as np
+    import soundfile as sf
+    try:
+        installation = installer_ying(travail.get('outils'))
+    except Exception as e:  # noqa: BLE001 — le noyau se repliera sur Seed-VC
+        import traceback
+        traceback.print_exc()
+        return {'erreur': f'YingMusic-SVC indisponible : {e!r}'[:500]}
+    pistes, dossier, etat, reclamations = travail['pistes'], '/tmp/ying/morceaux', '/tmp/ying/etat', '/tmp/ying/reclamations'
+    for d in (dossier, etat, reclamations):
+        shutil.rmtree(d, ignore_errors=True)
+        os.makedirs(d)
+    ordre = ordre_morceaux(pistes, travail['pad'], invite_s)
+    log(f'YINGMUSIC sur {cartes} cartes : {len(ordre)} morceau(x), pris par la première carte libre, le plus long d\'abord')
+    travaux = [{**travail, 'taches': ordre, 'morceaux_dir': dossier, 'reclamations': reclamations, 'etat': etat, 'carte': k,
+                'resultat': f'/tmp/ying/resultat_{k}.json'} for k in range(cartes)] if ordre else []
+    parts = etapes_a_part('ying', travaux, cartes) if travaux else []
+    faits, erreurs = {}, {}
+
+    def recueillir(r):
+        faits.update(r.get('morceaux_faits') or {})
+        erreurs.update(r.get('morceaux_erreurs') or {})
+        for c in faits:
+            erreurs.pop(c, None)
+    for r in parts:
+        recueillir(r)
+    reste = [[pi, mi] for pi, p in enumerate(pistes) for mi in range(len(p['morceaux']))
+             if f'{pi}_{mi}' not in faits and (erreurs.get(f'{pi}_{mi}') or {}).get('carte') != 0]
+    if reste and parts and not parts[0].get('erreur'):
+        log(f'YINGMUSIC reprise sur la carte 0 : {len(reste)} morceau(x)')
+        r = etape_a_part('ying', {**travail, 'taches': reste, 'morceaux_dir': dossier, 'carte': 0,
+                                  'resultat': '/tmp/ying/resultat_reprise.json'})
+        r['reprise'] = True
+        parts.append(r)
+        recueillir(r)
+    premier = next((r for r in parts if not r.get('erreur')), parts[0] if parts else {})
+    res = {k: premier.get(k) for k in ('commit', 'poids', 'poids_origine', 'references_s') if premier.get(k) is not None}
+    res.update({'installation': installation, 'chargement_s': max([r.get('chargement_s') or 0.0 for r in parts] or [0.0]),
+                'pistes': {}, 'cartes': [{'carte': r.get('carte'), 'reprise': bool(r.get('reprise')),
+                                          'morceaux': len(r.get('morceaux_faits') or {}),
+                                          'erreurs': len(r.get('morceaux_erreurs') or {}), 'chargement_s': r.get('chargement_s'),
+                                          'conversion_s': r.get('conversion_s'), 'duree_s': r.get('duree_s'),
+                                          'code': r.get('code'), 'erreur': r.get('erreur')} for r in parts]})
+    if parts and all(r.get('erreur') for r in parts):
+        res['erreur'] = parts[0]['erreur']
+    for pi, p in enumerate(pistes):
+        cles = [f'{pi}_{mi}' for mi in range(len(p['morceaux']))]
+        manque = [c for c in cles if c not in faits]
+        if manque:
+            res['pistes'][p['cle']] = {'erreur': (erreurs.get(manque[0]) or {}).get('erreur') or res.get('erreur')
+                                       or f'{len(manque)} morceau(x) non converti(s)'}
+            continue
+        try:
+            n = len(lire_mono(p['entree']))
+            y = poser_morceaux(n, p['morceaux'], travail['pad'],
+                               lambda k, mo, lo, hi: np.load(os.path.join(dossier, f'{pi}_{k}.npy')))
+            sf.write(p['sortie'], y, SR, subtype='FLOAT')
+            res['pistes'][p['cle']] = {'sortie': p['sortie'], 'conversion_s': round(sum(faits[c] for c in cles), 1),
+                                       'morceaux': len(cles)}
+        except Exception as e:  # noqa: BLE001 — cette piste se repliera sur Seed-VC
+            import traceback
+            traceback.print_exc()
+            res['pistes'][p['cle']] = {'erreur': repr(e)[:500]}
+    shutil.rmtree(dossier, ignore_errors=True)
+    return res
 
 
 def depuis_hf(classe, sources, cache, demi=True, **options):
@@ -2893,6 +3433,14 @@ def main():
         return charger(*a, **k)
     torch.load = charger_complet
     session.update({'seedvc': sha, 'torch': torch.__version__, 'gpu': torch.cuda.get_device_name(0)})
+    # Cartes GPU : la machine NvidiaTeslaT4 de Kaggle en a deux ; le nettoyage et YingMusic-SVC (et la séparation d'un
+    # lot) s'y partagent le travail, sans changer le résultat. Une seule carte : la chaîne d'avant (réglage gpus)
+    visibles, noms_cartes = compter_cartes(torch)
+    cartes, repli_cartes = cartes_a_utiliser(R.get('gpus'), visibles)
+    session['gpus'] = {'visibles': visibles, 'noms': noms_cartes, 'demande': R.get('gpus', 'auto'), 'utilisees': cartes,
+                       'repli': repli_cartes}
+    log(f"GPU : {visibles} carte(s) ({', '.join(noms_cartes) or '?'}), {cartes} utilisée(s)"
+        + (f' ; {repli_cartes}' if repli_cartes else ''))
 
     def ecrire_session():
         with open(os.path.join(SORTIE, 'session.json'), 'w') as f:
@@ -2916,12 +3464,8 @@ def main():
         for v in cibles['voix']:
             v['chemin'] = ref_chemin if v['fichier'] == R['voix']['fichier'] else trouver(v['fichier'])
     t = time.time()
-    os.makedirs('/tmp/sep', exist_ok=True)
-    with open('/tmp/separer.py', 'w') as f:
-        f.write(SEPARER)
-    lancer(sys.executable, '/tmp/separer.py', json.dumps([{'id': tr['id'], 'entree': tr['chemin'], 'voix': tr['voix'],
-                                                          'reste': tr['reste'], 'gain_entree': float(tr.get('gain_entree') or 1.0),
-                                                          'voix_flac': tr['voix_flac']} for tr in travaux]), '/tmp/sep')
+    separer_videos([{'id': tr['id'], 'entree': tr['chemin'], 'voix': tr['voix'], 'reste': tr['reste'],
+                     'gain_entree': float(tr.get('gain_entree') or 1.0), 'voix_flac': tr['voix_flac']} for tr in travaux], cartes)
     session['temps']['separation_totale_s'] = round(time.time() - t, 1)
 
     # 2. Modèles (une fois pour toutes les vidéos)
@@ -3202,14 +3746,21 @@ def main():
         torch.cuda.empty_cache()
         travail = {'videos': [{'id': e['tr']['id'], 'voix': e['tr']['voix'], 'dossier': f"/tmp/net/{e['tr']['id']}"} for e in videos_chant],
                    'karaoke': list(R.get('karaoke') or KARAOKE), 'dereverb': R.get('dereverb') or DEREVERB,
-                   'recouvrement': int(R.get('nettoyage_recouvrement') or 4), 'resultat': '/tmp/net/resultat.json'}
+                   'recouvrement': int(R.get('nettoyage_recouvrement') or 4)}
+        sur_cartes = cartes > 1 and modeles_presents(travail['karaoke'][0], travail['dereverb'])
+        if cartes > 1 and not sur_cartes:
+            log('NETTOYAGE sur une carte : modèles absents du montage d\'outils (deux cartes les téléchargeraient en même temps)')
         try:
-            res = etape_a_part('nettoyer', travail)
+            res = (nettoyer_sur_cartes(travail, [(e['tr']['id'], e['n'] / SR) for e in videos_chant], cartes) if sur_cartes
+                   else etape_a_part('nettoyer', {**travail, 'resultat': '/tmp/net/resultat.json'}))
         except Exception as ex:  # noqa: BLE001
             res = {'erreur': repr(ex)}
         session['temps']['nettoyage_totale_s'] = round(time.time() - t, 1)
         session['temps']['chargement_nettoyage_s'] = round(sum((res.get('chargements_s') or {}).values()), 1)
+        session['temps']['nettoyage_gpu_s'] = round(sum(v.get('duree_s') or 0 for v in (res.get('videos') or {}).values()), 1)
         session['nettoyage'] = {k: res.get(k) for k in ('karaoke', 'dereverb', 'recouvrement', 'chargements_s', 'erreur', 'code')}
+        if res.get('cartes'):
+            session['nettoyage']['cartes'] = res['cartes']
         for e in videos_chant:
             v = (res.get('videos') or {}).get(e['tr']['id']) or {}
             info = {'demande': True, 'applique': False, 'karaoke': res.get('karaoke'), 'dereverb': res.get('dereverb'),
@@ -3352,12 +3903,17 @@ def main():
         if any(e.get('plusieurs') for e in etats_v):
             travail['references'] = [v['chemin'] for v in cibles['voix']]   # indice = 7e élément de chaque morceau
         try:
-            res = etape_a_part('ying', travail)
+            # deux cartes : morceaux partagés, piste assemblée ici au bit près (invite : la référence, 25 s au plus)
+            res = (ying_sur_cartes(travail, cartes, min(25.0, float(refs['chant44k']['duree']))) if cartes > 1
+                   else etape_a_part('ying', travail))
         except Exception as ex:  # noqa: BLE001 — repli sur Seed-VC
             res = {'erreur': repr(ex)}
         session['temps']['yingmusic_total_s'] = round(time.time() - t, 1)
         session['temps']['chargement_yingmusic_s'] = round((res.get('chargement_s') or 0) + ((res.get('installation') or {}).get('duree_s') or 0), 1)
+        session['temps']['yingmusic_gpu_s'] = round(sum(p.get('conversion_s') or 0 for p in (res.get('pistes') or {}).values()), 1)
         session['yingmusic'] = {k: res.get(k) for k in ('commit', 'poids', 'poids_origine', 'installation', 'chargement_s', 'erreur', 'code')}
+        if res.get('cartes'):
+            session['yingmusic']['cartes'] = res['cartes']
         if res.get('references_s'):
             session['yingmusic']['references_s'] = res['references_s']   # préparation de chaque référence (voix cibles)
         ecrire_session()

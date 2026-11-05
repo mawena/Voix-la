@@ -121,9 +121,9 @@ class VoixCombinee(unittest.TestCase):
                                comparer_modeles=False, comparer_pas=None, modele_parole=None)
         travaux = [{'id': 'v1', 'entree': 'entree-x.flac', 'gain_entree': 2.0}]
         un = self.D.reglages_noyau(a, self.D.charger_voix('jules'), None, travaux)
-        # une voix : exactement les réglages d'avant
+        # une voix : exactement les réglages d'avant (plus gpus, les cartes GPU : auto sans --gpu)
         attendu = {**self.D.NOYAU_REGLAGES, 'pas': 30, 'ancres': None, 'paroles': True, 'moteur_chant': 'yingmusic',
-                   'nettoyage': True, 'voix': {'nom': 'jules', 'fichier': 'voix-jules.wav', 'f0_parole_hz': 110.0,
+                   'nettoyage': True, 'gpus': 'auto', 'voix': {'nom': 'jules', 'fichier': 'voix-jules.wav', 'f0_parole_hz': 110.0,
                                                'facteur_chant': 2.0},
                    'travaux': [{'id': 'v1', 'entree': 'entree-x.flac', 'mode': 'auto', 'octave': 'auto',
                                 'comparer_modeles': False, 'comparer_pas': None, 'gain_entree': 2.0,

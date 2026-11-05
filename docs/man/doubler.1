@@ -28,10 +28,11 @@ Toutes les vidéos d'une même commande partent dans une seule session Kaggle :
 sur le PC, le son de chaque vidéo est extrait et envoyé en FLAC 24 bits dans
 un jeu de données privé ;
 .IP 2. 4
-sur le GPU de Kaggle, un noyau privé sépare la voix, choisit entre chant et
-parole et le décalage d'octave de chaque chanteur, nettoie la voix chantée
-(voix principale et chœurs séparés, reverb d'origine retirée), puis la
-convertit avec YingMusic\-SVC ou Seed\-VC ;
+sur les deux GPU T4 de Kaggle, un noyau privé sépare la voix, choisit entre
+chant et parole et le décalage d'octave de chaque chanteur, nettoie la voix
+chantée (voix principale et chœurs séparés, reverb d'origine retirée), puis la
+convertit avec YingMusic\-SVC ou Seed\-VC ; le nettoyage et YingMusic\-SVC se
+partagent entre les deux cartes (\fB\-\-gpu\fR) ;
 .IP 3. 4
 de retour sur le PC, la voix convertie est mixée (nuances de la voix
 d'origine, dé\-esseur, reverb, limiteur), puis remise sur la vidéo ; l'image et
@@ -93,6 +94,19 @@ En chant, convertit la voix isolée complète, sans nettoyage (plus rapide).
 .TP
 .B \-\-sans\-paroles
 Ni transcription ni traduction des paroles, ni sous-titres, \fB.srt\fR ou \fB.lrc\fR (clé \fBparoles\fR, oui par défaut).
+.TP
+.BR \-\-gpu " auto|1|2"
+Cartes GPU du noyau. La machine Kaggle demandée (\fBNvidiaTeslaT4\fR, « GPU T4
+x2 ») a deux cartes T4 : le nettoyage (karaoké sur une carte, dereverb de la
+voix principale et des chœurs chacun sur la sienne), la conversion YingMusic\-SVC
+(morceaux répartis entre les cartes) et la séparation d'un lot s'y partagent le
+travail. Le son rendu est le même qu'avec une carte, au bit près : chaque
+morceau garde sa graine, et les pistes sont assemblées dans le même ordre. Sur
+une chanson de 3 min 48, la session GPU passe de 26,6 à 19,4 min. \fBauto\fR
+(défaut, clé \fBgpu\fR) : les cartes de la machine, deux au plus ; \fB1\fR : une
+carte, comme avant ; \fB2\fR : deux. Une machine à une seule carte, ou une carte
+qui s'arrête en route : repli automatique sur une carte. Le quota GPU
+hebdomadaire de Kaggle se compte en heures de session, pas en heures par carte.
 .TP
 .BI \-\-voix\-db " dB"
 Niveau de la voix par rapport à celle de la vidéo (défaut : +4 en chant, 0 en
@@ -162,8 +176,10 @@ Avec \fB\-\-voix\-liste\fR ou \fB\-\-config\fR : sortie en JSON.
 Sans argument, affiche la configuration et les valeurs utilisées (données,
 commande kaggle, script du noyau, ancres de genre) ; avec \fIclé valeur\fR,
 écrit une clé : \fBdonnees\fR, \fBvoix\fR, \fBmoteur\fR, \fBparoles\fR, \fBautotune\fR
-(intensité de 0 à 100), \fBkaggle.compte\fR, \fBkaggle.jeu\fR, \fBkaggle.noyau\fR,
-\fBkaggle.outils\fR.
+(intensité de 0 à 100), \fBgpu\fR (auto, 1 ou 2), \fBkaggle.compte\fR, \fBkaggle.jeu\fR,
+\fBkaggle.noyau\fR, \fBkaggle.outils\fR, \fBkaggle.machine\fR (machine Kaggle demandée
+à l'envoi du noyau, \fBNvidiaTeslaT4\fR par défaut ; refusée par Kaggle, doubler
+réessaie sur celle\-ci).
 .TP
 .B \-\-preparer\-outils
 Prépare une fois sur Kaggle les paquets et les modèles, pour des installations
@@ -189,7 +205,8 @@ doubler \-\-config kaggle.compte \fIcompte\fR
 .SH FICHIERS
 .TP
 .I ~/.config/voix\-la/config.json
-Configuration : compte Kaggle, dossier des données, voix et moteur par défaut.
+Configuration : compte Kaggle, dossier des données, voix et moteur par défaut,
+cartes GPU et machine Kaggle.
 .TP
 .I ~/.config/voix\-la/ancres_genre.json
 Ancres de genre, facultatives (deux empreintes de voix chantées, aucun son).

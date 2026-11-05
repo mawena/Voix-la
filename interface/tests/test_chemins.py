@@ -185,6 +185,52 @@ class EssaiPreferences(EssaiIsole):
         self.assertEqual(chemins.lire_preferences()["voix_defaut"], "jules-b")
         self.assertEqual(chemins.lire_preferences()["reverb_db"], -13.0)
 
+    def test_modifier_plusieurs_preferences(self):
+        chemins.modifier_preference("pas", 50)
+        p = chemins.modifier_preferences({"voix_par_chanteur": True, "voix_chanteurs": ["jules", "marie"]})
+        self.assertEqual((p["voix_par_chanteur"], p["voix_chanteurs"], p["pas"]), (True, ["jules", "marie"], 50))
+        self.assertEqual(chemins.lire_preferences(), p)
+
+
+class EssaiChoixChanteurs(EssaiIsole):
+    """« Une voix par chanteur » gardé d'une session à l'autre : choix, duo et voix relus (voix inventées)."""
+
+    def test_par_defaut_une_voix_pour_tous(self):
+        p = chemins.lire_preferences()
+        self.assertEqual((p["voix_par_chanteur"], p["duo_chanteurs"], p["voix_chanteurs"]), (False, "genre", []))
+        self.assertEqual(chemins.choix_chanteurs(p), (False, "genre", [None, None]))
+        self.assertEqual(chemins.choix_chanteurs(None), (False, "genre", [None, None]))
+
+    def test_relu_a_la_session_suivante(self):
+        chemins.modifier_preferences({"voix_par_chanteur": True, "duo_chanteurs": "ordre",
+                                      "voix_chanteurs": ["jules", "marie"]})
+        p = chemins.lire_preferences()      # nouvelle session : relu dans interface.json
+        self.assertEqual(chemins.choix_chanteurs(p), (True, "ordre", ["jules", "marie"]))
+        self.assertEqual(chemins.choix_chanteurs(p, ["marie", "jules", "paul"]), (True, "ordre", ["jules", "marie"]))
+
+    def test_voix_disparue_pas_preselectionnee(self):
+        p = {"voix_par_chanteur": True, "duo_chanteurs": "genre", "voix_chanteurs": ["jules", "marie"]}
+        self.assertEqual(chemins.choix_chanteurs(p, ["marie"]), (True, "genre", [None, "marie"]))
+        self.assertEqual(chemins.choix_chanteurs(p, []), (True, "genre", [None, None]))
+        # sans liste des voix (pas encore lue), les voix gardées restent telles quelles
+        self.assertEqual(chemins.choix_chanteurs(p)[2], ["jules", "marie"])
+
+    def test_une_seule_voix_choisie(self):
+        p = {"voix_par_chanteur": True, "voix_chanteurs": [None, "marie"]}
+        self.assertEqual(chemins.choix_chanteurs(p, ["jules", "marie"]), (True, "genre", [None, "marie"]))
+        self.assertEqual(chemins.choix_chanteurs({"voix_chanteurs": ["jules"]})[2], ["jules", None])
+
+    def test_valeurs_abimees(self):
+        chemins.ecrire_json(chemins.fichier_preferences(), {"voix_par_chanteur": "oui", "duo_chanteurs": "trio",
+                                                            "voix_chanteurs": "jules"})
+        self.assertEqual(chemins.choix_chanteurs(chemins.lire_preferences(), ["jules"]),
+                         (False, "genre", [None, None]))
+        for voix in ([1, ""], [None, {"id": "jules"}], {"0": "jules"}, None):
+            self.assertEqual(chemins.choix_chanteurs({"voix_chanteurs": voix})[2], [None, None], voix)
+        self.assertEqual(chemins.choix_chanteurs({"voix_par_chanteur": 1})[0], False, "vrai seulement s'il vaut true")
+        self.assertEqual(chemins.choix_chanteurs({"voix_chanteurs": ["jules", "marie", "paul"]})[2],
+                         ["jules", "marie"])
+
     def test_telechargements(self):
         with mock.patch.object(chemins.Path, "home", return_value=self.tmp):
             self.assertEqual(chemins.dossier_telechargements(), self.tmp)

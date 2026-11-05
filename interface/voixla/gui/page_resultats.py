@@ -9,6 +9,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
 from .. import chemins, corbeille, formats, moteur, pistes, rapports
 from .. import lecture as regles
+from ..paroles import decalage_son
 from . import commun
 from . import visualisations as vis
 from .analyses import analyses
@@ -732,8 +733,11 @@ class PageDetail(Adw.NavigationPage):
         """Paroles allumées ou éteintes (menu « œil ») : sous le lecteur, chargées une fois."""
         voulu = bool(self.fenetre.prefs.get("paroles"))
         if voulu and self.vue_paroles is None:
+            # position du lecteur en temps de la vidéo doublée ou du son doublé, selon la piste : voir
+            # voixla.paroles.ecart_lecture
             w = VueParoles(sur_clic=self._clic_frise, langue=self.fenetre.prefs.get("paroles_langue") or "deux",
-                           sur_langue=self._langue_paroles)
+                           sur_langue=self._langue_paroles, avec_image=self.lecteur.avec_image,
+                           debut_son=decalage_son(self.res.source))
             w.suivre(self._fournisseur)
             self.corps.insert_child_after(w, self.lecteur)
             self.vue_paroles = w

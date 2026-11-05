@@ -241,6 +241,11 @@ class Lecteur(Gtk.Box):
     def media(self):
         return self.flux.get(self.cle) if self.cle else None
 
+    def avec_image(self):
+        """Vrai si la source en cours a une image (une vidéo, qui compte en temps de la vidéo) ; faux pour un son lu
+        seul (MP3, son seul sous l'image arrêtée ou fenêtre fermée), qui compte en temps du son."""
+        return bool(self.cle) and not self.audio_seul and self.cle not in self.sans_image
+
     def en_lecture(self):
         """Vrai pendant la lecture, et pendant une bascule demandée en lecture dont le flux se prépare encore."""
         m = self.media()

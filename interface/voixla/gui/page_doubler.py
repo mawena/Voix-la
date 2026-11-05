@@ -177,6 +177,7 @@ class PageDoubler(commun.Page):
         super().__init__(fenetre, "Doubler", "doubler")
         self.videos = []
         self.modele = rapports.MODELE_DEFAUT
+        self._sans_memoire = False     # vrai pendant les changements faits par la page (pas un choix à garder)
         self.entete.pack_start(commun.bouton(icone="list-add-symbolic", infobulle="Ajouter des vidéos",
                                              clic=self.choisir))
 
@@ -221,6 +222,9 @@ class PageDoubler(commun.Page):
         for r in (self.r_voix_a, self.r_voix_b):
             r.connect("notify::selected", lambda *_: self._maj())
             g.add(r)
+        # le choix, le duo et les deux voix sont gardés dans interface.json d'une session à l'autre
+        for r in (self.r_choix_voix, self.r_duo, self.r_voix_a, self.r_voix_b):
+            r.connect("notify::selected", lambda *_: self._memoriser_chanteurs())
         self.r_mode = Adw.ComboRow(title="Mode", model=Gtk.StringList.new([m[1] for m in MODES]),
                                    subtitle="Automatique : chant s’il y a une musique sous la voix et que la voix "
                                             "chante ou rappe, sinon parole")
@@ -352,35 +356,65 @@ class PageDoubler(commun.Page):
             chaine = p.get("chaine") or ("avant" if p.get("moteur") == "seedvc" and p.get("sans_nettoyage") else
                                          "mesure" if p.get("moteur") or p.get("sans_nettoyage") else "defaut")
             self.r_chaine.set_selected(next((i for i, c in enumerate(CHAINES) if c[0] == chaine), 0))
+        # une voix par chanteur : le choix et le duo gardés (les deux voix, elles, attendent la liste des voix)
+        par, duo, _voix = chemins.choix_chanteurs(p)
+        self._sans_memoire = True
+        try:
+            self.r_choix_voix.set_selected(next(i for i, c in enumerate(CHOIX_VOIX)
+                                                if c[0] == ("chanteurs" if par else "une")))
+            self.r_duo.set_selected(next((i for i, d in enumerate(DUOS) if d[0] == duo), 0))
+        finally:
+            self._sans_memoire = False
 
     def _voix_changees(self):
         voix = self.fenetre.voix
+        # les choix en cours, lus avant que la liste change (leur position dans le menu change avec elle)
         actuelle = self._choix_menu(self.r_voix) if hasattr(self, "_ids_voix") else None
+        gardes = [self._choix_menu(r) for r in (self.r_voix_a, self.r_voix_b)]
         self._ids_voix = [v["id"] for v in voix]
-        self.r_voix.set_model(Gtk.StringList.new([f"{v['nom']} ({v['id']})" if v["nom"].lower() != v["id"]
-                                                  else v["nom"] for v in voix] or ["aucune voix"]))
-        cible = actuelle if actuelle in self._ids_voix else self.fenetre.voix_defaut()
-        # sans voix par défaut (plusieurs voix, aucune désignée) : rien n'est présélectionné, « Lancer » attend un choix
-        if cible in self._ids_voix:
-            self.r_voix.set_selected(self._ids_voix.index(cible))
-        elif voix:
-            self.r_voix.set_selected(Gtk.INVALID_LIST_POSITION)
-        self.r_voix.set_sensitive(bool(voix))
+        # une voix par chanteur : le choix en cours, sinon celui gardé dans interface.json s'il existe encore ; une
+        # voix disparue n'est pas présélectionnée et « Lancer » attend un choix
+        memoire = chemins.choix_chanteurs(self.fenetre.prefs, self._ids_voix)[2]
         noms = [f"{v['nom']} ({v['id']})" if v["nom"].lower() != v["id"] else v["nom"] for v in voix] or ["aucune voix"]
-        for r in (self.r_voix_a, self.r_voix_b):
-            garde = self._choix_menu(r)
-            r.set_model(Gtk.StringList.new(noms))
-            if garde in self._ids_voix:
-                r.set_selected(self._ids_voix.index(garde))
-            else:
-                r.set_selected(Gtk.INVALID_LIST_POSITION)
-            r.set_sensitive(bool(voix))
+        self._sans_memoire = True
+        try:
+            self.r_voix.set_model(Gtk.StringList.new(noms))
+            cible = actuelle if actuelle in self._ids_voix else self.fenetre.voix_defaut()
+            # sans voix par défaut (plusieurs voix, aucune désignée) : rien n'est présélectionné, « Lancer » attend un
+            # choix
+            if cible in self._ids_voix:
+                self.r_voix.set_selected(self._ids_voix.index(cible))
+            elif voix:
+                self.r_voix.set_selected(Gtk.INVALID_LIST_POSITION)
+            self.r_voix.set_sensitive(bool(voix))
+            for r, garde, gardee in zip((self.r_voix_a, self.r_voix_b), gardes, memoire):
+                r.set_model(Gtk.StringList.new(noms))
+                cible = garde if garde in self._ids_voix else gardee
+                r.set_selected(self._ids_voix.index(cible) if cible in self._ids_voix else Gtk.INVALID_LIST_POSITION)
+                r.set_sensitive(bool(voix))
+        finally:
+            self._sans_memoire = False
         self._maj()
 
     def _choix_menu(self, r):
         ids = getattr(self, "_ids_voix", [])
         i = r.get_selected()
         return ids[i] if 0 <= i < len(ids) else None
+
+    def _memoriser_chanteurs(self):
+        """Un choix fait à la main (une voix pour tous ou par chanteur, duo, voix de chaque chanteur) est gardé dans
+        interface.json. Une ligne sans voix choisie garde la voix gardée jusque-là."""
+        if self._sans_memoire or not hasattr(self, "_ids_voix"):
+            return
+        avant = chemins.choix_chanteurs(self.fenetre.prefs)
+        i, j = self.r_choix_voix.get_selected(), self.r_duo.get_selected()
+        par = 0 <= i < len(CHOIX_VOIX) and CHOIX_VOIX[i][0] == "chanteurs"
+        duo = DUOS[j][0] if 0 <= j < len(DUOS) else avant[1]
+        voix = [self._choix_menu(r) or v for r, v in zip((self.r_voix_a, self.r_voix_b), avant[2])]
+        if (par, duo, voix) == avant:
+            return
+        self.fenetre.prefs = chemins.modifier_preferences({"voix_par_chanteur": par, "duo_chanteurs": duo,
+                                                           "voix_chanteurs": voix})
 
     def par_chanteur(self):
         """Vrai si « Une voix par chanteur » est choisi (et que doubler le connaît)."""

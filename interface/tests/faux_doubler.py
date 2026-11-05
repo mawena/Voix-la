@@ -20,7 +20,12 @@ Variables d'environnement :
 - FAUX_DOUBLER_TRACE=<fichier> : une ligne JSON par lancement (argv, début, variables utiles) et une à la fin (code) ;
 - FAUX_DOUBLER_CONFIG=<dossier> : son config.json, à la place du fichier fixe ~/.config/voix-la/config.json du vrai
   (sinon $VOIXLA_CONFIG/config.json) ;
-- FAUX_DOUBLER_X42=absent : greffon x42-autotune absent (--config --json : x42_autotune null ; auto-tune refusé).
+- FAUX_DOUBLER_X42=absent : greffon x42-autotune absent (--config --json : x42_autotune null ; auto-tune refusé) ;
+- FAUX_DOUBLER_SANS_GPU=1 : doubler récent d'avant les deux GPU (0.5.0) : ni --gpu, ni clés « gpu » et
+  « kaggle.machine », ni temps_local.gpus dans les rapports.
+Deux GPU (--gpu auto|1|2, clé « gpu », clé « kaggle.machine ») : comme doubler, deux cartes en auto sur la machine
+NvidiaTeslaT4 (défaut), une sur une autre ; --config --json donne « gpu » et « kaggle.machine », et les rapports
+temps_local.gpus (cartes utilisées).
 Une voix par chanteur (--voix homme:a,femme:b ou chanteur1:a,chanteur2:b) : voix combinée « a+b », sorties « voix A et
 B », rapport inventé d'un duo (voix_cibles, chanteurs, affectation, passages) et courbes.json avec voix_par_trame.
 Auto-tune (--autotune [N], --sans-autotune, --autotune-gamme, clé « autotune ») : fichiers « (auto-tune) » vides et
@@ -42,6 +47,7 @@ import time
 from pathlib import Path
 
 ANCIEN = os.environ.get("FAUX_DOUBLER_ANCIEN") == "1"
+SANS_GPU = ANCIEN or os.environ.get("FAUX_DOUBLER_SANS_GPU") == "1"
 ECHEC = (os.environ.get("FAUX_DOUBLER_ECHEC") or "").strip().lower()
 DEPOT = Path(__file__).resolve().parents[2]
 DONNEES_DEFAUT = Path.home() / "Music" / "Voix-là"
@@ -54,6 +60,11 @@ CLES_CONFIG = {"donnees": "dossier des données (voix/, sorties/)", "kaggle.comp
                "paroles": "transcription des paroles et traduction française : oui (défaut) ou non",
                "autotune": "intensité de l'auto-tune à chaque doublage, de 0 (désactivé, défaut) à 100",
                "voix": "voix cible par défaut, un dossier de <données>/voix (sinon la seule voix présente)"}
+MACHINE_DEFAUT = "NvidiaTeslaT4"
+GPU_CHOIX = ("auto", "1", "2")
+if not SANS_GPU:
+    CLES_CONFIG.update({"gpu": "cartes GPU utilisées par le noyau : auto (défaut), 1 ou 2",
+                        "kaggle.machine": f"machine Kaggle demandée à l'envoi du noyau (défaut : {MACHINE_DEFAUT})"})
 # paroles inventées du faux doubler (format 1 de travail/<voix>/paroles.json)
 PAROLES_FAUSSES = [(0.5, 2.5, "Un matin de pluie fine"), (3.0, 5.0, "le café refroidit doucement"),
                    (6.0, 8.5, "et la radio chante encore")]
@@ -228,6 +239,13 @@ def ecrire_config(cle, valeur):
         valeur = 0 if v in ("non", "faux", "false", "off") else int(v) if v.isdigit() else -1
         if not 0 <= valeur <= 100:
             raise SystemExit("autotune : un entier de 0 à 100 ; 0 le désactive")
+    if cle == "gpu":
+        valeur = str(valeur).strip().lower()
+        if valeur not in GPU_CHOIX:
+            raise SystemExit(f"gpu : auto, 1 ou 2 attendu (reçu : {valeur})")
+    if cle == "kaggle.machine" and not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{1,39}", str(valeur)):
+        raise SystemExit(f"kaggle.machine : nom de machine Kaggle attendu, par exemple {MACHINE_DEFAUT} "
+                         f"(reçu : {valeur})")
     conf = lire_config()
     d = conf
     *chemin, fin = cle.split(".")
@@ -321,6 +339,9 @@ def afficher_config(a, en_json=False):
                 "source_voix_defaut": VOIX_DEFAUT_SOURCE, "kaggle": {"compte": compte, **noms},
                 "autotune": autotune_config(conf), "x42_autotune": x42(),
                 "jeton_kaggle": "absent", "commande_kaggle": "(faux doubler : aucune)", "contenu": masquer(conf)}
+    if not SANS_GPU:
+        effectif["gpu"] = gpu_config(conf)
+        effectif["kaggle"]["machine"] = machine_config(conf)
     if en_json:
         print(json.dumps(effectif, ensure_ascii=False, indent=1))
         return
@@ -331,8 +352,12 @@ def afficher_config(a, en_json=False):
     print(f"  voix           {VOIX}{'  ($DOUBLER_VOIX)' if os.environ.get('DOUBLER_VOIX') else ''}")
     print(f"  sorties        {a.sortie}")
     print(f"  voix (défaut)  {VOIX_DEFAUT or '—'}  ({VOIX_DEFAUT_SOURCE})")
+    if not SANS_GPU:
+        print(f"  gpu            {gpu_config(conf)}{'' if valeur_config(conf, 'gpu') is not None else '  (défaut)'}")
     for n in KAGGLE_DEFAUTS:
         print(f"  kaggle.{n:8s} {noms[n] or '— (kaggle.compte manque : doubler --config kaggle.compte <nom>)'}")
+    if not SANS_GPU:
+        print(f"  kaggle.machine {machine_config(conf)}")
     print("  jeton Kaggle   absent (faux doubler, jamais lu)")
     print("clés : " + " ; ".join(f"{c} ({d})" for c, d in CLES_CONFIG.items()))
 
@@ -400,6 +425,26 @@ def autotune_config(conf):
 
 def x42():
     return None if os.environ.get("FAUX_DOUBLER_X42") == "absent" else "/usr/lib/lv2 (faux)"
+
+
+def gpu_config(conf):
+    """Comme doubler : clé « gpu » (auto, 1 ou 2), auto si absente ou illisible."""
+    v = valeur_config(conf, "gpu")
+    v = "auto" if v is None else str(v).strip().lower()
+    return v if v in GPU_CHOIX else "auto"
+
+
+def machine_config(conf):
+    return str(valeur_config(conf, "kaggle.machine") or MACHINE_DEFAUT)
+
+
+def cartes_utilisees(a):
+    """Cartes que le faux noyau « utilise » : --gpu, sinon la clé « gpu » ; auto : deux sur la machine NvidiaTeslaT4
+    (GPU T4 x2), une sur une autre (comme le vrai noyau, qui prend les cartes qu'il voit)."""
+    gpu = getattr(a, "gpu", None) or gpu_config(lire_config())
+    if gpu in ("1", "2"):
+        return int(gpu)
+    return 2 if machine_config(lire_config()) == MACHINE_DEFAUT else 1
 
 
 def liste_voix(en_json=False):
@@ -886,6 +931,11 @@ def traiter_lot(videos, a, voix):
         rapatriement.finir()
     st = {"installation_s": 41.0, "separation_totale_s": 60.0, "chargement_modeles_s": 35.0,
           "total_s": round(temps["noyau_depuis_envoi_s"], 1)}
+    cartes = None if SANS_GPU else cartes_utilisees(a)
+    if cartes:
+        vues = 2 if machine_config(lire_config()) == MACHINE_DEFAUT else 1
+        dire(f"GPU Kaggle : {vues} carte(s) ({', '.join(['Tesla T4'] * vues)}), {min(cartes, vues)} utilisée(s)")
+        cartes = min(cartes, vues)
     dire(f"GPU Kaggle : {temps['noyau_depuis_envoi_s'] / 60:.1f} min depuis l'envoi (démarrage 3.0 s, installation "
          f"{st['installation_s']:.0f} s, séparation {st['separation_totale_s']:.0f} s, modèles "
          f"{st['chargement_modeles_s']:.0f} s, noyau {st['total_s'] / 60:.1f} min ; estimé "
@@ -898,6 +948,8 @@ def traiter_lot(videos, a, voix):
                            "noyau_depuis_envoi_s": temps["noyau_depuis_envoi_s"], "estimation_noyau_s": estimation,
                            "rapatriement_s": temps["rapatriement_s"], "decodage_retour_s": 0.0, "session_kaggle": st,
                            "videos_dans_la_session": len(travaux)}
+            if cartes:
+                temps_local["gpus"] = cartes   # cartes utilisées par le noyau, comme doubler
             dire(f"=== {tr['video'].name}")
             finir(tr, a, voix, temps_local)
         except Exception as e:  # noqa: BLE001
@@ -936,6 +988,10 @@ def analyseur():
         p.add_argument("--sans-autotune", action="store_true", help="pas d'auto-tune ; avec --remix : version retirée")
         p.add_argument("--autotune-gamme", default=None, metavar="GAMME",
                        help="gamme de l'auto-tune : auto, chromatique, ou une tonalité (la-mineur, do#-majeur…)")
+    if not SANS_GPU:
+        p.add_argument("--gpu", choices=list(GPU_CHOIX), default=None,
+                       help="cartes GPU du noyau : auto (défaut : les deux T4 de la machine Kaggle), 1 ou 2 ; "
+                            "défaut lu dans la configuration (clé « gpu »)")
     p.add_argument("--debut", type=float, default=None, help="début de l'extrait (s), pour un essai")
     p.add_argument("--duree", type=float, default=None, help="durée de l'extrait (s)")
     p.add_argument("--remix", action="store_true", help="refaire seulement le mixage et la vidéo depuis travail/ (sans Kaggle)")

@@ -9,6 +9,13 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ### Ajouté
 
+- Cinq pistes audio dans la vidéo doublée, calées entre elles et sur l'image à l'échantillon près : Doublage (la
+  première, seule par défaut), Original, Beat seul, Voix convertie seule (« Voix converties seules » avec une voix par
+  chanteur ; voix sèche et reverb aux gains du mix, même limiteur, sans la musique) et Voix d'origine seule. Titres
+  dans `title` et, en mp4, `handler_name` ; même codec que le doublage. La version auto-tune a les mêmes pistes, avec
+  la voix auto-tunée. `--remix` refait la vidéo ainsi, sans Kaggle. Environ 25 à 30 Mo de plus pour une chanson de
+  4 min. Clé `pistes_audio` et option `--pistes-audio toutes|doublage` pour revenir au doublage seul ;
+  `rapport.json` : `pistes_audio`. Si ffmpeg refuse les pistes en plus, la vidéo est faite sans elles.
 - Deux GPU : la machine Kaggle `NvidiaTeslaT4` (« GPU T4 x2 ») a deux cartes T4. Le nettoyage (dereverb de la voix
   principale et des chœurs en même temps), la conversion YingMusic-SVC (morceaux répartis) et la séparation d'un lot
   s'y partagent le travail. Le son est identique à celui d'une carte, au bit près. Chanson de 3 min 48 : session GPU de

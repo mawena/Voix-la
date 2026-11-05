@@ -244,6 +244,7 @@ doubler --config voix marie                     # choisir la voix par défaut
 | `voix` | voix cible par défaut, un dossier de `<données>/voix/` (`--voix` l'emporte) | la seule voix présente |
 | `paroles` | paroles à chaque doublage : oui ou non (`--sans-paroles` l'emporte) | oui |
 | `autotune` | intensité de l'auto-tune, de 0 (désactivé) à 100 : `doubler --config autotune 70` (`--autotune` et `--sans-autotune` l'emportent) | 0 |
+| `pistes_audio` | pistes audio de la vidéo doublée : `toutes` (doublage, original, beat seul, voix convertie seule, voix d'origine seule) ou `doublage` (lui seul) (`--pistes-audio` l'emporte) | `toutes` |
 | `gpu` | cartes GPU du noyau : `auto` (les deux T4 de la machine, une seule si elle n'en a qu'une), `1` (une carte, comme avant) ou `2` (`--gpu` l'emporte) | `auto` |
 
 Le fichier ressemble à ceci :
@@ -510,6 +511,7 @@ Une étape en `erreur` est suivie d'un événement `erreur`. Les étapes commune
 | `--voix-db N` | niveau de la voix convertie par rapport à la voix d'origine (dB) | `+4` en chant, `0` en parole |
 | `--reverb-db N` | niveau de la reverb sous la voix sèche (dB), en chant seulement | `-13` |
 | `--mix-v1` | ancien mixage : sans suivi des nuances de la voix d'origine ni dé-esseur | mixage v2 |
+| `--pistes-audio toutes\|doublage` | pistes audio de la vidéo doublée : les cinq (voir [Sorties](#sorties)) ou le doublage seul ; avec `--remix`, la vidéo refaite ainsi | clé `pistes_audio` de la configuration, sinon `toutes` |
 | `--debut S` | début de l'extrait (s), calé sur l'image clé qui précède | début de la vidéo |
 | `--duree S` | durée de l'extrait (s) | jusqu'à la fin |
 | `--remix` | refaire seulement le mixage et la vidéo depuis `travail/`, sans Kaggle | |
@@ -534,7 +536,7 @@ Tout va dans `<données>/sorties/<titre>/` (ou le dossier de `--sortie`). Un ext
 
 | Fichier | Contenu |
 |---|---|
-| `<titre> - voix <Nom>.<ext>` | la vidéo doublée, dans le conteneur d'origine (mkv si l'extension n'est pas connue) |
+| `<titre> - voix <Nom>.<ext>` | la vidéo doublée, dans le conteneur d'origine (mkv si l'extension n'est pas connue), avec cinq pistes audio calées entre elles et sur l'image : **Doublage** (la première, seule jouée par défaut), Original, Beat seul, Voix convertie seule (« Voix converties seules » avec une voix par chanteur ; telle qu'elle sonne dans le mix, sans la musique) et Voix d'origine seule ; `--pistes-audio doublage` : le doublage seul |
 | `<titre> - voix <Nom>.mp3` | le son doublé, MP3 320 kb/s |
 | `<titre> - voix <Nom>.<langue>.srt` | les paroles dans la langue chantée, sur le temps de la vidéo doublée |
 | `<titre> - voix <Nom>.fr.srt` | leur traduction française, quand elles ne sont pas en français (`.traduction.fr.srt` si elles le sont déjà en partie) |
@@ -575,6 +577,7 @@ Dans la vidéo doublée :
   raison) ;
 - les paroles (`paroles` : piste transcrite, langue de chaque phrase et les trois plus probables, lignes, mots, retraits
   des garde-fous, temps ; `paroles_sorties` : fichiers, pistes, décalage) ;
+- les pistes audio de la vidéo (`pistes_audio` : réglage, titres des pistes de la vidéo et de sa version auto-tune) ;
 - l'auto-tune (`autotune` : intensité, gamme et sa détection, accord, ports de x42-autotune, écart médian aux notes avant
   et après, fichiers) ;
 - une voix par chanteur : `voix_cibles` (chaque voix, sa clé, son centre de chant), `decision_hauteur.chanteurs`

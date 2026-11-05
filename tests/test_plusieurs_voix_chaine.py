@@ -337,9 +337,10 @@ def reglages(timbres, moteur='seedvc', cibles=None, octave='auto'):
     return r
 
 
-def lancer_noyau(dossier, R, source=None, scene=SCENE):
+def lancer_noyau(dossier, R, source=None, scene=SCENE, cartes=1):
     """Charge le noyau (chemins déplacés dans dossier), remplace ce qui touche au GPU, au réseau et aux modèles, lance
-    main() ; rend le dossier de sortie de la vidéo."""
+    main() ; rend le dossier de sortie de la vidéo. cartes=2 : une machine à deux GPU, dont les étapes « en même temps »
+    tournent ici l'une après l'autre, la dernière carte d'abord (le résultat ne doit pas dépendre de l'ordre)."""
     src = source if source is not None else NOYAU.read_text(encoding='utf-8')
     src = src.replace("'__REGLAGES__'", repr(base64.b64encode(b'{}').decode()))
     src = src.replace('/tmp/', f'{dossier}/t/').replace('/kaggle/', f'{dossier}/kaggle/')   # dossier est lui-même sous /tmp
@@ -391,6 +392,17 @@ def lancer_noyau(dossier, R, source=None, scene=SCENE):
         assert nom == 'ying', nom
         m.etape_ying(travail)
         return {**(m.lire_json(travail['resultat'], {}) or {}), 'code': 0, 'duree_s': 0.1}
+
+    def etapes(nom, travaux, n):
+        res = [None] * len(travaux)
+        for k in reversed(range(len(travaux))):
+            res[k] = {**etape(nom, travaux[k]), 'carte': k}
+        return res
+
+    if cartes > 1:
+        torch.cuda.device_count = lambda: cartes
+        m.etapes_a_part = etapes
+        m.installer_ying = lambda o=None: {'origine': 'essai', 'duree_s': 0.0}
 
     for nom, valeur in {'verifier_acces': lambda: None, 'trouver_outils': lambda: None, 'installer': lambda o=None: None,
                         'cloner': lambda o=None: 'faux', 'poids_depuis_outils': lambda o: None,
@@ -568,6 +580,36 @@ class ChaineUneVoixAuBitPres(unittest.TestCase):
                 self.assertEqual(json.dumps(r1, sort_keys=True), json.dumps(r0, sort_keys=True), 'rapport.json')
                 self.assertNotIn('voix_cibles', r1)
                 self.assertNotIn('affectation', r1)
+
+
+class ChaineDeuxCartes(unittest.TestCase):
+    """Machine à deux GPU : YingMusic-SVC partagé entre les cartes (morceaux répartis, piste assemblée dans le noyau)
+    rend la même voix convertie, les mêmes courbes et le même rapport qu'une carte, au bit près, avec une voix comme avec
+    une voix par chanteur ; réglage gpus à 1 : une seule carte, même sur la machine à deux."""
+
+    def sorties(self, R, cartes):
+        with Dossier() as d:
+            s = lancer_noyau(d, R, cartes=cartes)
+            rapport = (s / 'rapport.json').read_text().replace(str(d), '<dossier>')
+            session = json.loads((s.parent / 'session.json').read_text())
+            return (lire_son(s / 'voix_convertie.flac')[0], (s / 'courbes.json').read_text(),
+                    sans_durees(json.loads(rapport)), session)
+
+    def test_meme_resultat(self):
+        for cibles in (None, [('homme', 'jules'), ('femme', 'marie')]):
+            (y1, c1, r1, s1), (y2, c2, r2, s2) = (self.sorties(reglages(Timbres(), 'yingmusic', cibles), n) for n in (1, 2))
+            with self.subTest(cibles=bool(cibles)):
+                self.assertEqual((s1['gpus']['utilisees'], s2['gpus']['utilisees']), (1, 2))
+                self.assertEqual(len(s2['yingmusic']['cartes']), 2, 'les deux cartes ont converti')
+                self.assertTrue(np.array_equal(y1, y2), 'voix convertie')
+                self.assertEqual(c1, c2, 'courbes.json')
+                self.assertEqual(json.dumps(r1, sort_keys=True), json.dumps(r2, sort_keys=True), 'rapport.json')
+
+    def test_une_carte_demandee(self):
+        R = {**reglages(Timbres(), 'yingmusic'), 'gpus': 1}
+        s = self.sorties(R, 2)[3]
+        self.assertEqual((s['gpus']['visibles'], s['gpus']['utilisees']), (2, 1))
+        self.assertNotIn('cartes', s['yingmusic'])
 
 
 if __name__ == '__main__':

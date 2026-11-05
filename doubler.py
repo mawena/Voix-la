@@ -3,7 +3,8 @@
 
   doubler <vidéo> [<vidéo>…] [--voix NOM | --voix homme:NOM,femme:NOM | --voix chanteur1:NOM,chanteur2:NOM]
           [--mode auto|chant|parole] [--octave auto|0|-12|+12] [--pas 30]
-          [--moteur yingmusic|seedvc] [--sans-nettoyage] [--sans-paroles] [--voix-db 4] [--reverb-db -13] [--mix-v1]
+          [--moteur yingmusic|seedvc] [--sans-nettoyage] [--sans-paroles] [--gpu auto|1|2] [--voix-db 4] [--reverb-db -13]
+          [--mix-v1]
           [--autotune [N]] [--autotune-gamme auto|chromatique|la-mineur…] [--sans-autotune]
           [--debut S --duree S] [--remix] [--sortie DIR] [--comparer-pas 50] [--donnees DIR] [--evenements FICHIER]
   doubler --ajouter-voix <nom> <enregistrement>      ajoute une voix (n'importe quel audio ou vidéo)
@@ -22,7 +23,9 @@ Les vidéos données ensemble partent dans UNE seule session Kaggle (installatio
      complète, comme avant, plus rapide) ; un passage perdu au nettoyage (voix de fond prise pour de la reverb) est
      repris de la voix complète ; en parole, Seed-VC 22 kHz sur la voix isolée complète. Paroles (sauf --sans-paroles
      ou doubler --config paroles non) : Whisper large-v3 sur la voix principale, horodatées par mot, et traduction
-     française (NLLB-200) quand elles ne sont pas en français ;
+     française (NLLB-200) quand elles ne sont pas en français. La machine Kaggle (NvidiaTeslaT4) a deux cartes T4 : le
+     nettoyage et YingMusic-SVC (et la séparation d'un lot) s'y partagent le travail, sans changer le résultat (--gpu 1 :
+     une carte, comme avant ; une machine à une seule carte : repli automatique) ;
   3. de retour sur le PC : mixage puis remise sur chaque vidéo, image et sous-titres d'origine copiés sans réencodage,
      paroles ajoutées en pistes de sous-titres. Mixage v2 (défaut) : la voix suit les nuances de la voix d'origine (gain
      par fenêtres de 10 ms, lissé sur 150 ms, borné à ±6 dB, seulement là où les deux voix chantent), « s » adoucis
@@ -41,7 +44,8 @@ sur la musique seule (--autotune-gamme). Bas : notes juste rendues plus justes ;
 Données (voix/, sorties/) : --donnees, sinon $VOIXLA_DONNEES, sinon « donnees » de ~/.config/voix-la/config.json,
 sinon ~/Music/Voix-là. Voix par défaut : « voix » du même fichier (doubler --config voix NOM), sinon la seule voix de
 <données>/voix. Compte Kaggle : « kaggle.compte » (doubler --config kaggle.compte <nom>) ; moteur du chant par
-défaut : « moteur » (doubler --config moteur seedvc), sinon yingmusic. Commande kaggle : $VOIXLA_KAGGLE, sinon
+défaut : « moteur » (doubler --config moteur seedvc), sinon yingmusic. Cartes GPU : « gpu » (auto, 1 ou 2) ; machine
+Kaggle : « kaggle.machine » (NvidiaTeslaT4 par défaut : GPU T4 x2). Commande kaggle : $VOIXLA_KAGGLE, sinon
 ~/kaggle-venv/bin/kaggle. Ancres de genre (facultatives) : ~/.config/voix-la/ancres_genre.json, sinon kaggle/ du dépôt.
 YingMusic-SVC : code MIT, poids CC BY-NC 4.0, donc usage personnel et non commercial seulement.
 """
@@ -74,9 +78,20 @@ DONNEES_DEFAUT = Path.home() / 'Music' / 'Voix-là'
 # Identifiants Kaggle : <compte>/<nom>, compte lu dans CONFIG (jamais dans le code : le dépôt est public)
 KAGGLE_DEFAUTS = {'jeu': 'doublage-voix-entrees', 'noyau': 'doublage-voix-gpu',
                   'outils': 'doublage-outils'}   # outils : wheels, Seed-VC, poids des modèles (doubler --preparer-outils)
+# Machine Kaggle demandée à l'envoi du noyau (kernel-metadata.json, machine_shape) : « NvidiaTeslaT4 » est la machine
+# « GPU T4 x2 », deux cartes T4 de 16 Go (doc. de la CLI kaggle, kernels_metadata.md ; vérifié par nvidia-smi -L sur un
+# noyau privé le 05/11/2026). Le quota GPU hebdomadaire se compte en heures de session, pas en heures par carte.
+MACHINE_DEFAUT = 'NvidiaTeslaT4'
+MACHINE_SYNTAXE = r'[A-Za-z][A-Za-z0-9]{1,39}'
+GPU_CHOIX = ('auto', '1', '2')   # cartes utilisées par le noyau ; auto : toutes celles de la machine, deux au plus
 CLES_CONFIG = {'autotune': 'intensité de l\'auto-tune à chaque doublage, de 0 (désactivé, défaut) à 100',
-               'donnees': 'dossier des données (voix/, sorties/)', 'kaggle.compte': 'compte Kaggle (nom d\'utilisateur)',
-               'kaggle.jeu': 'jeu de données privé des entrées', 'kaggle.noyau': 'noyau GPU privé du doublage',
+               'donnees': 'dossier des données (voix/, sorties/)',
+               'gpu': 'cartes GPU utilisées par le noyau : auto (défaut : les deux T4 de la machine, une seule si elle '
+                      'n\'en a qu\'une), 1 (une carte, comme avant) ou 2',
+               'kaggle.compte': 'compte Kaggle (nom d\'utilisateur)',
+               'kaggle.jeu': 'jeu de données privé des entrées',
+               'kaggle.machine': f'machine Kaggle demandée à l\'envoi du noyau (défaut : {MACHINE_DEFAUT}, GPU T4 x2)',
+               'kaggle.noyau': 'noyau GPU privé du doublage',
                'kaggle.outils': 'noyau privé des outils préparés',
                'moteur': 'moteur de conversion du chant : yingmusic (défaut) ou seedvc',
                'paroles': 'paroles à chaque doublage (transcription, traduction française, sous-titres) : oui (défaut) '
@@ -92,6 +107,7 @@ DONNEES = DONNEES_DEFAUT
 SORTIES = DONNEES_DEFAUT / 'sorties'
 VOIX = DONNEES_DEFAUT / 'voix'   # une voix = un dossier (reference.wav, voix.json)
 JEU = NOYAU = OUTILS = None
+MACHINE = MACHINE_DEFAUT   # configurer_kaggle() : clé « kaggle.machine » de CONFIG
 VOIX_DEFAUT = None   # voix_par_defaut() : clé « voix » de CONFIG, sinon la seule voix de VOIX
 VOIX_DEFAUT_SOURCE = None
 FACTEUR_CHANT = 2.0   # centre de chant d'une voix ≈ 2 x sa hauteur de parole (ex. 100 Hz -> 200 Hz ; frontière 0/-12 à 1,41 x ce centre)
@@ -163,6 +179,12 @@ def ecrire_config(cle, valeur):
         valeur = str(Path(valeur).expanduser().resolve())
     if cle == 'moteur' and valeur not in MOTEURS:
         raise SystemExit(f'moteur inconnu : {valeur} (moteurs : {", ".join(MOTEURS)})')
+    if cle == 'gpu':
+        valeur = str(valeur).strip().lower()
+        if valeur not in GPU_CHOIX:
+            raise SystemExit(f'gpu : auto, 1 ou 2 attendu (reçu : {valeur})')
+    if cle == 'kaggle.machine' and not re.fullmatch(MACHINE_SYNTAXE, valeur):
+        raise SystemExit(f'kaggle.machine : nom de machine Kaggle attendu, par exemple {MACHINE_DEFAUT} (reçu : {valeur})')
     if cle == 'voix' and not re.fullmatch(NOM_VOIX, valeur):
         raise SystemExit(f'nom de voix invalide : {valeur} (minuscules, chiffres, - ou _ ; ex. marie, jean-b)')
     if cle == 'paroles':
@@ -210,6 +232,26 @@ def paroles_config(conf):
         dire(f'attention : « paroles » de {CONFIG} illisible ({v!r}) : paroles gardées (doubler --config paroles oui|non)')
         return True
     return b
+
+
+def gpu_config(conf):
+    """Clé « gpu » de la configuration : auto (défaut), 1 ou 2 ; une valeur illisible compte comme auto, avec un avis."""
+    v = valeur_config(conf, 'gpu')
+    if v is None:
+        return 'auto'
+    v = str(v).strip().lower()
+    if v not in GPU_CHOIX:
+        dire(f'attention : « gpu » de {CONFIG} illisible ({v!r}) : auto (doubler --config gpu auto|1|2)')
+        return 'auto'
+    return v
+
+
+def cartes_prevues(gpu, machine):
+    """Cartes que le noyau utilisera probablement (estimation de durée) : 1 si on le demande ; 2 si on le demande, ou
+    en auto sur la machine à deux T4 (NvidiaTeslaT4) ; 1 sur une autre machine en auto (nombre inconnu)."""
+    if str(gpu) == '1':
+        return 1
+    return 2 if str(gpu) == '2' or machine == MACHINE_DEFAUT else 1
 
 
 def masquer(conf):
@@ -272,10 +314,16 @@ def exiger_voix_defaut():
 
 
 def configurer_kaggle(conf=None):
-    """Identifiants <compte>/<nom> du jeu de données et des noyaux, d'après CONFIG ; le compte n'a pas de défaut."""
-    global JEU, NOYAU, OUTILS
+    """Identifiants <compte>/<nom> du jeu de données et des noyaux, d'après CONFIG ; le compte n'a pas de défaut. Machine
+    Kaggle demandée à l'envoi : « kaggle.machine », sinon MACHINE_DEFAUT."""
+    global JEU, NOYAU, OUTILS, MACHINE
     conf = lire_config() if conf is None else conf
     k = conf.get('kaggle') if isinstance(conf.get('kaggle'), dict) else {}
+    machine = str(k.get('machine') or '').strip()
+    if machine and not re.fullmatch(MACHINE_SYNTAXE, machine):
+        dire(f'attention : « kaggle.machine » de {CONFIG} illisible ({machine!r}) : {MACHINE_DEFAUT}')
+        machine = ''
+    MACHINE = machine or MACHINE_DEFAUT
     compte = str(k.get('compte') or '').strip()
     if not compte:
         raise SystemExit(f'compte Kaggle non configuré. Écrire :\n  doubler --config kaggle.compte <nom_du_compte_kaggle>\n'
@@ -295,11 +343,13 @@ def afficher_config(a, en_json=False):
     ancres = fichier_ancres()
     paroles = paroles_config(conf)
     autotune = autotune_config(conf)
+    gpu = gpu_config(conf)
     fat1 = trouver_fat1()
     effectif = {'config': str(CONFIG), 'donnees': str(DONNEES), 'source_donnees': a.source_donnees, 'voix': str(VOIX),
                 'sorties': a.sortie, 'voix_defaut': VOIX_DEFAUT, 'source_voix_defaut': VOIX_DEFAUT_SOURCE,
-                'moteur': moteur, 'paroles': paroles, 'autotune': autotune,
-                'x42_autotune': str(fat1) if fat1 else None, 'kaggle': {'compte': valeur_config(conf, 'kaggle.compte'), **noms},
+                'moteur': moteur, 'paroles': paroles, 'autotune': autotune, 'gpu': gpu,
+                'x42_autotune': str(fat1) if fat1 else None,
+                'kaggle': {'compte': valeur_config(conf, 'kaggle.compte'), **noms, 'machine': MACHINE},
                 'jeton_kaggle': 'présent' if JETON.exists() else 'absent', 'commande_kaggle': str(KAGGLE),
                 'script_noyau': str(SCRIPT_NOYAU), 'ancres_genre': str(ancres) if ancres else None,
                 'contenu': masquer(conf)}
@@ -317,8 +367,11 @@ def afficher_config(a, en_json=False):
     print(f"  paroles        {'oui' if paroles else 'non'}{'' if valeur_config(conf, 'paroles') is not None else '  (défaut)'}")
     print(f"  auto-tune      {autotune or 'désactivé'}{'' if valeur_config(conf, 'autotune') is not None else '  (défaut)'}"
           f" ; x42-autotune {fat1 or 'absent (sudo apt install x42-plugins)'}")
+    print(f"  gpu            {gpu}{'' if valeur_config(conf, 'gpu') is not None else '  (défaut)'}"
+          f" : {'une carte' if gpu == '1' else 'deux cartes' if gpu == '2' else 'les cartes de la machine, deux au plus'}")
     for n in KAGGLE_DEFAUTS:
         print(f"  kaggle.{n:8s} {noms[n] or '— (kaggle.compte manque : doubler --config kaggle.compte <nom>)'}")
+    print(f"  kaggle.machine {MACHINE}{'' if valeur_config(conf, 'kaggle.machine') else '  (défaut : GPU T4 x2)'}")
     print(f"  jeton Kaggle   {'présent' if JETON.exists() else 'absent'} ({JETON}, jamais affiché)")
     print(f"  outil kaggle   {KAGGLE}{'' if KAGGLE.exists() else '  (absent)'}"
           f"{'  ($VOIXLA_KAGGLE)' if os.environ.get('VOIXLA_KAGGLE') else ''}")
@@ -907,16 +960,25 @@ def envoyer_jeu(travaux, voix, dossier):
     shutil.rmtree(jeu, ignore_errors=True)
 
 
-def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=MOTEUR_DEFAUT, paroles=True, voix_cibles=1):
+FACTEURS_DEUX_CARTES = {'nettoyage': 0.70, 'conversion': 0.55}   # sans historique ; voir estimer_noyau_s
+
+
+def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=MOTEUR_DEFAUT, paroles=True, voix_cibles=1,
+                    cartes=1):
     """Durée probable d'une session (de l'envoi du noyau à sa fin), d'après la durée audio des vidéos et les rapports
     passés (rapport.json sous <sorties>/*/travail/*/) : démarrage + installation + chargement des modèles, puis par
     seconde d'audio la séparation et l'analyse, le nettoyage (chant) et la conversion (proportionnelle aux pas de
     diffusion ; voix nettoyée : voix principale, chœurs et passages repris par la piste de secours convertis à part,
     environ 1,5 fois plus), enfin les paroles (chargement de Whisper large-v3 et du traducteur, puis transcription).
     Le mode n'est connu qu'après la séparation : en mode auto, l'estimation suppose du chant (la plus longue). Défauts
-    prudents sans historique (nettoyage : banc d'essai du 04/11/2026 ; paroles : essai du même jour)."""
+    prudents sans historique (nettoyage : banc d'essai du 04/11/2026 ; paroles : essai du même jour).
+    Deux cartes (cartes=2, machine GPU T4 x2) : les temps par seconde d'audio restent des temps de GPU (somme des
+    cartes) ; le nettoyage et la conversion YingMusic-SVC, partagés entre les cartes, n'en prennent qu'une part en temps
+    réel (FACTEURS_DEUX_CARTES, ou ce qu'ont pris les sessions passées à deux cartes), et la séparation d'un lot environ
+    la moitié (jamais moins que la plus longue vidéo). Une carte : la formule d'avant, telle quelle."""
     import statistics
     fixes, extras, sep, net, conv, conv_net, par_fixes, par = [], [], [], [], [], [], [], []
+    f_net, f_conv = [], []
     rapports = sorted(Path(sorties).glob('*/travail/*/rapport.json'), key=lambda p: p.stat().st_mtime)[-30:]
     for p in rapports:
         try:
@@ -943,6 +1005,13 @@ def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=
                 par_fixes.append(max(float(sk['paroles_total_s']) - float(tps.get('paroles_s') or 0), 0.0))
             if d > 5 and tps.get('paroles_s'):
                 par.append(tps['paroles_s'] / d)
+            tl = r.get('temps_local', {})
+            if tl.get('gpus') == 2 and tl.get('videos_dans_la_session') == 1:
+                # part du temps de GPU (somme des cartes) que le nettoyage et YingMusic-SVC ont pris en temps réel
+                if sk.get('nettoyage_gpu_s'):
+                    f_net.append((sk['nettoyage_totale_s'] - (sk.get('chargement_nettoyage_s') or 0)) / sk['nettoyage_gpu_s'])
+                if sk.get('yingmusic_gpu_s'):
+                    f_conv.append((sk['yingmusic_total_s'] - (sk.get('chargement_yingmusic_s') or 0)) / sk['yingmusic_gpu_s'])
         except (OSError, ValueError, KeyError, TypeError):
             continue
     fixe = statistics.median(fixes) if fixes else 120.0
@@ -961,7 +1030,19 @@ def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=
     if voix_cibles > 1 and chant:   # une voix par chanteur : chaque référence préparée par moteur, pistes reconnues
         fixe += 20.0 * (voix_cibles - 1)
         t_sep += 0.05
-    return round(60 + fixe + sum(durees_s) * (t_sep + t_conv * pas))   # 60 s : file Kaggle et écriture des sorties
+    if cartes <= 1:
+        return round(60 + fixe + sum(durees_s) * (t_sep + t_conv * pas))   # 60 s : file Kaggle et écriture des sorties
+    # Deux cartes : t_sep = séparation et analyse + nettoyage + paroles ; seuls le nettoyage, la conversion YingMusic-SVC
+    # et la séparation d'un lot se partagent entre les cartes
+    total, plus_longue = float(sum(durees_s)), float(max(durees_s, default=0.0))
+    t_net = (statistics.median(net) if net else 2.3) if nettoyage and chant else 0.0
+    t_base = t_sep - t_net - ((statistics.median(par) if par else 0.25) if paroles else 0.0)
+    f_sep = max(0.5, plus_longue / total) if len(durees_s) > 1 and total > 0 else 1.0
+    borne = lambda f: min(1.0, max(0.4, f))
+    fn = borne(statistics.median(f_net)) if f_net else FACTEURS_DEUX_CARTES['nettoyage']
+    fc = borne(statistics.median(f_conv)) if f_conv else FACTEURS_DEUX_CARTES['conversion']
+    ying = chant and moteur == 'yingmusic'
+    return round(60 + fixe + total * (t_base * f_sep + (t_sep - t_base - t_net) + t_net * fn + t_conv * pas * (fc if ying else 1.0)))
 
 
 PANNE_MAXI_S = 3 * 3600   # coupure réseau tolérée pendant le suivi et le rapatriement (le noyau, lui, continue sur Kaggle)
@@ -974,9 +1055,21 @@ def panne_reseau(code, texte):
     return code == 124 or bool(RESEAU.search(texte or ''))
 
 
+MACHINE_REFUSEE = re.compile(r'machine.?shape|accelerator|machineshape', re.I)
+
+
+def metadonnees_noyau(noyau, jeux, sources, machine):
+    """kernel-metadata.json du noyau : privé, GPU et internet, sur la machine demandée (machine_shape)."""
+    return {'id': noyau, 'title': noyau.split('/')[1], 'code_file': 'doubler_kaggle.py', 'language': 'python',
+            'kernel_type': 'script', 'is_private': True, 'enable_gpu': True, 'enable_tpu': False,
+            'enable_internet': True, 'machine_shape': machine, 'dataset_sources': list(jeux),
+            'competition_sources': [], 'kernel_sources': list(sources), 'model_sources': []}
+
+
 def pousser_noyau(reglages, dossier, attente_maxi, noyau, jeux, sources=(), videos=()):
-    """Écrit et pousse le noyau (GPU T4 + internet) ; attend une place si les deux sessions GPU du compte sont prises.
-    Rend (heure de la poussée, numéro de version Kaggle ou None)."""
+    """Écrit et pousse le noyau (GPU + internet, machine MACHINE : deux T4 par défaut) ; attend une place si les sessions
+    GPU du compte sont prises. Une autre machine (kaggle.machine) refusée par Kaggle : nouvel essai sur MACHINE_DEFAUT (le
+    noyau s'adapte au nombre de cartes qu'il trouve). Rend (heure de la poussée, numéro de version Kaggle ou None)."""
     envoi = dossier / f"envoi-{noyau.split('/')[1]}"
     shutil.rmtree(envoi, ignore_errors=True)
     envoi.mkdir(parents=True)
@@ -989,18 +1082,25 @@ def pousser_noyau(reglages, dossier, attente_maxi, noyau, jeux, sources=(), vide
         raise RuntimeError(f'kaggle/doubler_kaggle.py : « {marque} » attendu une fois')
     script = script.replace(marque, f"SOURCE = '{base64.b64encode(script.encode()).decode()}'")
     (envoi / 'doubler_kaggle.py').write_text(script)
-    with open(envoi / 'kernel-metadata.json', 'w') as f:
-        json.dump({'id': noyau, 'title': noyau.split('/')[1], 'code_file': 'doubler_kaggle.py', 'language': 'python',
-                   'kernel_type': 'script', 'is_private': True, 'enable_gpu': True, 'enable_tpu': False,
-                   'enable_internet': True, 'machine_shape': 'NvidiaTeslaT4', 'dataset_sources': list(jeux),
-                   'competition_sources': [], 'kernel_sources': list(sources), 'model_sources': []}, f, indent=1)
+    machine = MACHINE
+
+    def ecrire_metadonnees():
+        with open(envoi / 'kernel-metadata.json', 'w') as f:
+            json.dump(metadonnees_noyau(noyau, jeux, sources, machine), f, indent=1)
+    ecrire_metadonnees()
     debut, attente = time.time(), None
     try:
         while True:   # deux sessions GPU au plus sur le compte : la suivante attend une place
             code, texte = kaggle('kernels', 'push', '-p', str(envoi))
             if re.search(r'successfully pushed', texte, re.I):
-                dire('Kaggle : noyau GPU lancé (' + texte.strip().splitlines()[-1].split('.')[0] + ')')
+                dire('Kaggle : noyau GPU lancé (' + texte.strip().splitlines()[-1].split('.')[0] + f', machine {machine})')
                 break
+            if machine != MACHINE_DEFAUT and MACHINE_REFUSEE.search(texte) and not re.search(r'GPU session count', texte, re.I):
+                dire(f'Kaggle : machine {machine} refusée ({texte.strip().splitlines()[-1][-200:]}) : nouvel essai sur '
+                     f'{MACHINE_DEFAUT} (GPU T4 x2)')
+                machine = MACHINE_DEFAUT
+                ecrire_metadonnees()
+                continue
             if not re.search(r'GPU session count|concurrent|too many', texte, re.I) or time.time() - debut > attente_maxi:
                 raise RuntimeError('Kaggle : noyau refusé : ' + texte.strip()[-500:])
             if attente is None:
@@ -2659,6 +2759,10 @@ def finir_travaux(travaux, a, voix, session, temps, envoi_s, estimation):
     echecs = []
     st = session.get('temps', {})
     attente = round(session['debut_epoch'] - temps['pousse_epoch'], 1) if session.get('debut_epoch') else None
+    g = session.get('gpus') or {}
+    if g:
+        dire(f"GPU Kaggle : {g.get('visibles')} carte(s) ({', '.join(g.get('noms') or []) or '?'}), {g.get('utilisees')} "
+             'utilisée(s)' + (f" ; {g['repli']}" if g.get('repli') else ''))
     dire(f"GPU Kaggle : {temps['noyau_depuis_envoi_s'] / 60:.1f} min depuis l'envoi (démarrage {attente} s, installation "
          f"{st.get('installation_s', 0):.0f} s, séparation {st.get('separation_totale_s', 0):.0f} s, modèles "
          f"{st.get('chargement_modeles_s', 0):.0f} s, noyau {st.get('total_s', 0) / 60:.1f} min ; estimé "
@@ -2675,7 +2779,8 @@ def finir_travaux(travaux, a, voix, session, temps, envoi_s, estimation):
                            'attente_demarrage_noyau_s': attente, 'version_noyau': temps.get('version_noyau'),
                            'noyau_depuis_envoi_s': temps['noyau_depuis_envoi_s'], 'estimation_noyau_s': estimation,
                            'rapatriement_s': temps['rapatriement_s'], 'decodage_retour_s': tr.get('decodage_retour_s'),
-                           'session_kaggle': st, 'videos_dans_la_session': len(travaux)}
+                           'session_kaggle': st, 'videos_dans_la_session': len(travaux),
+                           'gpus': (session.get('gpus') or {}).get('utilisees', 1)}
             if temps.get('reprise'):
                 temps_local['reprise'] = temps['reprise']
             dire(f"=== {tr['video'].name}")
@@ -2721,10 +2826,11 @@ def reglages_noyau(a, voix, ancres, travaux):
     isolée revient en FLAC 24 bits (voix_source.flac et son gain dans voix_source.flac.json) ; moteur_chant, nettoyage :
     chaîne du chant (YingMusic-SVC sur la voix nettoyée par défaut) ; ancres : None sans fichier d'ancres (ANCRES ; le
     noyau décide alors l'octave sans empreinte) ; paroles : transcription (Whisper large-v3) et traduction française dans
-    le noyau (paroles.json)."""
+    le noyau (paroles.json) ; gpus : cartes GPU à utiliser (auto, 1 ou 2 ; le noyau en prend au plus ce qu'il trouve)."""
     v0 = voix_membres(voix)[0]
     reglages = {**NOYAU_REGLAGES, 'pas': a.pas, 'ancres': ancres, 'paroles': bool(a.paroles),
                 'moteur_chant': a.moteur, 'nettoyage': not a.sans_nettoyage,
+                'gpus': 'auto' if getattr(a, 'gpu', None) in (None, 'auto') else int(a.gpu),
                 'voix': {'nom': v0['id'], 'fichier': f"voix-{v0['id']}.wav", 'f0_parole_hz': v0['f0'],
                          'facteur_chant': FACTEUR_CHANT},
                 'travaux': [{'id': tr['id'], 'entree': tr['entree'], 'mode': a.mode,
@@ -2775,13 +2881,15 @@ def traiter_lot(videos, a, voix):
         reglages = reglages_noyau(a, voix, ancres, travaux)
         retour = kdir / 'retour'
         sources = [OUTILS] if (kdir / 'outils.json').exists() else []
+        cartes = cartes_prevues(getattr(a, 'gpu', 'auto'), MACHINE)
         estimation = estimer_noyau_s([tr['duree_audio_s'] for tr in travaux], a.pas, a.sortie, not a.sans_nettoyage, a.mode,
-                                     a.moteur, a.paroles, len(voix_membres(voix)))
+                                     a.moteur, a.paroles, len(voix_membres(voix)), cartes)
         # limite du suivi : au moins le double de l'estimation (le nettoyage allonge beaucoup une longue chanson)
         attente_maxi = max((30 + 20 * len(travaux)) * 60, 2 * estimation + 30 * 60)
         dire(f"chaîne : chant → {'voix nettoyée' if not a.sans_nettoyage else 'voix complète (sans nettoyage)'}, "
              f"{'YingMusic-SVC' if a.moteur == 'yingmusic' else 'Seed-VC 44 kHz'} ; parole → Seed-VC 22 kHz ; "
              f"paroles → {'Whisper large-v3 et traduction française' if a.paroles else 'non'} ; "
+             f"{'deux cartes T4' if cartes == 2 else 'une carte'} (machine {MACHINE}) ; "
              f"session estimée à {estimation / 60:.0f} min")
         if voix.get('membres'):
             dire(f"une voix par chanteur ({'duo mixte' if voix['mode'] == 'genre' else 'chanteurs dans l’ordre d’apparition'}) : "
@@ -2795,6 +2903,7 @@ def traiter_lot(videos, a, voix):
                             'envoi_s': envoi_s,
                             'estimation_s': estimation, 'attente_maxi_s': attente_maxi, 'pas': a.pas,
                             'moteur': a.moteur, 'nettoyage': not a.sans_nettoyage, 'paroles': bool(a.paroles),
+                            'gpu': getattr(a, 'gpu', 'auto'), 'machine': MACHINE,
                             'travaux': [{k: tr.get(k) for k in CHAMPS_SESSION} for tr in travaux]})
         etapes = {}
         try:
@@ -2946,6 +3055,10 @@ def main():
     p.add_argument('--sans-paroles', action='store_true',
                    help='ni transcription ni traduction des paroles, ni sous-titres, .srt ou .lrc (défaut : clé « paroles » '
                         'de la configuration, oui sinon ; avec --remix : la vidéo refaite sans les paroles)')
+    p.add_argument('--gpu', choices=list(GPU_CHOIX), default=None,
+                   help="cartes GPU du noyau : auto (défaut : les deux T4 de la machine Kaggle, une seule si elle n'en a "
+                        "qu'une), 1 (une carte, comme avant) ou 2 ; même résultat, plus vite à deux. Défaut lu dans la "
+                        'configuration (clé « gpu »)')
     p.add_argument('--voix-db', type=float, default=None, help='voix par rapport à celle de la vidéo (défaut +4 en chant, 0 en parole)')
     p.add_argument('--reverb-db', type=float, default=-13, help='reverb sous la voix sèche, en chant (défaut -13)')
     p.add_argument('--mix-v1', action='store_true',
@@ -3051,6 +3164,7 @@ def executer(p, a):
         raise SystemExit(f'{CONFIG} : moteur inconnu « {moteur_conf} » (moteurs : {", ".join(MOTEURS)})')
     moteur_donne = a.moteur is not None
     a.moteur = a.moteur or moteur_conf or MOTEUR_DEFAUT
+    a.gpu = a.gpu or gpu_config(conf)
     a.paroles = not a.sans_paroles and paroles_config(conf)
     a.autotune_reglage = reglage_autotune(a, conf)
     if a.voix is None:

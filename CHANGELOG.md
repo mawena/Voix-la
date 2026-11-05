@@ -16,6 +16,11 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 - Clé `gpu` et option `--gpu auto|1|2` ; clé `kaggle.machine` (repli sur `NvidiaTeslaT4` si Kaggle refuse la machine
   demandée).
 - Repli automatique sur une carte : machine à une seule carte, ou carte arrêtée en route.
+- Interface : réglage « Cartes GPU » (Auto, 1 ou 2), écrit par `doubler --config gpu`, grisé si le `doubler` installé
+  ne connaît pas la clé `gpu`.
+- Interface : dans le détail d'un résultat à deux cartes, « GPU Kaggle (2 cartes T4) », et le temps de GPU additionné
+  des deux cartes pour le nettoyage et YingMusic-SVC (`nettoyage_gpu_s`, `yingmusic_gpu_s`) à côté des durées réelles
+  de la session, avec une note qui l'explique.
 - Interface : le choix « Une voix pour tous / Une voix par chanteur », le duo (mixte ou même genre) et les deux voix
   choisies sont gardés d'une session à l'autre (`interface.json` : `voix_par_chanteur`, `duo_chanteurs`,
   `voix_chanteurs`). Une voix qui n'existe plus n'est pas présélectionnée.
@@ -25,12 +30,18 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 - Estimation de durée à deux cartes. `rapport.json` : `temps_local.gpus`. `session.json` du noyau : `gpus`,
   `nettoyage_gpu_s`, `yingmusic_gpu_s`. À deux cartes, `temps.nettoyage_s` et `conversion_s` additionnent le temps de
   GPU des deux cartes.
+- Interface : estimation de durée à deux cartes. Les doublages nettoyés à deux cartes ont leur propre pente, tirée de
+  la durée réelle de la session et non de `temps.total_video_s`, qui additionne les deux cartes et surestimait
+  d'environ 30 %. Sans historique : 4,1 s par seconde de son. La page Doubler estime selon les cartes prévues (clé
+  `gpu`, machine Kaggle). Les rapports à une carte comptent comme avant.
 
 ### Corrigé
 
 - Interface : paroles calées sur la piste lue. Pour un extrait mkv ou webm, elles venaient 0,155 s trop tôt sur la
   vidéo et 0,13 s sur le MP3 et les sons seuls ; pour une vidéo entière au son d'origine en retard, 0,15 à 0,18 s trop
   tard sur le MP3 et les sons seuls. L'écart restant est de 25 ms au plus.
+- Interface : les notes du panneau des durées (attente d'une place GPU, session partagée) ne s'effacent plus l'une
+  l'autre.
 - Interface : le choix des voix « Chanteur 1 / 2 » ne glisse plus sur une autre voix quand la liste des voix change.
 - Interface : pour une vidéo entière dont le son d'origine est en retard (`decalage_son` de `travail/source.json`), la
   frise d'octave, la courbe de mélodie et les autres visualisations suivent le son en vidéo ; elles avaient 0,18 à

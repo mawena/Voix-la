@@ -363,7 +363,8 @@ doubler "Chanson.mp4" --remix --mix-v1      # l'ancien mixage, sans nuances ni d
 `vidéo@…`), et les mêmes `--voix` et dossier de sortie (`--sortie` ou `--donnees`) que pour le doublage, pour
 retrouver le bon dossier. Seuls `--voix-db`, `--reverb-db` et `--mix-v1` changent le résultat ; le mode, le moteur et
 le nettoyage restent ceux du doublage (`--moteur` et `--sans-nettoyage` y sont sans effet). La musique seule est
-recalculée et vérifiée à chaque fois.
+recalculée et vérifiée à chaque fois. Il recale aussi les paroles : `paroles.json` et les `.srt` d'un extrait mkv ou webm
+doublé avant le 05/11/2026, en avance sur la vidéo, y sont remis au temps de la vidéo doublée.
 
 Choisir le moteur du chant, ou revenir à la chaîne d'avant le nettoyage :
 
@@ -616,8 +617,11 @@ Dans la vidéo doublée :
  "traductions": {"fr": {"source": "nllb-200-distilled-600M", "segments": [{"debut": 64.5, "fin": 66.0, "texte": "…"}]}}}
 ```
 
-- temps en secondes de la vidéo doublée ; `decalage_s` est le décalage par rapport au son doublé (0 le plus souvent,
-  −0,13 s pour un extrait mkv ou webm) : le temps du mp3 vaut `debut − decalage_s` ;
+- temps en secondes de la vidéo doublée, comme ses pistes de paroles et les `.srt` ; `decalage_s` est l'instant de
+  la vidéo doublée où commence le son doublé : 0 le plus souvent (un extrait commence avec son image, en mkv et webm
+  aussi), le retard du son d'origine pour une vidéo entière dont le son part après l'image, l'avance de l'image quand
+  la copie d'un extrait part d'une image clé antérieure (message « image sans son au début ») ; le temps du mp3 et du
+  `.lrc` vaut `debut − decalage_s` ;
 - chaque ligne garde sa langue (une chanson bilingue a les deux) ; `traductions.fr` a une entrée par ligne, les lignes
   françaises recopiées ; elle est absente si tout est en français ;
 - sans paroles reconnues : `segments` vide, `langue` à `null`.

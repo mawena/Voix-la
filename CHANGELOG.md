@@ -44,6 +44,12 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ### Corrigé
 
+- Paroles d'un extrait mkv ou webm : `paroles.json` et les `.srt` écrits à côté des sorties étaient en avance sur la
+  vidéo doublée, de 0,13 s (le décalage donné à ffmpeg, alors que le conteneur recale tout sur la première image), et
+  d'autant plus quand la copie de l'image partait d'une image clé antérieure (0,96 s mesuré sur un webm VP9). Ils sont
+  maintenant au temps de la vidéo doublée, comme ses pistes de paroles, à 2 ms près ; `decalage_s` donne l'instant où y
+  commence le son doublé (0 pour un extrait), le `.lrc` reste au temps du mp3. Les pistes de la vidéo, les cinq pistes
+  audio et les autres cas ne changent pas. `doubler --remix` recale les paroles d'un ancien doublage.
 - Interface : paroles calées sur la piste lue. Pour un extrait mkv ou webm, elles venaient 0,155 s trop tôt sur la
   vidéo et 0,13 s sur le MP3 et les sons seuls ; pour une vidéo entière au son d'origine en retard, 0,15 à 0,18 s trop
   tard sur le MP3 et les sons seuls. L'écart restant est de 25 ms au plus.

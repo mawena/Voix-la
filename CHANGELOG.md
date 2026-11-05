@@ -7,6 +7,19 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+### Ajouté
+
+- Interface : le choix « Une voix pour tous / Une voix par chanteur », le duo (mixte ou même genre) et les deux voix
+  choisies sont gardés d'une session à l'autre (`interface.json` : `voix_par_chanteur`, `duo_chanteurs`,
+  `voix_chanteurs`). Une voix qui n'existe plus n'est pas présélectionnée.
+
+### Corrigé
+
+- Interface : paroles calées sur la piste lue. Pour un extrait mkv ou webm, elles venaient 0,155 s trop tôt sur la
+  vidéo et 0,13 s sur le MP3 et les sons seuls ; pour une vidéo entière au son d'origine en retard, 0,15 à 0,18 s trop
+  tard sur le MP3 et les sons seuls. L'écart restant est de 25 ms au plus.
+- Interface : le choix des voix « Chanteur 1 / 2 » ne glisse plus sur une autre voix quand la liste des voix change.
+
 ## [0.5.0] - 2026-11-04
 
 ### Ajouté

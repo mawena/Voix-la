@@ -177,6 +177,7 @@ class PageDoubler(commun.Page):
         super().__init__(fenetre, "Doubler", "doubler")
         self.videos = []
         self.modele = rapports.MODELE_DEFAUT
+        self._conf = {}                # « doubler --config --json » (cartes GPU prévues pour l'estimation)
         self._sans_memoire = False     # vrai pendant les changements faits par la page (pas un choix à garder)
         self.entete.pack_start(commun.bouton(icone="list-add-symbolic", infobulle="Ajouter des vidéos",
                                              clic=self.choisir))
@@ -490,8 +491,15 @@ class PageDoubler(commun.Page):
 
     def _estimer(self, durees, reglages):
         nettoyage = "--sans-nettoyage" in self.fenetre.caps and not reglages.get("sans_nettoyage")
+        # deux cartes T4 (clé « gpu » à auto ou 2 sur la machine par défaut) : le chant nettoyé va plus vite
+        cartes = moteur.cartes_prevues(self._conf, self.fenetre.caps)
         return rapports.estimer(durees, reglages.get("pas", 30), self.modele, nettoyage=nettoyage,
-                                mode=reglages.get("mode", "auto"), moteur=reglages.get("moteur") or None)
+                                mode=reglages.get("mode", "auto"), moteur=reglages.get("moteur") or None, cartes=cartes)
+
+    def gpu_par_defaut_change(self, gpu):
+        """Depuis les Réglages : nouvelle clé « gpu » de doubler, l'estimation de durée suit."""
+        self._conf = {**(self._conf or {}), "gpu": gpu}
+        self._maj()
 
     def _charger_modele(self):
         sorties = chemins.dossier_sorties(self.fenetre.donnees)
@@ -555,6 +563,8 @@ class PageDoubler(commun.Page):
 
         def fini(r):
             jeton, conf = r
+            self._conf = conf if isinstance(conf, dict) else {}
+            self._maj()
             self._paroles_defaut(moteur.paroles_par_defaut(conf))
             self._autotune_defaut(moteur.autotune_par_defaut(conf), moteur.x42_autotune(conf))
             compte = ((conf or {}).get("kaggle") or {}).get("compte")

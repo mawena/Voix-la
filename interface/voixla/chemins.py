@@ -33,6 +33,12 @@ PREFERENCES_DEFAUT = {
     # vide : celle de doubler (clé « voix » de sa configuration), sinon la seule voix ; avec plusieurs voix et aucun
     # défaut, aucune n'est présélectionnée
     "voix_defaut": "",
+    # Doubler, « Voix cible » : une voix par chanteur (vrai) ou une voix pour tous (faux), le duo (« genre » : voix
+    # d'homme et voix de femme ; « ordre » : chanteur 1 et chanteur 2) et les deux voix choisies, gardés d'une
+    # session à l'autre ; une voix qui n'existe plus n'est pas présélectionnée (voir choix_chanteurs)
+    "voix_par_chanteur": False,
+    "duo_chanteurs": "genre",
+    "voix_chanteurs": [],       # [voix d'homme ou chanteur 1, voix de femme ou chanteur 2] ; null : pas choisie
     "mode": "auto",
     "octave": "auto",
     "pas": 30,
@@ -274,10 +280,35 @@ def ecrire_preferences(prefs):
 
 
 def modifier_preference(cle, val):
+    return modifier_preferences({cle: val})
+
+
+def modifier_preferences(valeurs):
+    """Écrit plusieurs préférences d'un coup (une seule écriture) ; rend toutes les préférences."""
     p = lire_preferences()
-    p[cle] = val
+    p.update(valeurs)
     ecrire_preferences(p)
     return p
+
+
+DUOS_CHANTEURS = ("genre", "ordre")
+
+
+def choix_chanteurs(prefs, ids=None):
+    """Le choix « une voix par chanteur » gardé dans les préférences : (par_chanteur, duo, [voix a, voix b]).
+    Une valeur abîmée prend sa valeur par défaut (une voix pour tous, duo mixte, voix non choisie). Avec ids (les
+    voix qui existent), une voix disparue devient None : rien n'est présélectionné, comme sans mémoire."""
+    p = prefs if isinstance(prefs, dict) else {}
+    par = p.get("voix_par_chanteur") is True
+    duo = p.get("duo_chanteurs") if p.get("duo_chanteurs") in DUOS_CHANTEURS else DUOS_CHANTEURS[0]
+    lues = p.get("voix_chanteurs") if isinstance(p.get("voix_chanteurs"), list) else []
+    voix = []
+    for i in range(2):
+        v = lues[i] if i < len(lues) else None
+        if not isinstance(v, str) or not v or (ids is not None and v not in ids):
+            v = None
+        voix.append(v)
+    return par, duo, voix
 
 
 # --- Dossiers dérivés du dossier de données ------------------------------------------------------------------------

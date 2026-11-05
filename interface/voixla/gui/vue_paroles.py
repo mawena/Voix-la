@@ -62,11 +62,18 @@ class LigneParoles(Gtk.Box):
 
 
 class VueParoles(Gtk.Box):
-    """Bloc « Paroles » : en-tête (source, choix de la langue), ligne en cours, ligne suivante."""
+    """Bloc « Paroles » : en-tête (source, choix de la langue), ligne en cours, ligne suivante.
 
-    def __init__(self, sur_clic, langue="deux", sur_langue=None):
+    placer() reçoit la position du lecteur ; avec_image() dit si la source en cours montre une image (temps de la vidéo
+    doublée) ou non (temps du son doublé), debut_son où le son doublé commence dans la vidéo doublée : voixla.paroles.
+    ecart_lecture passe de l'un à l'autre, et le clic sur une ligne rend une position du lecteur."""
+
+    def __init__(self, sur_clic, langue="deux", sur_langue=None, avec_image=None, debut_son=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self.update_property([Gtk.AccessibleProperty.LABEL], ["Paroles synchronisées sur la lecture"])
+        self.sur_clic = sur_clic
+        self.avec_image = avec_image or (lambda: True)
+        self.debut_son = debut_son
         self.paroles = None
         self.langue = langue if langue in dict(CHOIX) else "deux"
         self.sur_langue = sur_langue
@@ -90,8 +97,8 @@ class VueParoles(Gtk.Box):
             self.t_choix[valeur] = t
         tete.append(self.boite_choix)
         self.append(tete)
-        self.courante = LigneParoles(["paroles-courante"], sur_clic, 2)
-        self.suivante = LigneParoles(["paroles-suivante"], sur_clic, 1)
+        self.courante = LigneParoles(["paroles-courante"], self._clic, 2)
+        self.suivante = LigneParoles(["paroles-suivante"], self._clic, 1)
         self.append(self.courante)
         self.append(self.suivante)
         self.message = Gtk.Label(xalign=0, wrap=True, css_classes=["caption", "dim-label"], visible=False)
@@ -140,8 +147,16 @@ class VueParoles(Gtk.Box):
 
     # --- lecture ---------------------------------------------------------------------------------------------------
 
+    def _ecart(self):
+        return P.ecart_lecture(self.paroles, bool(self.avec_image()), self.debut_son)
+
+    def _clic(self, debut):
+        """Clic sur une ligne : son début, rendu en position du lecteur."""
+        self.sur_clic(max(0.0, debut - self._ecart()))
+
     def placer(self, t, lecture=False):
-        self.position = float(t or 0.0)
+        """t : la position du lecteur ; gardée en temps des paroles."""
+        self.position = float(t or 0.0) + self._ecart()
         self._maj()
         if lecture and self.animateur:
             self.animateur.relancer()

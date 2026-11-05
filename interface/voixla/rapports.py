@@ -552,13 +552,32 @@ def libelle_conversion(rapport):
     return f"Conversion {NOMS_MOTEURS.get(moteur, moteur)}"
 
 
+def cartes_gpu(rapport):
+    """Cartes GPU utilisées par la session (temps_local.gpus de doubler : 1 ou 2) ; 1 pour un ancien rapport."""
+    tl = (rapport or {}).get("temps_local") or {}
+    try:
+        return max(1, int(tl.get("gpus") or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+GPU_ADDITIONNE = "temps de GPU des 2 cartes additionnés"
+
+
 def durees_etapes(rapport):
-    """[(libellé, secondes, [(sous-libellé, secondes)])] d'après temps_local, session_kaggle et temps."""
+    """[(libellé, secondes, [(sous-libellé, secondes)])] d'après temps_local, session_kaggle et temps.
+    Deux cartes (temps_local.gpus == 2) : le nettoyage et la conversion YingMusic-SVC de la vidéo (temps.nettoyage_s,
+    temps.conversion_s) additionnent le temps de GPU des deux cartes, et le disent ; les durées réelles sont celles de
+    la session (« toute la session »), à côté de leur temps de GPU (nettoyage_gpu_s, yingmusic_gpu_s)."""
     r = rapport or {}
     tl = r.get("temps_local") or {}
     sk = tl.get("session_kaggle") or {}
     tv = r.get("temps") or {}
     lignes = []
+    deux = cartes_gpu(r) >= 2
+    additionne = f" ({GPU_ADDITIONNE})" if deux else ""
+    conversion = libelle_conversion(r)
+    ying = conversion.endswith("YingMusic-SVC")
 
     def ajouter(libelle, s, details=()):
         if s is not None:
@@ -573,18 +592,21 @@ def durees_etapes(rapport):
            ("Chargement de YingMusic-SVC", sk.get("chargement_yingmusic_s")),
            ("Séparation (toute la session)", sk.get("separation_totale_s")),
            ("Nettoyage (toute la session)", sk.get("nettoyage_totale_s")),
+           (f"Nettoyage, {GPU_ADDITIONNE}", sk.get("nettoyage_gpu_s") if deux else None),
            ("YingMusic-SVC (toute la session)", sk.get("yingmusic_total_s")),
+           (f"YingMusic-SVC, {GPU_ADDITIONNE}", sk.get("yingmusic_gpu_s") if deux else None),
            ("Séparation de cette vidéo", tv.get("separation_s")),
            ("Analyse (mode, hauteur)", tv.get("analyse_s")),
-           ("Nettoyage de cette vidéo", tv.get("nettoyage_s")),
+           ("Nettoyage de cette vidéo" + additionne, tv.get("nettoyage_s")),
            ("Voix de chaque piste (une voix par chanteur)", tv.get("affectation_s")),
-           (libelle_conversion(r), tv.get("conversion_s")),
+           (conversion + (additionne if ying else ""), tv.get("conversion_s")),
            ("Courbes de mélodie", tv.get("courbes_s")),
            ("Noyau en tout", sk.get("total_s")),
            ("Estimé par doubler", tl.get("estimation_noyau_s"))]
-    ajouter("GPU Kaggle, depuis l’envoi", tl.get("noyau_depuis_envoi_s"), gpu)
+    cartes = " (2 cartes T4)" if deux else ""
+    ajouter(f"GPU Kaggle{cartes}, depuis l’envoi", tl.get("noyau_depuis_envoi_s"), gpu)
     if tl.get("noyau_depuis_envoi_s") is None and tv:
-        ajouter("GPU Kaggle (cette vidéo)", tv.get("total_video_s"), gpu)
+        ajouter(f"GPU Kaggle{cartes} (cette vidéo)", tv.get("total_video_s"), gpu)
     ajouter("Rapatriement", tl.get("rapatriement_s"))
     ajouter("Décodage du retour (FLAC)", tl.get("decodage_retour_s"))
     ajouter("Reste (original − voix)", tl.get("reste_local_s"))
@@ -605,6 +627,23 @@ def attente_gpu_probable(rapport):
     return x if x > 300 else None
 
 
+def notes_durees(rapport):
+    """Phrases sous le titre des durées : attente d'une place GPU, session de plusieurs vidéos, deux cartes."""
+    r = rapport or {}
+    tl = r.get("temps_local") or {}
+    notes = []
+    attente = attente_gpu_probable(r)
+    if attente:
+        notes.append(f"Dont environ {formats.duree(attente)} d’attente d’une place GPU ou de démarrage.")
+    if (tl.get("videos_dans_la_session") or 1) > 1:
+        notes.append(f"Session Kaggle partagée par {tl['videos_dans_la_session']} vidéos.")
+    if cartes_gpu(r) >= 2:
+        notes.append("2 cartes T4 : le nettoyage et la conversion YingMusic-SVC se partagent entre les deux cartes. "
+                     "Leurs durées pour cette vidéo additionnent le temps de GPU des deux cartes ; les durées réelles "
+                     "sont celles de toute la session.")
+    return notes
+
+
 # --- Estimation des durées -------------------------------------------------------------------------------------------
 
 # durée ≈ a + b × secondes d'audio (b par vidéo pour extraction, mix, video ; sur le total pour la session)
@@ -616,14 +655,60 @@ MODELE_DEFAUT = {
     # chant nettoyé (voix principale et chœurs séparés, reverb retirée, YingMusic-SVC) : environ deux fois plus de GPU
     # par seconde de son, et deux Roformer et YingMusic à charger en plus
     "kaggle_nettoye": (230.0, 5.2),
+    # le même sur les deux cartes T4 (doubler --gpu auto ou 2) : 4,1 s par seconde de son, mesuré le 05/11/2026 sur une
+    # chanson de 3 min 48 (session de 19,4 min, contre 26,6 sur une carte, soit 6,0 s par seconde de son)
+    "kaggle_nettoye_2cartes": (230.0, 4.1),
     "rapatriement": (10.0, 0.07),
     "mix": (1.0, 0.05),
     "video": (1.0, 0.03),
 }
 
 
+# Sans session passée à deux cartes (voir gpu_reel_deux_cartes) : part du temps de GPU (deux cartes additionnées) que le
+# nettoyage et YingMusic-SVC prennent en temps réel, chargements à part ; les mêmes que doubler (FACTEURS_DEUX_CARTES)
+FACTEURS_DEUX_CARTES = {"nettoyage": 0.70, "conversion": 0.55}
+
+
+def _sans_longue_attente(k, sk):
+    """Durée de la session depuis l'envoi ; une longue attente d'une place GPU ne dit rien de la vitesse : la durée du
+    noyau + 40 s la remplace alors."""
+    if k is not None and sk.get("total_s") is not None and float(k) - float(sk["total_s"]) > 300:
+        return float(sk["total_s"]) + 40
+    return k
+
+
+def gpu_reel_deux_cartes(rapport):
+    """GPU réel d'une vidéo doublée sur deux cartes, d'après temps.total_video_s, ou None. Ce total additionne le temps
+    de GPU des deux cartes pour le nettoyage et YingMusic-SVC : il est ramené au temps réel avec la part que la session
+    a mesurée (nettoyage_totale_s, chargement à part, sur nettoyage_gpu_s ; de même pour YingMusic-SVC), sinon avec
+    celle de doubler (FACTEURS_DEUX_CARTES), comme son estimation. Pour les sessions de plusieurs vidéos : pour une
+    vidéo seule, la durée réelle de la session (noyau_depuis_envoi_s) dit mieux."""
+    r = rapport or {}
+    tv = r.get("temps") or {}
+    sk = (r.get("temps_local") or {}).get("session_kaggle") or {}
+    if not tv.get("total_video_s"):
+        return None
+
+    def part(reel, chargement, gpu, defaut):
+        try:
+            f = (float(sk[reel]) - float(sk.get(chargement) or 0)) / float(sk[gpu])
+        except (KeyError, TypeError, ValueError, ZeroDivisionError):
+            return defaut
+        return min(1.0, max(0.4, f))
+    fn = part("nettoyage_totale_s", "chargement_nettoyage_s", "nettoyage_gpu_s", FACTEURS_DEUX_CARTES["nettoyage"])
+    fc = part("yingmusic_total_s", "chargement_yingmusic_s", "yingmusic_gpu_s", FACTEURS_DEUX_CARTES["conversion"])
+    ying = libelle_conversion(r).endswith("YingMusic-SVC")
+    reel = (float(tv["total_video_s"]) - (1 - fn) * float(tv.get("nettoyage_s") or 0)
+            - ((1 - fc) * float(tv.get("conversion_s") or 0) if ying else 0.0))
+    return max(0.0, reel)
+
+
 def modele_durees(resultats):
-    """Ajuste les pentes b du modèle sur les doublages passés (médiane), les constantes a restant fixes."""
+    """Ajuste les pentes b du modèle sur les doublages passés (médiane), les constantes a restant fixes.
+    Chant nettoyé sur une carte (rapports sans temps_local.gpus, ou gpus à 1) : le GPU de la vidéo, temps.total_video_s,
+    comme avant. Sur deux cartes (kaggle_nettoye_2cartes), ce total additionne le temps des deux cartes : on prend la
+    durée réelle de la session pour une vidéo seule (noyau_depuis_envoi_s), sinon ce total ramené au temps réel
+    (gpu_reel_deux_cartes)."""
     obs = {k: [] for k in MODELE_DEFAUT}
     for res in resultats:
         r = res.rapport or {}
@@ -633,13 +718,21 @@ def modele_durees(resultats):
             continue
         d = float(d)
         nettoye = bool((r.get("nettoyage") or {}).get("applique"))
-        if nettoye:
+        seule = tl.get("videos_dans_la_session") in (1, None)
+        sk = tl.get("session_kaggle") or {}
+        if nettoye and d > 5 and cartes_gpu(r) >= 2:
+            k = _sans_longue_attente(tl.get("noyau_depuis_envoi_s"), sk) if seule else None
+            reel = None if k is not None else gpu_reel_deux_cartes(r)
+            if k is not None:
+                a = MODELE_DEFAUT["kaggle_nettoye_2cartes"][0]
+                obs["kaggle_nettoye_2cartes"].append(max(0.0, (float(k) - a) / d))
+            elif reel:
+                obs["kaggle_nettoye_2cartes"].append(reel / d)
+        elif nettoye:
             # GPU de cette vidéo seule (valable aussi dans un lot de plusieurs vidéos)
             tv = (r.get("temps") or {}).get("total_video_s")
             if tv and d > 5:
                 obs["kaggle_nettoye"].append(max(0.0, float(tv) / d))
-        seule = tl.get("videos_dans_la_session") in (1, None)
-        sk = tl.get("session_kaggle") or {}
 
         def obs_(cle, y):
             if y is not None and d > 1:
@@ -651,10 +744,7 @@ def modele_durees(resultats):
         if seule:
             obs_("envoi", tl.get("envoi_jeu_s"))
             obs_("rapatriement", tl.get("rapatriement_s"))
-            k = tl.get("noyau_depuis_envoi_s") if not nettoye else None
-            if k is not None and sk.get("total_s") is not None and float(k) - float(sk["total_s"]) > 300:
-                k = float(sk["total_s"]) + 40   # une longue attente d'une place GPU ne dit rien de la vitesse
-            obs_("kaggle", k)
+            obs_("kaggle", _sans_longue_attente(tl.get("noyau_depuis_envoi_s"), sk) if not nettoye else None)
     modele = {}
     for cle, (a, b) in MODELE_DEFAUT.items():
         modele[cle] = (a, statistics.median(obs[cle]) if obs[cle] else b)
@@ -666,10 +756,11 @@ def facteur_pas(pas):
     return max(0.3, 1 + 0.4 * ((float(pas or 30) - 30) / 20))
 
 
-def estimer(durees_audio, pas=30, modele=None, nettoyage=False, mode="auto", moteur=None):
+def estimer(durees_audio, pas=30, modele=None, nettoyage=False, mode="auto", moteur=None, cartes=1):
     """{étape: secondes} pour un appel doubler avec ces vidéos (durées d'audio en secondes). nettoyage : chant nettoyé
     (le défaut du doubler actuel ; en mode auto, on suppose du chant, comme doubler) ; les pas ne changent la durée
-    qu'avec Seed-VC (avec YingMusic, 50 ou 100 pas n'apportent rien de mesurable)."""
+    qu'avec Seed-VC (avec YingMusic, 50 ou 100 pas n'apportent rien de mesurable). cartes : cartes GPU que le noyau
+    prendra (moteur.cartes_prevues) ; à deux, le chant nettoyé suit les sessions passées à deux cartes."""
     modele = {**MODELE_DEFAUT, **(modele or {})}
     durees = [float(d or 0) for d in durees_audio] or [0.0]
     total = sum(durees)
@@ -681,7 +772,7 @@ def estimer(durees_audio, pas=30, modele=None, nettoyage=False, mode="auto", mot
         a, b = modele[cle]
         e[cle] = a + b * total
     nettoye = bool(nettoyage) and mode != "parole"
-    a, b = modele["kaggle_nettoye" if nettoye else "kaggle"]
+    a, b = modele[("kaggle_nettoye_2cartes" if (cartes or 1) >= 2 else "kaggle_nettoye") if nettoye else "kaggle"]
     ying = (moteur or ("yingmusic" if nettoye else "seedvc")) == "yingmusic"
     e["kaggle"] = a + b * total * (1.0 if ying else facteur_pas(pas))
     e["attente"] = 0.0

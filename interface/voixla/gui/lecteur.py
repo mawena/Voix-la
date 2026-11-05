@@ -45,7 +45,9 @@ def quand_pret(m, rappel):
 
 class Lecteur(Gtk.Box):
     """Un lecteur ; sources = {clé: (chemin, décalage_s, libellé)} ; bascule entre sources à la même position
-    (position de référence = position de la source « B » ; une source de décalage d est lue à position + d).
+    (une source de décalage d est lue à position de référence + d). Dans la page d'un résultat, la position de
+    référence est le temps du son doublé, quelle que soit la piste : celle d'une vidéo a pour décalage le début du son
+    dans la vidéo doublée (voixla.pistes.source_lecteur).
     proprietaire : ce qui lit, pour le coordinateur (la page d'un résultat) ; à défaut, le lecteur lui-même, une
     préécoute (durable faux) qu'une autre lecture met en pause."""
 
@@ -320,7 +322,7 @@ class Lecteur(Gtk.Box):
     # --- position ------------------------------------------------------------------------------------------------
 
     def position_ref(self):
-        """Position dans la référence (le doublage), en secondes."""
+        """Position de référence (position dans la source en cours − son décalage), en secondes."""
         m = self.media()
         if not m:
             return 0.0

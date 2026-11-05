@@ -16,10 +16,12 @@ import time
 import unittest
 from pathlib import Path
 
-from voixla import chemins, paroles
+from voixla import chemins, paroles, pistes, rapports
 from voixla.paroles import Couche, Ligne, Mot, Paroles
 
-from .commun import EssaiIsole
+from .commun import VRAI_DOUBLER, EssaiIsole
+from .test_pistes import charger_doubler, position_ref
+from .test_pistes_video import SR, debut_mesure, nice_ffmpeg, video_de_synthese
 
 FFMPEG = shutil.which("ffmpeg") and shutil.which("ffprobe")
 INTERFACE = Path(__file__).resolve().parents[1]
@@ -160,6 +162,17 @@ class EssaiLireParoles(EssaiAvecCache):
         self.assertEqual((fr.langue, fr.source), ("fr", "modele-de-traduction"))
         self.assertEqual([l.texte for l in fr.lignes], ["Une chanson d'essai", "Pour jules, encore une fois"])
         self.assertEqual(fr.lignes[0].mots, [])
+
+    def test_decalage(self):
+        self.assertEqual(self.lire(PAROLES_VALIDES).decalage_s, 0.0)
+        p = self.lire({**PAROLES_VALIDES, "decalage_s": -0.1314})
+        self.assertEqual(p.decalage_s, -0.1314)
+        self.assertEqual(p.originale.lignes[0].debut, 64.5, "les temps du fichier sont gardés tels quels")
+        self.assertEqual(self.lire({**PAROLES_VALIDES, "decalage_s": 0.177}).decalage_s, 0.177)
+        for abime in ("-0.13", True, None, [1], {"s": 1}):
+            self.assertEqual(self.lire({**PAROLES_VALIDES, "decalage_s": abime}).decalage_s, 0.0, abime)
+        self.assertEqual(self.lire('{"format": 1, "decalage_s": NaN, "segments": [{"debut": 1, "fin": 2, '
+                                   '"texte": "x"}]}').decalage_s, 0.0)
 
     def test_sans_mots(self):
         p = self.lire({"format": 1, "langue": "it", "segments": [segment(1, 2, "senza parole")]})
@@ -629,6 +642,166 @@ class EssaiParolesPour(EssaiAvecCache):
         self.assertEqual(paroles.paroles_pour(None, None), (None, "ni paroles.json ni vidéo doublée"))
         self.assertEqual(paroles.paroles_pour(self.dossier_voix, self.tmp / "absente.mp4"),
                          (None, "vidéo doublée introuvable"))
+
+
+# --- Temps du lecteur ------------------------------------------------------------------------------------------------
+
+def paroles_a(debut, decalage_s=0.0, origine="paroles.json"):
+    """Des paroles d'une ligne, qui commence à debut (temps des paroles)."""
+    return Paroles(Couche("es", "essai", [Ligne(debut, debut + 0.5, "ligne d'essai")]), {}, origine, decalage_s)
+
+
+class EssaiEcartLecture(unittest.TestCase):
+    """Position du lecteur → temps des paroles. Un repère à 1,0 s du son doublé : paroles.json le met à 1,0 s +
+    decalage_s (doubler.caler_paroles) ; le lecteur l'entend à 1,0 s dans un son seul (MP3, original.wav, beat), et à
+    1,0 s + debut_son dans la vidéo doublée."""
+
+    def en_cours(self, p, position, avec_image, debut_son):
+        return paroles.position(p.originale.lignes, position + paroles.ecart_lecture(p, avec_image, debut_son))[0]
+
+    def test_sans_decalage(self):
+        p = paroles_a(1.0)
+        for avec_image in (True, False):
+            for debut_son in (0.0, None):
+                self.assertEqual(paroles.ecart_lecture(p, avec_image, debut_son), 0.0)
+
+    def test_extrait_mkv_ou_webm(self):
+        # doubler décale le mix de −0,1314 s, mais le conteneur recale tout sur la première image : le son commence
+        # avec l'image (decalage_son 0 dans source.json) ; le repère s'entend à 1,0 s, en vidéo comme en son seul
+        p = paroles_a(0.8686, -0.1314)
+        for avec_image in (True, False):
+            self.assertAlmostEqual(paroles.ecart_lecture(p, avec_image, 0.0), -0.1314)
+            self.assertEqual(self.en_cours(p, 1.0, avec_image, 0.0), 0)
+            self.assertIsNone(self.en_cours(p, 0.9, avec_image, 0.0), "pas 0,13 s trop tôt")
+        self.assertEqual(paroles.position(p.originale.lignes, 0.9)[0], 0, "sans l'écart : 0,13 s trop tôt")
+
+    def test_video_entiere_au_son_en_retard(self):
+        # son d'origine 0,177 s après l'image (decalage_son de source.json, repris par doubler et dans decalage_s) :
+        # la vidéo doublée a le même temps que paroles.json ; le MP3 et les sons seuls, celui du son
+        p = paroles_a(1.177, 0.177)
+        self.assertEqual(paroles.ecart_lecture(p, True, 0.177), 0.0)
+        self.assertAlmostEqual(paroles.ecart_lecture(p, False, 0.177), 0.177)
+        self.assertEqual(self.en_cours(p, 1.18, True, 0.177), 0)
+        self.assertEqual(self.en_cours(p, 1.0, False, 0.177), 0)
+        self.assertIsNone(self.en_cours(p, 0.9, False, 0.177))
+        self.assertIsNone(paroles.position(p.originale.lignes, 1.0)[0], "sans l'écart : MP3 0,18 s trop tard")
+
+    def test_sans_source_json(self):
+        # debut_son inconnu : decalage_s s'il est positif (vidéo entière au son en retard), sinon 0 (extrait)
+        self.assertAlmostEqual(paroles.ecart_lecture(paroles_a(0.8686, -0.1314), True, None), -0.1314)
+        self.assertEqual(paroles.ecart_lecture(paroles_a(1.177, 0.177), True, None), 0.0)
+        self.assertAlmostEqual(paroles.ecart_lecture(paroles_a(1.177, 0.177), False, None), 0.177)
+
+    def test_sous_titres_en_temps_de_la_video(self):
+        p = paroles_a(1.177, origine="sous-titres")
+        self.assertEqual(paroles.ecart_lecture(p, True, 0.177), 0.0)
+        self.assertAlmostEqual(paroles.ecart_lecture(p, False, 0.177), 0.177)
+        self.assertEqual(paroles.ecart_lecture(p, False, None), 0.0)
+        # un decalage_s ne concerne que paroles.json
+        self.assertEqual(paroles.ecart_lecture(paroles_a(1.0, 0.5, "sous-titres"), True, 0.0), 0.0)
+
+    def test_position_du_lecteur_en_temps_du_son(self):
+        # la page d'un résultat donne la position du lecteur en temps du son doublé, quelle que soit la piste
+        # (pistes.source_lecteur) : la vue des paroles la prend comme celle d'une piste sans image
+        for p, debut_son in ((paroles_a(1.177, 0.177), 0.177),                     # vidéo entière, son en retard
+                             (paroles_a(1.177, origine="sous-titres"), 0.177),     # sous-titres : temps de la vidéo
+                             (paroles_a(0.8686, -0.1314), 0.0),                    # extrait mkv ou webm
+                             (paroles_a(1.0), 0.0)):                               # extrait mp4, son à l'heure
+            self.assertEqual(self.en_cours(p, 1.0, False, debut_son), 0, p)
+            self.assertIsNone(self.en_cours(p, 0.9, False, debut_son), p)
+
+    def test_une_seule_regle(self):
+        # piste avec image = temps du son + pistes.avance_piste : la règle des sources du lecteur
+        for p in (paroles_a(1.177, 0.177), paroles_a(1.177, origine="sous-titres"), paroles_a(0.8686, -0.1314)):
+            for debut_son in (0.0, 0.177, 0.5):
+                self.assertAlmostEqual(paroles.ecart_lecture(p, True, debut_son),
+                                       paroles.ecart_lecture(p, False, debut_son)
+                                       - pistes.avance_piste(True, debut_son))
+        self.assertIs(paroles.decalage_son, pistes.decalage_son)
+
+    def test_sans_paroles(self):
+        self.assertEqual(paroles.ecart_lecture(None, False, 0.177), 0.0)
+
+    def test_decalage_son_de_source_json(self):
+        self.assertEqual(paroles.decalage_son({"decalage_son": 0.177}), 0.177)
+        self.assertEqual(paroles.decalage_son({"decalage_son": 0.0, "debut": 2.401}), 0.0)
+        for abime in ({}, None, [], {"decalage_son": "0.1"}, {"decalage_son": True}, {"decalage_son": float("inf")}):
+            self.assertIsNone(paroles.decalage_son(abime), abime)
+
+
+@unittest.skipUnless(FFMPEG and VRAI_DOUBLER.is_file(), "ffmpeg ou doubler.py absent")
+class EssaiEcartBoutEnBout(EssaiIsole):
+    """De bout en bout : de petites vidéos de synthèse remises en son par les fonctions de doubler.py (preparer_source,
+    plan_video, remettre_sur_video), une ligne de paroles au repère, à 2,5 s du son doublé, calée par
+    doubler.caler_paroles puis relue par lire_paroles. Le début du son est mesuré dans la vidéo doublée (corrélation,
+    relatif à la première image). La ligne doit tomber sur le repère à 30 ms près : en vidéo, et dans un son seul
+    (MP3, travail/original.wav, beat ou voix seule sans copie vidéo). Lue par GStreamer, la vidéo doublée d'un mkv
+    porte en plus l'amorce de l'AAC (23 ms) ; le MP3, le délai de l'encodeur (25 ms)."""
+
+    REPERE = 2.5
+
+    def doubler_synthese(self, nom, ext, debut=None, duree=None, retard=0.0):
+        import numpy as np
+        doubler = charger_doubler(self.tmp / f"doubler-{nom}")
+        source = self.tmp / "videos" / f"Source {nom}{ext}"
+        video_de_synthese(source, duree=6.0)
+        if retard:      # son d'origine qui part après l'image (decalage_son dans source.json)
+            brut = source.with_name(f"brut{ext}")
+            source.rename(brut)
+            nice_ffmpeg("-i", brut, "-itsoffset", retard, "-i", brut, "-map", "0:v", "-map", "1:a", "-c", "copy",
+                        source)
+        d = self.donnees / "sorties" / f"Chanson {nom}"
+        t = d / "travail"
+        t.mkdir(parents=True)
+        with contextlib.redirect_stdout(io.StringIO()):
+            src = doubler.preparer_source(source, doubler.sonder(source), debut, duree, t)
+            n = int(SR * (src.get("duree") or doubler.duree_s(t / "original.wav")))
+            mix = np.random.default_rng(3).standard_normal(n).astype(np.float32) * 0.2
+            (t / "mix.f32").write_bytes(np.stack([mix, mix], 1).tobytes())
+            nice_ffmpeg("-f", "f32le", "-ar", SR, "-ac", 2, "-i", t / "mix.f32", "-c:a", "pcm_f32le", t / "mix.wav")
+            plan = doubler.plan_video(t)
+            doublee = doubler.remettre_sur_video(t, t / "mix.wav", d, "Chanson - voix Jules", plan=plan)
+            cale = doubler.caler_paroles({"format": 1, "langue": "es", "decalage_s": 0.0, "traductions": {},
+                                          "segments": [segment(self.REPERE, self.REPERE + 1.0, "repère")]},
+                                         plan["decalage_son"])
+        f = t / "jules" / "paroles.json"
+        f.parent.mkdir()
+        f.write_text(json.dumps(cale), encoding="utf-8")
+        p = paroles.lire_paroles(f)
+        debut_son = paroles.decalage_son(json.loads((t / "source.json").read_text(encoding="utf-8")))
+        echantillons, pic = debut_mesure(doublee, t / "mix.wav")
+        self.assertGreater(pic, 0.8)
+        video = self.REPERE + echantillons / SR       # où le lecteur entend le repère dans la vidéo doublée
+        ligne = p.originale.lignes[0].debut
+        for position, avec_image in ((video, True), (self.REPERE, False)):
+            t_paroles = position + paroles.ecart_lecture(p, avec_image, debut_son)
+            self.assertAlmostEqual(t_paroles, ligne, delta=0.03, msg=f"{nom}, avec image : {avec_image}")
+            self.assertEqual(paroles.position(p.originale.lignes, t_paroles + 0.03)[0], 0)
+        # dans la page d'un résultat, le lecteur compte en temps du son, même sur la vidéo doublée
+        # (pistes.source_lecteur) ; la vue des paroles prend sa position comme celle d'un son seul
+        r = rapports.lire_dossier(d, {"jules": "Jules"})[0]
+        source = pistes.sources_lecteur(pistes.choisir_pistes(r, "video"))["doublage"]
+        self.assertEqual(source[0], doublee)
+        t_paroles = position_ref(video, source) + paroles.ecart_lecture(p, False, debut_son)
+        self.assertAlmostEqual(t_paroles, ligne, delta=0.03, msg=f"{nom}, page d'un résultat")
+        return p, video, ligne
+
+    def test_extrait_mkv(self):
+        p, video, ligne = self.doubler_synthese("mkv-extrait", ".mkv", debut=1.4, duree=4.0)
+        self.assertAlmostEqual(p.decalage_s, -0.1315, delta=0.002)
+        # sans l'écart, la ligne venait 0,13 s trop tôt, en vidéo comme en son seul
+        self.assertGreater(video - ligne, 0.1)
+        self.assertGreater(self.REPERE - ligne, 0.1)
+
+    def test_mkv_entier_au_son_en_retard(self):
+        p, video, ligne = self.doubler_synthese("mkv-retard", ".mkv", retard=0.2)
+        self.assertGreater(p.decalage_s, 0.1)
+        self.assertAlmostEqual(video, ligne, delta=0.03, msg="en vidéo, paroles.json était déjà juste")
+        self.assertGreater(ligne - self.REPERE, 0.1, "en son seul, la ligne venait trop tard")
+
+    def test_mp4_extrait(self):
+        p, video, ligne = self.doubler_synthese("mp4-extrait", ".mp4", debut=1.4, duree=4.0)
+        self.assertEqual(p.decalage_s, 0.0)
 
 
 # --- Synchronisation -------------------------------------------------------------------------------------------------

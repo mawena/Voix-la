@@ -3,7 +3,8 @@
 
   doubler <vidéo> [<vidéo>…] [--voix NOM | --voix homme:NOM,femme:NOM | --voix chanteur1:NOM,chanteur2:NOM]
           [--mode auto|chant|parole] [--octave auto|0|-12|+12] [--pas 30]
-          [--moteur yingmusic|seedvc] [--sans-nettoyage] [--sans-paroles] [--voix-db 4] [--reverb-db -13] [--mix-v1]
+          [--moteur yingmusic|seedvc] [--sans-nettoyage] [--sans-paroles] [--gpu auto|1|2] [--voix-db 4] [--reverb-db -13]
+          [--mix-v1] [--pistes-audio toutes|doublage]
           [--autotune [N]] [--autotune-gamme auto|chromatique|la-mineur…] [--sans-autotune]
           [--debut S --duree S] [--remix] [--sortie DIR] [--comparer-pas 50] [--donnees DIR] [--evenements FICHIER]
   doubler --ajouter-voix <nom> <enregistrement>      ajoute une voix (n'importe quel audio ou vidéo)
@@ -22,15 +23,20 @@ Les vidéos données ensemble partent dans UNE seule session Kaggle (installatio
      complète, comme avant, plus rapide) ; un passage perdu au nettoyage (voix de fond prise pour de la reverb) est
      repris de la voix complète ; en parole, Seed-VC 22 kHz sur la voix isolée complète. Paroles (sauf --sans-paroles
      ou doubler --config paroles non) : Whisper large-v3 sur la voix principale, horodatées par mot, et traduction
-     française (NLLB-200) quand elles ne sont pas en français ;
+     française (NLLB-200) quand elles ne sont pas en français. La machine Kaggle (NvidiaTeslaT4) a deux cartes T4 : le
+     nettoyage et YingMusic-SVC (et la séparation d'un lot) s'y partagent le travail, sans changer le résultat (--gpu 1 :
+     une carte, comme avant ; une machine à une seule carte : repli automatique) ;
   3. de retour sur le PC : mixage puis remise sur chaque vidéo, image et sous-titres d'origine copiés sans réencodage,
      paroles ajoutées en pistes de sous-titres. Mixage v2 (défaut) : la voix suit les nuances de la voix d'origine (gain
      par fenêtres de 10 ms, lissé sur 150 ms, borné à ±6 dB, seulement là où les deux voix chantent), « s » adoucis
      (dé-esseur), voix +4 dB et reverb -13 dB en chant ; parole sans reverb. --mix-v1 : l'ancien mixage.
 Sorties : <sortie>/<titre>/<titre> - voix <Nom>.<conteneur d'origine> et .mp3, .<langue>.srt, .fr.srt (traduction) et
 .lrc (paroles synchronisées, à côté du mp3) ; travail/ (son d'origine, voix isolée, reste) et travail/<voix>/ (voix
-convertie, rapport.json avec les temps de chaque étape, paroles.json). --remix refait seulement le mixage et la remise
-sur la vidéo, paroles comprises. Seuls le son des vidéos et la référence de la voix choisie partent sur Kaggle.
+convertie, rapport.json avec les temps de chaque étape, paroles.json). La vidéo a cinq pistes audio, calées entre elles
+et sur l'image : Doublage (la première, seule jouée par défaut), Original, Beat seul, Voix convertie seule (telle
+qu'elle sonne dans le mix) et Voix d'origine seule ; --pistes-audio doublage (clé « pistes_audio ») : le doublage seul.
+--remix refait seulement le mixage et la remise sur la vidéo, paroles et pistes audio comprises. Seuls le son des
+vidéos et la référence de la voix choisie partent sur Kaggle.
 Une voix par chanteur (--voix homme:A,femme:B pour un duo mixte, chanteur1:A,chanteur2:B pour un duo de même genre) :
 chaque piste de chaque passage (voix principale, chœurs, secours) prend la voix du chanteur qu'on y reconnaît, l'octave
 se décide pour chaque couple chanteur -> voix ; sorties <titre> - voix A et B.<ext>, travail/A+B/.
@@ -41,8 +47,10 @@ sur la musique seule (--autotune-gamme). Bas : notes juste rendues plus justes ;
 Données (voix/, sorties/) : --donnees, sinon $VOIXLA_DONNEES, sinon « donnees » de ~/.config/voix-la/config.json,
 sinon ~/Music/Voix-là. Voix par défaut : « voix » du même fichier (doubler --config voix NOM), sinon la seule voix de
 <données>/voix. Compte Kaggle : « kaggle.compte » (doubler --config kaggle.compte <nom>) ; moteur du chant par
-défaut : « moteur » (doubler --config moteur seedvc), sinon yingmusic. Commande kaggle : $VOIXLA_KAGGLE, sinon
-~/kaggle-venv/bin/kaggle. Ancres de genre (facultatives) : ~/.config/voix-la/ancres_genre.json, sinon kaggle/ du dépôt.
+défaut : « moteur » (doubler --config moteur seedvc), sinon yingmusic. Pistes audio de la vidéo : « pistes_audio »
+(toutes, défaut, ou doublage). Cartes GPU : « gpu » (auto, 1 ou 2) ; machine Kaggle : « kaggle.machine »
+(NvidiaTeslaT4 par défaut : GPU T4 x2). Commande kaggle : $VOIXLA_KAGGLE, sinon ~/kaggle-venv/bin/kaggle. Ancres de
+genre (facultatives) : ~/.config/voix-la/ancres_genre.json, sinon kaggle/ du dépôt.
 YingMusic-SVC : code MIT, poids CC BY-NC 4.0, donc usage personnel et non commercial seulement.
 """
 import argparse
@@ -61,7 +69,7 @@ import tempfile
 import time
 from pathlib import Path
 
-VERSION = '0.5.0'   # même version que le paquet Debian (debian/changelog) et l'interface (voixla.__version__)
+VERSION = '0.6.0'   # même version que le paquet Debian (debian/changelog) et l'interface (voixla.__version__)
 # Dossier du code : le dépôt, ou /usr/lib/voix-la une fois le paquet installé (/usr/bin/doubler lance ce fichier)
 DEPOT = Path(__file__).resolve().parent
 SCRIPT_NOYAU = DEPOT / 'kaggle' / 'doubler_kaggle.py'   # le noyau envoyé à Kaggle
@@ -74,13 +82,30 @@ DONNEES_DEFAUT = Path.home() / 'Music' / 'Voix-là'
 # Identifiants Kaggle : <compte>/<nom>, compte lu dans CONFIG (jamais dans le code : le dépôt est public)
 KAGGLE_DEFAUTS = {'jeu': 'doublage-voix-entrees', 'noyau': 'doublage-voix-gpu',
                   'outils': 'doublage-outils'}   # outils : wheels, Seed-VC, poids des modèles (doubler --preparer-outils)
+# Machine Kaggle demandée à l'envoi du noyau (kernel-metadata.json, machine_shape) : « NvidiaTeslaT4 » est la machine
+# « GPU T4 x2 », deux cartes T4 de 16 Go (doc. de la CLI kaggle, kernels_metadata.md ; vérifié par nvidia-smi -L sur un
+# noyau privé le 05/11/2026). Le quota GPU hebdomadaire se compte en heures de session, pas en heures par carte.
+MACHINE_DEFAUT = 'NvidiaTeslaT4'
+MACHINE_SYNTAXE = r'[A-Za-z][A-Za-z0-9]{1,39}'
+GPU_CHOIX = ('auto', '1', '2')   # cartes utilisées par le noyau ; auto : toutes celles de la machine, deux au plus
+# Pistes audio de la vidéo doublée : toutes (le doublage, en premier et seul par défaut, puis l'original, le beat seul,
+# la voix convertie seule et la voix d'origine seule) ou doublage (lui seul, comme avant le 05/11/2026)
+PISTES_AUDIO = ('toutes', 'doublage')
+PISTES_AUDIO_DEFAUT = 'toutes'
 CLES_CONFIG = {'autotune': 'intensité de l\'auto-tune à chaque doublage, de 0 (désactivé, défaut) à 100',
-               'donnees': 'dossier des données (voix/, sorties/)', 'kaggle.compte': 'compte Kaggle (nom d\'utilisateur)',
-               'kaggle.jeu': 'jeu de données privé des entrées', 'kaggle.noyau': 'noyau GPU privé du doublage',
+               'donnees': 'dossier des données (voix/, sorties/)',
+               'gpu': 'cartes GPU utilisées par le noyau : auto (défaut : les deux T4 de la machine, une seule si elle '
+                      'n\'en a qu\'une), 1 (une carte, comme avant) ou 2',
+               'kaggle.compte': 'compte Kaggle (nom d\'utilisateur)',
+               'kaggle.jeu': 'jeu de données privé des entrées',
+               'kaggle.machine': f'machine Kaggle demandée à l\'envoi du noyau (défaut : {MACHINE_DEFAUT}, GPU T4 x2)',
+               'kaggle.noyau': 'noyau GPU privé du doublage',
                'kaggle.outils': 'noyau privé des outils préparés',
                'moteur': 'moteur de conversion du chant : yingmusic (défaut) ou seedvc',
                'paroles': 'paroles à chaque doublage (transcription, traduction française, sous-titres) : oui (défaut) '
                           'ou non',
+               'pistes_audio': 'pistes audio de la vidéo doublée : toutes (défaut : doublage, original, beat seul, voix '
+                               'convertie seule, voix d\'origine seule ; le doublage par défaut) ou doublage (lui seul)',
                'voix': 'voix cible par défaut, un dossier de <données>/voix (sinon la seule voix présente)'}
 OUI = {'oui', 'o', 'yes', 'y', 'true', 'vrai', '1', 'on'}
 NON = {'non', 'n', 'no', 'false', 'faux', '0', 'off'}
@@ -92,6 +117,7 @@ DONNEES = DONNEES_DEFAUT
 SORTIES = DONNEES_DEFAUT / 'sorties'
 VOIX = DONNEES_DEFAUT / 'voix'   # une voix = un dossier (reference.wav, voix.json)
 JEU = NOYAU = OUTILS = None
+MACHINE = MACHINE_DEFAUT   # configurer_kaggle() : clé « kaggle.machine » de CONFIG
 VOIX_DEFAUT = None   # voix_par_defaut() : clé « voix » de CONFIG, sinon la seule voix de VOIX
 VOIX_DEFAUT_SOURCE = None
 FACTEUR_CHANT = 2.0   # centre de chant d'une voix ≈ 2 x sa hauteur de parole (ex. 100 Hz -> 200 Hz ; frontière 0/-12 à 1,41 x ce centre)
@@ -163,6 +189,16 @@ def ecrire_config(cle, valeur):
         valeur = str(Path(valeur).expanduser().resolve())
     if cle == 'moteur' and valeur not in MOTEURS:
         raise SystemExit(f'moteur inconnu : {valeur} (moteurs : {", ".join(MOTEURS)})')
+    if cle == 'gpu':
+        valeur = str(valeur).strip().lower()
+        if valeur not in GPU_CHOIX:
+            raise SystemExit(f'gpu : auto, 1 ou 2 attendu (reçu : {valeur})')
+    if cle == 'pistes_audio':
+        valeur = str(valeur).strip().lower()
+        if valeur not in PISTES_AUDIO:
+            raise SystemExit(f'pistes_audio : toutes ou doublage attendu (reçu : {valeur})')
+    if cle == 'kaggle.machine' and not re.fullmatch(MACHINE_SYNTAXE, valeur):
+        raise SystemExit(f'kaggle.machine : nom de machine Kaggle attendu, par exemple {MACHINE_DEFAUT} (reçu : {valeur})')
     if cle == 'voix' and not re.fullmatch(NOM_VOIX, valeur):
         raise SystemExit(f'nom de voix invalide : {valeur} (minuscules, chiffres, - ou _ ; ex. marie, jean-b)')
     if cle == 'paroles':
@@ -210,6 +246,40 @@ def paroles_config(conf):
         dire(f'attention : « paroles » de {CONFIG} illisible ({v!r}) : paroles gardées (doubler --config paroles oui|non)')
         return True
     return b
+
+
+def gpu_config(conf):
+    """Clé « gpu » de la configuration : auto (défaut), 1 ou 2 ; une valeur illisible compte comme auto, avec un avis."""
+    v = valeur_config(conf, 'gpu')
+    if v is None:
+        return 'auto'
+    v = str(v).strip().lower()
+    if v not in GPU_CHOIX:
+        dire(f'attention : « gpu » de {CONFIG} illisible ({v!r}) : auto (doubler --config gpu auto|1|2)')
+        return 'auto'
+    return v
+
+
+def pistes_audio_config(conf):
+    """Clé « pistes_audio » de la configuration : toutes (défaut) ou doublage ; une valeur illisible compte comme
+    toutes, avec un avis."""
+    v = valeur_config(conf, 'pistes_audio')
+    if v is None:
+        return PISTES_AUDIO_DEFAUT
+    v = str(v).strip().lower()
+    if v not in PISTES_AUDIO:
+        dire(f'attention : « pistes_audio » de {CONFIG} illisible ({v!r}) : {PISTES_AUDIO_DEFAUT} '
+             '(doubler --config pistes_audio toutes|doublage)')
+        return PISTES_AUDIO_DEFAUT
+    return v
+
+
+def cartes_prevues(gpu, machine):
+    """Cartes que le noyau utilisera probablement (estimation de durée) : 1 si on le demande ; 2 si on le demande, ou
+    en auto sur la machine à deux T4 (NvidiaTeslaT4) ; 1 sur une autre machine en auto (nombre inconnu)."""
+    if str(gpu) == '1':
+        return 1
+    return 2 if str(gpu) == '2' or machine == MACHINE_DEFAUT else 1
 
 
 def masquer(conf):
@@ -272,10 +342,16 @@ def exiger_voix_defaut():
 
 
 def configurer_kaggle(conf=None):
-    """Identifiants <compte>/<nom> du jeu de données et des noyaux, d'après CONFIG ; le compte n'a pas de défaut."""
-    global JEU, NOYAU, OUTILS
+    """Identifiants <compte>/<nom> du jeu de données et des noyaux, d'après CONFIG ; le compte n'a pas de défaut. Machine
+    Kaggle demandée à l'envoi : « kaggle.machine », sinon MACHINE_DEFAUT."""
+    global JEU, NOYAU, OUTILS, MACHINE
     conf = lire_config() if conf is None else conf
     k = conf.get('kaggle') if isinstance(conf.get('kaggle'), dict) else {}
+    machine = str(k.get('machine') or '').strip()
+    if machine and not re.fullmatch(MACHINE_SYNTAXE, machine):
+        dire(f'attention : « kaggle.machine » de {CONFIG} illisible ({machine!r}) : {MACHINE_DEFAUT}')
+        machine = ''
+    MACHINE = machine or MACHINE_DEFAUT
     compte = str(k.get('compte') or '').strip()
     if not compte:
         raise SystemExit(f'compte Kaggle non configuré. Écrire :\n  doubler --config kaggle.compte <nom_du_compte_kaggle>\n'
@@ -295,11 +371,14 @@ def afficher_config(a, en_json=False):
     ancres = fichier_ancres()
     paroles = paroles_config(conf)
     autotune = autotune_config(conf)
+    gpu = gpu_config(conf)
+    pistes_audio = pistes_audio_config(conf)
     fat1 = trouver_fat1()
     effectif = {'config': str(CONFIG), 'donnees': str(DONNEES), 'source_donnees': a.source_donnees, 'voix': str(VOIX),
                 'sorties': a.sortie, 'voix_defaut': VOIX_DEFAUT, 'source_voix_defaut': VOIX_DEFAUT_SOURCE,
-                'moteur': moteur, 'paroles': paroles, 'autotune': autotune,
-                'x42_autotune': str(fat1) if fat1 else None, 'kaggle': {'compte': valeur_config(conf, 'kaggle.compte'), **noms},
+                'moteur': moteur, 'paroles': paroles, 'autotune': autotune, 'gpu': gpu, 'pistes_audio': pistes_audio,
+                'x42_autotune': str(fat1) if fat1 else None,
+                'kaggle': {'compte': valeur_config(conf, 'kaggle.compte'), **noms, 'machine': MACHINE},
                 'jeton_kaggle': 'présent' if JETON.exists() else 'absent', 'commande_kaggle': str(KAGGLE),
                 'script_noyau': str(SCRIPT_NOYAU), 'ancres_genre': str(ancres) if ancres else None,
                 'contenu': masquer(conf)}
@@ -317,8 +396,14 @@ def afficher_config(a, en_json=False):
     print(f"  paroles        {'oui' if paroles else 'non'}{'' if valeur_config(conf, 'paroles') is not None else '  (défaut)'}")
     print(f"  auto-tune      {autotune or 'désactivé'}{'' if valeur_config(conf, 'autotune') is not None else '  (défaut)'}"
           f" ; x42-autotune {fat1 or 'absent (sudo apt install x42-plugins)'}")
+    print(f"  gpu            {gpu}{'' if valeur_config(conf, 'gpu') is not None else '  (défaut)'}"
+          f" : {'une carte' if gpu == '1' else 'deux cartes' if gpu == '2' else 'les cartes de la machine, deux au plus'}")
+    print(f"  pistes audio   {pistes_audio}{'' if valeur_config(conf, 'pistes_audio') is not None else '  (défaut)'} : "
+          + ('le doublage seul' if pistes_audio == 'doublage' else
+             "doublage (par défaut), original, beat seul, voix convertie seule, voix d'origine seule"))
     for n in KAGGLE_DEFAUTS:
         print(f"  kaggle.{n:8s} {noms[n] or '— (kaggle.compte manque : doubler --config kaggle.compte <nom>)'}")
+    print(f"  kaggle.machine {MACHINE}{'' if valeur_config(conf, 'kaggle.machine') else '  (défaut : GPU T4 x2)'}")
     print(f"  jeton Kaggle   {'présent' if JETON.exists() else 'absent'} ({JETON}, jamais affiché)")
     print(f"  outil kaggle   {KAGGLE}{'' if KAGGLE.exists() else '  (absent)'}"
           f"{'  ($VOIXLA_KAGGLE)' if os.environ.get('VOIXLA_KAGGLE') else ''}")
@@ -907,16 +992,27 @@ def envoyer_jeu(travaux, voix, dossier):
     shutil.rmtree(jeu, ignore_errors=True)
 
 
-def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=MOTEUR_DEFAUT, paroles=True, voix_cibles=1):
+# Sans historique (voir estimer_noyau_s) : part du temps de GPU (deux cartes additionnées) que le nettoyage et YingMusic-SVC
+# prennent en temps réel, chargements à part ; mesuré le 05/11/2026 sur une chanson de 3 min 48 : 0,69 et 0,55
+FACTEURS_DEUX_CARTES = {'nettoyage': 0.70, 'conversion': 0.55}
+
+
+def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=MOTEUR_DEFAUT, paroles=True, voix_cibles=1,
+                    cartes=1):
     """Durée probable d'une session (de l'envoi du noyau à sa fin), d'après la durée audio des vidéos et les rapports
     passés (rapport.json sous <sorties>/*/travail/*/) : démarrage + installation + chargement des modèles, puis par
     seconde d'audio la séparation et l'analyse, le nettoyage (chant) et la conversion (proportionnelle aux pas de
     diffusion ; voix nettoyée : voix principale, chœurs et passages repris par la piste de secours convertis à part,
     environ 1,5 fois plus), enfin les paroles (chargement de Whisper large-v3 et du traducteur, puis transcription).
     Le mode n'est connu qu'après la séparation : en mode auto, l'estimation suppose du chant (la plus longue). Défauts
-    prudents sans historique (nettoyage : banc d'essai du 04/11/2026 ; paroles : essai du même jour)."""
+    prudents sans historique (nettoyage : banc d'essai du 04/11/2026 ; paroles : essai du même jour).
+    Deux cartes (cartes=2, machine GPU T4 x2) : les temps par seconde d'audio restent des temps de GPU (somme des
+    cartes) ; le nettoyage et la conversion YingMusic-SVC, partagés entre les cartes, n'en prennent qu'une part en temps
+    réel (FACTEURS_DEUX_CARTES, ou ce qu'ont pris les sessions passées à deux cartes), et la séparation d'un lot environ
+    la moitié (jamais moins que la plus longue vidéo). Une carte : la formule d'avant, telle quelle."""
     import statistics
     fixes, extras, sep, net, conv, conv_net, par_fixes, par = [], [], [], [], [], [], [], []
+    f_net, f_conv = [], []
     rapports = sorted(Path(sorties).glob('*/travail/*/rapport.json'), key=lambda p: p.stat().st_mtime)[-30:]
     for p in rapports:
         try:
@@ -943,6 +1039,13 @@ def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=
                 par_fixes.append(max(float(sk['paroles_total_s']) - float(tps.get('paroles_s') or 0), 0.0))
             if d > 5 and tps.get('paroles_s'):
                 par.append(tps['paroles_s'] / d)
+            tl = r.get('temps_local', {})
+            if tl.get('gpus') == 2 and tl.get('videos_dans_la_session') == 1:
+                # part du temps de GPU (somme des cartes) que le nettoyage et YingMusic-SVC ont pris en temps réel
+                if sk.get('nettoyage_gpu_s'):
+                    f_net.append((sk['nettoyage_totale_s'] - (sk.get('chargement_nettoyage_s') or 0)) / sk['nettoyage_gpu_s'])
+                if sk.get('yingmusic_gpu_s'):
+                    f_conv.append((sk['yingmusic_total_s'] - (sk.get('chargement_yingmusic_s') or 0)) / sk['yingmusic_gpu_s'])
         except (OSError, ValueError, KeyError, TypeError):
             continue
     fixe = statistics.median(fixes) if fixes else 120.0
@@ -961,7 +1064,19 @@ def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=
     if voix_cibles > 1 and chant:   # une voix par chanteur : chaque référence préparée par moteur, pistes reconnues
         fixe += 20.0 * (voix_cibles - 1)
         t_sep += 0.05
-    return round(60 + fixe + sum(durees_s) * (t_sep + t_conv * pas))   # 60 s : file Kaggle et écriture des sorties
+    if cartes <= 1:
+        return round(60 + fixe + sum(durees_s) * (t_sep + t_conv * pas))   # 60 s : file Kaggle et écriture des sorties
+    # Deux cartes : t_sep = séparation et analyse + nettoyage + paroles ; seuls le nettoyage, la conversion YingMusic-SVC
+    # et la séparation d'un lot se partagent entre les cartes
+    total, plus_longue = float(sum(durees_s)), float(max(durees_s, default=0.0))
+    t_net = (statistics.median(net) if net else 2.3) if nettoyage and chant else 0.0
+    t_base = t_sep - t_net - ((statistics.median(par) if par else 0.25) if paroles else 0.0)
+    f_sep = max(0.5, plus_longue / total) if len(durees_s) > 1 and total > 0 else 1.0
+    borne = lambda f: min(1.0, max(0.4, f))
+    fn = borne(statistics.median(f_net)) if f_net else FACTEURS_DEUX_CARTES['nettoyage']
+    fc = borne(statistics.median(f_conv)) if f_conv else FACTEURS_DEUX_CARTES['conversion']
+    ying = chant and moteur == 'yingmusic'
+    return round(60 + fixe + total * (t_base * f_sep + (t_sep - t_base - t_net) + t_net * fn + t_conv * pas * (fc if ying else 1.0)))
 
 
 PANNE_MAXI_S = 3 * 3600   # coupure réseau tolérée pendant le suivi et le rapatriement (le noyau, lui, continue sur Kaggle)
@@ -974,9 +1089,21 @@ def panne_reseau(code, texte):
     return code == 124 or bool(RESEAU.search(texte or ''))
 
 
+MACHINE_REFUSEE = re.compile(r'machine.?shape|accelerator|machineshape', re.I)
+
+
+def metadonnees_noyau(noyau, jeux, sources, machine):
+    """kernel-metadata.json du noyau : privé, GPU et internet, sur la machine demandée (machine_shape)."""
+    return {'id': noyau, 'title': noyau.split('/')[1], 'code_file': 'doubler_kaggle.py', 'language': 'python',
+            'kernel_type': 'script', 'is_private': True, 'enable_gpu': True, 'enable_tpu': False,
+            'enable_internet': True, 'machine_shape': machine, 'dataset_sources': list(jeux),
+            'competition_sources': [], 'kernel_sources': list(sources), 'model_sources': []}
+
+
 def pousser_noyau(reglages, dossier, attente_maxi, noyau, jeux, sources=(), videos=()):
-    """Écrit et pousse le noyau (GPU T4 + internet) ; attend une place si les deux sessions GPU du compte sont prises.
-    Rend (heure de la poussée, numéro de version Kaggle ou None)."""
+    """Écrit et pousse le noyau (GPU + internet, machine MACHINE : deux T4 par défaut) ; attend une place si les sessions
+    GPU du compte sont prises. Une autre machine (kaggle.machine) refusée par Kaggle : nouvel essai sur MACHINE_DEFAUT (le
+    noyau s'adapte au nombre de cartes qu'il trouve). Rend (heure de la poussée, numéro de version Kaggle ou None)."""
     envoi = dossier / f"envoi-{noyau.split('/')[1]}"
     shutil.rmtree(envoi, ignore_errors=True)
     envoi.mkdir(parents=True)
@@ -989,18 +1116,25 @@ def pousser_noyau(reglages, dossier, attente_maxi, noyau, jeux, sources=(), vide
         raise RuntimeError(f'kaggle/doubler_kaggle.py : « {marque} » attendu une fois')
     script = script.replace(marque, f"SOURCE = '{base64.b64encode(script.encode()).decode()}'")
     (envoi / 'doubler_kaggle.py').write_text(script)
-    with open(envoi / 'kernel-metadata.json', 'w') as f:
-        json.dump({'id': noyau, 'title': noyau.split('/')[1], 'code_file': 'doubler_kaggle.py', 'language': 'python',
-                   'kernel_type': 'script', 'is_private': True, 'enable_gpu': True, 'enable_tpu': False,
-                   'enable_internet': True, 'machine_shape': 'NvidiaTeslaT4', 'dataset_sources': list(jeux),
-                   'competition_sources': [], 'kernel_sources': list(sources), 'model_sources': []}, f, indent=1)
+    machine = MACHINE
+
+    def ecrire_metadonnees():
+        with open(envoi / 'kernel-metadata.json', 'w') as f:
+            json.dump(metadonnees_noyau(noyau, jeux, sources, machine), f, indent=1)
+    ecrire_metadonnees()
     debut, attente = time.time(), None
     try:
         while True:   # deux sessions GPU au plus sur le compte : la suivante attend une place
             code, texte = kaggle('kernels', 'push', '-p', str(envoi))
             if re.search(r'successfully pushed', texte, re.I):
-                dire('Kaggle : noyau GPU lancé (' + texte.strip().splitlines()[-1].split('.')[0] + ')')
+                dire('Kaggle : noyau GPU lancé (' + texte.strip().splitlines()[-1].split('.')[0] + f', machine {machine})')
                 break
+            if machine != MACHINE_DEFAUT and MACHINE_REFUSEE.search(texte) and not re.search(r'GPU session count', texte, re.I):
+                dire(f'Kaggle : machine {machine} refusée ({texte.strip().splitlines()[-1][-200:]}) : nouvel essai sur '
+                     f'{MACHINE_DEFAUT} (GPU T4 x2)')
+                machine = MACHINE_DEFAUT
+                ecrire_metadonnees()
+                continue
             if not re.search(r'GPU session count|concurrent|too many', texte, re.I) or time.time() - debut > attente_maxi:
                 raise RuntimeError('Kaggle : noyau refusé : ' + texte.strip()[-500:])
             if attente is None:
@@ -1383,15 +1517,18 @@ def reverb(tv, seche, nom, duree):
     return rev
 
 
-def assembler(t, seche, rev, g, sortie_wav):
-    """Mix final : musique seule + voix sèche (gain g['seche']) + reverb (g['reverb'], s'il y en a une), puis limiteur."""
+def assembler(t, seche, rev, g, sortie_wav, musique=True):
+    """Mix final : musique seule + voix sèche (gain g['seche']) + reverb (g['reverb'], s'il y en a une), puis limiteur.
+    musique faux : la voix convertie seule, telle qu'elle sonne dans le mix (piste « voix convertie seule » de la vidéo) :
+    même graphe, musique mise à zéro (elle ne sert plus qu'à donner au résultat la durée du mix)."""
     entrees = ['-i', t / 'instrumental.wav', '-i', seche]
-    graphe = f"[1:a]volume={g['seche']:.2f}dB[s];"
+    graphe, fond = ('', '[0:a]') if musique else ('[0:a]volume=0[z];', '[z]')
+    graphe += f"[1:a]volume={g['seche']:.2f}dB[s];"
     if rev is not None:
         entrees += ['-i', rev]
-        graphe += f"[2:a]volume={g['reverb']:.2f}dB[r];[0:a][s][r]amix=inputs=3:normalize=0:duration=first,"
+        graphe += f"[2:a]volume={g['reverb']:.2f}dB[r];{fond}[s][r]amix=inputs=3:normalize=0:duration=first,"
     else:
-        graphe += '[0:a][s]amix=inputs=2:normalize=0:duration=first,'
+        graphe += f'{fond}[s]amix=inputs=2:normalize=0:duration=first,'
     # limiteur sur la crête vraie (détection suréchantillonnée x4), -1 dBTP environ ; latency=1 : sans elle, alimiter
     # retarde le mix de 5 ms (son en retard sur l'image)
     graphe += f'aresample={4 * 44100},alimiter=limit={LIMITE:.4f}:level=disabled:latency=1,aresample=44100[m]'
@@ -2018,6 +2155,10 @@ def faire_autotune(t, tv, dossier, base, mode, gains, reglage):
 
 
 RECUL_FFMPEG_S = 3 / 23   # ffmpeg recule de 3/23 s avant de chercher (formats sans recherche par pts, images B : mkv, webm)
+# Conteneurs de sortie sans liste d'édition : rien n'y commence avant 0, le muxeur avance tous les temps (image, son,
+# sous-titres) d'autant que la première image copiée d'un extrait est avant la coupe. En mp4, m4v et mov, une liste
+# d'édition garde la coupe pour temps 0.
+RECALES_SUR_L_IMAGE = ('.mkv', '.webm')
 
 
 def premiere_image_copiee(video, info, fv, ss):
@@ -2035,22 +2176,29 @@ def premiere_image_copiee(video, info, fv, ss):
 def ajuster_coupe(video, info, fv, debut):
     """Valeur de -ss qui fait partir la copie de l'image sur l'image clé de l'extrait (debut - 0,001 s). En mp4, -ss debut
     y tombe ; en mkv ou webm, ffmpeg recule de 0,13 s avant de chercher et repartait de l'image clé précédente (1,9 s
-    d'image sans son sur un épisode de série) : on cherche alors 0,1315 s plus loin."""
+    d'image sans son sur un épisode de série) : on cherche alors 0,1315 s plus loin. Rend (-ss, instant de la première
+    image copiée depuis le début du fichier, None si ffmpeg ne l'a pas dit)."""
     p = premiere_image_copiee(video, info, fv, debut)
     if p is None or p >= debut - 0.02:
-        return debut
+        return debut, p
     ss = debut + RECUL_FFMPEG_S + 0.001
     p2 = premiere_image_copiee(video, info, fv, ss)
     if p2 is not None and abs(p2 - (debut - 0.001)) < 0.02:
-        return ss
+        return ss, p2
     dire(f'attention : la copie de l\'image commencera à {p:.3f} s au lieu de {debut:.3f} s (image sans son au début)')
-    return debut
+    return debut, p
 
 
 def plan_video(t):
-    """Où et comment le mix sera remis sur la vidéo : conteneur de sortie, coupe de l'extrait (-ss/-t) et décalage du
-    son dans la vidéo de sortie (decalage_son : instant de la vidéo de sortie où commence le mix ; 0 le plus souvent,
-    -0,13 s pour un extrait mkv ou webm, le retard du flux audio d'origine pour une vidéo entière)."""
+    """Où et comment le mix sera remis sur la vidéo : conteneur de sortie, coupe de l'extrait (-ss/-t), décalage du mix
+    donné à ffmpeg (decalage_son : -itsoffset, compté depuis la coupe ; 0 le plus souvent, -0,13 s pour un extrait mkv
+    ou webm, le retard du flux audio d'origine pour une vidéo entière) et instant de la vidéo doublée où le mix commence
+    vraiment (debut_son : celui des paroles, de paroles.json et des .srt).
+
+    Les deux diffèrent pour un extrait mkv ou webm (RECALES_SUR_L_IMAGE) : le conteneur recale tous les temps sur la
+    première image copiée, le mix commence donc avec elle (debut_son 0, pas -0,13 s), ou plus tard si la copie part d'une
+    image clé antérieure à celle de l'extrait (debut - 0,001 s ; repli d'ajuster_coupe, image sans son au début). En mp4,
+    m4v et mov, et pour une vidéo entière, ils sont égaux."""
     src = json.loads((t / 'source.json').read_text())
     video = Path(src['video'])
     info = sonder(video)
@@ -2059,54 +2207,132 @@ def plan_video(t):
         ext = '.mkv'
     fv = flux_video(info)
     coupe, decalage_son = [], float(src.get('decalage_son') or 0)
+    debut_son = decalage_son
     if 'debut' in src:
-        ss = ajuster_coupe(video, info, fv, src['debut'])
+        ss, image = ajuster_coupe(video, info, fv, src['debut'])
         # la vidéo commence à ss, le son du mix à debut : le mix est décalé d'autant (négatif si ss > debut)
         coupe = ['-ss', f'{ss:.6f}', '-t', f"{src['debut'] + src['duree'] - ss:.6f}"]
         decalage_son += src['debut'] - ss
-    return {'src': src, 'video': video, 'info': info, 'ext': ext, 'fv': fv, 'coupe': coupe, 'decalage_son': decalage_son}
+        debut_son = decalage_son
+        if ext in RECALES_SUR_L_IMAGE and image is not None:
+            debut_son = max(0.0, round(src['debut'] - 0.001 - image, 3))   # avance de la copie sur l'image clé (au ms)
+    return {'src': src, 'video': video, 'info': info, 'ext': ext, 'fv': fv, 'coupe': coupe, 'decalage_son': decalage_son,
+            'debut_son': debut_son}
 
 
 SOUS_TITRES_NOUVEAUX = {'.mp4': 'mov_text', '.m4v': 'mov_text', '.mov': 'mov_text', '.mkv': 'srt', '.webm': 'webvtt'}
+CONTENEURS_MP4 = ('.mp4', '.m4v', '.mov')   # titre des pistes lu dans handler_name (title n'y est pas gardé)
 
 
-def remettre_sur_video(t, mix, dossier, base, sous_titres=(), plan=None):
+def echantillons(fichier):
+    """(nombre d'échantillons, fréquence) du premier flux audio d'un fichier (exact pour un WAV)."""
+    d = json.loads(lancer(['ffprobe', '-v', 'error', '-select_streams', 'a:0', '-show_entries',
+                           'stream=duration_ts,sample_rate', '-of', 'json', str(fichier)]))
+    s = (d.get('streams') or [{}])[0]
+    return int(s.get('duration_ts') or 0), int(s.get('sample_rate') or 0)
+
+
+def remettre_sur_video(t, mix, dossier, base, sous_titres=(), plan=None, pistes=(), titre=None):
     """Le mix remis sur la vidéo : image copiée sans réencodage, sous-titres d'origine gardés (ceux que le conteneur
-    accepte tels quels), puis les pistes de sous_titres ajoutées ([{fichier (srt, temps de la vidéo de sortie), langue
-    (ISO 639-2), titre}] : mov_text en mp4, srt en mkv, webvtt en webm), sans être affichées d'office."""
+    accepte tels quels), puis les pistes de sous_titres ajoutées ([{fichier (srt, au temps de la coupe, celui du
+    décalage du mix decalage_son : le conteneur les recale avec l'image et le son), langue (ISO 639-2), titre}] :
+    mov_text en mp4, srt en mkv, webvtt en webm), sans être affichées d'office.
+    Le mix est la première piste audio et la seule par défaut (l'interface et les lecteurs prennent la piste 0) ; titre :
+    son titre (défaut « voix <Nom> », d'après base). pistes : pistes audio en plus, après lui, dans l'ordre ([{fichier,
+    titre}], sons de l'extrait comme le mix), calées exactement comme lui (même -itsoffset, même coupe de l'image) et
+    ramenées à sa durée, à l'échantillon près. Toutes : codec de CONTENEURS, langue de la source quand elle est connue,
+    titre aussi dans handler_name en mp4 ; en mp4, ffmpeg les met dans le même alternate_group (une seule jouée)."""
     p = plan or plan_video(t)
     src, video, info, ext, fv = p['src'], p['video'], p['info'], p['ext'], p['fv']
     audio, options, acceptes = CONTENEURS[ext]
     sortie = dossier / f'{base}{ext}'
     decalage = ['-itsoffset', f"{p['decalage_son']:.6f}"] if abs(p['decalage_son']) > 1e-6 else []
-    cartes = ['-map', f"0:{fv['index']}", '-map', '1:a:0']
+    sons = [{'fichier': mix, 'titre': titre or base.split(' - ', 1)[-1]}, *pistes]
+    entrees, cartes = [], ['-map', f"0:{fv['index']}"]
+    for i, s in enumerate(sons):
+        entrees += [*decalage, '-i', s['fichier']]
+        cartes += ['-map', f'{1 + i}:a:0']
     gardes, jetes = [], []
     for s in flux(info, 'subtitle'):
         (gardes if s.get('codec_name') in acceptes else jetes).append(s)
     for s in gardes:
         cartes += ['-map', f"0:{s['index']}"]
-    entrees, codecs = [], []
+    codecs = []
     for j, st in enumerate(sous_titres):
         k = len(gardes) + j   # index de la piste parmi les sous-titres de sortie
         entrees += ['-i', st['fichier']]
-        cartes += ['-map', f'{2 + j}:0']
+        cartes += ['-map', f'{1 + len(sons) + j}:0']
         codecs += [f'-c:s:{k}', SOUS_TITRES_NOUVEAUX.get(ext, 'srt'), f'-metadata:s:s:{k}', f"language={st['langue']}",
                    f'-metadata:s:s:{k}', f"title={st['titre']}", f'-disposition:s:{k}', '0']
-        if ext in ('.mp4', '.m4v', '.mov'):
+        if ext in CONTENEURS_MP4:
             codecs += [f'-metadata:s:s:{k}', f"handler_name={st['titre']}"]
     if ext == '.mkv':
         cartes += ['-map', '0:t?']   # polices jointes des sous-titres
         if sous_titres:
             options = [*options, '-default_mode', 'infer_no_subs']   # les paroles ne s'affichent pas d'office
-    meta = ['-metadata:s:a:0', f"title={base.split(' - ', 1)[-1]}"]
-    if src.get('langue'):
-        meta += ['-metadata:s:a:0', f"language={src['langue']}"]
-    ff(*p['coupe'], '-i', video, *decalage, '-i', mix, *entrees, *cartes, '-c:v', 'copy', '-c:s', 'copy', *codecs,
+    n, sr = echantillons(mix) if pistes else (0, 0)
+    meta = []
+    for k, s in enumerate(sons):
+        meta += [f'-metadata:s:a:{k}', f"title={s['titre']}", f'-disposition:a:{k}', 'default' if k == 0 else '0']
+        if src.get('langue'):
+            meta += [f'-metadata:s:a:{k}', f"language={src['langue']}"]
+        if ext in CONTENEURS_MP4:
+            meta += [f'-metadata:s:a:{k}', f"handler_name={s['titre']}"]
+        if k and n and sr:   # même durée que le mix : complétée de silence ou coupée à la fin, jamais décalée
+            meta += [f'-filter:a:{k}', f'aresample={sr},apad=whole_len={n},atrim=end_sample={n}']
+    ff(*p['coupe'], '-i', video, *entrees, *cartes, '-c:v', 'copy', '-c:s', 'copy', *codecs,
        '-c:t', 'copy', *audio, *meta, *options, sortie)
     if jetes:
         dire(f"sous-titres non copiés ({', '.join(sorted({s.get('codec_name', '?') for s in jetes}))}) : le conteneur "
              f'{ext} ne les accepte pas tels quels')
     return sortie
+
+
+def titres_pistes(voix, autotune=False):
+    """Titres des pistes audio de la vidéo doublée, d'après la voix (« Jules », ou « Jules et Marie » avec une voix par
+    chanteur) : Doublage (voix Jules), Original, Beat seul, Voix convertie seule (Jules), Voix d'origine seule."""
+    nom, at = voix['affichage'], ' auto-tune' if autotune else ''
+    convertie = 'Voix converties seules' if len(voix_membres(voix)) > 1 else 'Voix convertie seule'
+    return {'doublage': f'Doublage{at} (voix {nom})', 'original': 'Original', 'beat': 'Beat seul',
+            'voix': f'{convertie}{at} ({nom})', 'voix_origine': "Voix d'origine seule"}
+
+
+def pistes_en_plus(t, tv, voix, gains, autotune=False):
+    """Pistes audio de la vidéo doublée après le doublage : original (travail/original.wav), beat seul
+    (travail/instrumental.wav, celui de ce mixage), voix convertie seule, voix d'origine seule (travail/voix_source.wav).
+    La voix convertie seule est celle du mix, sans la musique : assembler() avec la voix sèche et la reverb de ce mixage
+    (de la version auto-tune si autotune), aux mêmes gains, au même limiteur ; écrite dans travail/<voix>/.voix_seule*.wav,
+    effacé après la vidéo. Sans elle (erreur), les trois autres pistes restent."""
+    titres = titres_pistes(voix, autotune)
+    nom = 'autotune' if autotune else 'convertie'
+    rev = tv / f'reverb_voix_{nom}.wav' if 'reverb' in gains else None
+    seule = tv / f".voix_seule{'_autotune' if autotune else ''}.wav"
+    try:
+        assembler(t, tv / f'seche_voix_{nom}.wav', rev, gains, seule, musique=False)
+        voix_seule = [{'fichier': seule, 'titre': titres['voix']}]
+    except Exception as e:  # noqa: BLE001 — une piste en moins, jamais de vidéo en moins
+        seule.unlink(missing_ok=True)
+        dire(f"ATTENTION : {titres['voix'].lower()} impossible ({str(e).strip().splitlines()[-1][:200]}) : "
+             'vidéo sans cette piste')
+        voix_seule = []
+    return [{'fichier': t / 'original.wav', 'titre': titres['original']},
+            {'fichier': t / 'instrumental.wav', 'titre': titres['beat']}, *voix_seule,
+            {'fichier': t / 'voix_source.wav', 'titre': titres['voix_origine']}]
+
+
+def video_avec_repli(t, mix, dossier, base, pistes_st, pistes_a, plan, titre):
+    """remettre_sur_video ; refusée par ffmpeg, elle est refaite sans les pistes audio en plus, puis aussi sans les
+    pistes de paroles : la vidéo doublée passe avant elles. Rend (vidéo, pistes de paroles gardées, pistes audio en plus
+    gardées)."""
+    essais = [(pistes_st, pistes_a)] + [(pistes_st, [])] * bool(pistes_a) + [([], [])] * bool(pistes_st)
+    for i, (st, pa) in enumerate(essais):
+        try:
+            return remettre_sur_video(t, mix, dossier, base, st, plan, pa, titre), st, pa
+        except Exception as e:  # noqa: BLE001
+            if i == len(essais) - 1:
+                raise
+            dire(f"ATTENTION : {'pistes audio en plus' if pa else 'pistes de paroles'} refusées par ffmpeg "
+                 f'({str(e).strip().splitlines()[-1][:200]}) : vidéo sans elles')
 
 
 # --- Paroles : paroles.json (noyau), calage sur la vidéo, .srt, .lrc --------------------------------------------------
@@ -2193,9 +2419,10 @@ def lire_paroles(chemin):
 
 
 def caler_paroles(d, decalage):
-    """Temps des paroles en secondes de la vidéo de sortie : le noyau les donne en temps du son doublé (decalage_s 0) ;
-    le mix commence à decalage s dans la vidéo. Idempotent (--remix) : decalage_s garde le décalage déjà appliqué.
-    Ce qui tomberait avant le début de la vidéo est rogné ou retiré."""
+    """Temps des paroles décalés de decalage s : le noyau les donne en temps du son doublé (decalage_s 0) ; pour
+    paroles.json et les .srt, decalage est l'instant de la vidéo doublée où commence le mix (plan_video : debut_son).
+    Idempotent (--remix) : decalage_s garde le décalage déjà appliqué, un ancien calage est donc corrigé. Ce qui
+    tomberait avant 0 est rogné ou retiré."""
     delta = float(decalage) - float(d.get('decalage_s') or 0.0)
 
     def decaler(segs, cle='texte', mots=False):
@@ -2283,9 +2510,16 @@ def ecrire_lrc(segments, chemin, decalage=0.0, titre=None, langue=None):
     return n
 
 
-def preparer_paroles(tv, dossier, base, decalage, duree_video=None):
-    """paroles.json calé sur la vidéo de sortie (réécrit), puis <base>.<langue>.srt, <base>.fr.srt (traduction ; ou
-    <base>.traduction.fr.srt si les paroles sont déjà en français) et <base>.lrc à côté des sorties. Rend (pistes de
+PISTES_PAROLES_TEMP = '.paroles_video_*.srt'   # dans travail/<voix>/ : pistes de paroles au temps de la coupe
+
+
+def preparer_paroles(tv, dossier, base, decalage, duree_video=None, decalage_ffmpeg=None):
+    """paroles.json calé sur la vidéo doublée (réécrit), puis <base>.<langue>.srt, <base>.fr.srt (traduction ; ou
+    <base>.traduction.fr.srt si les paroles sont déjà en français) et <base>.lrc à côté des sorties. decalage :
+    instant de la vidéo doublée où commence le mix (plan_video : debut_son) ; duree_video : sa fin, dans le même temps.
+    decalage_ffmpeg : le décalage du mix donné à ffmpeg (plan_video : decalage_son), s'il diffère (extrait mkv ou webm) :
+    les pistes de sous-titres pour remettre_sur_video, que le conteneur recale avec l'image et le son, sont alors
+    écrites à ce décalage dans travail/<voix>/.paroles_video_<n>.srt (à effacer après la vidéo). Rend (pistes de
     sous-titres pour remettre_sur_video, fichiers écrits, résumé pour le rapport)."""
     chemin = tv / 'paroles.json'
     d, raison = lire_paroles(chemin)
@@ -2301,16 +2535,25 @@ def preparer_paroles(tv, dossier, base, decalage, duree_video=None):
         return [], [], {**info, 'raison': 'aucune parole reconnue'}
     lg = d['langue'] or 'und'
     code, nom = langue_piste(d['langue'])
-    pistes, fichiers = [], []
-    srt = dossier / f'{base}.{lg}.srt'
-    ecrire_srt(d['segments'], srt, duree_video)
-    pistes.append({'fichier': srt, 'langue': code, 'titre': f'Paroles ({nom})'})
-    fichiers.append(srt)
+    a_ecrire = [(f'{base}.{lg}.srt', code, f'Paroles ({nom})', lambda x: x['segments'])]
     if info['traduction']:
-        srt_fr = dossier / (f'{base}.fr.srt' if lg != 'fr' else f'{base}.traduction.fr.srt')
-        ecrire_srt(d['traductions']['fr']['segments'], srt_fr, duree_video)
-        pistes.append({'fichier': srt_fr, 'langue': 'fre', 'titre': 'Paroles (français, traduction)'})
-        fichiers.append(srt_fr)
+        a_ecrire.append((f'{base}.fr.srt' if lg != 'fr' else f'{base}.traduction.fr.srt', 'fre',
+                         'Paroles (français, traduction)', lambda x: x['traductions']['fr']['segments']))
+    dv = fin_v = None
+    if decalage_ffmpeg is not None and abs(float(decalage_ffmpeg) - float(decalage)) > 1e-6:
+        dv = caler_paroles(json.loads(json.dumps(d)), decalage_ffmpeg)
+        fin_v = None if duree_video is None else duree_video - float(decalage) + float(decalage_ffmpeg)
+    pistes, fichiers = [], []
+    for n, (nom_f, code_f, titre, segments) in enumerate(a_ecrire):
+        srt = dossier / nom_f
+        ecrire_srt(segments(d), srt, duree_video)
+        fichiers.append(srt)
+        if dv is not None:
+            if not segments(dv):
+                continue
+            srt = tv / PISTES_PAROLES_TEMP.replace('*', str(n))
+            ecrire_srt(segments(dv), srt, fin_v)
+        pistes.append({'fichier': srt, 'langue': code_f, 'titre': titre})
     lrc = dossier / f'{base}.lrc'
     ecrire_lrc(d['segments'], lrc, decalage, base, d['langue'])
     fichiers.append(lrc)
@@ -2415,41 +2658,53 @@ def finir(tr, a, voix, temps_local=None):
     with Etape('video', titre, 'son remis sur la vidéo (image copiée)' + (', paroles en sous-titres' if paroles_on else '')):
         plan = plan_video(t)
         if paroles_on:
-            try:
-                pistes_st, fichiers_paroles, i_p = preparer_paroles(tv, dossier, base, plan['decalage_son'],
-                                                                    duree_s(tv / 'mix.wav') + plan['decalage_son'])
+            try:   # paroles.json, .srt : temps de la vidéo doublée ; pistes de la vidéo : temps de la coupe
+                pistes_st, fichiers_paroles, i_p = preparer_paroles(tv, dossier, base, plan['debut_son'],
+                                                                    duree_s(tv / 'mix.wav') + plan['debut_son'],
+                                                                    decalage_ffmpeg=plan['decalage_son'])
                 info_paroles.update(i_p)
             except Exception as e:  # noqa: BLE001 — des paroles abîmées n'empêchent jamais la vidéo
                 info_paroles['raison'] = f'paroles inutilisables : {e}'
+        # pistes audio : le doublage (piste 0, seule par défaut), puis original, beat seul, voix convertie seule, voix
+        # d'origine seule (sauf --pistes-audio doublage, ou la clé pistes_audio de la configuration)
+        toutes = getattr(a, 'pistes_audio', None) != 'doublage'
+        info_pistes = {'reglage': 'toutes' if toutes else 'doublage'}
         try:
-            sortie = remettre_sur_video(t, tv / 'mix.wav', dossier, base, pistes_st, plan)
-        except Exception as e:  # noqa: BLE001
-            if not pistes_st:
-                raise
-            dire(f'ATTENTION : pistes de paroles refusées par ffmpeg ({str(e).splitlines()[-1][:200]}) : vidéo sans elles')
-            info_paroles['raison'] = 'pistes de sous-titres refusées par ffmpeg (fichiers .srt et .lrc gardés)'
-            pistes_st = []
-            sortie = remettre_sur_video(t, tv / 'mix.wav', dossier, base, (), plan)
-        info_paroles['pistes_video'] = [st['titre'] for st in pistes_st]
-        sortie_at = lrc_at = None
-        if info_at and info_at.get('applique'):
-            b_at = base_autotune(base)
-            try:   # mêmes pistes de paroles et sous-titres d'origine que la version normale
-                sortie_at = remettre_sur_video(t, tv / 'mix_autotune.wav', dossier, b_at, pistes_st, plan)
-                info_at['fichiers']['video'] = sortie_at.name
-            except Exception as e:  # noqa: BLE001 — le mp3 auto-tune reste
-                dire(f'ATTENTION : vidéo auto-tune impossible ({str(e).strip().splitlines()[-1][:200]}) : mp3 seul')
-                info_at['fichiers']['video'] = None
-                info_at['erreur_video'] = str(e).strip()[:500]
-            lrc = next((f for f in fichiers_paroles if f.suffix == '.lrc'), None)
-            if lrc is not None:
-                lrc_at = dossier / f'{b_at}.lrc'
-                shutil.copy2(lrc, lrc_at)
-            info_at['fichiers']['lrc'] = lrc_at.name if lrc_at else None
+            pistes_a = pistes_en_plus(t, tv, voix, gains) if toutes else []
+            demandees = pistes_st
+            sortie, pistes_st, pistes_a = video_avec_repli(t, tv / 'mix.wav', dossier, base, pistes_st, pistes_a, plan,
+                                                           titres_pistes(voix)['doublage'])
+            if demandees and not pistes_st:
+                info_paroles['raison'] = 'pistes de sous-titres refusées par ffmpeg (fichiers .srt et .lrc gardés)'
+            info_pistes['video'] = [titres_pistes(voix)['doublage'], *(p['titre'] for p in pistes_a)]
+            info_paroles['pistes_video'] = [st['titre'] for st in pistes_st]
+            sortie_at = lrc_at = None
+            if info_at and info_at.get('applique'):
+                b_at = base_autotune(base)
+                try:   # mêmes pistes de paroles et sous-titres d'origine que la version normale, pistes audio auto-tune
+                    pistes_at = pistes_en_plus(t, tv, voix, gains, autotune=True) if toutes else []
+                    sortie_at, _, pistes_at = video_avec_repli(t, tv / 'mix_autotune.wav', dossier, b_at, pistes_st,
+                                                               pistes_at, plan, titres_pistes(voix, True)['doublage'])
+                    info_at['fichiers']['video'] = sortie_at.name
+                    info_pistes['video_autotune'] = [titres_pistes(voix, True)['doublage'],
+                                                     *(p['titre'] for p in pistes_at)]
+                except Exception as e:  # noqa: BLE001 — le mp3 auto-tune reste
+                    dire(f'ATTENTION : vidéo auto-tune impossible ({str(e).strip().splitlines()[-1][:200]}) : mp3 seul')
+                    info_at['fichiers']['video'] = None
+                    info_at['erreur_video'] = str(e).strip()[:500]
+                lrc = next((f for f in fichiers_paroles if f.suffix == '.lrc'), None)
+                if lrc is not None:
+                    lrc_at = dossier / f'{b_at}.lrc'
+                    shutil.copy2(lrc, lrc_at)
+                info_at['fichiers']['lrc'] = lrc_at.name if lrc_at else None
+        finally:   # voix convertie seule, pistes de paroles au temps de la coupe : le temps de les mettre dans la vidéo
+            for f in (tv / '.voix_seule.wav', tv / '.voix_seule_autotune.wav', *tv.glob(PISTES_PAROLES_TEMP)):
+                f.unlink(missing_ok=True)
     video_s = time.time() - debut
     rapport['mix'] = {**info, 'musique_seule': reste, 'limite_dbtp': round(20 * math.log10(LIMITE), 2), 'voix_db': voix_db, 'reverb_db': a.reverb_db if mode == 'chant' else None,
                       'gains_db': {k: round(v, 2) for k, v in gains.items()}, 'voix_source_db': cible}
     rapport['paroles_sorties'] = info_paroles
+    rapport['pistes_audio'] = info_pistes
     if info_at is not None:
         rapport['autotune'] = info_at
     if temps_local is not None:
@@ -2659,6 +2914,10 @@ def finir_travaux(travaux, a, voix, session, temps, envoi_s, estimation):
     echecs = []
     st = session.get('temps', {})
     attente = round(session['debut_epoch'] - temps['pousse_epoch'], 1) if session.get('debut_epoch') else None
+    g = session.get('gpus') or {}
+    if g:
+        dire(f"GPU Kaggle : {g.get('visibles')} carte(s) ({', '.join(g.get('noms') or []) or '?'}), {g.get('utilisees')} "
+             'utilisée(s)' + (f" ; {g['repli']}" if g.get('repli') else ''))
     dire(f"GPU Kaggle : {temps['noyau_depuis_envoi_s'] / 60:.1f} min depuis l'envoi (démarrage {attente} s, installation "
          f"{st.get('installation_s', 0):.0f} s, séparation {st.get('separation_totale_s', 0):.0f} s, modèles "
          f"{st.get('chargement_modeles_s', 0):.0f} s, noyau {st.get('total_s', 0) / 60:.1f} min ; estimé "
@@ -2675,7 +2934,8 @@ def finir_travaux(travaux, a, voix, session, temps, envoi_s, estimation):
                            'attente_demarrage_noyau_s': attente, 'version_noyau': temps.get('version_noyau'),
                            'noyau_depuis_envoi_s': temps['noyau_depuis_envoi_s'], 'estimation_noyau_s': estimation,
                            'rapatriement_s': temps['rapatriement_s'], 'decodage_retour_s': tr.get('decodage_retour_s'),
-                           'session_kaggle': st, 'videos_dans_la_session': len(travaux)}
+                           'session_kaggle': st, 'videos_dans_la_session': len(travaux),
+                           'gpus': (session.get('gpus') or {}).get('utilisees', 1)}
             if temps.get('reprise'):
                 temps_local['reprise'] = temps['reprise']
             dire(f"=== {tr['video'].name}")
@@ -2721,10 +2981,11 @@ def reglages_noyau(a, voix, ancres, travaux):
     isolée revient en FLAC 24 bits (voix_source.flac et son gain dans voix_source.flac.json) ; moteur_chant, nettoyage :
     chaîne du chant (YingMusic-SVC sur la voix nettoyée par défaut) ; ancres : None sans fichier d'ancres (ANCRES ; le
     noyau décide alors l'octave sans empreinte) ; paroles : transcription (Whisper large-v3) et traduction française dans
-    le noyau (paroles.json)."""
+    le noyau (paroles.json) ; gpus : cartes GPU à utiliser (auto, 1 ou 2 ; le noyau en prend au plus ce qu'il trouve)."""
     v0 = voix_membres(voix)[0]
     reglages = {**NOYAU_REGLAGES, 'pas': a.pas, 'ancres': ancres, 'paroles': bool(a.paroles),
                 'moteur_chant': a.moteur, 'nettoyage': not a.sans_nettoyage,
+                'gpus': 'auto' if getattr(a, 'gpu', None) in (None, 'auto') else int(a.gpu),
                 'voix': {'nom': v0['id'], 'fichier': f"voix-{v0['id']}.wav", 'f0_parole_hz': v0['f0'],
                          'facteur_chant': FACTEUR_CHANT},
                 'travaux': [{'id': tr['id'], 'entree': tr['entree'], 'mode': a.mode,
@@ -2775,13 +3036,15 @@ def traiter_lot(videos, a, voix):
         reglages = reglages_noyau(a, voix, ancres, travaux)
         retour = kdir / 'retour'
         sources = [OUTILS] if (kdir / 'outils.json').exists() else []
+        cartes = cartes_prevues(getattr(a, 'gpu', 'auto'), MACHINE)
         estimation = estimer_noyau_s([tr['duree_audio_s'] for tr in travaux], a.pas, a.sortie, not a.sans_nettoyage, a.mode,
-                                     a.moteur, a.paroles, len(voix_membres(voix)))
+                                     a.moteur, a.paroles, len(voix_membres(voix)), cartes)
         # limite du suivi : au moins le double de l'estimation (le nettoyage allonge beaucoup une longue chanson)
         attente_maxi = max((30 + 20 * len(travaux)) * 60, 2 * estimation + 30 * 60)
         dire(f"chaîne : chant → {'voix nettoyée' if not a.sans_nettoyage else 'voix complète (sans nettoyage)'}, "
              f"{'YingMusic-SVC' if a.moteur == 'yingmusic' else 'Seed-VC 44 kHz'} ; parole → Seed-VC 22 kHz ; "
              f"paroles → {'Whisper large-v3 et traduction française' if a.paroles else 'non'} ; "
+             f"{'deux cartes T4' if cartes == 2 else 'une carte'} (machine {MACHINE}) ; "
              f"session estimée à {estimation / 60:.0f} min")
         if voix.get('membres'):
             dire(f"une voix par chanteur ({'duo mixte' if voix['mode'] == 'genre' else 'chanteurs dans l’ordre d’apparition'}) : "
@@ -2795,6 +3058,7 @@ def traiter_lot(videos, a, voix):
                             'envoi_s': envoi_s,
                             'estimation_s': estimation, 'attente_maxi_s': attente_maxi, 'pas': a.pas,
                             'moteur': a.moteur, 'nettoyage': not a.sans_nettoyage, 'paroles': bool(a.paroles),
+                            'gpu': getattr(a, 'gpu', 'auto'), 'machine': MACHINE,
                             'travaux': [{k: tr.get(k) for k in CHAMPS_SESSION} for tr in travaux]})
         etapes = {}
         try:
@@ -2946,6 +3210,14 @@ def main():
     p.add_argument('--sans-paroles', action='store_true',
                    help='ni transcription ni traduction des paroles, ni sous-titres, .srt ou .lrc (défaut : clé « paroles » '
                         'de la configuration, oui sinon ; avec --remix : la vidéo refaite sans les paroles)')
+    p.add_argument('--pistes-audio', choices=list(PISTES_AUDIO), default=None,
+                   help='pistes audio de la vidéo doublée : toutes (défaut : le doublage, en premier et seul par défaut, '
+                        'puis original, beat seul, voix convertie seule, voix d\'origine seule) ou doublage (lui seul). '
+                        'Défaut lu dans la configuration (clé « pistes_audio ») ; avec --remix : la vidéo refaite ainsi')
+    p.add_argument('--gpu', choices=list(GPU_CHOIX), default=None,
+                   help="cartes GPU du noyau : auto (défaut : les deux T4 de la machine Kaggle, une seule si elle n'en a "
+                        "qu'une), 1 (une carte, comme avant) ou 2 ; même résultat, plus vite à deux. Défaut lu dans la "
+                        'configuration (clé « gpu »)')
     p.add_argument('--voix-db', type=float, default=None, help='voix par rapport à celle de la vidéo (défaut +4 en chant, 0 en parole)')
     p.add_argument('--reverb-db', type=float, default=-13, help='reverb sous la voix sèche, en chant (défaut -13)')
     p.add_argument('--mix-v1', action='store_true',
@@ -3032,6 +3304,7 @@ def executer(p, a):
     if a.ajouter_voix:
         ajouter_voix(*a.ajouter_voix)
         return 0
+    a.pistes_audio = a.pistes_audio or pistes_audio_config(conf)
     if a.reprendre:
         if not KAGGLE.exists() or not JETON.exists():
             sys.exit(f'Kaggle : commande ({KAGGLE}) ou clé (~/.kaggle/access_token) absente')
@@ -3051,6 +3324,7 @@ def executer(p, a):
         raise SystemExit(f'{CONFIG} : moteur inconnu « {moteur_conf} » (moteurs : {", ".join(MOTEURS)})')
     moteur_donne = a.moteur is not None
     a.moteur = a.moteur or moteur_conf or MOTEUR_DEFAUT
+    a.gpu = a.gpu or gpu_config(conf)
     a.paroles = not a.sans_paroles and paroles_config(conf)
     a.autotune_reglage = reglage_autotune(a, conf)
     if a.voix is None:

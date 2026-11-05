@@ -2,12 +2,13 @@
 sinon repli sur les sous-titres de la vidéo doublée, extraits par ffmpeg et gardés en cache. Synchronisation sur la
 lecture : ligne en cours, ligne suivante, mot en cours.
 
-- paroles.json (format 1 ; temps en secondes, 0 = début de l'audio doublé) :
-    {"format": 1, "langue": "es", "source": "whisper-large-v3",
+- paroles.json (format 1 ; temps en secondes de la vidéo doublée, « decalage_s » : leur décalage par rapport au son
+  doublé, dont le temps vaut debut − decalage_s) :
+    {"format": 1, "langue": "es", "source": "whisper-large-v3", "decalage_s": 0.0,
      "segments": [{"debut": 64.5, "fin": 66.0, "texte": "…", "mots": [{"debut": 64.5, "fin": 64.8, "mot": "…"}]}],
      "traductions": {"fr": {"source": "<modèle>", "segments": [{"debut": 64.5, "fin": 66.0, "texte": "…"}]}}}
-  « mots » et « traductions » sont facultatifs. Les segments ou mots abîmés sont ignorés un par un ; le fichier n'est
-  jamais modifié.
+  « mots », « traductions » et « decalage_s » sont facultatifs. Les segments ou mots abîmés sont ignorés un par un ; le
+  fichier n'est jamais modifié. Le temps des paroles n'est pas celui du lecteur : voir ecart_lecture.
 - Sous-titres : chaque flux texte de la vidéo doublée (subrip, mov_text, ass…) est converti en SRT par
   « ffmpeg -map 0:s:N -f srt » dans ~/.cache/voix-la/sous-titres/ (VOIXLA_CACHE pour les essais) : <clé>.json (index
   des flux : langue, titre, codec, fichier) et <clé>-<N>.srt. La clé dépend du chemin, de la taille et de la date de la
@@ -33,6 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import chemins
+from .pistes import avance_piste, decalage_son  # noqa: F401  (decalage_son : lu dans travail/source.json)
 
 VERSION = 1                 # version du cache des sous-titres
 CACHE_MAX_MO = 20
@@ -75,6 +77,7 @@ class Paroles:
     originale: Couche
     traductions: dict     # {"fr": Couche} ; peut être vide
     origine: str          # "paroles.json" ou "sous-titres"
+    decalage_s: float = 0.0   # paroles.json : décalage par rapport au son doublé (temps du son = debut − decalage_s)
 
     def _francaise(self):
         c = self.traductions.get("fr")
@@ -220,7 +223,40 @@ def lire_paroles(chemin):
             traductions[rangee] = Couche(langue=str(cle), source=v["source"] if isinstance(v.get("source"), str)
                                          else "", lignes=l)
     return Paroles(Couche(langue=langue.strip() if langue else None, source=source, lignes=lignes), traductions,
-                   "paroles.json")
+                   "paroles.json", _decalage(d.get("decalage_s")) or 0.0)
+
+
+def _decalage(v):
+    """Un décalage valide (nombre fini, de signe quelconque) en float, sinon None (booléens et chaînes refusés)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    v = float(v)
+    return v if math.isfinite(v) else None
+
+
+def ecart_lecture(paroles, avec_image=True, debut_son=None):
+    """Temps des paroles = position dans la piste lue + cet écart (s) ; retrancher l'écart d'un temps des paroles donne
+    la position où aller.
+
+    La piste lue compte en temps du son doublé + pistes.avance_piste(avec_image, debut_son), la règle de passage du
+    temps du son au temps de la piste :
+    - avec image (la vidéo doublée, ses copies des pistes séparées, qui gardent ses temps, et la vidéo d'origine au
+      décalage de l'extrait) : le temps de la vidéo doublée, où le son doublé commence à debut_son
+      (voir decalage_son) ;
+    - sans image (le MP3, travail/original.wav, le beat ou une voix seule lus sans copie vidéo, le son seul quand la
+      fenêtre est fermée) : le temps du son doublé. C'est aussi le temps du lecteur de la page d'un résultat, quelle
+      que soit la piste (pistes.Piste.decalage_lu).
+    paroles.json est en temps du son + decalage_s (doubler.caler_paroles). Pour un extrait mkv ou webm, doubler
+    décale le mix de −0,13 s (decalage_s), mais le conteneur recale tout à partir de la première image : dans la
+    vidéo doublée, le son commence avec l'image (debut_son 0), pas 0,13 s avant. Les sous-titres de la vidéo doublée
+    sont en temps de la vidéo : temps du son + debut_son. debut_son None (source.json absent ou sans decalage_son) :
+    decalage_s s'il est positif (vidéo entière au son en retard), sinon 0."""
+    if paroles is None:
+        return 0.0
+    dec = paroles.decalage_s if paroles.origine == "paroles.json" else 0.0
+    video = debut_son if debut_son is not None else max(0.0, dec)
+    # temps du son = position − avance_piste ; paroles.json : temps du son + decalage_s ; sous-titres : + video
+    return (dec if paroles.origine == "paroles.json" else video) - avance_piste(avec_image, video)
 
 
 # --- SRT -------------------------------------------------------------------------------------------------------------

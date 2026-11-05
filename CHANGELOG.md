@@ -7,6 +7,63 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+## [0.6.0] - 2026-11-05
+
+### Ajouté
+
+- Cinq pistes audio dans la vidéo doublée, calées entre elles et sur l'image à l'échantillon près : Doublage (la
+  première, seule par défaut), Original, Beat seul, Voix convertie seule (« Voix converties seules » avec une voix par
+  chanteur ; voix sèche et reverb aux gains du mix, même limiteur, sans la musique) et Voix d'origine seule. Titres
+  dans `title` et, en mp4, `handler_name` ; même codec que le doublage. La version auto-tune a les mêmes pistes, avec
+  la voix auto-tunée. `--remix` refait la vidéo ainsi, sans Kaggle. Environ 25 à 30 Mo de plus pour une chanson de
+  4 min. Clé `pistes_audio` et option `--pistes-audio toutes|doublage` pour revenir au doublage seul ;
+  `rapport.json` : `pistes_audio`. Si ffmpeg refuse les pistes en plus, la vidéo est faite sans elles.
+- Deux GPU : la machine Kaggle `NvidiaTeslaT4` (« GPU T4 x2 ») a deux cartes T4. Le nettoyage (dereverb de la voix
+  principale et des chœurs en même temps), la conversion YingMusic-SVC (morceaux répartis) et la séparation d'un lot
+  s'y partagent le travail. Le son est identique à celui d'une carte, au bit près. Chanson de 3 min 48 : session GPU de
+  26,6 à 19,4 min.
+- Clé `gpu` et option `--gpu auto|1|2` ; clé `kaggle.machine` (repli sur `NvidiaTeslaT4` si Kaggle refuse la machine
+  demandée).
+- Repli automatique sur une carte : machine à une seule carte, ou carte arrêtée en route.
+- Interface : réglage « Cartes GPU » (Auto, 1 ou 2), écrit par `doubler --config gpu`, grisé si le `doubler` installé
+  ne connaît pas la clé `gpu`.
+- Interface : dans le détail d'un résultat à deux cartes, « GPU Kaggle (2 cartes T4) », et le temps de GPU additionné
+  des deux cartes pour le nettoyage et YingMusic-SVC (`nettoyage_gpu_s`, `yingmusic_gpu_s`) à côté des durées réelles
+  de la session, avec une note qui l'explique.
+- Interface : le choix « Une voix pour tous / Une voix par chanteur », le duo (mixte ou même genre) et les deux voix
+  choisies sont gardés d'une session à l'autre (`interface.json` : `voix_par_chanteur`, `duo_chanteurs`,
+  `voix_chanteurs`). Une voix qui n'existe plus n'est pas présélectionnée.
+
+### Modifié
+
+- Estimation de durée à deux cartes. `rapport.json` : `temps_local.gpus`. `session.json` du noyau : `gpus`,
+  `nettoyage_gpu_s`, `yingmusic_gpu_s`. À deux cartes, `temps.nettoyage_s` et `conversion_s` additionnent le temps de
+  GPU des deux cartes.
+- Interface : estimation de durée à deux cartes. Les doublages nettoyés à deux cartes ont leur propre pente, tirée de
+  la durée réelle de la session et non de `temps.total_video_s`, qui additionne les deux cartes et surestimait
+  d'environ 30 %. Sans historique : 4,1 s par seconde de son. La page Doubler estime selon les cartes prévues (clé
+  `gpu`, machine Kaggle). Les rapports à une carte comptent comme avant.
+
+### Corrigé
+
+- Paroles d'un extrait mkv ou webm : `paroles.json` et les `.srt` écrits à côté des sorties étaient en avance sur la
+  vidéo doublée, de 0,13 s (le décalage donné à ffmpeg, alors que le conteneur recale tout sur la première image), et
+  d'autant plus quand la copie de l'image partait d'une image clé antérieure (0,96 s mesuré sur un webm VP9). Ils sont
+  maintenant au temps de la vidéo doublée, comme ses pistes de paroles, à 2 ms près ; `decalage_s` donne l'instant où y
+  commence le son doublé (0 pour un extrait), le `.lrc` reste au temps du mp3. Les pistes de la vidéo, les cinq pistes
+  audio et les autres cas ne changent pas. `doubler --remix` recale les paroles d'un ancien doublage.
+- Interface : paroles calées sur la piste lue. Pour un extrait mkv ou webm, elles venaient 0,155 s trop tôt sur la
+  vidéo et 0,13 s sur le MP3 et les sons seuls ; pour une vidéo entière au son d'origine en retard, 0,15 à 0,18 s trop
+  tard sur le MP3 et les sons seuls. L'écart restant est de 25 ms au plus.
+- Interface : les notes du panneau des durées (attente d'une place GPU, session partagée) ne s'effacent plus l'une
+  l'autre.
+- Interface : le choix des voix « Chanteur 1 / 2 » ne glisse plus sur une autre voix quand la liste des voix change.
+- Interface : pour une vidéo entière dont le son d'origine est en retard (`decalage_son` de `travail/source.json`), la
+  frise d'octave, la courbe de mélodie et les autres visualisations suivent le son en vidéo ; elles avaient 0,18 à
+  0,20 s d'avance. Le passage de la vidéo à une piste en son seul (beat ou voix seule sans copie vidéo, bascule
+  Vidéo → MP3, son seul fenêtre fermée), puis le retour à la vidéo, gardent le même instant du son ; ils sautaient de
+  0,15 à 0,20 s. Un extrait et une vidéo au son à l'heure ne changent pas. Écart restant : 26 ms au plus.
+
 ## [0.5.0] - 2026-11-04
 
 ### Ajouté
@@ -238,7 +295,8 @@ Première version publique.
     `VOIXLA_DECODAGE_MATERIEL=1` remet le décodage matériel ;
   - les essais automatiques laissaient le son de l'application coupé.
 
-[Non publié]: https://github.com/mawena/Voix-la/compare/v0.5.0...HEAD
+[Non publié]: https://github.com/mawena/Voix-la/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/mawena/Voix-la/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/mawena/Voix-la/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/mawena/Voix-la/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/mawena/Voix-la/compare/v0.3.0...v0.3.1

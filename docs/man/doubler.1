@@ -28,10 +28,11 @@ Toutes les vidéos d'une même commande partent dans une seule session Kaggle :
 sur le PC, le son de chaque vidéo est extrait et envoyé en FLAC 24 bits dans
 un jeu de données privé ;
 .IP 2. 4
-sur le GPU de Kaggle, un noyau privé sépare la voix, choisit entre chant et
-parole et le décalage d'octave de chaque chanteur, nettoie la voix chantée
-(voix principale et chœurs séparés, reverb d'origine retirée), puis la
-convertit avec YingMusic\-SVC ou Seed\-VC ;
+sur les deux GPU T4 de Kaggle, un noyau privé sépare la voix, choisit entre
+chant et parole et le décalage d'octave de chaque chanteur, nettoie la voix
+chantée (voix principale et chœurs séparés, reverb d'origine retirée), puis la
+convertit avec YingMusic\-SVC ou Seed\-VC ; le nettoyage et YingMusic\-SVC se
+partagent entre les deux cartes (\fB\-\-gpu\fR) ;
 .IP 3. 4
 de retour sur le PC, la voix convertie est mixée (nuances de la voix
 d'origine, dé\-esseur, reverb, limiteur), puis remise sur la vidéo ; l'image et
@@ -40,6 +41,15 @@ les sous\-titres sont copiés sans réencodage.
 Seuls le son des vidéos et la référence de la voix choisie (de chaque voix,
 avec une voix par chanteur) partent sur Kaggle.
 .PP
+La vidéo doublée a cinq pistes audio, calées entre elles et sur l'image, dans
+cet ordre : \fBDoublage (voix <Nom>)\fR, la première et la seule jouée par
+défaut ; \fBOriginal\fR ; \fBBeat seul\fR (la musique sans aucune voix) ;
+\fBVoix convertie seule (<Nom>)\fR, telle qu'elle sonne dans le mix (voix sèche
+et reverb à leurs gains, même limiteur ; \fBVoix converties seules\fR avec une
+voix par chanteur) ; \fBVoix d'origine seule\fR. Le lecteur les propose dans
+son menu des pistes audio ; \fB\-\-pistes\-audio doublage\fR garde le doublage
+seul.
+.PP
 Avec l'auto\-tune (\fB\-\-autotune\fR, ou la clé \fBautotune\fR de la
 configuration), une version de plus est faite sur le PC, sans GPU : la voix
 sèche passe dans x42\-autotune (paquet \fBx42\-plugins\fR, filtre \fBlv2\fR de
@@ -47,7 +57,8 @@ ffmpeg) avant la reverb, dans la gamme détectée sur la musique seule, puis est
 mixée au même niveau que la version normale. Elle s'ajoute aux sorties
 habituelles, qui ne changent pas :
 \fI<titre> \- voix <Nom> (auto\-tune).<conteneur>\fR (mêmes pistes de paroles et
-sous\-titres d'origine), \fI.mp3\fR et \fI.lrc\fR. Sans le greffon, doubler le
+sous\-titres d'origine, mêmes pistes audio, doublage et voix convertie seule
+auto\-tunés), \fI.mp3\fR et \fI.lrc\fR. Sans le greffon, doubler le
 dit et fait la version normale seule.
 .PP
 Un extrait propre à chaque vidéo s'écrit \fIvidéo\fB@\fIdébut\fB+\fIdurée\fR
@@ -94,6 +105,29 @@ En chant, convertit la voix isolée complète, sans nettoyage (plus rapide).
 .B \-\-sans\-paroles
 Ni transcription ni traduction des paroles, ni sous-titres, \fB.srt\fR ou \fB.lrc\fR (clé \fBparoles\fR, oui par défaut).
 .TP
+.BR \-\-pistes\-audio " toutes|doublage"
+Pistes audio de la vidéo doublée : \fBtoutes\fR (défaut, clé
+\fBpistes_audio\fR) : le doublage, en premier et seul par défaut, puis
+l'original, le beat seul, la voix convertie seule et la voix d'origine seule ;
+\fBdoublage\fR : le doublage seul. Les pistes en plus coûtent 6 à 8 Mo par
+minute de son (AAC 256 kb/s chacune ; Opus 192 kb/s en webm), et la remise sur
+la vidéo dure environ cinq fois plus longtemps (une piste encodée après
+l'autre : une minute environ pour une chanson de 4 min). Avec
+\fB\-\-remix\fR : la vidéo est refaite ainsi.
+.TP
+.BR \-\-gpu " auto|1|2"
+Cartes GPU du noyau. La machine Kaggle demandée (\fBNvidiaTeslaT4\fR, « GPU T4
+x2 ») a deux cartes T4 : le nettoyage (karaoké sur une carte, dereverb de la
+voix principale et des chœurs chacun sur la sienne), la conversion YingMusic\-SVC
+(morceaux répartis entre les cartes) et la séparation d'un lot s'y partagent le
+travail. Le son rendu est le même qu'avec une carte, au bit près : chaque
+morceau garde sa graine, et les pistes sont assemblées dans le même ordre. Sur
+une chanson de 3 min 48, la session GPU passe de 26,6 à 19,4 min. \fBauto\fR
+(défaut, clé \fBgpu\fR) : les cartes de la machine, deux au plus ; \fB1\fR : une
+carte, comme avant ; \fB2\fR : deux. Une machine à une seule carte, ou une carte
+qui s'arrête en route : repli automatique sur une carte. Le quota GPU
+hebdomadaire de Kaggle se compte en heures de session, pas en heures par carte.
+.TP
 .BI \-\-voix\-db " dB"
 Niveau de la voix par rapport à celle de la vidéo (défaut : +4 en chant, 0 en
 parole).
@@ -131,7 +165,10 @@ corbeille, fichiers de travail effacés).
 Extrait commun à toutes les vidéos, pour un essai.
 .TP
 .B \-\-remix
-Refait seulement le mixage et la vidéo depuis \fItravail/\fR, sans Kaggle.
+Refait seulement le mixage et la vidéo depuis \fItravail/\fR, sans Kaggle
+(paroles et pistes audio comprises : un ancien doublage y gagne ses cinq
+pistes ; \fIparoles.json\fR et les \fB.srt\fR d'un extrait mkv ou webm fait
+avant le 05/11/2026, en avance sur la vidéo doublée, y sont recalés).
 .TP
 .B \-\-reprendre
 Finit la dernière session Kaggle interrompue (coupure réseau, PC éteint) :
@@ -162,8 +199,11 @@ Avec \fB\-\-voix\-liste\fR ou \fB\-\-config\fR : sortie en JSON.
 Sans argument, affiche la configuration et les valeurs utilisées (données,
 commande kaggle, script du noyau, ancres de genre) ; avec \fIclé valeur\fR,
 écrit une clé : \fBdonnees\fR, \fBvoix\fR, \fBmoteur\fR, \fBparoles\fR, \fBautotune\fR
-(intensité de 0 à 100), \fBkaggle.compte\fR, \fBkaggle.jeu\fR, \fBkaggle.noyau\fR,
-\fBkaggle.outils\fR.
+(intensité de 0 à 100), \fBgpu\fR (auto, 1 ou 2), \fBpistes_audio\fR (toutes ou
+doublage), \fBkaggle.compte\fR, \fBkaggle.jeu\fR,
+\fBkaggle.noyau\fR, \fBkaggle.outils\fR, \fBkaggle.machine\fR (machine Kaggle demandée
+à l'envoi du noyau, \fBNvidiaTeslaT4\fR par défaut ; refusée par Kaggle, doubler
+réessaie sur celle\-ci).
 .TP
 .B \-\-preparer\-outils
 Prépare une fois sur Kaggle les paquets et les modèles, pour des installations
@@ -189,7 +229,8 @@ doubler \-\-config kaggle.compte \fIcompte\fR
 .SH FICHIERS
 .TP
 .I ~/.config/voix\-la/config.json
-Configuration : compte Kaggle, dossier des données, voix et moteur par défaut.
+Configuration : compte Kaggle, dossier des données, voix et moteur par défaut,
+cartes GPU et machine Kaggle.
 .TP
 .I ~/.config/voix\-la/ancres_genre.json
 Ancres de genre, facultatives (deux empreintes de voix chantées, aucun son).

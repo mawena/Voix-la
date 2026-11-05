@@ -217,8 +217,10 @@ class PageDetail(Adw.NavigationPage):
         pos = self.lecteur.position_ref() if self.lecteur.media() else 0.0
         self.forme = forme
         self.pistes_dispo = pistes.choisir_pistes(self.res, forme, self.source_choisie())
-        # le beat et les voix seules : leur copie vidéo si elle est prête (en cache), sinon le son seul
-        sources = {c: (p.a_lire, p.decalage, p.libelle) for c, p in self.pistes_dispo.items() if p.a_lire}
+        # le beat et les voix seules : leur copie vidéo si elle est prête (en cache), sinon le son seul ; le lecteur
+        # compte en temps du son doublé (frise, courbes, paroles), et lit une vidéo décalée du début du son en elle
+        # (pistes.source_lecteur) : on passe de la vidéo au son seul, et retour, au même instant du son
+        sources = pistes.sources_lecteur(self.pistes_dispo)
         sans_image = {c for c, p in self.pistes_dispo.items() if not p.avec_image}
         ephemeres = {c for c in pistes.SANS_IMAGE_TOUTES if c in self.pistes_dispo and self.pistes_dispo[c].video}
         cle = pistes.piste_apres_changement(self.pistes_dispo, self.voulue or self.piste)
@@ -442,7 +444,7 @@ class PageDetail(Adw.NavigationPage):
             else:
                 q.video = Path(f)
                 if self.piste != "comparaison":   # sinon, elle sera lue au retour aux pistes (changer_forme)
-                    self.lecteur.ajouter(cle, (q.video, q.decalage, q.libelle), sans_image=False, ephemere=True)
+                    self.lecteur.ajouter(cle, pistes.source_lecteur(q), sans_image=False, ephemere=True)
                 if self.lecteur.cle == cle:
                     self.piste = cle
                 self.page.proteger_caches()
@@ -477,7 +479,7 @@ class PageDetail(Adw.NavigationPage):
                 return
             p.fichier, p.a_preparer = Path(f), False
             if p.video is None:
-                self.lecteur.ajouter(cle, (p.fichier, 0.0, p.libelle), sans_image=True)
+                self.lecteur.ajouter(cle, pistes.source_lecteur(p), sans_image=True)
             if self.voulue == cle:
                 self.voulue = None
                 self.lecteur.basculer(cle)
@@ -685,6 +687,8 @@ class PageDetail(Adw.NavigationPage):
             self.lecteur.revenir_en_video()
 
     def _position(self, t, lecture):
+        """t : la position du lecteur, en temps du son doublé, celui de la frise, de courbes.json et des analyses du
+        son (même en vidéo, où le son peut commencer après l'image : voir pistes.source_lecteur)."""
         if self.frise:
             self.frise.placer(t)
         if self.frise_voix is not None:
@@ -732,8 +736,9 @@ class PageDetail(Adw.NavigationPage):
         """Paroles allumées ou éteintes (menu « œil ») : sous le lecteur, chargées une fois."""
         voulu = bool(self.fenetre.prefs.get("paroles"))
         if voulu and self.vue_paroles is None:
+            # position du lecteur en temps du son doublé : voir voixla.paroles.ecart_lecture
             w = VueParoles(sur_clic=self._clic_frise, langue=self.fenetre.prefs.get("paroles_langue") or "deux",
-                           sur_langue=self._langue_paroles)
+                           sur_langue=self._langue_paroles, debut_son=pistes.decalage_son(self.res.source))
             w.suivre(self._fournisseur)
             self.corps.insert_child_after(w, self.lecteur)
             self.vue_paroles = w
@@ -1110,12 +1115,10 @@ class PageDetail(Adw.NavigationPage):
                 g.add(e)
             else:
                 g.add(commun.ligne_valeur(libelle, formats.duree(s, precis=True)))
-        attente = rapports.attente_gpu_probable(self.res.rapport)
-        if attente:
-            g.set_description(f"Dont environ {formats.duree(attente)} d’attente d’une place GPU ou de démarrage.")
-        tl = (self.res.rapport or {}).get("temps_local") or {}
-        if (tl.get("videos_dans_la_session") or 1) > 1:
-            g.set_description(f"Session Kaggle partagée par {tl['videos_dans_la_session']} vidéos.")
+        # attente d'une place GPU, session partagée, deux cartes T4 (temps de GPU additionnés) : toutes les notes
+        notes = rapports.notes_durees(self.res.rapport)
+        if notes:
+            g.set_description(commun.echapper(" ".join(notes)))
         return g
 
     def _groupe_comparaisons(self):

@@ -68,7 +68,8 @@ class EssaiCapacites(EssaiIsole):
         self.assertEqual(caps & frozenset(moteur.OPTIONS_SUIVIES),
                          frozenset(moteur.OPTIONS_SUIVIES) - RECENTES - {"--reprendre", "--moteur", "--sans-nettoyage",
                                                                          "--sans-paroles", "--autotune",
-                                                                         "--sans-autotune", "--autotune-gamme"})
+                                                                         "--sans-autotune", "--autotune-gamme",
+                                                                         "--gpu"})
         self.assertTrue(moteur.disponible())
 
     def test_doubler_introuvable(self):
@@ -483,7 +484,8 @@ class EssaiConfig(EssaiIsole):
         self.assertEqual(c["donnees"], str(self.donnees))
         self.assertEqual(c["source_donnees"], "VOIXLA_DONNEES")
         self.assertEqual(c["kaggle"], {"compte": "moi", "jeu": "moi/doublage-voix-entrees", "noyau": "moi/mon-noyau",
-                                       "outils": "moi/doublage-outils"})
+                                       "outils": "moi/doublage-outils", "machine": "NvidiaTeslaT4"})
+        self.assertEqual(c["gpu"], "auto")
         self.assertEqual(c["jeton_kaggle"], "absent")
         self.assertFalse(interface.exists())
         self.assertIsNone(moteur.voix_de_config(c))

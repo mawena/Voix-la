@@ -7,8 +7,12 @@ Pistes, dans sorties/<titre>/ :
 - beat : travail/instrumental.wav, la musique sans aucune voix (original − voix isolée, refait à chaque mixage) ;
 - ma_voix : la voix convertie seule, au niveau du mix (voir plan_ma_voix) ;
 - voix_origine : travail/voix_source.wav, la voix d'origine isolée.
-Toutes sont calées sur le doublage : le temps 0 est le début du son doublé (sauf la vidéo d'origine d'un extrait,
-lue avec le décalage du début de l'extrait).
+Toutes sont calées sur le doublage : le lecteur compte en temps du son doublé, dont le 0 est le début du son doublé
+(celui du MP3, de travail/original.wav, du beat, des voix seules, de courbes.json et de la frise). Une piste qui a une
+image (la vidéo doublée, ses copies des pistes séparées, la vidéo d'origine) compte en temps de la vidéo doublée, où le
+son doublé commence à decalage_son de travail/source.json : avance_piste, la seule règle de passage d'un temps à
+l'autre (voixla.paroles.ecart_lecture s'en sert aussi). La vidéo d'origine d'un extrait est lue en plus avec le
+décalage du début de l'extrait.
 
 « Ma voix seule » refait la part de la voix dans le mix de doubler (fonction mixer de doubler.py), sans la musique :
   voix sèche      travail/<voix>/seche_voix_convertie.wav   au gain gains_db.seche  (rapport.json, clé « mix ») ;
@@ -99,6 +103,26 @@ def _fichier(p):
 def bascule_ab(courante):
     """Touche B : du doublage à l'original, et de toute autre piste au doublage."""
     return "original" if courante == "doublage" else "doublage"
+
+
+# --- Temps du son, temps de la piste ---------------------------------------------------------------------------------
+
+def decalage_son(source):
+    """Où commence le son doublé dans la vidéo doublée (s) : « decalage_son » de travail/source.json (le retard du son
+    d'origine d'une vidéo entière, que doubler garde ; 0 pour un extrait, dont la vidéo commence sur son image), ou
+    None si source.json manque ou ne le dit pas."""
+    v = source.get("decalage_son") if isinstance(source, dict) else None
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return float(v) if math.isfinite(v) else None
+
+
+def avance_piste(avec_image, debut_son):
+    """Temps de la piste lue = temps du son doublé + cette avance (s). Une piste qui a une image (la vidéo doublée, ses
+    copies des pistes séparées, qui gardent ses temps, la vidéo d'origine) compte en temps de la vidéo doublée, où le
+    son doublé commence à debut_son (decalage_son ; None : 0) ; un son lu seul (le MP3, travail/original.wav, le beat
+    ou une voix seule sans copie vidéo, le son seul fenêtre fermée) compte en temps du son."""
+    return float(debut_son or 0.0) if avec_image else 0.0
 
 
 # --- Ma voix seule -----------------------------------------------------------------------------------------------------
@@ -347,7 +371,7 @@ def ma_voix_prete(dossier_voix, rapport=None, autotune=False):
 class Piste:
     cle: str
     fichier: Path | None = None     # ce qu'on lit ; None : indisponible, ou à préparer (a_preparer)
-    decalage: float = 0.0           # position dans le fichier = position dans le doublage + décalage
+    decalage: float = 0.0           # début de l'extrait dans la vidéo d'origine, sinon 0 (voir decalage_lu)
     image: bool = False             # le fichier a une image
     explication: str = ""           # ce que la piste contient, ou pourquoi elle manque
     a_preparer: bool = False        # ma_voix : à combiner (en cache) avant de l'écouter
@@ -369,6 +393,13 @@ class Piste:
         return self.image or self.video is not None
 
     nom: str = ""                   # libellé propre à ce résultat (« Voix converties seules »), sinon LIBELLES
+    debut_son: float = 0.0          # decalage_son de travail/source.json : où le son commence dans la vidéo doublée
+
+    @property
+    def decalage_lu(self):
+        """Position dans ce que lit le lecteur (a_lire) = temps du son doublé + ce décalage : celui de l'extrait, plus
+        avance_piste (debut_son) si a_lire a une image."""
+        return self.decalage + avance_piste(self.avec_image, self.debut_son)
 
     @property
     def libelle(self):
@@ -430,7 +461,21 @@ def choisir_pistes(res, forme="video", source_choisie=None):
         _choisir_video(res, forme, p[c], plan)
     sortie = {c: p[c] for c in CLES}
     sortie.update(pistes_autotune(res, forme))
+    debut_son = decalage_son(getattr(res, "source", None)) or 0.0
+    for q in sortie.values():
+        q.debut_son = debut_son
     return sortie
+
+
+def source_lecteur(piste):
+    """La source du lecteur (gui/lecteur.py) pour cette piste : (ce qu'on lit, décalage, libellé). Le lecteur compte
+    en temps du son doublé et lit la source à position + décalage (Piste.decalage_lu)."""
+    return (piste.a_lire, piste.decalage_lu, piste.libelle)
+
+
+def sources_lecteur(dispo):
+    """{clé: source du lecteur} des pistes (choisir_pistes) qu'on peut lire tout de suite (voir source_lecteur)."""
+    return {c: source_lecteur(p) for c, p in dispo.items() if p.a_lire}
 
 
 def pistes_autotune(res, forme="video"):

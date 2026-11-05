@@ -15,7 +15,8 @@ from voixla.rapports import Resultat
 
 LIBELLES_ETAPES = {"Extraction du son", "Envoi sur Kaggle", "Démarrage du noyau", "GPU Kaggle, depuis l’envoi",
                    "GPU Kaggle (cette vidéo)", "Rapatriement", "Reste (original − voix)", "Mixage", "Remise sur la vidéo",
-                   "Décodage du retour (FLAC)"}
+                   "Décodage du retour (FLAC)", "GPU Kaggle (2 cartes T4), depuis l’envoi",
+                   "GPU Kaggle (2 cartes T4) (cette vidéo)"}
 CLASSES = {"homme", "femme", "locuteur", "inconnu", "muet"}
 
 

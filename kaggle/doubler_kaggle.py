@@ -2615,6 +2615,7 @@ def etape_nettoyer(travail):
                 temoin(t, 'erreur')
                 ecrire_json(chemin, res)
                 continue
+            t0 = time.time()   # durée de la vidéo : sans le chargement du modèle, comme avant
             try:
                 os.makedirs(v['dossier'], exist_ok=True)
                 x = lire_deux_canaux(v['voix'])

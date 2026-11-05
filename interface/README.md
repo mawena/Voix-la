@@ -50,8 +50,8 @@ mix ⇄ voix seule. Dans la liste des résultats en mode sélection, Échap en s
   pause et stop, et un clic sur le titre ramène à la page qui joue. Elle reste visible fenêtre étroite, où la barre
   latérale est repliée.
 - **Fermer la fenêtre pendant une lecture** ne l'arrête pas. La fenêtre se cache, l'application reste en vie
-  (`Gio.Application.hold`) et la musique continue. Une vidéo passe sur son son seul, de même contenu, à la même
-  position et sans blanc : le MP3 du doublage, `travail/original.wav` pour l'original, le fichier du beat ou d'une voix
+  (`Gio.Application.hold`) et la musique continue. Une vidéo passe sur son son seul, de même contenu, au même
+  instant du son et sans blanc : le MP3 du doublage, `travail/original.wav` pour l'original, le fichier du beat ou d'une voix
   seule. Plus rien ne décode l'image : un essai sur une vidéo doublée 1080p de 3 min 50 mesure 1,5 % d'un cœur au lieu
   de 24 %. Relancer `voix-la` (instance unique) ou « Raise » rouvre la fenêtre telle qu'on l'a laissée, et la vidéo
   reprend là où en est le son. L'application quitte quand la lecture finit, sur un stop, ou après 15 min de pause
@@ -81,7 +81,8 @@ restent : ils ne servent plus et leur purge les efface. Tout se récupère dans 
 ## Pistes séparées
 
 Dans le détail d'un résultat, les bascules au-dessus du lecteur choisissent ce qu'on écoute. On change de piste sans
-perdre la position, et la lecture continue (ou reste en pause).
+perdre la position, au même instant du son, même quand le son d'une vidéo entière part après l'image (voir
+[Paroles](#paroles)), et la lecture continue (ou reste en pause).
 
 | Piste | Fichier lu | Si le fichier manque |
 |---|---|---|
@@ -167,13 +168,17 @@ ou « Les deux » (la traduction sous chaque ligne) n'apparaît que s'il y a deu
   ```
 
   Les segments ou les mots abîmés sont ignorés un par un. Le fichier n'est jamais modifié.
-- **Temps des paroles et piste lue.** `paroles.json` est en temps du son doublé + `decalage_s` (le temps du MP3 vaut
-  `debut − decalage_s`). Sur une piste qui a une image (doublage, original en vidéo, copies des pistes séparées), le
-  lecteur compte en temps de la vidéo doublée, où le son commence à `decalage_son` de `travail/source.json` (le retard
-  du son d'origine d'une vidéo entière ; 0 pour un extrait). Sur une piste sans image (MP3, `travail/original.wav`,
-  beat ou voix seule sans copie vidéo), il compte en temps du son. Les paroles suivent la piste en cours, et un clic
-  sur une ligne va à son début sur chacune. Écart restant mesuré sous GStreamer : 25 ms au plus (amorce de l'AAC dans
-  un mkv, délai de l'encodeur MP3). Les sous-titres de repli sont en temps de la vidéo.
+- **Temps du lecteur, temps des paroles.** Le lecteur d'un résultat compte en temps du son doublé : celui du MP3, de
+  `travail/original.wav`, du beat, des voix seules, de la frise et de `courbes.json`. Une piste qui a une image (la
+  vidéo doublée, sa version auto-tune, les copies des pistes séparées, la vidéo d'origine) compte en temps de la vidéo
+  doublée, où le son commence à `decalage_son` de `travail/source.json` (le retard du son d'origine d'une vidéo
+  entière ; 0 pour un extrait) : elle est lue décalée d'autant (`pistes.avance_piste`, la seule règle de passage d'un
+  temps à l'autre). `paroles.json` est en temps du son + `decalage_s` (le temps du son vaut `debut − decalage_s`), et
+  les sous-titres de repli en temps de la vidéo. Les paroles, la frise et la courbe suivent donc chaque piste. Une
+  bascule (piste, Vidéo/MP3, son seul fenêtre fermée et retour) garde le même instant du son, et un clic sur une ligne
+  ou sur la frise va à ce moment. Écart restant mesuré sous GStreamer : 26 ms au plus (amorce de l'AAC dans un mkv,
+  délai de l'encodeur MP3). Une vidéo au son en retard s'ouvre au début du son, quelques centièmes de seconde après sa
+  première image.
 - **Repli : les sous-titres de la vidéo doublée.** C'est le cas des doublages sans `paroles.json`. Chaque flux de
   sous-titres en texte (mov_text, subrip, ass…) est extrait par `ffmpeg -map 0:s:N -f srt`, sous `nice`, dans
   `~/.cache/voix-la/sous-titres/` (20 Mo au plus). L'affichage indique leur langue (tag `language`) et s'ils sont
@@ -198,6 +203,8 @@ Chacune s'allume ou s'éteint dans le menu « œil » d'un résultat (ou dans le
   hauteur elle-même (YIN avec numpy, son ramené à 16 kHz) à partir de `travail/voix_source.*` et de
   `travail/<voix>/voix_convertie.flac`. Le résultat est gardé dans `travail/<voix>/courbes-locales.json`, au même
   format, avec la signature des fichiers analysés : il est refait si la voix convertie change.
+  Comme la frise, elle est en temps du son doublé : elle suit le son même quand celui d'une vidéo entière part après
+  l'image.
 - **Spectrogramme, forme d'onde, vu-mètre** : une seule lecture du son par piste (ffmpeg, puis numpy), mise en cache
   dans `~/.cache/voix-la/pistes/`, par fichier et par produit. Un fichier refait (taille ou date) est réanalysé.
 - **Sobriété** :

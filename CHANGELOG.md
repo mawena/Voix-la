@@ -19,6 +19,11 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
   vidéo et 0,13 s sur le MP3 et les sons seuls ; pour une vidéo entière au son d'origine en retard, 0,15 à 0,18 s trop
   tard sur le MP3 et les sons seuls. L'écart restant est de 25 ms au plus.
 - Interface : le choix des voix « Chanteur 1 / 2 » ne glisse plus sur une autre voix quand la liste des voix change.
+- Interface : pour une vidéo entière dont le son d'origine est en retard (`decalage_son` de `travail/source.json`), la
+  frise d'octave, la courbe de mélodie et les autres visualisations suivent le son en vidéo ; elles avaient 0,18 à
+  0,20 s d'avance. Le passage de la vidéo à une piste en son seul (beat ou voix seule sans copie vidéo, bascule
+  Vidéo → MP3, son seul fenêtre fermée), puis le retour à la vidéo, gardent le même instant du son ; ils sautaient de
+  0,15 à 0,20 s. Un extrait et une vidéo au son à l'heure ne changent pas. Écart restant : 26 ms au plus.
 
 ## [0.5.0] - 2026-11-04
 

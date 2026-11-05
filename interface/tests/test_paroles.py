@@ -16,11 +16,11 @@ import time
 import unittest
 from pathlib import Path
 
-from voixla import chemins, paroles
+from voixla import chemins, paroles, pistes, rapports
 from voixla.paroles import Couche, Ligne, Mot, Paroles
 
 from .commun import VRAI_DOUBLER, EssaiIsole
-from .test_pistes import charger_doubler
+from .test_pistes import charger_doubler, position_ref
 from .test_pistes_video import SR, debut_mesure, nice_ffmpeg, video_de_synthese
 
 FFMPEG = shutil.which("ffmpeg") and shutil.which("ffprobe")
@@ -700,6 +700,25 @@ class EssaiEcartLecture(unittest.TestCase):
         # un decalage_s ne concerne que paroles.json
         self.assertEqual(paroles.ecart_lecture(paroles_a(1.0, 0.5, "sous-titres"), True, 0.0), 0.0)
 
+    def test_position_du_lecteur_en_temps_du_son(self):
+        # la page d'un résultat donne la position du lecteur en temps du son doublé, quelle que soit la piste
+        # (pistes.source_lecteur) : la vue des paroles la prend comme celle d'une piste sans image
+        for p, debut_son in ((paroles_a(1.177, 0.177), 0.177),                     # vidéo entière, son en retard
+                             (paroles_a(1.177, origine="sous-titres"), 0.177),     # sous-titres : temps de la vidéo
+                             (paroles_a(0.8686, -0.1314), 0.0),                    # extrait mkv ou webm
+                             (paroles_a(1.0), 0.0)):                               # extrait mp4, son à l'heure
+            self.assertEqual(self.en_cours(p, 1.0, False, debut_son), 0, p)
+            self.assertIsNone(self.en_cours(p, 0.9, False, debut_son), p)
+
+    def test_une_seule_regle(self):
+        # piste avec image = temps du son + pistes.avance_piste : la règle des sources du lecteur
+        for p in (paroles_a(1.177, 0.177), paroles_a(1.177, origine="sous-titres"), paroles_a(0.8686, -0.1314)):
+            for debut_son in (0.0, 0.177, 0.5):
+                self.assertAlmostEqual(paroles.ecart_lecture(p, True, debut_son),
+                                       paroles.ecart_lecture(p, False, debut_son)
+                                       - pistes.avance_piste(True, debut_son))
+        self.assertIs(paroles.decalage_son, pistes.decalage_son)
+
     def test_sans_paroles(self):
         self.assertEqual(paroles.ecart_lecture(None, False, 0.177), 0.0)
 
@@ -758,6 +777,13 @@ class EssaiEcartBoutEnBout(EssaiIsole):
             t_paroles = position + paroles.ecart_lecture(p, avec_image, debut_son)
             self.assertAlmostEqual(t_paroles, ligne, delta=0.03, msg=f"{nom}, avec image : {avec_image}")
             self.assertEqual(paroles.position(p.originale.lignes, t_paroles + 0.03)[0], 0)
+        # dans la page d'un résultat, le lecteur compte en temps du son, même sur la vidéo doublée
+        # (pistes.source_lecteur) ; la vue des paroles prend sa position comme celle d'un son seul
+        r = rapports.lire_dossier(d, {"jules": "Jules"})[0]
+        source = pistes.sources_lecteur(pistes.choisir_pistes(r, "video"))["doublage"]
+        self.assertEqual(source[0], doublee)
+        t_paroles = position_ref(video, source) + paroles.ecart_lecture(p, False, debut_son)
+        self.assertAlmostEqual(t_paroles, ligne, delta=0.03, msg=f"{nom}, page d'un résultat")
         return p, video, ligne
 
     def test_extrait_mkv(self):

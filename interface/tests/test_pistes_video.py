@@ -18,10 +18,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from voixla import chemins, pistes
+from voixla import chemins, pistes, rapports
+from voixla import lecture as regles
 
 from .commun import VRAI_DOUBLER
-from .test_pistes import RAPPORT_CHANT, RAPPORT_PAROLE, TOUT, EssaiAvecCache, charger_doubler, ecrire, ffmpeg
+from .test_pistes import (RAPPORT_CHANT, RAPPORT_PAROLE, TOUT, EssaiAvecCache, charger_doubler, ecrire, ffmpeg,
+                          position_ref, sources_avant, temps_source)
 
 FFMPEG = shutil.which("ffmpeg") and shutil.which("ffprobe")
 SR = 44100
@@ -477,7 +479,44 @@ class EssaiBoutEnBout(EssaiAvecCache):
         # exigence : à une trame audio près ; en fait au temps du conteneur près (1 ms en mkv et webm)
         self.assertLessEqual(abs(nous - mix), TRAME_AAC)
         self.assertLessEqual(abs(nous - mix), 0.0011 * SR, f"{nom} : doublage {mix:+.1f}, copie {nous:+.1f} éch.")
+        self.temps_du_son(nom, d, source, copie, mix / SR, nous / SR, retard)
         return doublee, copie
+
+    def temps_du_son(self, nom, d, source, copie, mix, beat, retard):
+        """Le lecteur de la page d'un résultat compte en temps du son doublé (frise, courbe, MP3, sons seuls) : chaque
+        source qui a une image est décalée du début du son en elle, mesuré (mix, beat : s depuis la première image), à
+        30 ms près ; un son seul ne l'est pas. Les bascules à la même position gardent l'instant du son : de la vidéo
+        au son seul (bascule Vidéo/MP3, fenêtre fermée) et retour, touche B."""
+        t = d / "travail"
+        ecrire(t / "jules" / "rapport.json", {"mode": "chant"})
+        ecrire(d / "Chanson - voix Jules.mp3")       # vide : seul son nom compte ici
+        r = rapports.lire_dossier(d, {"jules": "Jules"})[0]
+        video = pistes.choisir_pistes(r, "video")
+        s = pistes.sources_lecteur(video)
+        self.assertEqual(s["beat"][0], copie)
+        orig, pic = debut_mesure(source, t / "original.wav")      # le son d'origine extrait, dans la vidéo d'origine
+        self.assertGreater(pic, 0.8)
+        orig /= SR
+        debuts = {"doublage": mix, "beat": beat, "original": orig}
+        sons = pistes.choisir_pistes(r, "mp3")
+        self.assertEqual({x[1] for x in pistes.sources_lecteur(sons).values()}, {0.0}, "en MP3 : le temps du son")
+        for cle, debut in debuts.items():
+            self.assertAlmostEqual(s[cle][1], debut, delta=0.03, msg=f"{nom}, {cle}")
+            son = regles.source_son(cle, sons, s[cle])     # fenêtre fermée : le MP3, original.wav, le beat
+            for temps in (1.0, 2.5):
+                ref = position_ref(temps + debut, s[cle])  # on entend l'instant « temps » du son
+                self.assertAlmostEqual(ref, temps, delta=0.03, msg=f"{nom}, {cle} : frise et courbe")
+                self.assertAlmostEqual(temps_source(ref, son), temps, delta=0.03, msg=f"{nom}, {cle} → son seul")
+                self.assertAlmostEqual(temps_source(position_ref(temps, son), s[cle]), temps + debut, delta=0.03,
+                                       msg=f"{nom}, son seul → {cle}")
+        # touche B : même instant du son dans la vidéo d'origine (deux mesures, chacune à 30 ms près)
+        ref = position_ref(2.5 + mix, s["doublage"])
+        self.assertAlmostEqual(temps_source(ref, s["original"]), 2.5 + orig, delta=0.06, msg=f"{nom}, touche B")
+        avant = sources_avant(video)
+        if retard:
+            self.assertGreater(position_ref(2.5 + mix, avant["doublage"]) - 2.5, 0.1, "avant : 0,18 s trop tard")
+        else:
+            self.assertEqual(s, avant, f"{nom} : inchangé sans retard du son d'origine")
 
     def test_mp4_entier(self):
         self.cas("mp4-entier", ".mp4")
@@ -495,6 +534,9 @@ class EssaiBoutEnBout(EssaiAvecCache):
 
     def test_mkv_son_d_origine_en_retard(self):
         self.cas("mkv-retard", ".mkv", retard=0.2)
+
+    def test_mp4_son_d_origine_en_retard(self):
+        self.cas("mp4-retard", ".mp4", retard=0.2)
 
     def test_webm_opus(self):
         self.cas("webm-entier", ".webm")

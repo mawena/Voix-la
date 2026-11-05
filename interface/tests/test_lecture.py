@@ -9,7 +9,8 @@ from types import SimpleNamespace
 from voixla import lecture as regles
 from voixla import pistes
 
-from .test_pistes import RAPPORT_CHANT, EssaiAvecCache
+from .test_pistes import (DEBUT_SON, RAPPORT_CHANT, EssaiAvecCache, position_ref, resultat_source, sources_avant,
+                          temps_source)
 
 
 class Proprio:
@@ -184,6 +185,33 @@ class EssaiReprisePistes(EssaiAvecCache):
                          "la vidéo d'origine décalée → le son d'origine extrait, calé sur le doublage")
         self.assertEqual(regles.source_son("beat", son, (Path("/cache/videos/beat.mp4"), 0.0, "Beat seul"))[0],
                          r.travail / "instrumental.wav")
+
+    def test_video_entiere_au_son_en_retard(self):
+        # fenêtre fermée (Lecteur.passer_en_son) : de la vidéo au son seul, puis retour (revenir_en_video), au même
+        # instant du son ; la vidéo compte en temps de la vidéo doublée, où le son commence à decalage_son
+        r = resultat_source(self, {"decalage_son": DEBUT_SON})
+        video = pistes.sources_lecteur(pistes.choisir_pistes(r, "video"))
+        son = pistes.choisir_pistes(r, "mp3")
+        for cle, fichier in (("doublage", r.mp3), ("original", r.travail / "original.wav"),
+                             ("beat", r.travail / "instrumental.wav")):
+            s = regles.source_son(cle, son, video[cle])
+            self.assertEqual(s[:2], (fichier, 0.0), cle)
+            ref = position_ref(42.0 + DEBUT_SON, video[cle])       # le son doublé à 42 s, dans la vidéo
+            self.assertAlmostEqual(temps_source(ref, s), 42.0, msg=cle)
+            self.assertAlmostEqual(temps_source(position_ref(42.0, s), video[cle]), 42.0 + DEBUT_SON, msg=cle)
+            avant = sources_avant(pistes.choisir_pistes(r, "video"))[cle]
+            self.assertAlmostEqual(temps_source(position_ref(42.0 + DEBUT_SON, avant), s), 42.0 + DEBUT_SON,
+                                   msg=f"{cle} : avant, le son seul partait 0,18 s plus loin")
+
+    def test_extrait_inchange(self):
+        r = resultat_source(self, {"debut": 12.5, "duree": 40.0, "decalage_son": 0.0})
+        video = pistes.sources_lecteur(pistes.choisir_pistes(r, "video"))
+        son = pistes.choisir_pistes(r, "mp3")
+        o = regles.source_son("original", son, video["original"])
+        self.assertEqual(video["original"][1], 12.5)
+        self.assertAlmostEqual(temps_source(position_ref(54.5, video["original"]), o), 42.0)
+        d = regles.source_son("doublage", son, video["doublage"])
+        self.assertEqual(temps_source(position_ref(42.0, video["doublage"]), d), 42.0)
 
     def test_sans_mp3_la_video_reste(self):
         r = self.doublage(fichiers=["original.wav"], rapport=RAPPORT_CHANT, mp3=False)

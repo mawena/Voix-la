@@ -7,6 +7,15 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+### Modifié
+
+- Étiquette de langue des cinq pistes audio de la vidéo doublée (et de sa version auto-tune) : la langue principale
+  des paroles reconnues, et non plus celle du son d'origine. Une chanson française téléchargée avec un son étiqueté
+  `eng` a désormais des pistes `fre`. Chanson bilingue : la langue chantée le plus longtemps (durée totale de ses
+  lignes, comme la langue de `paroles.json`). Sans paroles (`--sans-paroles`, rien de reconnu, langue inconnue) :
+  l'étiquette du son d'origine, comme avant. `--remix` réétiquette les anciens doublages qui ont un `paroles.json`.
+  `rapport.json` : `pistes_audio.langue`.
+
 ## [0.6.0] - 2026-11-05
 
 ### Ajouté

@@ -537,7 +537,7 @@ Tout va dans `<données>/sorties/<titre>/` (ou le dossier de `--sortie`). Un ext
 
 | Fichier | Contenu |
 |---|---|
-| `<titre> - voix <Nom>.<ext>` | la vidéo doublée, dans le conteneur d'origine (mkv si l'extension n'est pas connue), avec cinq pistes audio calées entre elles et sur l'image : **Doublage** (la première, seule jouée par défaut), Original, Beat seul, Voix convertie seule (« Voix converties seules » avec une voix par chanteur ; telle qu'elle sonne dans le mix, sans la musique) et Voix d'origine seule ; `--pistes-audio doublage` : le doublage seul |
+| `<titre> - voix <Nom>.<ext>` | la vidéo doublée, dans le conteneur d'origine (mkv si l'extension n'est pas connue), avec cinq pistes audio calées entre elles et sur l'image : **Doublage** (la première, seule jouée par défaut), Original, Beat seul, Voix convertie seule (« Voix converties seules » avec une voix par chanteur ; telle qu'elle sonne dans le mix, sans la musique) et Voix d'origine seule, toutes étiquetées de la langue des paroles reconnues (voir plus bas) ; `--pistes-audio doublage` : le doublage seul |
 | `<titre> - voix <Nom>.mp3` | le son doublé, MP3 320 kb/s |
 | `<titre> - voix <Nom>.<langue>.srt` | les paroles dans la langue chantée, sur le temps de la vidéo doublée |
 | `<titre> - voix <Nom>.fr.srt` | leur traduction française, quand elles ne sont pas en français (`.traduction.fr.srt` si elles le sont déjà en partie) |
@@ -556,6 +556,11 @@ Dans la vidéo doublée :
 
 - l'image est copiée telle quelle, sans réencodage ;
 - le son est en AAC 256 kb/s (Opus 192 kb/s en webm), en stéréo ;
+- les cinq pistes audio portent la même étiquette de langue (ISO 639-2/B, comme les pistes de paroles) : la langue
+  principale des paroles reconnues, c'est-à-dire, si la chanson en mêle plusieurs, celle chantée le plus longtemps
+  (durée totale de ses lignes). Sans paroles (`--sans-paroles`, rien de reconnu, langue inconnue), elles gardent
+  l'étiquette du son d'origine, sinon aucune. Une chanson française téléchargée avec un son étiqueté `eng` a ainsi des
+  pistes `fre`. `--remix` réétiquette ainsi un ancien doublage qui a un `paroles.json` ;
 - les sous-titres sont copiés si le conteneur les accepte (mov_text en mp4 et mov, texte et images en mkv, WebVTT en
   webm), sinon laissés de côté avec un message. En mkv, les polices jointes sont copiées aussi ;
 - les paroles s'ajoutent en pistes de sous-titres après celles d'origine : « Paroles (espagnol) » (`spa`) et
@@ -578,7 +583,10 @@ Dans la vidéo doublée :
   raison) ;
 - les paroles (`paroles` : piste transcrite, langue de chaque phrase et les trois plus probables, lignes, mots, retraits
   des garde-fous, temps ; `paroles_sorties` : fichiers, pistes, décalage) ;
-- les pistes audio de la vidéo (`pistes_audio` : réglage, titres des pistes de la vidéo et de sa version auto-tune) ;
+- les pistes audio de la vidéo (`pistes_audio` : réglage, titres des pistes de la vidéo et de sa version auto-tune, et
+  `langue` : l'étiquette écrite sur les pistes (`etiquette`), sa provenance (`provenance` : `paroles`, `source` ou
+  `null`), l'étiquette du son d'origine (`source`) ; si elle vient des paroles, leur langue principale (`paroles`, code
+  Whisper, et `nom`) et les secondes chantées dans chaque langue (`secondes_par_langue`), sinon `raison`) ;
 - l'auto-tune (`autotune` : intensité, gamme et sa détection, accord, ports de x42-autotune, écart médian aux notes avant
   et après, fichiers) ;
 - une voix par chanteur : `voix_cibles` (chaque voix, sa clé, son centre de chant), `decision_hauteur.chanteurs`

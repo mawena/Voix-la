@@ -433,6 +433,119 @@ class EssaiChoixDesPistes(EssaiAvecCache):
             self.assertEqual(pistes.bascule_ab(c), "doublage")
 
 
+# --- Temps du son, temps de la piste ---------------------------------------------------------------------------------
+
+DEBUT_SON = 0.177       # son d'origine 0,177 s après l'image : decalage_son de source.json (vidéo entière)
+
+
+def position_ref(temps, source):
+    """Lecteur.position_ref (gui/lecteur.py) : la position du lecteur quand sa source (chemin, décalage, libellé) en
+    est à « temps » (s, temps du fichier)."""
+    return max(0.0, temps - (source[1] or 0.0))
+
+
+def temps_source(position, source):
+    """Lecteur._activer et Lecteur.aller_a : où le lecteur place sa source pour une position (bascule à la même
+    position, retour de la fenêtre, clic sur la frise ou sur une ligne des paroles)."""
+    return max(0.0, position + (source[1] or 0.0))
+
+
+def sources_avant(dispo):
+    """Les sources du lecteur comme la page les bâtissait avant : sans le début du son dans la vidéo doublée."""
+    return {c: (p.a_lire, p.decalage, p.libelle) for c, p in dispo.items() if p.a_lire}
+
+
+def resultat_source(essai, source, titre="Chanson fictive", autotune=False, copie_beat=True):
+    """Un doublage fictif (essai.doublage) dont travail/source.json vaut {"video": …, **source}, avec sa version
+    auto-tune (vidéo et MP3) si autotune, et la copie vidéo du beat prête en cache si copie_beat."""
+    rapport = {**RAPPORT_CHANT, "autotune": {"applique": True}} if autotune else RAPPORT_CHANT
+    r = essai.doublage(titre=titre, fichiers=TOUT, rapport=rapport)
+    if autotune:
+        for ext in (".mp4", ".mp3"):
+            ecrire(r.dossier / f"{titre} - voix Jules (auto-tune){ext}")
+    ecrire(r.travail / "source.json", {"video": str(r.video_source), **source})
+    if copie_beat:
+        ecrire(pistes.chemin_video(r.video, pistes.identite_son(r.travail / "instrumental.wav")), b"copie")
+    return rapports.lire_dossier(r.dossier, {"jules": "Jules"})[0]
+
+
+class EssaiTempsDuSon(EssaiAvecCache):
+    """Le lecteur de la page d'un résultat compte en temps du son doublé : celui de la frise, de courbes.json, des
+    analyses du son, du MP3, de travail/original.wav, du beat et des voix seules. Une piste qui a une image (vidéo
+    doublée, sa version auto-tune, une copie des pistes séparées, la vidéo d'origine) compte en temps de la vidéo
+    doublée, où le son commence à decalage_son de source.json : sa source est décalée d'autant (avance_piste, la règle
+    de voixla.paroles.ecart_lecture)."""
+
+    def test_regle(self):
+        self.assertEqual(pistes.avance_piste(True, DEBUT_SON), DEBUT_SON)
+        self.assertEqual(pistes.avance_piste(False, DEBUT_SON), 0.0)
+        self.assertEqual(pistes.avance_piste(True, None), 0.0, "source.json absent : la vidéo au temps du son")
+        self.assertEqual(pistes.decalage_son({"video": "x.mp4", "decalage_son": DEBUT_SON}), DEBUT_SON)
+        self.assertEqual(pistes.decalage_son({"decalage_son": 0}), 0.0)
+        for abime in (None, {}, {"debut": 12.5}, {"decalage_son": "0.1"}, {"decalage_son": False},
+                      {"decalage_son": float("nan")}):
+            self.assertIsNone(pistes.decalage_son(abime), abime)
+
+    def test_video_entiere_au_son_en_retard(self):
+        r = resultat_source(self, {"decalage_son": DEBUT_SON}, autotune=True)
+        p = pistes.choisir_pistes(r, "video")
+        s = pistes.sources_lecteur(p)
+        for c in ("doublage", "doublage_at", "original", "beat"):
+            self.assertTrue(p[c].avec_image, c)
+            self.assertEqual(s[c][1], DEBUT_SON, c)
+        self.assertEqual(s["beat"][0], p["beat"].video, "la copie vidéo du beat, prête en cache")
+        self.assertEqual(s["original"][0], r.video_source)
+        # la voix d'origine, dont la copie se prépare : le son seul sous l'image arrêtée, en temps du son
+        self.assertEqual(s["voix_origine"], (r.travail / "voix_source.wav", 0.0, "Voix d’origine seule"))
+        self.assertNotIn("ma_voix", s, "à combiner d'abord")
+        # le son doublé à 10,0 s s'entend à 10,177 s de la vidéo doublée : la frise et la courbe reçoivent 10,0 s
+        ref = position_ref(10.0 + DEBUT_SON, s["doublage"])
+        self.assertAlmostEqual(ref, 10.0)
+        self.assertAlmostEqual(position_ref(10.0 + DEBUT_SON, sources_avant(p)["doublage"]), 10.0 + DEBUT_SON,
+                               msg="avant : 0,18 s trop tard")
+        # bascules à la même position : vers le son seul, même instant du son ; touche B, même image
+        self.assertAlmostEqual(temps_source(ref, s["voix_origine"]), 10.0)
+        self.assertAlmostEqual(temps_source(ref, s["original"]), 10.0 + DEBUT_SON)
+        self.assertAlmostEqual(temps_source(ref, s["beat"]), 10.0 + DEBUT_SON)
+        # en MP3 (bascule Vidéo/MP3), tout est en temps du son
+        m = pistes.choisir_pistes(r, "mp3")
+        sm = pistes.sources_lecteur(m)
+        self.assertEqual({c: x[1] for c, x in sm.items()}, {c: 0.0 for c in sm})
+        self.assertEqual(sm, sources_avant(m))
+        self.assertAlmostEqual(temps_source(ref, sm["doublage"]), 10.0)
+        self.assertAlmostEqual(temps_source(position_ref(10.0, sm["doublage"]), s["doublage"]), 10.0 + DEBUT_SON)
+
+    def test_ma_voix_prete_apres_coup(self):
+        # page_resultats : la voix seule combinée s'ajoute en son seul, puis sa copie vidéo (lecteur.ajouter)
+        r = resultat_source(self, {"decalage_son": DEBUT_SON})
+        q = pistes.choisir_pistes(r, "video")["ma_voix"]
+        q.fichier, q.a_preparer = self.cache / "voix" / "jules.flac", False
+        self.assertEqual(pistes.source_lecteur(q), (q.fichier, 0.0, "Ma voix seule"))
+        q.video = self.cache / "videos" / "jules.mp4"
+        self.assertEqual(pistes.source_lecteur(q), (q.video, DEBUT_SON, "Ma voix seule"))
+
+    def test_video_d_origine_deplacee_ou_choisie(self):
+        r = resultat_source(self, {"decalage_son": DEBUT_SON})
+        r.video_source.unlink()
+        o = pistes.choisir_pistes(r, "video")["original"]
+        self.assertEqual(pistes.source_lecteur(o), (r.travail / "original.wav", 0.0, "Original"))
+        choisie = ecrire(self.tmp / "ailleurs" / "Chanson fictive.mp4")
+        o = pistes.choisir_pistes(r, "video", choisie)["original"]
+        self.assertEqual(pistes.source_lecteur(o), (choisie, DEBUT_SON, "Original"))
+
+    def test_extrait_et_video_au_son_a_l_heure_inchanges(self):
+        for i, source in enumerate(({"debut": 12.5, "duree": 40.0, "decalage_son": 0.0},     # extrait
+                                    {"decalage_son": 0.0},                                    # son à l'heure
+                                    {"debut": 12.5, "duree": 40.0})):                         # sans decalage_son
+            r = resultat_source(self, source, titre=f"Chanson {i}", autotune=True)
+            for forme in ("video", "mp3"):
+                p = pistes.choisir_pistes(r, forme)
+                self.assertEqual(pistes.sources_lecteur(p), sources_avant(p), (source, forme))
+            s = pistes.sources_lecteur(pistes.choisir_pistes(r, "video"))
+            self.assertEqual(s["original"][1], source.get("debut", 0.0), "au début de l'extrait")
+            self.assertEqual(s["doublage"][1], 0.0)
+
+
 # --- Fichiers enregistrés --------------------------------------------------------------------------------------------
 
 class EssaiNoms(EssaiAvecCache):

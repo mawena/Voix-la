@@ -7,14 +7,36 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+### Ajouté
+
+- Interface : pour un doublage dont la vidéo a ses cinq pistes audio (doubler ≥ 0.6.0), Beat seul, Ma voix seule et
+  Voix d'origine seule changent de piste audio dans la vidéo doublée elle-même (`current-audio` de playbin) : même
+  position, l'image continue, plus aucune copie vidéo (environ 150 Mo de cache en moins par chanson de 4 min, 200 Mo
+  avec l'auto-tune). Nouvelle piste entendue en 0,25 s, au même échantillon. Pistes repérées par leur titre d'après
+  `pistes_audio` de `rapport.json`, sinon d'après les titres des flux. Sans la vidéo d'origine, Original lit la piste
+  Original de la vidéo doublée, sur son image. Avec l'auto-tune, beat et voix d'origine se lisent dans la vidéo
+  auto-tune. Les anciens doublages à une piste gardent les copies.
+- Interface : « Enregistrer ma voix seule… » extrait la piste de la vidéo (`-map 0:a:N`) au lieu de recombiner la voix.
+
 ### Modifié
 
+- Interface : la préparation à l'avance de ces doublages se limite à la miniature ; ma voix seule n'est combinée qu'en
+  MP3 ou quand on l'écoute (son seul fenêtre fermée).
+- Interface : les analyses du son lisent toujours une piste désignée (`-map 0:a:N`), la première d'une vidéo doublée
+  (le doublage), au lieu du choix automatique de ffmpeg.
 - Étiquette de langue des cinq pistes audio de la vidéo doublée (et de sa version auto-tune) : la langue principale
   des paroles reconnues, et non plus celle du son d'origine. Une chanson française téléchargée avec un son étiqueté
   `eng` a désormais des pistes `fre`. Chanson bilingue : la langue chantée le plus longtemps (durée totale de ses
   lignes, comme la langue de `paroles.json`). Sans paroles (`--sans-paroles`, rien de reconnu, langue inconnue) :
   l'étiquette du son d'origine, comme avant. `--remix` réétiquette les anciens doublages qui ont un `paroles.json`.
   `rapport.json` : `pistes_audio.langue`.
+
+### Corrigé
+
+- Interface : extrait dont la copie de l'image part d'une image clé antérieure (« image sans son au début ») : le son
+  doublé y commence à `decalage_s` de `paroles.json`, et non à `decalage_son` de `source.json` (0 pour un extrait).
+  Paroles, frise, courbe et bascules (vidéo ⇄ MP3, son seul, touche B) étaient en avance d'autant (0,48 s dans
+  l'essai). La vidéo d'origine garde son propre calage.
 
 ## [0.6.0] - 2026-11-05
 

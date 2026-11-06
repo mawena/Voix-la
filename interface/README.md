@@ -24,7 +24,7 @@ Prérequis du poste : Python 3, PyGObject avec GTK 4, libadwaita 1.5 et GStreame
 |---|---|
 | **Doubler** | Choisir une ou plusieurs vidéos, par le sélecteur (il ouvre `Vidéos/` des données, sinon le dossier Téléchargements) ou par glisser-déposer. Pour chaque vidéo, un extrait facultatif se règle dans un petit lecteur (« Début ici », « Fin ici », écouter l'extrait). Réglages : voix pour tous ou **une voix par chanteur** (duo mixte : Voix d'homme et Voix de femme ; duo de même genre : Chanteur 1 et Chanteur 2), gardée d'une session à l'autre dans `interface.json` (`voix_par_chanteur`, `duo_chanteurs`, `voix_chanteurs` ; une voix qui n'existe plus n'est pas présélectionnée), mode, octave, pas, niveau de la voix, reverb, ancien mixage v1, et, si `doubler` les connaît, la chaîne de conversion : « Par défaut » (voix principale et chœurs séparés, reverb retirée, YingMusic-SVC), « Chaîne d'avant » (Seed-VC, sans nettoyage, plus rapide) ou « Sur mesure » (moteur et nettoyage au choix), et l'interrupteur **Paroles** (transcription et traduction française ; éteint, il ajoute `--sans-paroles` ; allumé par défaut, d'après la clé `paroles` de la configuration de `doubler`), et l'**auto-tune** : interrupteur, intensité (1 à 100, 70 par défaut) et gamme (Auto, Chromatique ou une tonalité), d'après la clé `autotune` de `doubler` (éteint alors que la configuration l'allume, il ajoute `--sans-autotune`) ; grisé avec « installez x42-plugins » si `doubler` ne trouve pas le greffon. L'estimation compte environ deux fois plus de GPU pour le chant nettoyé, et suit les cartes GPU prévues (clé `gpu` et machine Kaggle de `doubler`) : à deux cartes T4, elle se fonde sur la durée réelle des sessions passées à deux cartes (4,1 s par seconde de son sans historique, 5,2 à une carte). La page estime la durée d'après les doublages passés, puis le bouton « Lancer » envoie le travail dans la file. |
 | **Travaux** | La file. Un seul `doubler` tourne à la fois. Les étapes s'affichent en direct, avec le temps écoulé et le temps restant estimé, l'état du noyau Kaggle et le journal complet dépliable. On peut annuler un travail. « Voir le résultat » ouvre le doublage fini. |
-| **Résultats** | Les doublages (titre, voix, mode, durée, date), avec une recherche. Chaque ligne a un menu « ⋮ » : « Ouvrir le dossier » et « Mettre à la corbeille… » ; le mode **Sélectionner** (bouton coche de l'en-tête, Échap pour en sortir) coche plusieurs doublages et les met à la corbeille d'un coup (voir [Corbeille](#corbeille)). Le détail d'un doublage montre : la lecture de la vidéo ou du MP3 et le **choix de ce qu'on écoute, à la même position** : Doublage, Original, Beat seul, Ma voix seule, Voix d'origine seule (voir [Pistes séparées](#pistes-séparées) ; touche B : doublage ⇄ original) ; la bascule **Auto-tune** (touche T) passe au doublage et à la voix seule auto-tunés, à la même position ; les **paroles** synchronisées (ci-dessous) ; la frise d'octave, où un clic va à ce moment, et, avec une voix par chanteur, la frise **Voix de chaque passage** (une couleur par voix, bandeau partagé quand les deux chantent ensemble, clic pour y aller) ; les **visualisations du son** (ci-dessous) ; les informations (moteur réellement utilisé et repli éventuel sur Seed-VC, nettoyage appliqué ou sa raison avec les niveaux de la voix principale, des chœurs et de la reverb retirée, décision d'octave et sa raison, décision par chanteur avec une voix par chanteur, tonalité détectée et écart aux notes avant et après l'auto-tune) ; les pistes séparées, avec « Enregistrer le beat… » et « Enregistrer ma voix seule… » (et « Ma voix seule (auto-tune) », enregistrable aussi) ; le remix rapide redonne les mêmes voix ; le remix rapide ; les durées par étape (nettoyage, YingMusic-SVC, estimation de doubler comprise ; à deux cartes, « GPU Kaggle (2 cartes T4) », avec le temps de GPU des deux cartes additionnés à côté des durées réelles de la session) ; l'ouverture du dossier et la mise à la corbeille. Si la vidéo source a changé de place, « Choisir… » l'indique à la main (`travail/source.json` n'est pas modifié) ; en attendant, l'original se lit sans image, d'après `travail/original.wav`. |
+| **Résultats** | Les doublages (titre, voix, mode, durée, date), avec une recherche. Chaque ligne a un menu « ⋮ » : « Ouvrir le dossier » et « Mettre à la corbeille… » ; le mode **Sélectionner** (bouton coche de l'en-tête, Échap pour en sortir) coche plusieurs doublages et les met à la corbeille d'un coup (voir [Corbeille](#corbeille)). Le détail d'un doublage montre : la lecture de la vidéo ou du MP3 et le **choix de ce qu'on écoute, à la même position** : Doublage, Original, Beat seul, Ma voix seule, Voix d'origine seule (voir [Pistes séparées](#pistes-séparées) ; touche B : doublage ⇄ original) ; la bascule **Auto-tune** (touche T) passe au doublage et à la voix seule auto-tunés, à la même position ; les **paroles** synchronisées (ci-dessous) ; la frise d'octave, où un clic va à ce moment, et, avec une voix par chanteur, la frise **Voix de chaque passage** (une couleur par voix, bandeau partagé quand les deux chantent ensemble, clic pour y aller) ; les **visualisations du son** (ci-dessous) ; les informations (moteur réellement utilisé et repli éventuel sur Seed-VC, nettoyage appliqué ou sa raison avec les niveaux de la voix principale, des chœurs et de la reverb retirée, décision d'octave et sa raison, décision par chanteur avec une voix par chanteur, tonalité détectée et écart aux notes avant et après l'auto-tune) ; les pistes séparées, avec « Enregistrer le beat… » et « Enregistrer ma voix seule… » (et « Ma voix seule (auto-tune) », enregistrable aussi) ; le remix rapide, qui redonne les mêmes voix ; les durées par étape (nettoyage, YingMusic-SVC, estimation de doubler comprise ; à deux cartes, « GPU Kaggle (2 cartes T4) », avec le temps de GPU des deux cartes additionnés à côté des durées réelles de la session) ; l'ouverture du dossier et la mise à la corbeille. Si la vidéo source a changé de place, « Choisir… » l'indique à la main (`travail/source.json` n'est pas modifié) ; en attendant, l'original se lit sans image, d'après `travail/original.wav`. |
 | **Voix** | Les voix : nom, durée de la référence, hauteur de parole, alertes. On peut écouter la référence, choisir la voix par défaut, ajouter une voix depuis un fichier (`doubler --ajouter-voix`) ou au micro (texte à lire, compte à rebours, contrôle de qualité), la renommer ou la mettre à la corbeille. La page gère aussi les prises de chant pour l'affinage, avec le total cumulé face à l'objectif de 5 à 10 min. |
 | **Écoute à l'aveugle** | Les versions A, B, C… de chaque extrait du banc d'essai (`banc/ecoute/`) : mix et voix seule. L'interrupteur **Voix seule** de la barre du bas (touche V) fait passer la version en cours de son mix à sa voix seule (`X_voix.mp3`) et retour, à la même position. Vous notez les versions de 1 à 5. La correspondance lettre → version n'apparaît qu'après votre vote, qui va dans `banc/ecoute/votes.json`. Vu-mètre, spectrogramme et forme d'onde de ce qui joue, si on les allume. |
 | **État** | Kaggle : présence du jeton (son contenu n'est jamais lu), compte, statut des noyaux connus. `doubler` : options reconnues, verrou libre ou pris (verrou commun `~/.local/state/voix-la/verrou-kaggle` et `sorties/.kaggle/verrou`). Le poste : RAM, charge, `file-attente --etat`. Kaggle se rafraîchit à la demande, ou toutes les 60 s au plus quand la page est visible. |
@@ -56,7 +56,10 @@ mix ⇄ voix seule. Dans la liste des résultats en mode sélection, Échap en s
   de 24 %. Relancer `voix-la` (instance unique) ou « Raise » rouvre la fenêtre telle qu'on l'a laissée, et la vidéo
   reprend là où en est le son. L'application quitte quand la lecture finit, sur un stop, ou après 15 min de pause
   fenêtre fermée. Sans lecture en cours, fermer la fenêtre quitte comme avant. Les travaux en cours continuent dans
-  les deux cas, et une notification arrive à la fin de chacun.
+  les deux cas, et une notification arrive à la fin de chacun. Une piste lue dans la vidéo doublée passe sur le même
+  son seul (MP3 pour le doublage, fichier du beat ou de la voix) ; au retour, on reprend le flux de la vidéo resté
+  ouvert, déjà sur la bonne piste. Rester sur la vidéo sans décoder l'image a été mesuré et écarté (image : 30 à 36 %
+  d'un cœur ; son seul : 0,7 à 1,3 %).
 - **MPRIS** : le lecteur `org.mpris.MediaPlayer2.voixla`, publié sur le bus de session pendant une lecture. GNOME le
   montre dans le menu du haut (titre, voix et piste, image de la vidéo), et les touches multimédia le pilotent :
   lecture, pause, stop, déplacement, Raise et Quit. Il n'y a pas de piste suivante ni précédente. Les essais
@@ -84,13 +87,29 @@ Dans le détail d'un résultat, les bascules au-dessus du lecteur choisissent ce
 perdre la position, au même instant du son, même quand le son d'une vidéo entière part après l'image (voir
 [Paroles](#paroles)), et la lecture continue (ou reste en pause).
 
+- **Dans la vidéo doublée** (doubler ≥ 0.6.0) : la vidéo a ses propres pistes audio, calées à l'échantillon près.
+  Beat seul, Ma voix seule et Voix d'origine seule changent alors de piste dans le même flux (`current-audio` de
+  playbin) : même position, l'image continue, rien à préparer ni à copier. Mesuré : nouvelle piste entendue en 0,25 s,
+  au même échantillon (la file audio de playsink passe de 1 s à 0,2 s pour ces vidéos).
+  - Pistes repérées par leur titre, dans l'ordre de `pistes_audio.video` de `rapport.json` (`video_autotune` pour
+    l'auto-tune), sinon par les titres des flux (`title`, `handler_name` en mp4), lus par ffprobe dans un fil.
+  - **Original** reste la vidéo d'origine, avec son propre calage ; sans elle, c'est la piste Original de la vidéo
+    doublée, sur son image. Avec « Auto-tune », le beat et la voix d'origine se lisent dans la vidéo auto-tune.
+  - En pause, la piste choisie n'est posée qu'à la reprise : on entend encore la précédente 0,2 à 0,3 s (changer de
+    piste en pause puis déplacer la lecture bloque playbin, GStreamer 1.24).
+  - Le playbin est celui du `Gtk.MediaFile`, retrouvé par `gui/pistes_gst.py` : adresse du flux par la capsule
+    `__gpointer__` de PyGObject, nom du type et tailles des structures vérifiés, type de l'objet pointé, usine
+    `playbin`. Si un contrôle échoue, l'interface revient aux copies.
+  - Préparation à l'avance : seulement la miniature. Ma voix seule n'est combinée qu'en MP3 ou quand on l'écoute.
+  - Les anciens doublages à une piste gardent les copies et les fichiers du tableau ci-dessous.
+
 | Piste | Fichier lu | Si le fichier manque |
 |---|---|---|
 | **Doublage** (par défaut) | la vidéo doublée, ou son MP3 | grisée |
-| **Original** | la vidéo d'origine (`travail/source.json`, ou celle choisie à la main), au décalage de l'extrait ; en MP3, `travail/original.wav` | sans la vidéo d'origine : `travail/original.wav`, sans image |
-| **Beat seul** | `travail/instrumental.wav` : la musique sans aucune voix (original − voix isolée) | grisée, avec la raison |
-| **Ma voix seule** (« Voix converties seules » avec une voix par chanteur) | la voix convertie telle qu'elle sonne dans le mix (ci-dessous), préparée en cache à l'avance ; avec l'auto-tune, « Ma voix seule (auto-tune) » de la même façon | ancien doublage sans voix sèche : `travail/<voix>/voix_convertie.flac` brute ; sans rien : grisée |
-| **Voix d'origine seule** | `travail/voix_source.wav` : la voix d'origine isolée | grisée, avec la raison |
+| **Original** | la vidéo d'origine (`travail/source.json`, ou celle choisie à la main), au décalage de l'extrait ; en MP3, `travail/original.wav` | sans la vidéo d'origine : la piste Original de la vidéo doublée ; ancien doublage : `travail/original.wav`, sans image |
+| **Beat seul** | la piste de la vidéo doublée ; ancien doublage : `travail/instrumental.wav` : la musique sans aucune voix (original − voix isolée) | grisée, avec la raison |
+| **Ma voix seule** (« Voix converties seules » avec une voix par chanteur) | la piste de la vidéo doublée ; ancien doublage : la voix convertie telle qu'elle sonne dans le mix (ci-dessous), préparée en cache à l'avance ; avec l'auto-tune, « Ma voix seule (auto-tune) » de la même façon | ancien doublage sans voix sèche : `travail/<voix>/voix_convertie.flac` brute ; sans rien : grisée |
+| **Voix d'origine seule** | la piste de la vidéo doublée ; ancien doublage : `travail/voix_source.wav` : la voix d'origine isolée | grisée, avec la raison |
 
 - **Ma voix seule** refait la part de la voix dans le mix de `doubler` (sa fonction `mixer`), sans la musique :
   - `seche_voix_convertie.wav` au gain `mix.gains_db.seche` de `rapport.json` ;
@@ -148,6 +167,8 @@ perdre la position, au même instant du son, même quand le son d'une vidéo ent
 - **Enregistrer le beat…** et **Enregistrer ma voix seule…** (groupe « Pistes séparées ») ouvrent un sélecteur sur le
   dossier du doublage, avec le nom des sorties : `<titre> - voix <Nom> (beat).mp3` et
   `<titre> - voix <Nom> (voix seule).mp3`. On écrit en MP3 320 kb/s, ou en FLAC (ou WAV) si l'on change l'extension.
+  Doublage à cinq pistes : ma voix seule est extraite de la vidéo (`-map 0:a:N`), sauf si elle est déjà combinée ; le
+  beat vient de `instrumental.wav`.
   L'écriture est atomique, sous `nice`. Ces fichiers sont écartés de la liste des sorties de `doubler`, et partent à
   la corbeille avec les fichiers de leur voix.
 
@@ -171,8 +192,10 @@ ou « Les deux » (la traduction sous chaque ligne) n'apparaît que s'il y a deu
 - **Temps du lecteur, temps des paroles.** Le lecteur d'un résultat compte en temps du son doublé : celui du MP3, de
   `travail/original.wav`, du beat, des voix seules, de la frise et de `courbes.json`. Une piste qui a une image (la
   vidéo doublée, sa version auto-tune, les copies des pistes séparées, la vidéo d'origine) compte en temps de la vidéo
-  doublée, où le son commence à `decalage_son` de `travail/source.json` (le retard du son d'origine d'une vidéo
-  entière ; 0 pour un extrait) : elle est lue décalée d'autant (`pistes.avance_piste`, la seule règle de passage d'un
+  doublée, où le son commence à `decalage_s` de `paroles.json` (exact depuis doubler 0.6.0, y compris pour un extrait
+  dont l'image part d'une image clé antérieure ; une valeur négative, d'un ancien extrait mkv, est ignorée), sinon à
+  `decalage_son` de `travail/source.json` (le retard du son d'origine d'une vidéo entière ; 0 pour un extrait) ; la
+  vidéo d'origine garde `decalage_son` et le début de l'extrait : elle est lue décalée d'autant (`pistes.avance_piste`, la seule règle de passage d'un
   temps à l'autre). `paroles.json` est en temps du son + `decalage_s` (le temps du son vaut `debut − decalage_s`), et
   les sous-titres de repli en temps de la vidéo. Les paroles, la frise et la courbe suivent donc chaque piste. Une
   bascule (piste, Vidéo/MP3, son seul fenêtre fermée et retour) garde le même instant du son, et un clic sur une ligne
@@ -206,7 +229,8 @@ Chacune s'allume ou s'éteint dans le menu « œil » d'un résultat (ou dans le
   Comme la frise, elle est en temps du son doublé : elle suit le son même quand celui d'une vidéo entière part après
   l'image.
 - **Spectrogramme, forme d'onde, vu-mètre** : une seule lecture du son par piste (ffmpeg, puis numpy), mise en cache
-  dans `~/.cache/voix-la/pistes/`, par fichier et par produit. Un fichier refait (taille ou date) est réanalysé.
+  dans `~/.cache/voix-la/pistes/`, par fichier et par produit. On lit toujours une piste désignée (`-map 0:a:N`) : la
+  première d'une vidéo (le doublage), ou celle d'une piste lue dans la vidéo (en cache à part). Un fichier refait (taille ou date) est réanalysé.
 - **Sobriété** :
   - chaque calcul tourne dans un processus à part, sous `nice`, un seul à la fois ;
   - au-delà d'une minute de son, il passe par `file-attente`, la file des travaux lourds du poste ;
@@ -223,7 +247,7 @@ Chacune s'allume ou s'éteint dans le menu « œil » d'un résultat (ou dans le
   `doubler`, sauf par `doubler --config`.
 - **Caches** (`~/.cache/voix-la/`, `VOIXLA_CACHE` pour les essais), chacun purgé à part, les fichiers les moins
   récemment utilisés d'abord : `pistes/` (analyses du son, 500 Mo), `voix/` (ma voix seule, 300 Mo), `videos/`
-  (copies vidéo du beat et des voix seules, 2 Go par défaut, préférence `cache_pistes_mo`), `sous-titres/` (20 Mo),
+  (copies vidéo du beat et des voix seules des anciens doublages à une piste, 2 Go par défaut, préférence `cache_pistes_mo`), `sous-titres/` (20 Mo),
   `miniatures/` (images de MPRIS, 20 Mo). `proteges.json` liste les fichiers que l'interface lit en ce moment : la
   purge n'y touche pas. `verrous/` contient les verrous des préparations.
 - **Journal du préparateur en tâche de fond** : `~/.local/state/voix-la/preparation.log`.
@@ -315,6 +339,9 @@ Variables pour les essais :
 
 Le faux doubler imite les deux GPU (`--gpu`, clés `gpu` et `kaggle.machine`, `temps_local.gpus`) ;
 `FAUX_DOUBLER_SANS_GPU=1` imite un doubler d'avant les deux GPU.
+
+`test_pistes_dans_la_video` lit en GStreamer dans un processus à part (`fakeaudiosink`, aucun son), et le lecteur
+sous Xvfb, sur le bus privé.
 
 ## Limites
 

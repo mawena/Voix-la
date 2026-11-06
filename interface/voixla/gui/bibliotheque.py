@@ -395,9 +395,7 @@ class PageBibliotheque(commun.Page):
     def __init__(self, fenetre):
         super().__init__(fenetre, "Résultats", "resultats")
         _installer_css()
-        bib.declarer_preferences()
-        self.choix = bib.preferences(fenetre.prefs if bib.CLE_PREFERENCES in fenetre.prefs
-                                     else chemins.lire_preferences())
+        self.choix = bib.preferences(fenetre.prefs)
         self.resultats = []           # voixla.rapports.Resultat, du plus récent au plus ancien
         self.versions = []            # voixla.bibliotheque.Version, dans le même ordre
         self.par_cle = {}             # Resultat.cle → Version
@@ -1070,7 +1068,8 @@ class PageBibliotheque(commun.Page):
         d.connect("shown", lambda *_: d.revenir_en_video())
         if d.forme == "video":
             d.passer_en_son()
-        d.lecteur.aller_a(0.0, lire=True)
+        # là où la lecture de ce doublage s'était arrêtée (préférence « positions »), sinon au début
+        d.lecteur.aller_a(d.reprise or 0.0, lire=True)
         return d
 
     # --- ouvrir ----------------------------------------------------------------------------------------------------

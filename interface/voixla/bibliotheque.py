@@ -29,13 +29,8 @@ TRIS = ("date", "titre", "voix", "duree", "mode")
 LIBELLES_TRI = {"date": "Date", "titre": "Titre", "voix": "Voix", "duree": "Durée", "mode": "Mode"}
 # ordre naturel : le plus récent d'abord pour la date, croissant (A → Z, le plus court) pour le reste
 DECROISSANT = {"date": True, "titre": False, "voix": False, "duree": False, "mode": False}
-PREFERENCES = {"vue": "grille", "tri": "date", "inverse": False, "regrouper": True}
-
-
-def declarer_preferences():
-    """Déclare le défaut de la clé « bibliotheque » d'interface.json auprès de voixla.chemins, qui ne lit et n'écrit que
-    les clés de PREFERENCES_DEFAUT : sans cela, la moindre autre préférence enregistrée l'effacerait. Idempotent."""
-    chemins.PREFERENCES_DEFAUT.setdefault(CLE_PREFERENCES, dict(PREFERENCES))
+# le défaut est déclaré dans voixla.chemins (PREFERENCES_DEFAUT), qui ne lit et n'écrit que les clés qu'il connaît
+PREFERENCES = dict(chemins.PREFERENCES_DEFAUT[CLE_PREFERENCES])
 
 
 def preferences(prefs):

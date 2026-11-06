@@ -6,6 +6,7 @@ rapide, l'enregistrement du beat ou de la voix seule, ouvrir le dossier, supprim
 La page qui crée un détail (page, ici la bibliothèque) fournit : fenetre, remix_actif, proteger_caches(),
 ouvrir_detail(res), revenir_au_detail(detail) et mettre_a_la_corbeille(resultats, apres)."""
 
+import time
 from pathlib import Path
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
@@ -15,13 +16,20 @@ from .. import lecture as regles
 from . import commun, pistes_gst
 from . import visualisations as vis
 from .analyses import analyses
+from .commandes import Commandes
 from .frise import Frise, FriseVoix, legende as legende_frise, legende_voix
 from .lecteur import Lecteur
 from .lecture import lectures
-from .vue_paroles import VueParoles
+from .vue_paroles import TAILLES, Karaoke, PanneauParoles, VueParoles
 
 PRODUITS_VIS = {"spectre": "spectre", "onde": "onde", "vumetre": "bandes"}
 VOIX_SEULES = ("ma_voix", "ma_voix_at")     # voix seules combinées en cache (normale et auto-tune)
+POSITION_S = 30              # pendant la lecture, la position est retenue (reprise) toutes les 30 s au plus
+HAUTEUR_ECRAN = 320          # hauteur de l'image dans le détail (hors mode cinéma)
+# Les panneaux que le mode cinéma (touche V) masque d'un coup : préférence → texte du menu « œil »
+PANNEAUX = (("frise_octave", "Frise d’octave"), ("frise_voix", "Voix de chaque passage"),
+            ("vis_melodie", "Courbe de mélodie"), ("vis_onde", "Forme d’onde"), ("vis_spectre", "Spectrogramme"),
+            ("vis_vumetre", "Vu-mètre"), ("paroles", "Paroles"))
 
 
 def phrase(texte):
@@ -75,8 +83,22 @@ class PageDetail(Adw.NavigationPage):
         self._oubliee = False         # page quittée et fermée (flux fermés, plus d'écoute des préférences)
         self.autotune = False         # bascule « Auto-tune » (touche T) : doublage et voix seule auto-tunés
         self._preparations = set()    # voix seules en préparation (ma_voix, ma_voix_at)
-        self.vue_paroles = None
+        self.vue_paroles = None       # paroles sous le lecteur (préférence « paroles »)
+        self.panneau_paroles = None   # « Toutes les paroles », à droite (préférence « paroles_panneau »)
+        self.paroles_image = None     # sous-titres sur l'image hors du plein écran (préférence « paroles_video »)
+        self._karaokes = []           # paroles en surimpression (sur l'image, en plein écran) à tenir à jour
+        self.paroles_lues = None      # voixla.paroles.Paroles, une fois lues
+        self._message_paroles = "Recherche des paroles…"
+        self._paroles_demandees = False
+        self.cinema = False           # mode cinéma (touche V) : tous les panneaux masqués, l'image en grand
+        self.plein = None             # la vue plein écran (gui/plein_ecran.py), quand elle est ouverte
+        self._minuteur_position = None    # pendant la lecture : la position retenue toutes les POSITION_S
+        self._volume_a_ecrire = None
+        self._maj_panneau = False
+        self.passages = rapports.passages_voix(res.rapport)
         self.pistes_dispo = self._choisir_pistes(self.forme)
+        self.actions = self._creer_actions()
+        self.insert_action_group("detail", self.actions)
         vue = Adw.ToolbarView()
         entete = Adw.HeaderBar()
         self.titre_fenetre = Adw.WindowTitle(title=res.titre_court, subtitle=sous_titre(res))
@@ -87,20 +109,15 @@ class PageDetail(Adw.NavigationPage):
         b_suppr = commun.bouton(icone="user-trash-symbolic", infobulle="Mettre à la corbeille…",
                                 clic=self.supprimer)
         entete.pack_end(b_suppr)
-        menu_vis = Gio.Menu()
-        for action, libelle in (("vis-melodie", "Courbe de mélodie"), ("vis-spectre", "Spectrogramme"),
-                                ("vis-onde", "Forme d’onde"), ("vis-vumetre", "Vu-mètre")):
-            menu_vis.append(libelle, f"win.{action}")
-        self.menu_melodie = Gio.Menu()
-        self.menu_melodie.append("Mélodie en Hz (sinon en notes)", "win.melodie-hz")
-        self._maj_menu_autotune()     # « Courbe de la version auto-tune », si le doublage en a une
-        menu_vis.append_section(None, self.menu_melodie)
-        section = Gio.Menu()
-        section.append("Paroles", "win.paroles")
-        menu_vis.append_section(None, section)
-        entete.pack_end(Gtk.MenuButton(icon_name="view-reveal-symbolic", menu_model=menu_vis,
-                                       tooltip_text="Visualisations du son et paroles"))
+        self.b_oeil = Gtk.MenuButton(icon_name="view-reveal-symbolic", menu_model=self._menu_oeil(),
+                                     tooltip_text="Panneaux, visualisations et paroles")
+        self.b_oeil.update_property([Gtk.AccessibleProperty.LABEL], ["Panneaux, visualisations et paroles"])
+        entete.pack_end(self.b_oeil)
         vue.add_top_bar(entete)
+        # reprise à la dernière position (préférence « positions ») : on le dit, avec de quoi repartir du début
+        self.banniere = Adw.Banner(button_label="Reprendre au début")
+        self.banniere.connect("button-clicked", lambda *_: self._depuis_le_debut())
+        vue.add_top_bar(self.banniere)
 
         corps = commun.boite(espace=14, marges=16)
         self.corps = corps
@@ -146,8 +163,19 @@ class PageDetail(Adw.NavigationPage):
         ligne_note.append(self.b_reessayer)
         corps.append(ligne_note)
 
-        self.lecteur = Lecteur(hauteur=320, sur_position=self._position, proprietaire=self)
+        self.lecteur = Lecteur(hauteur=HAUTEUR_ECRAN, sur_position=self._position, proprietaire=self,
+                               commandes=False)
         self.lecteur.sur_echec_piste = self._sans_pistes_audio
+        self.lecteur.sur_etat = self._lecteur_change
+        volume = self.fenetre.prefs.get("volume")
+        if isinstance(volume, (int, float)) and not isinstance(volume, bool):
+            self.lecteur.volume = max(0.0, min(1.0, float(volume)))
+        self.commandes = Commandes(self)
+        self.lecteur.append(self.commandes)
+        # double-clic sur l'image : plein écran
+        clic = Gtk.GestureClick()
+        clic.connect("pressed", lambda _g, n, _x, _y: n == 2 and self.basculer_plein_ecran())
+        self.lecteur.superpose.add_controller(clic)
         corps.append(self.lecteur)
         # Visualisations du son (chacune s'allume et s'éteint par le menu « œil » ; préférences mémorisées)
         self.vis = {}                 # nom → widget
@@ -156,36 +184,37 @@ class PageDetail(Adw.NavigationPage):
         corps.append(self.boite_vis)
         self.boite_onde = commun.boite(espace=6)
 
-        # Frise
+        # Frise d'octave
         self.segs = rapports.segments_frise(res.rapport)
-        g_frise = commun.boite(espace=6)
+        self.g_octave = commun.boite(espace=6)
         tete = Gtk.Box(spacing=8)
         tete.append(Gtk.Label(label="Frise d’octave", xalign=0, css_classes=["heading"], hexpand=True))
         self.passage = Gtk.Label(xalign=1, css_classes=["caption", "chiffres"])
         tete.append(self.passage)
-        g_frise.append(tete)
+        self.g_octave.append(tete)
         if self.segs:
             self.frise = Frise(sur_clic=self._clic_frise)
             self.frise.definir(self.segs, rapports.duree_frise(res.rapport, self.segs))
-            g_frise.append(self.frise)
-            g_frise.append(legende_frise(self.segs))
-            g_frise.append(commun.legende("Chaque passage montre la voix détectée et son décalage en demi-tons ; un clic "
-                                          "va à ce moment."))
+            self.g_octave.append(self.frise)
+            self.g_octave.append(legende_frise(self.segs))
+            self.g_octave.append(commun.legende("Chaque passage montre la voix détectée et son décalage en demi-tons ; "
+                                                "un clic va à ce moment."))
         else:
             self.frise = None
-            g_frise.append(commun.legende("Pas de frise dans ce rapport."))
+            self.g_octave.append(commun.legende("Pas de frise dans ce rapport."))
+        corps.append(self.g_octave)
         # une voix par chanteur : quelle voix cible chante chaque passage (voix principale et chœurs compris)
         self.frise_voix = None
-        passages = rapports.passages_voix(res.rapport)
-        if passages:
+        self.g_voix = commun.boite(espace=6, visible=False)
+        if self.passages:
             noms = [v.get("nom") for v in res.voix_cibles if v.get("nom")] or res.voix_membres
             affichages = {n: self.fenetre.nom_voix(n) for n in noms}
-            g_frise.append(Gtk.Label(label="Voix de chaque passage", xalign=0, css_classes=["heading"], margin_top=6))
+            self.g_voix.append(Gtk.Label(label="Voix de chaque passage", xalign=0, css_classes=["heading"]))
             self.frise_voix = FriseVoix(sur_clic=self._clic_frise)
-            self.frise_voix.definir(passages, noms, rapports.duree_frise(res.rapport, self.segs), affichages)
-            g_frise.append(self.frise_voix)
-            g_frise.append(legende_voix(noms, affichages))
-        corps.append(g_frise)
+            self.frise_voix.definir(self.passages, noms, rapports.duree_frise(res.rapport, self.segs), affichages)
+            self.g_voix.append(self.frise_voix)
+            self.g_voix.append(legende_voix(noms, affichages))
+        corps.append(self.g_voix)
         corps.append(self.boite_onde)
 
         # Informations
@@ -195,27 +224,47 @@ class PageDetail(Adw.NavigationPage):
         corps.append(self.g_pistes)
         self.g_remix = self._groupe_remix()
         corps.append(self.g_remix)
-        corps.append(self._groupe_durees())
-        if res.comparaisons:
-            corps.append(self._groupe_comparaisons())
+        self.g_durees = self._groupe_durees()
+        corps.append(self.g_durees)
+        self.g_comparaisons = self._groupe_comparaisons() if res.comparaisons else None
+        if self.g_comparaisons is not None:
+            corps.append(self.g_comparaisons)
 
         self.defilement = commun.defile(corps, 980)
-        vue.set_content(self.defilement)
-        self.set_child(vue)
-        raccourcis = Gtk.ShortcutController(scope=Gtk.ShortcutScope.MANAGED)
-        raccourcis.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string("b"),
-                                                 Gtk.CallbackAction.new(lambda *_: (self.bascule_ab(), True)[1])))
-        raccourcis.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string("t"),
-                                                 Gtk.CallbackAction.new(lambda *_: (self.bascule_autotune(), True)[1])))
-        raccourcis.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string("space"),
-                                                 Gtk.CallbackAction.new(lambda *_: (self.lecture_pause(), True)[1])))
-        self.add_controller(raccourcis)
+        self.clamp = corps.get_parent()
+        # « Toutes les paroles » : un panneau à droite (par-dessus le contenu, fenêtre étroite)
+        self.partage = Adw.OverlaySplitView(sidebar_position=Gtk.PackType.END, content=self.defilement,
+                                            show_sidebar=False, min_sidebar_width=260, max_sidebar_width=380,
+                                            sidebar_width_fraction=0.32)
+        self.partage.connect("notify::show-sidebar", lambda *_: self._panneau_ferme())
+        vue.set_content(self.partage)
+        # fenêtre étroite : le panneau passe par-dessus le contenu, puis les commandes secondaires disparaissent
+        cadre = Adw.BreakpointBin(child=vue)
+        cadre.set_size_request(300, 300)
+        etroit = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 760sp"))
+        etroit.add_setter(self.partage, "collapsed", True)
+        cadre.add_breakpoint(etroit)
+        tres_etroit = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 540sp"))
+        tres_etroit.add_setter(self.partage, "collapsed", True)
+        for w in self.commandes.secondaires:
+            tres_etroit.add_setter(w, "visible", False)
+        cadre.add_breakpoint(tres_etroit)
+        self.set_child(cadre)
+        self.add_controller(self.raccourcis())
         # quitter la page n'arrête pas la lecture ; une page quittée qui ne lit pas est oubliée
         self.connect("hidden", lambda *_: self._cachee())
         self.connect("shown", lambda *_: self.page.proteger_caches())
         self.changer_forme(self.forme)
         self.fenetre.ecouter("visualisations", self._maj_visualisations)
         self._maj_visualisations()
+        # reprise : là où la lecture de ce doublage s'était arrêtée
+        self.reprise = regles.position_reprise(self.fenetre.prefs.get("positions"), self._cle_reprise(),
+                                               res.duree_s)
+        if self.reprise:
+            self.lecteur.aller_a(self.reprise)
+            self._position(self.reprise, False)
+            self.banniere.set_title(f"Reprise à {formats.chrono(self.reprise)}, là où la lecture s’était arrêtée")
+            self.banniere.set_revealed(True)
         if res.video is not None and pistes.a_sonder(res):
             # rapport sans pistes_audio : les titres des pistes audio de la vidéo, lus dans un fil (ffprobe)
             commun.en_fil(lambda: [pistes.titres_des_flux(v) for v in (res.video, res.video_autotune) if v],
@@ -273,6 +322,11 @@ class PageDetail(Adw.NavigationPage):
         self._preparer_tout()
         self._appliquer_pistes()
         self.page.proteger_caches()
+        if self.paroles_image is not None:
+            self.paroles_image.set_visible(forme == "video" and bool(self.fenetre.prefs.get("paroles_video")))
+        if self.plein is not None:
+            self.plein.forme_changee()
+        self.commandes.lecture_changee()
 
     def _preparer_tout(self):
         """Dès l'ouverture, avant le moindre clic : ce qui manque se prépare en tâche de fond, une chose à la fois et
@@ -336,6 +390,7 @@ class PageDetail(Adw.NavigationPage):
         finally:
             self._maj = False
         self._maj_note()
+        self._maj_action_piste()
 
     def _maj_note(self):
         c = self.voulue or self.piste
@@ -608,6 +663,388 @@ class PageDetail(Adw.NavigationPage):
         else:
             self.lire()
 
+    # --- lecteur complet : actions, menu « œil », touches -------------------------------------------------------------
+
+    def _creer_actions(self):
+        """Les actions de la page (groupe « detail ») : vitesse et piste (menus des commandes), mode cinéma,
+        auto-tune ; elles servent aussi à la vue plein écran, où le groupe est repris."""
+        g = Gio.SimpleActionGroup()
+
+        def etat(nom, valeur, rappel):
+            a = Gio.SimpleAction.new_stateful(nom, valeur.get_type() if valeur.get_type_string() == "s" else None,
+                                              valeur)
+            a.connect("change-state", lambda act, v: rappel(v))
+            g.add_action(a)
+        etat("vitesse", GLib.Variant.new_string("1"), lambda v: self.regler_vitesse(float(v.get_string())))
+        etat("piste", GLib.Variant.new_string("doublage"), lambda v: self.touche_piste(v.get_string()))
+        etat("cinema", GLib.Variant.new_boolean(False), lambda v: self.basculer_cinema(v.get_boolean()))
+        etat("autotune", GLib.Variant.new_boolean(False), lambda v: self.res.autotune and
+             self.t_autotune.set_active(v.get_boolean()))
+        for nom, rappel in (("boucle", lambda: self.basculer_boucle()), ("capture", lambda: self.capturer_image()),
+                            ("plein-ecran", lambda: self.basculer_plein_ecran())):
+            a = Gio.SimpleAction.new(nom, None)
+            a.connect("activate", lambda *_a, r=rappel: r())
+            g.add_action(a)
+        return g
+
+    def _menu_oeil(self):
+        """Le menu « œil » : chaque panneau (frises, visualisations), l'échelle de la mélodie, les paroles (sous le
+        lecteur, panneau « Toutes les paroles », sur l'image, taille du texte) et le mode cinéma."""
+        menu = Gio.Menu()
+        panneaux = Gio.Menu()
+        panneaux.append("Frise d’octave", "win.frise-octave")
+        if self.passages:
+            panneaux.append("Voix de chaque passage", "win.frise-voix")
+        for action, libelle in (("vis-melodie", "Courbe de mélodie"), ("vis-onde", "Forme d’onde"),
+                                ("vis-spectre", "Spectrogramme"), ("vis-vumetre", "Vu-mètre")):
+            panneaux.append(libelle, f"win.{action}")
+        menu.append_section("Panneaux", panneaux)
+        self.menu_melodie = Gio.Menu()
+        self.menu_melodie.append("Mélodie en Hz (sinon en notes)", "win.melodie-hz")
+        self._maj_menu_autotune()     # « Courbe de la version auto-tune », si le doublage en a une
+        menu.append_section(None, self.menu_melodie)
+        paroles = Gio.Menu()
+        paroles.append("Paroles", "win.paroles")
+        paroles.append("Toutes les paroles, à droite (P)", "win.paroles-panneau")
+        paroles.append("Sous-titres sur la vidéo", "win.paroles-video")
+        tailles = Gio.Menu()
+        for nom, libelle, _f in TAILLES:
+            item = Gio.MenuItem.new(libelle, None)
+            item.set_action_and_target_value("win.paroles-taille", GLib.Variant.new_string(nom))
+            tailles.append_item(item)
+        paroles.append_submenu("Taille du texte", tailles)
+        menu.append_section("Paroles", paroles)
+        cinema = Gio.Menu()
+        cinema.append("Mode cinéma : tout masquer (V)", "detail.cinema")
+        menu.append_section(None, cinema)
+        return menu
+
+    def menu_pistes(self):
+        """Le choix de la piste dans les commandes du plein écran (touches 1 à 5)."""
+        menu = Gio.Menu()
+        for i, cle in enumerate(regles.TOUCHES_PISTES):
+            p = self.pistes_dispo.get(cle)
+            item = Gio.MenuItem.new(f"{p.libelle if p else pistes.LIBELLES[cle]} ({i + 1})", None)
+            item.set_action_and_target_value("detail.piste", GLib.Variant.new_string(cle))
+            menu.append_item(item)
+        if self.res.autotune:
+            autre = Gio.Menu()
+            autre.append("Auto-tune (T)", "detail.autotune")
+            menu.append_section(None, autre)
+        return menu
+
+    def raccourcis(self, plein_ecran=False):
+        """Les touches du lecteur (portée MANAGED, comme B, T et Espace d'avant) : la page affichée, ou la vue plein
+        écran (plein_ecran vrai) ; chacune ne répond que quand c'est elle qu'on voit."""
+        c = Gtk.ShortcutController(scope=Gtk.ShortcutScope.MANAGED)
+
+        def ajouter(touches, rappel):
+            for t in touches.split():
+                c.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string(t),
+                                                Gtk.CallbackAction.new(lambda *_: self._touche(rappel, plein_ecran))))
+        ajouter("space", self.lecture_pause)
+        ajouter("b", self.bascule_ab)
+        ajouter("t", self.bascule_autotune)
+        ajouter("Left", lambda: self.sauter(-regles.SAUT_S))
+        ajouter("Right", lambda: self.sauter(regles.SAUT_S))
+        ajouter("comma", lambda: self.pas_image(-1))
+        ajouter("period", lambda: self.pas_image(1))
+        ajouter("Home", lambda: self.aller_a(0.0))
+        for i, cle in enumerate(regles.TOUCHES_PISTES):
+            ajouter(f"{i + 1} KP_{i + 1}", lambda c=cle: self.touche_piste(c))
+        ajouter("l", self.basculer_boucle)
+        ajouter("bracketleft", lambda: self.changer_vitesse(-1))
+        ajouter("bracketright", lambda: self.changer_vitesse(1))
+        ajouter("m", lambda: self.couper_son(not self.lecteur.coupe))
+        ajouter("f", self.basculer_plein_ecran)
+        ajouter("s", self.capturer_image)
+        if plein_ecran:
+            ajouter("Escape", self.quitter_plein_ecran)
+        else:
+            ajouter("v", lambda: self.basculer_cinema(not self.cinema))
+            ajouter("p", lambda: self.fenetre.lookup_action("paroles-panneau").activate(None))
+        return c
+
+    def _touche(self, rappel, plein_ecran):
+        if self._oubliee or (self.plein is not None) != plein_ecran:
+            return False
+        if not plein_ecran and not self.est_visible():
+            return False
+        rappel()
+        if self.plein is not None:
+            self.plein.montrer_commandes()
+        return True
+
+    def touche_piste(self, cle):
+        """Touches 1 à 5 (et le choix de piste du plein écran) : la bascule de cette piste, si elle est là."""
+        t = self.t_pistes.get(cle)
+        if t is None:
+            return
+        if not t.get_sensitive():
+            p = self.pistes_dispo.get(cle)
+            self.fenetre.toast(f"{p.libelle if p else pistes.LIBELLES.get(cle, cle)} indisponible"
+                               + (f" : {p.explication}" if p and p.explication else ""))
+            self._maj_action_piste()
+            return
+        t.set_active(True)
+
+    def _maj_action_piste(self):
+        a = self.actions.lookup_action("piste")
+        base = pistes.cle_de_base(self.voulue or self.piste)
+        if a is not None and a.get_state().get_string() != base:
+            a.set_state(GLib.Variant.new_string(base))
+        a = self.actions.lookup_action("autotune")
+        if a is not None and a.get_state().get_boolean() != self.autotune:
+            a.set_state(GLib.Variant.new_boolean(self.autotune))
+
+    # --- lecteur complet : déplacements, vitesse, son, boucle A-B ----------------------------------------------------
+
+    def duree_lecture(self):
+        """La durée montrée par les commandes, en temps de référence."""
+        if self.piste == "comparaison":
+            return self.lecteur.duree()
+        return self.res.duree_s or self.lecteur.duree_ref()
+
+    def _apres_deplacement(self, t):
+        """Après un déplacement (touche, barre, MPRIS) : frises, paroles et commandes au nouvel instant."""
+        if t is None:
+            return
+        lit = self.lecteur.en_lecture()
+        self._position(t, lit)
+        if self.plein is not None:
+            self.plein.placer(t, lit)
+        self.commandes.lecture_changee()
+        lectures().prevoir()
+
+    def sauter(self, delta_s):
+        self._apres_deplacement(self.lecteur.sauter(delta_s))
+
+    def pas_image(self, sens):
+        self._apres_deplacement(self.lecteur.pas_image(sens))
+
+    def vitesse_possible(self):
+        return self.lecteur.vitesse_possible()
+
+    def changer_vitesse(self, sens):
+        self.regler_vitesse(regles.vitesse_voisine(self.lecteur.vitesse, sens))
+
+    def regler_vitesse(self, v):
+        """La vitesse de lecture (0,5× à 2×), la hauteur gardée ; pour toutes les pistes de ce résultat."""
+        if not self.lecteur.regler_vitesse(v):
+            self.fenetre.toast("Vitesse indisponible : ce lecteur ne garderait pas la hauteur du son")
+        a = self.actions.lookup_action("vitesse")
+        texte = f"{self.lecteur.vitesse:g}"
+        if a.get_state().get_string() != texte:
+            a.set_state(GLib.Variant.new_string(texte))
+        self._annoncer(f"Vitesse {regles.libelle_vitesse(self.lecteur.vitesse)}")
+        self._lecteur_change()
+
+    def basculer_boucle(self):
+        """Touche L : début de la boucle A-B ici, puis sa fin, puis plus de boucle. Elle vaut pour toutes les pistes :
+        on compare le doublage et l'original au même passage."""
+        b = regles.boucle_suivante(self.lecteur.boucle, self.lecteur.position_ref())
+        self.lecteur.definir_boucle(b)
+        self._annoncer("Boucle effacée" if not b else f"Début de la boucle à {formats.chrono(b[0])}"
+                       if not regles.boucle_complete(b) else f"Boucle {regles.libelle_boucle(b)}")
+        self._lecteur_change()
+
+    def couper_son(self, oui):
+        self.lecteur.couper_son(oui)
+        self._lecteur_change()
+
+    def regler_volume(self, v):
+        """Volume (commandes, MPRIS) : tous les flux ; gardé dans les préférences une seconde après le dernier
+        changement."""
+        self.lecteur.regler_volume(v)
+        if self._volume_a_ecrire is None:
+            self._volume_a_ecrire = GLib.timeout_add(1000, self._ecrire_volume)
+        self.commandes.lecture_changee()
+        if self.plein is not None:
+            self.plein.commandes.lecture_changee()
+        lectures().prevoir()
+
+    def _ecrire_volume(self):
+        self._volume_a_ecrire = None
+        if abs((self.fenetre.prefs.get("volume") or 0.0) - self.lecteur.volume) > 1e-3:
+            self.fenetre.prefs = chemins.modifier_preference("volume", round(self.lecteur.volume, 3))
+        return False
+
+    def _annoncer(self, texte):
+        """Un changement sans autre trace visible (vitesse, boucle) dit aux lecteurs d'écran."""
+        try:
+            self.commandes.announce(texte, Gtk.AccessibleAnnouncementPriority.MEDIUM)
+        except (AttributeError, TypeError):
+            pass
+
+    def _lecteur_change(self):
+        """Lecture, pause, fin, vitesse, boucle (rappel sur_etat du lecteur) : commandes, plein écran, paroles,
+        position retenue pour la reprise, barre « en cours de lecture » et MPRIS."""
+        if self._oubliee:
+            return
+        lit = self.lecteur.en_lecture()
+        self.commandes.lecture_changee()
+        if self.plein is not None:
+            self.plein.lecture_changee()
+        t = self.lecteur.position_ref()
+        for w in [self.panneau_paroles, *self._karaokes]:
+            if w is not None and w.get_mapped():
+                w.placer(t, lit)
+        if lit:
+            if self._minuteur_position is None:
+                self._minuteur_position = GLib.timeout_add_seconds(POSITION_S, self._garder_en_lisant)
+            if self.banniere.get_revealed() and t > (self.reprise or 0.0) + 8:
+                self.banniere.set_revealed(False)
+        elif self.lecteur.media() is not None:
+            self.garder_position()
+        lectures().prevoir()
+
+    def _garder_en_lisant(self):
+        if self._oubliee or not self.lecteur.en_lecture():
+            self._minuteur_position = None
+            return False
+        self.garder_position()
+        if self.banniere.get_revealed():
+            self.banniere.set_revealed(False)
+        return True
+
+    # --- reprise à la dernière position ------------------------------------------------------------------------------
+
+    def _cle_reprise(self):
+        return regles.cle_reprise(self.res.dossier, self.res.voix)
+
+    def garder_position(self):
+        """Retient la position de ce doublage (préférence « positions ») : on y reprendra en le rouvrant, depuis le
+        détail ou la bibliothèque. Au début ou à la fin, il est oublié (on reprendra au début)."""
+        if self._oubliee or self.piste == "comparaison" or self.lecteur.media() is None:
+            return
+        m = self.lecteur.media()
+        pos = self.duree_lecture() if m.get_ended() else self.lecteur.position_ref()
+        avant = self.fenetre.prefs.get("positions") or {}
+        apres = regles.memoriser_position(avant, self._cle_reprise(), pos, self.duree_lecture(), time.time())
+        if apres.get(self._cle_reprise()) != avant.get(self._cle_reprise()):
+            self.fenetre.prefs = chemins.modifier_preference("positions", apres)
+
+    def _depuis_le_debut(self):
+        self.banniere.set_revealed(False)
+        self.aller_a(0.0)
+        self.reprise = None
+
+    # --- plein écran, mode cinéma, capture ---------------------------------------------------------------------------
+
+    def basculer_plein_ecran(self):
+        if self.plein is not None:
+            self.quitter_plein_ecran()
+        else:
+            self.entrer_plein_ecran()
+
+    def entrer_plein_ecran(self):
+        if self._oubliee or self.plein is not None:
+            return
+        from .plein_ecran import PleinEcran
+        self.plein = PleinEcran(self)
+        self.fenetre.entrer_plein_ecran(self.plein)
+
+    def quitter_plein_ecran(self):
+        vue, self.plein = self.plein, None
+        if vue is None:
+            return
+        self._karaokes = [k for k in self._karaokes if k not in (vue.paroles, vue.paroles_son)]
+        vue.fermer()
+        if self.fenetre.plein_ecran is vue:
+            self.fenetre.sortir_plein_ecran()
+        if not self._oubliee:
+            self._position(self.lecteur.position_ref(), self.lecteur.en_lecture())
+            self.commandes.b_plein.grab_focus()
+
+    def paroles_en_surimpression(self):
+        """En plein écran, les paroles sur l'image suivent l'interrupteur « Paroles »."""
+        return bool(self.fenetre.prefs.get("paroles"))
+
+    def basculer_cinema(self, oui):
+        """Mode cinéma (touche V) : tous les panneaux masqués d'un coup (frises, visualisations, paroles,
+        informations), l'image en grand ; encore V pour les retrouver tels qu'ils étaient."""
+        self.cinema = bool(oui)
+        a = self.actions.lookup_action("cinema")
+        if a.get_state().get_boolean() != self.cinema:
+            a.set_state(GLib.Variant.new_boolean(self.cinema))
+        self._maj_visibilites()
+        self._annoncer("Mode cinéma" if self.cinema else "Panneaux réaffichés")
+
+    def _maj_visibilites(self):
+        """Ce qui se voit, d'après les préférences (menu « œil ») et le mode cinéma."""
+        p, c = self.fenetre.prefs, self.cinema
+        self.g_octave.set_visible(not c and bool(p.get("frise_octave", True)))
+        self.g_voix.set_visible(not c and bool(self.passages) and bool(p.get("frise_voix", True)))
+        for w in (self.boite_vis, self.boite_onde, self.g_infos, self.g_pistes, self.g_remix, self.g_durees,
+                  self.g_comparaisons, self.vue_paroles):
+            if w is not None:
+                w.set_visible(not c)
+        self._maj_panneau = True
+        try:
+            self.partage.set_show_sidebar(not c and bool(p.get("paroles_panneau")))
+        finally:
+            self._maj_panneau = False
+        if self.paroles_image is not None:
+            self.paroles_image.set_visible(self.forme == "video" and bool(p.get("paroles_video")))
+        # l'image en grand : elle prend la hauteur libre, et la largeur jusqu'à 1800 px
+        self.lecteur.ecran.set_size_request(-1, 200 if c else HAUTEUR_ECRAN)
+        for w in (self.lecteur, self.lecteur.superpose, self.lecteur.ecran):
+            w.set_vexpand(c)
+        self.clamp.set_maximum_size(1800 if c else 980)
+        self.clamp.set_tightening_threshold(1600 if c else 784)
+
+    def _panneau_ferme(self):
+        """Le panneau « Toutes les paroles » refermé par un clic à côté (fenêtre étroite) : la préférence suit."""
+        if self._maj_panneau or self._oubliee or self.cinema:
+            return
+        voulu = self.partage.get_show_sidebar()
+        if voulu != bool(self.fenetre.prefs.get("paroles_panneau")):
+            self.fenetre.regler_visualisation("paroles_panneau", voulu)
+
+    def image_a_capturer(self):
+        return self.forme == "video" and self.lecteur.ecran.get_paintable() is not None
+
+    def capturer_image(self):
+        """Touche S : l'image en cours, à sa taille d'origine, en PNG dans Images/Voix-là (écrite dans un fil)."""
+        if not self.image_a_capturer():
+            self.fenetre.toast("Pas d’image à enregistrer (MP3, ou vidéo pas encore prête)")
+            return
+        try:
+            from gi.repository import Graphene
+            image = self.lecteur.ecran.get_paintable().get_current_image()
+            l, h = image.get_intrinsic_width(), image.get_intrinsic_height()
+            if l <= 0 or h <= 0:
+                raise ValueError("image vide")
+            instantane = Gtk.Snapshot()
+            image.snapshot(instantane, l, h)
+            noeud = instantane.to_node()
+            if noeud is None:
+                raise ValueError("image vide")
+            texture = self.fenetre.get_native().get_renderer().render_texture(
+                noeud, Graphene.Rect().init(0, 0, l, h))
+            telechargeur = Gdk.TextureDownloader.new(texture)
+            telechargeur.set_format(Gdk.MemoryFormat.R8G8B8A8)
+            octets, pas = telechargeur.download_bytes()
+        except Exception as e:  # noqa: BLE001
+            self.fenetre.toast(f"Capture impossible : {e}")
+            return
+        q = self.pistes_dispo.get(self.piste)
+        dossier = chemins.dossier_images(GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_PICTURES))
+        sortie = dossier / chemins.nom_capture(self.res.titre_court, q.libelle if q else "",
+                                               self.lecteur.position_ref())
+
+        def ecrire():
+            from gi.repository import GdkPixbuf
+            dossier.mkdir(parents=True, exist_ok=True)
+            pb = GdkPixbuf.Pixbuf.new_from_bytes(octets, GdkPixbuf.Colorspace.RGB, True, 8, l, h, pas)
+            pb.savev(str(sortie), "png", [], [])
+            return sortie
+
+        def fini(f):
+            self.fenetre.toast(f"Image enregistrée : {f.name}", "Montrer", lambda: commun.montrer_fichier(
+                self.fenetre, f), duree=6)
+        commun.en_fil(ecrire, fini, lambda e: self.fenetre.toast(f"Capture impossible : {e}"))
+
     # --- lecture durable (coordinateur, barre « en cours de lecture », MPRIS) ----------------------------------------
 
     def meme_resultat(self, res):
@@ -633,11 +1070,21 @@ class PageDetail(Adw.NavigationPage):
         """Ferme les flux et cesse d'écouter les préférences : la page ne reviendra plus."""
         if self._oubliee:
             return
+        self.garder_position()
+        self.quitter_plein_ecran()
         self._oubliee = True
         self.fenetre.oublier("visualisations", self._maj_visualisations)
-        for w in list(self.vis.values()) + ([self.vue_paroles] if self.vue_paroles is not None else []):
+        for w in [*self.vis.values(), self.vue_paroles, self.panneau_paroles, *self._karaokes]:
             if getattr(w, "animateur", None):
                 w.animateur.arreter()
+        for ident in (self._minuteur_position, self._volume_a_ecrire):
+            if ident is not None:
+                GLib.source_remove(ident)
+        if self._volume_a_ecrire is not None:
+            self._volume_a_ecrire = None
+            self._ecrire_volume()
+        self._minuteur_position = None
+        self.lecteur.definir_boucle(())
         self.lecteur.liberer()
         self.page.proteger_caches()
 
@@ -666,7 +1113,9 @@ class PageDetail(Adw.NavigationPage):
         return regles.Etat(statut=statut, position_s=self.lecteur.position_ref(), duree_s=duree, titre=r.titre_court,
                            voix=r.voix_nom or (r.voix or ""), piste=piste, genre="resultat",
                            cle=("resultat", str(r.dossier), r.voix or ""), video=str(r.video) if r.video else None,
-                           volume=m.get_volume() if m is not None else 1.0)
+                           volume=self.lecteur.volume, vitesse=self.lecteur.vitesse,
+                           vitesse_reglable=m is not None and self.lecteur.vitesse_possible() is not False,
+                           boucle=tuple(self.lecteur.boucle) if regles.boucle_complete(self.lecteur.boucle) else ())
 
     def _duree_ref(self):
         d = self.lecteur.duree()
@@ -693,6 +1142,7 @@ class PageDetail(Adw.NavigationPage):
         if self.lecteur.media() is not None:
             self.lecteur.aller_a(0.0)
             self._position(0.0, False)
+            self.garder_position()            # arrêté : on reprendra au début
         if self.dans_la_pile():
             lectures().terminer(self)
         else:
@@ -700,12 +1150,7 @@ class PageDetail(Adw.NavigationPage):
 
     def aller_a(self, s):
         self.lecteur.aller_a(s)
-        self._position(s, self.lecteur.en_lecture())
-
-    def regler_volume(self, v):
-        m = self.lecteur.media()
-        if m is not None:
-            m.set_volume(v)
+        self._apres_deplacement(s)
 
     def revenir(self):
         self.page.revenir_au_detail(self)
@@ -740,8 +1185,9 @@ class PageDetail(Adw.NavigationPage):
             self.frise_voix.placer(t)
         for w in self.vis.values():
             w.placer(t, lecture)
-        if self.vue_paroles is not None:
-            self.vue_paroles.placer(t, lecture)
+        for w in (self.vue_paroles, self.panneau_paroles, self.paroles_image):
+            if w is not None and w.get_visible():
+                w.placer(t, lecture)
         s = rapports.segment_a(self.segs, t)
         texte = formats.chrono_precis(t)
         if s:
@@ -783,35 +1229,111 @@ class PageDetail(Adw.NavigationPage):
         return p.fichier or p.video      # le son de la copie vidéo si la voix seule a quitté le cache
 
     def _maj_paroles(self):
-        """Paroles allumées ou éteintes (menu « œil ») : sous le lecteur, chargées une fois."""
-        voulu = bool(self.fenetre.prefs.get("paroles"))
-        if voulu and self.vue_paroles is None:
-            # position du lecteur en temps du son doublé : voir voixla.paroles.ecart_lecture
-            w = VueParoles(sur_clic=self._clic_frise, langue=self.fenetre.prefs.get("paroles_langue") or "deux",
-                           sur_langue=self._langue_paroles, debut_son=pistes.debut_son_video(self.res))
+        """Paroles allumées ou éteintes (menu « œil ») : sous le lecteur, dans le panneau « Toutes les paroles », sur
+        l'image. Lues une seule fois (paroles.json, sinon sous-titres de la vidéo doublée), pour tous ces affichages ;
+        la position du lecteur est en temps du son doublé (voir voixla.paroles.ecart_lecture)."""
+        p = self.fenetre.prefs
+        langue, taille = p.get("paroles_langue") or "deux", p.get("paroles_taille") or "normale"
+        debut_son = pistes.debut_son_video(self.res)
+        if p.get("paroles") and self.vue_paroles is None:
+            w = VueParoles(sur_clic=self._clic_frise, langue=langue, sur_langue=self._langue_paroles,
+                           debut_son=debut_son, taille=taille)
             w.suivre(self._fournisseur)
             self.corps.insert_child_after(w, self.lecteur)
             self.vue_paroles = w
-            r = self.res
-
-            def lu(p, message):
-                if p is not None:
-                    w.definir(p)
-                    w.placer(self.lecteur.position_ref())
-                elif message == "attente":
-                    w.dire("Lecture des sous-titres de la vidéo doublée (sous nice)…")
-                else:
-                    w.dire(f"Pas de paroles : {message}" if message else "Pas de paroles")
-            analyses().paroles(r.dossier_voix, r.video, lu)
-        elif not voulu and self.vue_paroles is not None:
+            self._nourrir(w)
+        elif not p.get("paroles") and self.vue_paroles is not None:
+            if self.vue_paroles.animateur:
+                self.vue_paroles.animateur.arreter()
             self.corps.remove(self.vue_paroles)
             self.vue_paroles = None
+        if p.get("paroles_panneau") and self.panneau_paroles is None:
+            w = PanneauParoles(sur_clic=self._clic_frise, langue=langue, debut_son=debut_son)
+            w.suivre(self._fournisseur)
+            self.partage.set_sidebar(w)
+            self.panneau_paroles = w
+            self._nourrir(w)
+        if p.get("paroles_video") and self.paroles_image is None:
+            w = self.creer_karaoke("video", precedente=False)
+            w.set_valign(Gtk.Align.END)
+            for cote in ("start", "end"):
+                getattr(w, f"set_margin_{cote}")(24)
+            w.set_margin_bottom(18)
+            self.lecteur.superpose.add_overlay(w)
+            self.paroles_image = w
+        for w in [self.vue_paroles, self.panneau_paroles, *self._karaokes]:
+            if w is None:
+                continue
+            if getattr(w, "langue", langue) != langue:
+                w.regler_langue(langue)
+            if hasattr(w, "regler_taille") and w is not self.panneau_paroles:
+                w.regler_taille(self._taille_karaoke(w, taille))
+
+    def _taille_karaoke(self, w, taille):
+        """La taille choisie, sans descendre sous le minimum d'un affichage (paroles en grand d'un MP3 en plein
+        écran)."""
+        mini = getattr(w, "taille_min", None)
+        rangs = [n for n, _l, _f in TAILLES]
+        if mini in rangs and taille in rangs and rangs.index(mini) > rangs.index(taille):
+            return mini
+        return taille
+
+    def creer_karaoke(self, style, precedente=False, taille_min=None):
+        """Des paroles en surimpression (sur l'image, en plein écran) : tenues à jour par la page (paroles lues,
+        langue, taille)."""
+        p = self.fenetre.prefs
+        w = Karaoke(style=style, taille=p.get("paroles_taille") or "normale", sur_clic=None, precedente=precedente,
+                    debut_son=pistes.debut_son_video(self.res), langue=p.get("paroles_langue") or "deux")
+        w.taille_min = taille_min
+        if taille_min:
+            w.regler_taille(self._taille_karaoke(w, p.get("paroles_taille") or "normale"))
+        w.suivre(self._fournisseur)
+        self._karaokes.append(w)
+        self._nourrir(w, message=False)
+        return w
+
+    def _nourrir(self, w, message=True):
+        """Donne les paroles (ou leur absence) à un affichage ; la première demande les fait lire."""
+        if self.paroles_lues is not None:
+            w.definir(self.paroles_lues)
+            w.placer(self.lecteur.position_ref())
+        else:
+            w.dire(self._message_paroles if message else "")
+        if self._paroles_demandees:
+            return
+        self._paroles_demandees = True
+        r = self.res
+
+        def lu(p, msg):
+            if self._oubliee:
+                return
+            if p is not None:
+                self.paroles_lues = p
+            elif msg == "attente":
+                self._message_paroles = "Lecture des sous-titres de la vidéo doublée (sous nice)…"
+            else:
+                self._message_paroles = f"Pas de paroles : {msg}" if msg else "Pas de paroles"
+            for x in [self.vue_paroles, self.panneau_paroles, *self._karaokes]:
+                if x is None:
+                    continue
+                if p is not None:
+                    x.definir(p)
+                    x.placer(self.lecteur.position_ref(), self.lecteur.en_lecture())
+                else:
+                    x.dire(self._message_paroles if x in (self.vue_paroles, self.panneau_paroles) else "")
+        analyses().paroles(r.dossier_voix, r.video, lu)
 
     def _langue_paroles(self, valeur):
         self.fenetre.prefs = chemins.modifier_preference("paroles_langue", valeur)
+        for w in [self.panneau_paroles, *self._karaokes]:
+            if w is not None:
+                w.regler_langue(valeur)
 
     def _maj_visualisations(self):
         self._maj_paroles()
+        self._maj_visibilites()
+        if self.plein is not None:
+            self.plein.forme_changee()
         if not vis.disponible():
             return
         p = self.fenetre.prefs
@@ -1324,6 +1846,28 @@ class PageDetail(Adw.NavigationPage):
         if action.startswith("aller-"):
             t = float(action.split("-", 1)[1])
             GLib.timeout_add(1500, lambda: (self.lecteur.aller_a(t), self._position(t, False), False)[2])
+        # lecteur complet (captures) : plein écran (commandes visibles, puis masquées), mode cinéma, panneau
+        # « Toutes les paroles », menu « œil », boucle A-B, vitesse, sous-titres sur l'image, taille des paroles
+        if action == "plein-ecran":
+            GLib.timeout_add(2200, lambda: (self.entrer_plein_ecran(), False)[1])
+        if action == "masquer":
+            GLib.timeout_add(3600, lambda: (self.plein is not None and self.plein.masquer_commandes(), False)[1])
+        if action == "cinema":
+            GLib.timeout_add(1200, lambda: (self.basculer_cinema(True), False)[1])
+        if action == "panneau":
+            self.fenetre.regler_visualisation("paroles_panneau", True)
+        if action == "sous-titres":
+            self.fenetre.regler_visualisation("paroles_video", True)
+        if action.startswith("taille-"):
+            self.fenetre.regler_visualisation("paroles_taille", action.split("-", 1)[1])
+        if action == "oeil":
+            GLib.timeout_add(2600, lambda: (self.b_oeil.popup(), False)[1])
+        if action.startswith("boucle-"):
+            a, b = (float(x) for x in action.split("-")[1:3])
+            GLib.timeout_add(1600, lambda: (self.lecteur.definir_boucle((a, b)), self._lecteur_change(), False)[2])
+        if action.startswith("vitesse-"):
+            v = float(action.split("-", 1)[1])
+            GLib.timeout_add(2400, lambda: (self.regler_vitesse(v), False)[1])
         if action.startswith("puis-"):
             # après « lire » : on quitte le résultat pendant la lecture (barre « en cours de lecture ») ; « liste » :
             # retour à la liste des résultats, sinon une autre section

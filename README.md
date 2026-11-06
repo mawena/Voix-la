@@ -84,9 +84,12 @@ flowchart TD
 - **Deux cartes (Kaggle).** La machine demandée (`NvidiaTeslaT4`, « GPU T4 x2 ») a deux cartes T4. Le nettoyage
   (karaoké sur une carte, puis dereverb de la voix principale et des chœurs chacune sur la sienne), la conversion
   YingMusic-SVC (morceaux pris par la première carte libre) et la séparation d'un lot s'y partagent le travail. Les
-  modèles se chargent l'un après l'autre. Chaque morceau garde sa graine et les pistes sont assemblées dans le même
-  ordre : le son est celui d'une carte seule, au bit près. `--gpu 1` revient à une carte. Avec une machine à une seule
-  carte, ou une carte arrêtée en route, le noyau se replie de lui-même sur une carte.
+  paroles, prêtes dès la fin du nettoyage, passent sur la carte 1 pendant que la carte 0 commence la conversion ; la
+  carte 1 rejoint ensuite la conversion. Les modèles se chargent l'un après l'autre, et Whisper ne partage jamais une
+  carte avec YingMusic-SVC. Chaque morceau garde sa graine et les pistes sont assemblées dans le même ordre : le son et
+  les paroles sont ceux d'une carte seule, au bit près. `--gpu 1` revient à une carte (paroles après la conversion).
+  Avec une machine à une seule carte, ou une carte arrêtée en route, le noyau se replie de lui-même sur une carte,
+  paroles comprises.
 - **Musique seule (PC).** Le reste (musique, bruits) vaut exactement l'original moins la voix isolée. Il est
   recalculé à chaque mixage, puis vérifié par trois garde-fous :
   - reconstruction : musique seule + voix redonnent l'original ;
@@ -935,6 +938,18 @@ Deux cartes T4, le 05/11/2026, une vidéo par session :
   changent pas.
 - Le nettoyage prend environ 0,7 fois son temps de GPU, et la conversion YingMusic-SVC 0,55 fois.
 - Le quota GPU se compte par heure de session, pas par carte : une chanson coûte moins de quota.
+
+Paroles pendant la conversion, le 06/11/2026 (même chanson de 3 min 48, deux sessions le même soir) :
+
+| Version | GPU Kaggle | Noyau | De la fin du nettoyage à la fin |
+|---|---|---|---|
+| paroles après la conversion (0.6.0) | 16,8 min | 979 s | 365 s |
+| paroles sur la carte 1 pendant la conversion | 16,7 min | 973 s | 324 s |
+
+- Les paroles ne coûtent plus qu'environ la moitié de leur durée : −41 s ici (les autres étapes varient d'autant d'une
+  machine Kaggle à l'autre), environ 2 min attendues quand les paroles sont longues (262 s).
+- Whisper large-v3 se charge en 5 à 6 s depuis la copie locale (310 s lu sur le montage, 26 s téléchargé) ; la
+  transcription prend 70 s pour 177 s de phrases chantées.
 
 Chaîne actuelle (chant : voix nettoyée, YingMusic-SVC), le 04/11/2026 :
 

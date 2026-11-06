@@ -7,6 +7,14 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+### Performances
+
+- Noyau : sur deux cartes, les paroles (Whisper large-v3, puis NLLB) tournent sur la carte 1 pendant que la carte 0
+  commence la conversion YingMusic-SVC, puis la carte 1 rejoint la conversion : 365 → 324 s de la fin du nettoyage à
+  la fin du noyau sur une chanson de 3 min 48, son et paroles identiques au bit près. `--gpu 1` et les machines à une
+  carte gardent la chaîne d'avant.
+- Noyau : mémoire du GPU au plus fort de YingMusic-SVC et des paroles dans le journal.
+
 ### Ajouté
 
 - Interface : pour un doublage dont la vidéo a ses cinq pistes audio (doubler ≥ 0.6.0), Beat seul, Ma voix seule et

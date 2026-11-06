@@ -993,91 +993,137 @@ def envoyer_jeu(travaux, voix, dossier):
     shutil.rmtree(jeu, ignore_errors=True)
 
 
-# Sans historique (voir estimer_noyau_s) : part du temps de GPU (deux cartes additionnées) que le nettoyage et YingMusic-SVC
-# prennent en temps réel, chargements à part ; mesuré le 05/11/2026 sur une chanson de 3 min 48 : 0,69 et 0,55
-FACTEURS_DEUX_CARTES = {'nettoyage': 0.70, 'conversion': 0.55}
+# Sans historique (voir estimer_noyau_s), sur deux cartes : part du temps de GPU (deux cartes additionnées) que le
+# nettoyage et YingMusic-SVC prennent en temps réel, chargements à part (mesuré le 05/11/2026 : 0,69 et 0,55) ; part de
+# leur durée que coûtent les paroles, faites sur la carte 1 pendant que la carte 0 commence la conversion YingMusic-SVC :
+# la moitié (la carte 0 convertit seule pendant ce temps ; mesuré le 06/11/2026 : 0,4 à 0,45), jamais moins que ce qui
+# dépasse la conversion (paroles plus longues que toute la conversion à deux cartes)
+FACTEURS_DEUX_CARTES = {'nettoyage': 0.70, 'conversion': 0.55, 'paroles': 0.5}
+
+
+def rapports_passes(sorties, n=30):
+    """Les n derniers rapport.json (<sorties>/*/travail/*/rapport.json) d'un dossier de sorties, ou de plusieurs (une
+    liste ; un rapport vu deux fois ne compte qu'une fois), du plus ancien au plus récent."""
+    dossiers = [sorties] if isinstance(sorties, (str, os.PathLike)) else list(sorties)
+    vus = {}
+    for s in dossiers:
+        for p in Path(s).expanduser().glob('*/travail/*/rapport.json'):
+            try:
+                vus.setdefault(p.resolve(), p.stat().st_mtime)
+            except OSError:
+                continue
+    return sorted(vus, key=vus.get)[-n:]
 
 
 def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=MOTEUR_DEFAUT, paroles=True, voix_cibles=1,
                     cartes=1):
     """Durée probable d'une session (de l'envoi du noyau à sa fin), d'après la durée audio des vidéos et les rapports
-    passés (rapport.json sous <sorties>/*/travail/*/) : démarrage + installation + chargement des modèles, puis par
-    seconde d'audio la séparation et l'analyse, le nettoyage (chant) et la conversion (proportionnelle aux pas de
-    diffusion ; voix nettoyée : voix principale, chœurs et passages repris par la piste de secours convertis à part,
-    environ 1,5 fois plus), enfin les paroles (chargement de Whisper large-v3 et du traducteur, puis transcription).
+    passés (rapports_passes : sous <sorties>/*/travail/*/, sorties pouvant être une liste de dossiers) : démarrage (file
+    Kaggle comprise) + installation + chargement des modèles, le reste de la session (chargement de la séparation, fin
+    des vidéos, fin du noyau), puis par seconde d'audio la séparation et l'analyse, le nettoyage (chant) et la conversion
+    (proportionnelle aux pas de diffusion ; voix nettoyée : voix principale, chœurs et passages repris par la piste de
+    secours convertis à part, environ 1,5 fois plus), enfin les paroles (une part fixe : démarrage, chargement de Whisper
+    large-v3 et du traducteur depuis leur copie locale ; puis transcription et traduction, par seconde d'audio).
     Le mode n'est connu qu'après la séparation : en mode auto, l'estimation suppose du chant (la plus longue). Défauts
-    prudents sans historique (nettoyage : banc d'essai du 04/11/2026 ; paroles : essai du même jour).
+    prudents sans historique (nettoyage : banc d'essai du 04/11/2026 ; paroles : essais du 06/11/2026).
     Deux cartes (cartes=2, machine GPU T4 x2) : les temps par seconde d'audio restent des temps de GPU (somme des
     cartes) ; le nettoyage et la conversion YingMusic-SVC, partagés entre les cartes, n'en prennent qu'une part en temps
     réel (FACTEURS_DEUX_CARTES, ou ce qu'ont pris les sessions passées à deux cartes), et la séparation d'un lot environ
-    la moitié (jamais moins que la plus longue vidéo). Une carte : la formule d'avant, telle quelle."""
+    la moitié (jamais moins que la plus longue vidéo). Avec YingMusic-SVC, les paroles (P, leur durée sur la carte 1,
+    attente du chargement de la carte 0 comprise) passent pendant la conversion (Y, sa durée à deux cartes) : elles
+    coûtent max(0,5 × P, P − Y). Une carte, la parole ou Seed-VC : les paroles après la conversion, P en entier."""
     import statistics
-    fixes, extras, sep, net, conv, conv_net, par_fixes, par = [], [], [], [], [], [], [], []
+    fixes, autres, extras, sep, net, conv, conv_net, par, par_fixes, par_fixes_carte = [], [], [], [], [], [], [], [], [], []
     f_net, f_conv = [], []
-    rapports = sorted(Path(sorties).glob('*/travail/*/rapport.json'), key=lambda p: p.stat().st_mtime)[-30:]
-    for p in rapports:
+    f_par = FACTEURS_DEUX_CARTES['paroles']
+    for p in rapports_passes(sorties):
         try:
             r = json.loads(p.read_text())
             d, tps = float(r['duree_s']), r.get('temps', {})
-            sk = r.get('temps_local', {}).get('session_kaggle', {})
+            tl = r.get('temps_local', {})
+            sk = tl.get('session_kaggle', {})
             v = r.get('variantes', {}).get('voix_convertie.flac', {})
             nettoyee = bool((r.get('nettoyage') or {}).get('applique'))
+            seule = tl.get('videos_dans_la_session') == 1
+            # paroles faites sur la carte 1 pendant la conversion (leur durée, comprise dans yingmusic_total_s)
+            pendant = sk.get('paroles_pendant_conversion_s')
             if sk.get('installation_s') is not None:
-                fixes.append(sk['installation_s'] + sk.get('chargement_modeles_s', 0)
-                             + r['temps_local'].get('attente_demarrage_noyau_s', 0))
+                fixes.append(sk['installation_s'] + (sk.get('chargement_modeles_s') or 0)
+                             + (tl.get('attente_demarrage_noyau_s') or 0))
                 if sk.get('chargement_nettoyage_s') is not None or sk.get('chargement_yingmusic_s') is not None:
                     extras.append((sk.get('chargement_nettoyage_s') or 0) + (sk.get('chargement_yingmusic_s') or 0))
+                if seule and d > 5 and tl.get('noyau_depuis_envoi_s') and not tl.get('reprise'):
+                    # le reste de la session, hors des parts estimées ici : démarrage du noyau, chargement de la
+                    # séparation, fin de la vidéo, écriture et fin du noyau, jusqu'à ce que doubler la voie finie
+                    ying_s = sk.get('yingmusic_total_s')
+                    reste = (tl['noyau_depuis_envoi_s'] - (tl.get('attente_demarrage_noyau_s') or 0) - sk['installation_s']
+                             - (sk.get('chargement_modeles_s') or 0) - (tps.get('separation_s') or 0)
+                             - (tps.get('analyse_s') or 0) - (sk.get('nettoyage_totale_s') or 0)
+                             - (ying_s if ying_s is not None else (tps.get('conversion_s') or 0))
+                             - (0 if pendant is not None else (sk.get('paroles_total_s') or 0)))
+                    if 0 < reste < 600:
+                        autres.append(reste)
             if d > 5 and tps.get('separation_s'):
                 sep.append((tps['separation_s'] + tps.get('analyse_s', 0)) / d)
             if d > 5 and nettoyee and tps.get('nettoyage_s'):
                 net.append(tps['nettoyage_s'] / d)
             if d > 5 and v.get('conversion_s') and v.get('pas_diffusion'):
                 (conv_net if nettoyee else conv).append(v['conversion_s'] / d / v['pas_diffusion'])
-            if ('paroles_copie_s' in sk and sk.get('paroles_total_s') is not None
-                    and r.get('temps_local', {}).get('videos_dans_la_session') == 1):
+            if 'paroles_copie_s' in sk and sk.get('paroles_total_s') is not None and seule:
                 # tout ce qui n'est pas transcription (démarrage du processus, chargements, traduction) compte comme fixe ;
-                # seulement les noyaux qui copient les modèles sur le disque local (avant : 5 min de chargement)
-                par_fixes.append(max(float(sk['paroles_total_s']) - float(tps.get('paroles_s') or 0), 0.0))
+                # seulement les noyaux qui copient les modèles sur le disque local (avant : 5 min de chargement). Sur la
+                # carte 1 pendant la conversion, l'attente du chargement de YingMusic-SVC sur la carte 0 en fait partie
+                (par_fixes_carte if pendant is not None else par_fixes).append(
+                    max(float(sk['paroles_total_s']) - float(tps.get('paroles_s') or 0), 0.0))
             if d > 5 and tps.get('paroles_s'):
                 par.append(tps['paroles_s'] / d)
-            tl = r.get('temps_local', {})
-            if tl.get('gpus') == 2 and tl.get('videos_dans_la_session') == 1:
-                # part du temps de GPU (somme des cartes) que le nettoyage et YingMusic-SVC ont pris en temps réel
+            if tl.get('gpus') == 2 and seule:
+                # part du temps de GPU (somme des cartes) que le nettoyage et YingMusic-SVC ont pris en temps réel ;
+                # paroles pendant la conversion : leur part (f_par) retirée, si la carte 1 a rejoint la conversion
                 if sk.get('nettoyage_gpu_s'):
                     f_net.append((sk['nettoyage_totale_s'] - (sk.get('chargement_nettoyage_s') or 0)) / sk['nettoyage_gpu_s'])
                 if sk.get('yingmusic_gpu_s'):
-                    f_conv.append((sk['yingmusic_total_s'] - (sk.get('chargement_yingmusic_s') or 0)) / sk['yingmusic_gpu_s'])
+                    x = sk['yingmusic_total_s'] - (sk.get('chargement_yingmusic_s') or 0)
+                    if pendant is None or x > pendant:
+                        f_conv.append((x - f_par * (pendant or 0)) / sk['yingmusic_gpu_s'])
         except (OSError, ValueError, KeyError, TypeError):
             continue
     fixe = statistics.median(fixes) if fixes else 120.0
+    autre = statistics.median(autres) if autres else 80.0
     t_sep = statistics.median(sep) if sep else 0.8
     t_conv = statistics.median(conv) if conv else 0.045
+    t_net = 0.0
     chant = mode != 'parole'
     if nettoyage and chant:
         fixe += statistics.median(extras) if extras else 90.0   # chargement des deux Roformer et de YingMusic-SVC
-        t_sep += statistics.median(net) if net else 2.3          # banc : ~9 min de plus pour 4 min de chant
+        t_net = statistics.median(net) if net else 2.3           # banc : ~9 min de plus pour 4 min de chant
         t_conv = statistics.median(conv_net) if conv_net else 1.5 * t_conv
     elif chant and moteur == 'yingmusic':
         fixe += 30.0   # chargement de YingMusic-SVC
-    if paroles:
-        fixe += statistics.median(par_fixes) if par_fixes else 90.0   # Whisper large-v3 (3 Go) et NLLB-200 (2,5 Go)
-        t_sep += statistics.median(par) if par else 0.25
     if voix_cibles > 1 and chant:   # une voix par chanteur : chaque référence préparée par moteur, pistes reconnues
         fixe += 20.0 * (voix_cibles - 1)
         t_sep += 0.05
-    if cartes <= 1:
-        return round(60 + fixe + sum(durees_s) * (t_sep + t_conv * pas))   # 60 s : file Kaggle et écriture des sorties
-    # Deux cartes : t_sep = séparation et analyse + nettoyage + paroles ; seuls le nettoyage, la conversion YingMusic-SVC
-    # et la séparation d'un lot se partagent entre les cartes
     total, plus_longue = float(sum(durees_s)), float(max(durees_s, default=0.0))
-    t_net = (statistics.median(net) if net else 2.3) if nettoyage and chant else 0.0
-    t_base = t_sep - t_net - ((statistics.median(par) if par else 0.25) if paroles else 0.0)
+    # paroles : part fixe (copie locale des modèles) et transcription, traduction comprise, par seconde d'audio
+    t_par = statistics.median(par) if par else 0.45
+    p_fixe = statistics.median(par_fixes) if par_fixes else 25.0
+    t_paroles = (p_fixe + total * t_par) if paroles else 0.0
+    if cartes <= 1:
+        return round(autre + fixe + t_paroles + total * (t_sep + t_net + t_conv * pas))
+    # Deux cartes : seuls le nettoyage, la conversion YingMusic-SVC et la séparation d'un lot se partagent entre les
+    # cartes ; les paroles passent sur la carte 1 pendant la conversion YingMusic-SVC
     f_sep = max(0.5, plus_longue / total) if len(durees_s) > 1 and total > 0 else 1.0
     borne = lambda f: min(1.0, max(0.4, f))
     fn = borne(statistics.median(f_net)) if f_net else FACTEURS_DEUX_CARTES['nettoyage']
     fc = borne(statistics.median(f_conv)) if f_conv else FACTEURS_DEUX_CARTES['conversion']
     ying = chant and moteur == 'yingmusic'
-    return round(60 + fixe + total * (t_base * f_sep + (t_sep - t_base - t_net) + t_net * fn + t_conv * pas * (fc if ying else 1.0)))
+    conversion = total * t_conv * pas * (fc if ying else 1.0)
+    if paroles and ying:
+        # sans session passée de ce genre : la part fixe d'avant, plus l'attente du chargement de YingMusic-SVC sur la
+        # carte 0 (les modèles se chargent l'un après l'autre)
+        p = (statistics.median(par_fixes_carte) if par_fixes_carte else p_fixe + 25.0) + total * t_par
+        t_paroles = max(f_par * p, p - conversion)
+    return round(autre + fixe + t_paroles + total * (t_sep * f_sep + t_net * fn) + conversion)
 
 
 PANNE_MAXI_S = 3 * 3600   # coupure réseau tolérée pendant le suivi et le rapatriement (le noyau, lui, continue sur Kaggle)
@@ -3056,6 +3102,27 @@ def reglages_noyau(a, voix, ancres, travaux):
     return reglages
 
 
+def fiche_outils(sortie):
+    """outils.json des outils préparés sur Kaggle (doubler --preparer-outils), ou None. Ces outils sont ceux du compte
+    Kaggle (noyau OUTILS), pas d'un dossier de sortie : la fiche est cherchée dans <sortie>/.kaggle/, puis dans ETAT
+    (copie qu'y laisse --preparer-outils, retenue pour le même noyau OUTILS seulement), puis dans le dossier des sorties
+    par défaut (<données>/sorties/.kaggle/, où --preparer-outils l'écrivait seul). Un doublage vers un dossier neuf
+    (--sortie) monte ainsi les outils déjà préparés."""
+    commune = ETAT / 'outils.json'
+    for f in (Path(sortie).expanduser().resolve() / '.kaggle' / 'outils.json', commune,
+              Path(SORTIES).expanduser().resolve() / '.kaggle' / 'outils.json'):
+        if not f.is_file():
+            continue
+        if f == commune:
+            try:
+                if json.loads(f.read_text()).get('noyau') != OUTILS:
+                    continue   # outils d'un autre compte ou d'un autre noyau (clés kaggle.* changées depuis)
+            except (OSError, ValueError, AttributeError):
+                continue
+        return f
+    return None
+
+
 def traiter_lot(videos, a, voix):
     """Toutes les vidéos dans une seule session Kaggle, puis le mixage de chacune sur le PC."""
     if SESSION.exists():   # vérifié de nouveau sous le verrou ; ici, pour ne pas extraire le son pour rien
@@ -3089,10 +3156,12 @@ def traiter_lot(videos, a, voix):
         # réglages du noyau (reglages_noyau) ; voix_cibles seulement avec plusieurs voix (sinon ceux d'avant, tels quels)
         reglages = reglages_noyau(a, voix, ancres, travaux)
         retour = kdir / 'retour'
-        sources = [OUTILS] if (kdir / 'outils.json').exists() else []
+        outils = fiche_outils(a.sortie)
+        sources = [OUTILS] if outils else []
         cartes = cartes_prevues(getattr(a, 'gpu', 'auto'), MACHINE)
-        estimation = estimer_noyau_s([tr['duree_audio_s'] for tr in travaux], a.pas, a.sortie, not a.sans_nettoyage, a.mode,
-                                     a.moteur, a.paroles, len(voix_membres(voix)), cartes)
+        # historique : les rapports de ce dossier de sortie, et ceux du dossier par défaut (un dossier neuf n'en a pas)
+        estimation = estimer_noyau_s([tr['duree_audio_s'] for tr in travaux], a.pas, [a.sortie, SORTIES],
+                                     not a.sans_nettoyage, a.mode, a.moteur, a.paroles, len(voix_membres(voix)), cartes)
         # limite du suivi : au moins le double de l'estimation (le nettoyage allonge beaucoup une longue chanson)
         attente_maxi = max((30 + 20 * len(travaux)) * 60, 2 * estimation + 30 * 60)
         dire(f"chaîne : chant → {'voix nettoyée' if not a.sans_nettoyage else 'voix complète (sans nettoyage)'}, "
@@ -3100,6 +3169,9 @@ def traiter_lot(videos, a, voix):
              f"paroles → {'Whisper large-v3 et traduction française' if a.paroles else 'non'} ; "
              f"{'deux cartes T4' if cartes == 2 else 'une carte'} (machine {MACHINE}) ; "
              f"session estimée à {estimation / 60:.0f} min")
+        if not outils:
+            dire('outils non préparés sur Kaggle : la session télécharge paquets et modèles, environ 4 min de plus '
+                 '(doubler --preparer-outils, une fois)')
         if voix.get('membres'):
             dire(f"une voix par chanteur ({'duo mixte' if voix['mode'] == 'genre' else 'chanteurs dans l’ordre d’apparition'}) : "
                  f"{decrire_voix(voix)} ; en parole, {voix['membres'][0]['id']} seule")
@@ -3193,7 +3265,8 @@ def reprendre(a):
 def preparer_outils(a):
     """Lance une fois le noyau « outils » : il dépose sur Kaggle (sortie privée de noyau) les wheels pip, Seed-VC au commit
     figé et les poids des modèles ; les doublages suivants le montent (kernel_sources) au lieu de tout retélécharger.
-    Rien ne part du PC à part ce script, et seuls outils.json et le journal reviennent."""
+    Rien ne part du PC à part ce script, et seuls outils.json et le journal reviennent. La fiche est gardée dans
+    <sortie>/.kaggle/ et, avec le nom du noyau, dans ETAT : tout dossier de sortie la retrouve (fiche_outils)."""
     kdir = Path(a.sortie).expanduser().resolve() / '.kaggle'
     kdir.mkdir(parents=True, exist_ok=True)
     retour = kdir / 'retour-outils'
@@ -3202,6 +3275,8 @@ def preparer_outils(a):
                          attendu='outils.json')
     fiche = json.loads((retour / 'outils.json').read_text())
     (kdir / 'outils.json').write_text(json.dumps(fiche, ensure_ascii=False, indent=1))
+    ETAT.mkdir(parents=True, exist_ok=True)
+    (ETAT / 'outils.json').write_text(json.dumps({**fiche, 'noyau': OUTILS}, ensure_ascii=False, indent=1))
     shutil.rmtree(retour, ignore_errors=True)
     ying = fiche.get('yingmusic') or {}
     dire(f"outils prêts sur Kaggle ({OUTILS}) en {temps['noyau_depuis_envoi_s'] / 60:.1f} min : Seed-VC {fiche['commit'][:10]}, "

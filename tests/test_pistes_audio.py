@@ -22,6 +22,8 @@ JULES = {'id': 'jules', 'affichage': 'Jules'}
 DUO = {'id': 'jules+marie', 'affichage': 'Jules et Marie', 'membres': [{'id': 'jules', 'affichage': 'Jules'},
                                                                          {'id': 'marie', 'affichage': 'Marie'}]}
 UN_MS = SR // 1000   # 44 échantillons
+# étiquette des pistes audio sans paroles : celle de la source (rapport.json, pistes_audio.langue)
+SPA_SOURCE = {'etiquette': 'spa', 'provenance': 'source', 'source': 'spa', 'raison': 'sans paroles'}
 
 
 def encodeur(nom):
@@ -44,9 +46,10 @@ def bruit(n, graine, niveau_db, bande=(150.0, 5000.0)):
     return y * 10 ** (niveau_db / 20) / np.sqrt(np.mean(y ** 2))
 
 
-def video(chemin, duree, retard=0.0, sous_titre=False, images_b=False):
+def video(chemin, duree, retard=0.0, sous_titre=False, images_b=False, langue='spa'):
     """Vidéo de synthèse (image clé chaque seconde ; images B si images_b : ffmpeg recule alors de 0,13 s avant de
-    chercher dans un mkv), son en espagnol (spa), en retard de retard s sur l'image."""
+    chercher dans un mkv), son étiqueté langue (espagnol, spa, par défaut ; None : sans étiquette), en retard de
+    retard s sur l'image."""
     webm = chemin.suffix == '.webm'
     cmd = ['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i', f'testsrc=size=128x96:rate=25:duration={duree}',
            *(['-itsoffset', str(retard)] if retard else []),
@@ -59,7 +62,8 @@ def video(chemin, duree, retard=0.0, sous_titre=False, images_b=False):
         cartes += ['-map', '2', '-c:s', 'mov_text' if chemin.suffix == '.mp4' else 'srt']
     cmd += [*cartes, *(['-c:v', 'libvpx', '-b:v', '300k'] if webm else ['-c:v', 'mpeg4']), '-g', '25',
             *(['-bf', '2'] if images_b else []),
-            '-c:a', 'libopus' if webm else 'aac', '-metadata:s:a:0', 'language=spa', str(chemin)]
+            '-c:a', 'libopus' if webm else 'aac', *(['-metadata:s:a:0', f'language={langue}'] if langue else []),
+            str(chemin)]
     subprocess.run(cmd, check=True)
     return chemin
 
@@ -130,7 +134,8 @@ def travail(D, source, dossier, voix, extrait=None, mode='chant', ecart_voix=0, 
     """travail/ comme au retour de Kaggle : source.json et original.wav extraits de la vidéo (extrait compris), puis
     original.wav refait à la même longueur avec des sons de synthèse : musique (bruit 1) + voix d'origine (bruit 2) ;
     voix_source.wav = la voix d'origine (ecart_voix échantillons de moins : complétée ou coupée à la remise sur la
-    vidéo) ; voix convertie : bruit 3. Rend (t, tv, source.json)."""
+    vidéo) ; voix convertie : bruit 3. paroles : True (PAROLES, en espagnol) ou le contenu de paroles.json. Rend (t, tv,
+    source.json)."""
     t = dossier / 'travail'
     tv = t / voix['id']
     tv.mkdir(parents=True)
@@ -146,7 +151,7 @@ def travail(D, source, dossier, voix, extrait=None, mode='chant', ecart_voix=0, 
     (tv / 'voix.wav').unlink()
     (tv / 'rapport.json').write_text(json.dumps({'mode': mode, 'frise': []}))
     if paroles:
-        (tv / 'paroles.json').write_text(json.dumps(PAROLES))
+        (tv / 'paroles.json').write_text(json.dumps(PAROLES if paroles is True else paroles))
     return t, tv, src
 
 
@@ -237,7 +242,7 @@ class PistesAudio(unittest.TestCase):
         _, debuts = self.verifier(sortie, t, tv, self.titres())
         self.assertLessEqual(abs(debuts[0]), UN_MS)   # vidéo entière, son à l'heure : le doublage part avec l'image
         rapport = json.loads((tv / 'rapport.json').read_text())
-        self.assertEqual(rapport['pistes_audio'], {'reglage': 'toutes', 'video': self.titres()})
+        self.assertEqual(rapport['pistes_audio'], {'reglage': 'toutes', 'video': self.titres(), 'langue': SPA_SOURCE})
         self.assertEqual(sorted(f.name for f in tv.glob('.*')), [])   # voix convertie seule : fichier effacé
         # mix.wav = beat + voix convertie seule, au limiteur près (presque pas sollicité ici) ; les 10 premières et
         # dernières ms exceptées : la musique y passe par le rééchantillonnage du limiteur, qui commence et finit en
@@ -310,7 +315,7 @@ class PistesAudio(unittest.TestCase):
         self.assertEqual((sons[0]['disposition']['default'], sons[0]['tags']['handler_name'], sons[0]['tags']['language']),
                          (1, 'Doublage (voix Jules)', 'spa'))
         self.assertEqual(json.loads((tv / 'rapport.json').read_text())['pistes_audio'],
-                         {'reglage': 'doublage', 'video': ['Doublage (voix Jules)']})
+                         {'reglage': 'doublage', 'video': ['Doublage (voix Jules)'], 'langue': SPA_SOURCE})
         # même mix, même mp3 qu'avec les cinq pistes
         mix, mp3 = (tv / 'mix.wav').read_bytes(), (tv.parents[1] / 'Seul - voix Jules.mp3').read_bytes()
         _, _, tv5, _ = self.doubler('Toutes', '.mp4')

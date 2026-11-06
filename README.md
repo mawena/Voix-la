@@ -2,7 +2,7 @@
 
 Voix-là : votre vidéo, avec une autre voix. Et voilà.
 
-> **Version 0.6.0** : paquet Debian `.deb` joint à chaque [release](https://github.com/mawena/Voix-la/releases). Voir le
+> **Version 0.7.0** : paquet Debian `.deb` joint à chaque [release](https://github.com/mawena/Voix-la/releases). Voir le
 > [journal des modifications](CHANGELOG.md).
 
 `doubler` prend une vidéo (chanson d'une chanteuse ou d'un chanteur, duo, rap, ou vidéo parlée) et rend la même vidéo,
@@ -84,9 +84,14 @@ flowchart TD
 - **Deux cartes (Kaggle).** La machine demandée (`NvidiaTeslaT4`, « GPU T4 x2 ») a deux cartes T4. Le nettoyage
   (karaoké sur une carte, puis dereverb de la voix principale et des chœurs chacune sur la sienne), la conversion
   YingMusic-SVC (morceaux pris par la première carte libre) et la séparation d'un lot s'y partagent le travail. Les
-  modèles se chargent l'un après l'autre. Chaque morceau garde sa graine et les pistes sont assemblées dans le même
-  ordre : le son est celui d'une carte seule, au bit près. `--gpu 1` revient à une carte. Avec une machine à une seule
-  carte, ou une carte arrêtée en route, le noyau se replie de lui-même sur une carte.
+  paroles, prêtes dès la fin du nettoyage, passent sur la carte 1 pendant que la carte 0 commence la conversion ; la
+  carte 1 rejoint ensuite la conversion. Les modèles se chargent l'un après l'autre, et Whisper ne partage jamais une
+  carte avec YingMusic-SVC. Chaque morceau garde sa graine et les pistes sont assemblées dans le même ordre : le son et
+  les paroles sont ceux d'une carte seule, au bit près, sauf le texte d'un morceau où Whisper boucle et repasse en
+  températures échantillonnées (ce qu'il en reste après les garde-fous peut varier d'une carte à l'autre). `--gpu 1` revient à une carte (paroles après la conversion).
+  Avec une machine à une seule carte, ou une carte arrêtée en route, le noyau se replie de lui-même sur une carte,
+  paroles comprises. Sans morceau pour YingMusic-SVC (Seed-VC, parole), les paroles passent après la conversion sur la
+  carte 1, que le noyau n'occupe pas (il garde Seed-VC chargé sur la carte 0).
 - **Musique seule (PC).** Le reste (musique, bruits) vaut exactement l'original moins la voix isolée. Il est
   recalculé à chaque mixage, puis vérifié par trois garde-fous :
   - reconstruction : musique seule + voix redonnent l'original ;
@@ -213,9 +218,11 @@ suivants le montent au lieu de tout retélécharger, et se replient sur internet
 n'est pas obligatoire : sans lui, chaque session télécharge tout. Relancez-le après une mise à jour de `doubler` qui
 ajoute un modèle.
 
-`doubler` retient que les outils sont prêts dans `<sortie>/.kaggle/outils.json`, soit
-`<données>/sorties/.kaggle/outils.json` par défaut. Avec un autre dossier de sortie (`--sortie`, ou un autre dossier
-des données), relancez `doubler --preparer-outils` avec les mêmes options.
+`doubler` retient que les outils sont prêts dans `<sortie>/.kaggle/outils.json` et dans
+`~/.local/state/voix-la/outils.json` (avec le nom du noyau d'outils). Les outils sont ceux du compte Kaggle : un autre
+dossier de sortie (`--sortie`) ou un autre dossier des données les retrouve sans relancer `--preparer-outils`. Ceux
+préparés avant cette version sont retrouvés dans `<données>/sorties/.kaggle/outils.json`. Sans outils, `doubler` le
+dit (environ 4 min de plus par session).
 
 ## Configuration
 
@@ -537,7 +544,7 @@ Tout va dans `<données>/sorties/<titre>/` (ou le dossier de `--sortie`). Un ext
 
 | Fichier | Contenu |
 |---|---|
-| `<titre> - voix <Nom>.<ext>` | la vidéo doublée, dans le conteneur d'origine (mkv si l'extension n'est pas connue), avec cinq pistes audio calées entre elles et sur l'image : **Doublage** (la première, seule jouée par défaut), Original, Beat seul, Voix convertie seule (« Voix converties seules » avec une voix par chanteur ; telle qu'elle sonne dans le mix, sans la musique) et Voix d'origine seule ; `--pistes-audio doublage` : le doublage seul |
+| `<titre> - voix <Nom>.<ext>` | la vidéo doublée, dans le conteneur d'origine (mkv si l'extension n'est pas connue), avec cinq pistes audio calées entre elles et sur l'image : **Doublage** (la première, seule jouée par défaut), Original, Beat seul, Voix convertie seule (« Voix converties seules » avec une voix par chanteur ; telle qu'elle sonne dans le mix, sans la musique) et Voix d'origine seule, toutes étiquetées de la langue des paroles reconnues (voir plus bas) ; `--pistes-audio doublage` : le doublage seul |
 | `<titre> - voix <Nom>.mp3` | le son doublé, MP3 320 kb/s |
 | `<titre> - voix <Nom>.<langue>.srt` | les paroles dans la langue chantée, sur le temps de la vidéo doublée |
 | `<titre> - voix <Nom>.fr.srt` | leur traduction française, quand elles ne sont pas en français (`.traduction.fr.srt` si elles le sont déjà en partie) |
@@ -556,6 +563,11 @@ Dans la vidéo doublée :
 
 - l'image est copiée telle quelle, sans réencodage ;
 - le son est en AAC 256 kb/s (Opus 192 kb/s en webm), en stéréo ;
+- les cinq pistes audio portent la même étiquette de langue (ISO 639-2/B, comme les pistes de paroles) : la langue
+  principale des paroles reconnues, c'est-à-dire, si la chanson en mêle plusieurs, celle chantée le plus longtemps
+  (durée totale de ses lignes). Sans paroles (`--sans-paroles`, rien de reconnu, langue inconnue), elles gardent
+  l'étiquette du son d'origine, sinon aucune. Une chanson française téléchargée avec un son étiqueté `eng` a ainsi des
+  pistes `fre`. `--remix` réétiquette ainsi un ancien doublage qui a un `paroles.json` ;
 - les sous-titres sont copiés si le conteneur les accepte (mov_text en mp4 et mov, texte et images en mkv, WebVTT en
   webm), sinon laissés de côté avec un message. En mkv, les polices jointes sont copiées aussi ;
 - les paroles s'ajoutent en pistes de sous-titres après celles d'origine : « Paroles (espagnol) » (`spa`) et
@@ -578,7 +590,10 @@ Dans la vidéo doublée :
   raison) ;
 - les paroles (`paroles` : piste transcrite, langue de chaque phrase et les trois plus probables, lignes, mots, retraits
   des garde-fous, temps ; `paroles_sorties` : fichiers, pistes, décalage) ;
-- les pistes audio de la vidéo (`pistes_audio` : réglage, titres des pistes de la vidéo et de sa version auto-tune) ;
+- les pistes audio de la vidéo (`pistes_audio` : réglage, titres des pistes de la vidéo et de sa version auto-tune, et
+  `langue` : l'étiquette écrite sur les pistes (`etiquette`), sa provenance (`provenance` : `paroles`, `source` ou
+  `null`), l'étiquette du son d'origine (`source`) ; si elle vient des paroles, leur langue principale (`paroles`, code
+  Whisper, et `nom`) et les secondes chantées dans chaque langue (`secondes_par_langue`), sinon `raison`) ;
 - l'auto-tune (`autotune` : intensité, gamme et sa détection, accord, ports de x42-autotune, écart médian aux notes avant
   et après, fichiers) ;
 - une voix par chanteur : `voix_cibles` (chaque voix, sa clé, son centre de chant), `decision_hauteur.chanteurs`
@@ -889,6 +904,11 @@ morceau à l'autre, seuils de non-parole et de répétition, mots hors du chant,
 NLLB-200 traduit ensuite en français, ligne par ligne, ce qui n'est pas en français. `--sans-paroles` (ou la clé
 `paroles`) s'en passe.
 
+Whisper ne garde que les poids d'attention utiles aux horodatages par mot (ses 10 têtes d'alignement) : une passe tient
+en 4 Gio de GPU plus 8 Mo par jeton, 7,6 Gio mesurés pour une boucle de 448 jetons, au lieu de 6,7 Gio plus 21 Mo
+(environ 16 Gio pour la même boucle, plus qu'une T4). Les paroles sont les mêmes au bit près. La mémoire libre est
+vérifiée avant le chargement, et un morceau qui en manquerait encore est coupé en deux au lieu d'être repassé tel quel.
+
 ### Auto-tune
 
 L'auto-tune est désactivé par défaut. Avec `--autotune N` (ou `doubler --config autotune N`), `doubler` fait, en plus
@@ -928,6 +948,32 @@ Deux cartes T4, le 05/11/2026, une vidéo par session :
 - Le nettoyage prend environ 0,7 fois son temps de GPU, et la conversion YingMusic-SVC 0,55 fois.
 - Le quota GPU se compte par heure de session, pas par carte : une chanson coûte moins de quota.
 
+Paroles pendant la conversion, le 06/11/2026 (même chanson de 3 min 48, deux sessions le même soir) :
+
+| Version | GPU Kaggle | Noyau | De la fin du nettoyage à la fin |
+|---|---|---|---|
+| paroles après la conversion (0.6.0) | 16,8 min | 979 s | 365 s |
+| paroles sur la carte 1 pendant la conversion | 16,7 min | 973 s | 324 s |
+
+- Les paroles ne coûtent plus qu'environ la moitié de leur durée : −41 s ici (les autres étapes varient d'autant d'une
+  machine Kaggle à l'autre), environ 2 min attendues quand les paroles sont longues (262 s).
+- Whisper large-v3 se charge en 5 à 6 s depuis la copie locale (310 s lu sur le montage, 26 s téléchargé) ; la
+  transcription prend 70 s pour 177 s de phrases chantées.
+
+Paroles et mémoire du GPU, le 06/11/2026 (chanson de 2 min 49, celle de deux doublages du 05/11 dont les paroles
+avaient manqué de mémoire) :
+
+| Version | Transcription | Mot à mot | Mémoire au plus fort | Noyau | GPU Kaggle |
+|---|---|---|---|---|---|
+| 0.6.0 (paroles après la conversion, carte 0) | 253 s | 10 morceaux sur 12, 4 passes en panne | plus de 12,5 Gio | 1 121 s | 19,2 min |
+| corrigée, deux cartes | 101 s | 12 sur 12 | 7,6 Gio | 863 s | 15,2 min |
+| corrigée, une carte (`--gpu 1`) | 101 s | 12 sur 12 | 7,6 Gio (12,5 libres) | 1 342 s | 22,8 min |
+
+- Son, mix et paroles des dix autres morceaux identiques au bit près à ceux du 05/11, à une comme à deux cartes ; seuls
+  changent les deux morceaux en panne, des boucles de Whisper (448 jetons) qui demandaient environ 16 Gio.
+- `--gpu 1` reproduit la configuration de la panne (paroles sur la carte 0, où le noyau garde Seed-VC : 12,5 Gio libres
+  au départ) : plus aucune erreur de mémoire.
+
 Chaîne actuelle (chant : voix nettoyée, YingMusic-SVC), le 04/11/2026 :
 
 | Vidéos | Durée | Temps total | dont Kaggle |
@@ -957,8 +1003,20 @@ Chaîne d'avant (`--moteur seedvc --sans-nettoyage`), une vidéo par session, av
 - Le mixage et la remise sur la vidéo prennent quelques secondes à une demi-minute sur le PC.
 - S'y ajoute l'attente d'une place GPU sur Kaggle, de zéro à quelques minutes.
 
-`doubler` annonce la durée probable de chaque session, estimée d'après les rapports des doublages passés (nettoyage et
-chœurs compris ; en mode `auto`, il suppose du chant). Mesuré : 10,9 min annoncées pour 11,2 min réelles.
+`doubler` annonce la durée probable de chaque session, estimée d'après les rapports des doublages passés : ceux du
+dossier de sortie et ceux du dossier par défaut (`<données>/sorties`), si bien qu'un dossier neuf (`--sortie`) en
+profite aussi. Nettoyage et chœurs compris ; en mode `auto`, il suppose du chant.
+
+- Les parts fixes se mesurent sur les sessions passées : démarrage et installation, chargement des modèles, et le
+  reste de la session (chargement de la séparation, fin du noyau : 80 à 90 s).
+- À deux cartes avec YingMusic-SVC, les paroles comptent pour la moitié de leur durée, jamais moins que ce qui dépasse
+  la conversion ; à une carte, en parole ou avec Seed-VC, en entier. Leur part fixe est d'environ 15 à 25 s après la
+  conversion, 40 s sur la carte 1 (attente du chargement de YingMusic-SVC comprise) ; la transcription prend 0,3 à
+  0,5 s par seconde de son, traduction comprise.
+- Sur les onze doublages du 04 au 06/11, l'écart médian est d'environ −4 %. Les grands écarts ne se prévoient pas avant
+  l'envoi : l'attente d'une place GPU (jusqu'à 3,5 min), une machine Kaggle lente, une chanson chargée en chœurs
+  (conversion jusqu'à 40 % plus longue), ou des paroles qui manquaient de mémoire GPU (4 min au lieu d'une, sur une
+  chanson du 05/11 ; corrigé depuis).
 `--preparer-outils` prend environ 11 min de GPU, une fois (10,6 mesurées, Whisper et NLLB compris).
 
 - Paroles : 15 s de transcription pour 21 s chantées. Les modèles (5,6 Go) sont copiés sur le disque local pendant la

@@ -2,7 +2,9 @@
 
 Étapes d'un doublage : extraction, envoi, attente, kaggle, rapatriement, mix, video, fini. Les étapes de session
 (envoi → rapatriement) sont communes à toutes les vidéos de l'appel ; extraction, mix et video sont faites vidéo par
-vidéo (compteur k/N). Les estimations viennent des doublages passés (rapports.modele_durees).
+vidéo (compteur k/N). Les estimations sont celles de l'interface, faites avant le lancement (rapports.estimer, la
+session Kaggle calculée par doubler.py) ; une fois le noyau lancé, celle de doubler pour la session (estimation_s de
+ses événements « kaggle ») la remplace, et le temps restant la suit.
 """
 
 import time
@@ -284,3 +286,31 @@ class Avancement:
     def statut_kaggle(self):
         s = (self.kaggle.get("statut") or "").lower()
         return STATUTS_KAGGLE.get(s, s)
+
+    def estimation_doubler_s(self):
+        """Durée de la session Kaggle estimée par doubler (estimation_s de ses événements « kaggle »), connue une fois
+        le noyau lancé ; elle remplace alors celle de l'interface (estimations["kaggle"]). None avant."""
+        try:
+            e = self.kaggle.get("estimation_s")
+            return float(e) if e is not None and float(e) > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    def texte_kaggle(self, maintenant=None):
+        """Ligne d'état du noyau : « GPU Kaggle : en cours depuis 5 min 10 s · durée prévue par doubler ≈ 17 min »
+        (« … · au-delà de la durée prévue par doubler (≈ 17 min) » si le noyau la dépasse) ; None avant son premier
+        état."""
+        from . import formats
+        if not self.kaggle.get("statut"):
+            return None
+        maintenant = maintenant or time.time()
+        depuis = float(self.kaggle.get("depuis_s") or 0) + max(0.0, maintenant - float(self.kaggle.get("t") or maintenant))
+        texte = f"GPU Kaggle : {self.statut_kaggle()} depuis {formats.duree(depuis)}"
+        est = self.estimation_doubler_s()
+        if est:
+            en_cours = self.etapes.get("kaggle") is not None and self.etapes["kaggle"].etat == "en_cours"
+            if en_cours and depuis > est:
+                texte += f" · au-delà de la durée prévue par doubler ({formats.duree_courte(est)})"
+            else:
+                texte += f" · durée prévue par doubler {formats.duree_courte(est)}"
+        return texte

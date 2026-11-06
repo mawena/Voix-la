@@ -9,10 +9,11 @@ Pistes, dans sorties/<titre>/ :
 - voix_origine : travail/voix_source.wav, la voix d'origine isolée.
 Toutes sont calées sur le doublage : le lecteur compte en temps du son doublé, dont le 0 est le début du son doublé
 (celui du MP3, de travail/original.wav, du beat, des voix seules, de courbes.json et de la frise). Une piste qui a une
-image (la vidéo doublée, ses copies des pistes séparées, la vidéo d'origine) compte en temps de la vidéo doublée, où le
-son doublé commence à decalage_son de travail/source.json : avance_piste, la seule règle de passage d'un temps à
-l'autre (voixla.paroles.ecart_lecture s'en sert aussi). La vidéo d'origine d'un extrait est lue en plus avec le
-décalage du début de l'extrait.
+image compte en temps de cette image : avance_piste, la seule règle de passage d'un temps à l'autre
+(voixla.paroles.ecart_lecture s'en sert aussi), avec pour chaque image l'instant où le son y commence. Dans la vidéo
+doublée (et ses copies des pistes séparées, ses pistes audio, sa version auto-tune), c'est debut_son_video :
+decalage_s de paroles.json, exact depuis doubler 0.6.0, sinon decalage_son de travail/source.json. Dans la vidéo
+d'origine, c'est decalage_son de source.json (le retard de son son ; 0 pour un extrait), plus le début de l'extrait.
 
 « Ma voix seule » refait la part de la voix dans le mix de doubler (fonction mixer de doubler.py), sans la musique :
   voix sèche      travail/<voix>/seche_voix_convertie.wav   au gain gains_db.seche  (rapport.json, clé « mix ») ;
@@ -21,18 +22,28 @@ additionnées (amix sans normalisation), puis passées au même limiteur (crête
 coupées à la durée de travail/instrumental.wav comme le mix. Le résultat va en cache, en FLAC, dans
 ~/.cache/voix-la/voix/, nommé d'après les fichiers et les gains (refait si un remix les change).
 
-En vidéo, le beat et les voix seules se lisent sur l'image de la vidéo doublée, qui avance avec le son : une copie
-préparée une fois en cache (~/.cache/voix-la/videos/), avec le flux vidéo de la vidéo doublée copié sans réencodage
-(-c:v copy) et le son de la piste encodé comme doubler le fait (AAC 256k, Opus 192k en webm), coupé à la fin de la
-vidéo. Le son y commence exactement là où commence le son du doublage, lu dans la vidéo doublée (voir calage_video) :
-la copie a les mêmes temps que la vidéo doublée, et on y passe à la même position. Un seul décodage vidéo à la fois.
+Pistes dans la vidéo (doubler ≥ 0.6.0) : la vidéo doublée a ses propres pistes audio, calées entre elles à
+l'échantillon près (Doublage, la seule par défaut, puis Original, Beat seul, Voix convertie seule, Voix d'origine
+seule ; de même pour la version auto-tune). Elles sont repérées par leur titre, dans l'ordre, d'après rapport.json
+(pistes_audio.video, pistes_audio.video_autotune), sinon d'après les titres des flux (pistes_de_la_video). Le beat et
+les voix seules s'y lisent alors sur place : même flux que le doublage, autre piste audio (Piste.piste_audio, que le
+lecteur donne à current-audio de playbin), sans copie à préparer. L'original reste la vidéo d'origine quand on l'a ;
+sinon, c'est la piste Original de la vidéo doublée, sur son image, plutôt que travail/original.wav sans image.
+
+Sinon (anciens doublages, à une seule piste audio), en vidéo, le beat et les voix seules se lisent sur l'image de la
+vidéo doublée, qui avance avec le son : une copie préparée une fois en cache (~/.cache/voix-la/videos/), avec le flux
+vidéo de la vidéo doublée copié sans réencodage (-c:v copy) et le son de la piste encodé comme doubler le fait (AAC
+256k, Opus 192k en webm), coupé à la fin de la vidéo. Le son y commence exactement là où commence le son du doublage, lu
+dans la vidéo doublée (voir calage_video) : la copie a les mêmes temps que la vidéo doublée, et on y passe à la même
+position. Un seul décodage vidéo à la fois.
 
 En ligne de commande (lancée par l'interface et par le préparateur, voixla/preparation.py : tout de suite, sous
 nice -n 19 et ionice -c3, jamais par file-attente) :
   python3 -m voixla.pistes voix DOSSIER_VOIX [--autotune]
   python3 -m voixla.pistes video VIDEO_DOUBLEE (SON | --voix DOSSIER_VOIX [--autotune])
-  python3 -m voixla.pistes exporter (SOURCE | --voix DOSSIER_VOIX [--autotune]) SORTIE.mp3|.flac|.wav
-  (--autotune : la voix seule de la version auto-tune, d'après seche_voix_autotune.wav et reverb_voix_autotune.wav)
+  python3 -m voixla.pistes exporter (SOURCE [--piste-audio N] | --voix DOSSIER_VOIX [--autotune]) SORTIE.mp3|.flac|.wav
+  (--autotune : la voix seule de la version auto-tune, d'après seche_voix_autotune.wav et reverb_voix_autotune.wav ;
+   --piste-audio N : la piste audio N de SOURCE, une vidéo doublée à plusieurs pistes, au lieu de la première)
   python3 -m voixla.pistes miniature VIDEO_DOUBLEE     (une image de la vidéo, en cache, pour MPRIS)
 """
 
@@ -76,6 +87,13 @@ INFOBULLE_VOIX_CONVERTIES = "Les voix converties seules, comme dans le mix : voi
 CLES_AUTOTUNE = {"doublage": "doublage_at", "ma_voix": "ma_voix_at"}
 SANS_IMAGE_TOUTES = SANS_IMAGE + ("ma_voix_at",)
 LIBELLES_AUTOTUNE = {"doublage_at": "Doublage (auto-tune)", "ma_voix_at": "Ma voix seule (auto-tune)"}
+# En vidéo, la vidéo auto-tune à plusieurs pistes a aussi l'original, le beat et la voix d'origine, au même son que la
+# vidéo normale : avec « Auto-tune », ils s'y lisent sur place (même flux que le doublage auto-tune), sous ces clés.
+CLES_AUTOTUNE_VIDEO = {"original": "original_at", "beat": "beat_at", "voix_origine": "voix_origine_at"}
+# Titres des pistes audio de la vidéo doublée (doubler.titres_pistes), comparés en minuscules : début du titre → clé
+TITRES_PISTES = (("doublage", "doublage"), ("original", "original"), ("beat seul", "beat"),
+                 ("voix convertie seule", "ma_voix"), ("voix converties seules", "ma_voix"),
+                 ("voix d'origine seule", "voix_origine"))
 VERSION_VIDEO = 1
 CACHE_VIDEO_MO = 2048           # au-delà, les copies vidéo les moins récemment lues sont effacées (réglable :
                                 # préférence cache_pistes_mo, Réglages > Doublage)
@@ -118,11 +136,159 @@ def decalage_son(source):
 
 
 def avance_piste(avec_image, debut_son):
-    """Temps de la piste lue = temps du son doublé + cette avance (s). Une piste qui a une image (la vidéo doublée, ses
-    copies des pistes séparées, qui gardent ses temps, la vidéo d'origine) compte en temps de la vidéo doublée, où le
-    son doublé commence à debut_son (decalage_son ; None : 0) ; un son lu seul (le MP3, travail/original.wav, le beat
-    ou une voix seule sans copie vidéo, le son seul fenêtre fermée) compte en temps du son."""
+    """Temps de la piste lue = temps du son doublé + cette avance (s). Une piste qui a une image compte en temps de
+    cette image, où le son commence à debut_son (None : 0) : la vidéo doublée, ses copies des pistes séparées et ses
+    pistes audio, qui gardent ses temps (debut_son_video), ou la vidéo d'origine (decalage_son de source.json) ; un son
+    lu seul (le MP3, travail/original.wav, le beat ou une voix seule sans image, le son seul fenêtre fermée) compte en
+    temps du son."""
     return float(debut_son or 0.0) if avec_image else 0.0
+
+
+def decalage_paroles(dossier_voix):
+    """decalage_s de travail/<voix>/paroles.json (s), s'il est valide et positif, sinon None. Depuis doubler 0.6.0,
+    c'est l'instant exact de la vidéo doublée où commence le son doublé (plan_video : debut_son), y compris pour un
+    extrait dont la copie de l'image part d'une image clé antérieure (« image sans son au début »). Un ancien
+    paroles.json d'extrait mkv ou webm portait le décalage donné à ffmpeg (−0,13 s), que le conteneur annule : une
+    valeur négative est donc ignorée. Lu une fois par version du fichier (taille, date)."""
+    if dossier_voix is None:
+        return None
+    f = Path(dossier_voix) / "paroles.json"
+    try:
+        st = f.stat()
+    except OSError:
+        return None
+    cle = (str(f), st.st_size, st.st_mtime_ns)
+    if cle not in _DECALAGES:
+        d = chemins.lire_json(f, None)
+        v = d.get("decalage_s") if isinstance(d, dict) else None
+        if len(_DECALAGES) > 200:
+            _DECALAGES.clear()
+        _DECALAGES[cle] = float(v) if _nombre(v) and v >= 0 else None
+    return _DECALAGES[cle]
+
+
+_DECALAGES = {}
+
+
+def debut_son_video(res):
+    """Où commence le son doublé dans la vidéo doublée (s), la règle des pistes qui ont son image (avance_piste) :
+    decalage_s de paroles.json quand il existe (exact), sinon decalage_son de travail/source.json, sinon 0."""
+    v = decalage_paroles(getattr(res, "dossier_voix", None))
+    if v is not None:
+        return v
+    return decalage_son(getattr(res, "source", None)) or 0.0
+
+
+# --- Pistes audio de la vidéo doublée --------------------------------------------------------------------------------
+
+def _titre_norme(titre):
+    return " ".join(str(titre).replace("’", "'").split()).casefold()
+
+
+def cle_du_titre(titre):
+    """La clé de piste d'un titre de piste audio de doubler (« Beat seul » → beat), sinon None."""
+    t = _titre_norme(titre)
+    for debut, cle in TITRES_PISTES:
+        if t == debut or t.startswith(debut + " "):
+            return cle
+    return None
+
+
+def reperer_pistes(titres):
+    """{clé: index de la piste parmi les sons de la vidéo (a:N)} d'après les titres des pistes audio, dans leur ordre :
+    doublage, original, beat, ma_voix (voix convertie seule, ou voix converties seules), voix_origine. La première de
+    chaque sorte compte, un titre inconnu est sauté sans décaler les autres. Vide s'il n'y a pas de doublage, ou rien
+    d'autre que lui (vidéo à une seule piste)."""
+    sortie = {}
+    for i, t in enumerate(titres if isinstance(titres, (list, tuple)) else ()):
+        c = cle_du_titre(t) if isinstance(t, str) else None
+        if c is not None and c not in sortie:
+            sortie[c] = i
+    return sortie if "doublage" in sortie and len(sortie) > 1 else {}
+
+
+def pistes_de_la_video(res, autotune=False, titres_flux=None):
+    """Les pistes audio de la vidéo doublée (de sa version auto-tune si autotune) : {clé: index (a:N)}, d'après
+    rapport.json (pistes_audio.video, pistes_audio.video_autotune) quand il le dit, sinon d'après titres_flux, les
+    titres des flux de la vidéo (titres_des_flux). Le rapport l'emporte : s'il ne donne pas de liste pour cette vidéo
+    (doublage seul, vidéo auto-tune ratée), il n'y a pas de pistes en plus, quoi que disent les flux."""
+    rapport = getattr(res, "rapport", None)
+    pa = rapport.get("pistes_audio") if isinstance(rapport, dict) else None
+    if isinstance(pa, dict):
+        return reperer_pistes(pa.get("video_autotune" if autotune else "video"))
+    return reperer_pistes(titres_flux) if titres_flux else {}
+
+
+_TITRES = {}
+
+
+def titres_des_flux(video):
+    """Titres des pistes audio d'une vidéo, dans l'ordre (tag title, ou handler_name en mp4), par ffprobe ; [] si
+    illisible. Gardés par version du fichier (chemin, taille, date)."""
+    try:
+        cle = _signature(video)
+    except OSError:
+        return []
+    if cle not in _TITRES:
+        try:
+            r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream_tags",
+                                "-of", "json", str(video)], capture_output=True, text=True, timeout=30,
+                               stdin=subprocess.DEVNULL)
+            flux = (json.loads(r.stdout or "{}").get("streams") or []) if r.returncode == 0 else []
+        except (OSError, ValueError, subprocess.SubprocessError):
+            flux = []
+        titres = []
+        for f in flux:
+            tags = {str(k).lower(): v for k, v in (f.get("tags") or {}).items()}
+            titres.append(str(tags.get("title") or tags.get("handler_name") or ""))
+        if len(_TITRES) > 200:
+            _TITRES.clear()
+        _TITRES[cle] = titres
+    return _TITRES[cle]
+
+
+SEP_PISTE_AUDIO = "#piste-audio="
+
+
+def source_analyse(fichier, piste_audio=None):
+    """Ce qu'analysent les visualisations du son (voixla.analyse), en texte : un fichier (sa première piste audio :
+    le doublage, pour une vidéo doublée), ou une autre de ses pistes audio (a:N) : « <fichier>#piste-audio=N »."""
+    return f"{fichier}{SEP_PISTE_AUDIO}{int(piste_audio)}" if piste_audio else str(fichier)
+
+
+def separer_source(source):
+    """(fichier, index de la piste audio) d'une source de source_analyse ; 0 pour un fichier seul."""
+    s = str(source)
+    f, sep, n = s.rpartition(SEP_PISTE_AUDIO)
+    if sep and n.isdigit():
+        return f, int(n)
+    return s, 0
+
+
+def titres_en_cache(video):
+    """Les titres des flux déjà lus par titres_des_flux, sinon None ; ne lance rien (stat seul)."""
+    try:
+        return _TITRES.get(_signature(video))
+    except OSError:
+        return None
+
+
+def a_sonder(res):
+    """Vrai si les pistes de la vidéo doublée ne sont connues que par ses flux (rapport sans pistes_audio) et que
+    ses titres ne sont pas encore lus : l'interface les fait lire par titres_des_flux, dans un fil."""
+    rapport = getattr(res, "rapport", None)
+    if isinstance(rapport, dict) and isinstance(rapport.get("pistes_audio"), dict):
+        return False
+    return any(v is not None and titres_en_cache(v) is None
+               for v in (res.video, getattr(res, "video_autotune", None)))
+
+
+def _titres(video, res, sonder):
+    """Titres des flux de video quand le rapport ne dit rien des pistes audio : lus (sonder) ou déjà en cache."""
+    rapport = getattr(res, "rapport", None)
+    if video is None or (isinstance(rapport, dict) and isinstance(rapport.get("pistes_audio"), dict)):
+        return None
+    return titres_des_flux(video) if sonder else titres_en_cache(video)
 
 
 # --- Ma voix seule -----------------------------------------------------------------------------------------------------
@@ -375,7 +541,8 @@ class Piste:
     image: bool = False             # le fichier a une image
     explication: str = ""           # ce que la piste contient, ou pourquoi elle manque
     a_preparer: bool = False        # ma_voix : à combiner (en cache) avant de l'écouter
-    video: Path | None = None       # en vidéo : la copie en cache (image de la vidéo doublée, son de cette piste)
+    video: Path | None = None       # en vidéo : la copie en cache (image de la vidéo doublée, son de cette piste), ou
+                                    # la vidéo doublée elle-même quand elle a cette piste (piste_audio)
     video_a_preparer: bool = False  # en vidéo : copie à faire pour lire cette piste sur l'image qui avance
     sans_video: str = ""            # pourquoi cette piste se lit sans image (pas de vidéo doublée, copie impossible)
 
@@ -385,7 +552,8 @@ class Piste:
 
     @property
     def a_lire(self):
-        """Ce que lit le lecteur : la copie vidéo si elle est prête, sinon le son seul."""
+        """Ce que lit le lecteur : la copie vidéo (ou la vidéo doublée qui a cette piste) si elle est prête, sinon le
+        son seul."""
         return self.video or self.fichier
 
     @property
@@ -393,7 +561,10 @@ class Piste:
         return self.image or self.video is not None
 
     nom: str = ""                   # libellé propre à ce résultat (« Voix converties seules »), sinon LIBELLES
-    debut_son: float = 0.0          # decalage_son de travail/source.json : où le son commence dans la vidéo doublée
+    debut_son: float = 0.0          # où le son commence dans l'image lue (avance_piste) : debut_son_video pour la
+                                    # vidéo doublée, decalage_son de source.json pour la vidéo d'origine
+    piste_audio: int | None = None  # en vidéo : l'index (a:N) de cette piste parmi les sons de a_lire, une vidéo
+                                    # doublée à plusieurs pistes audio ; lue sur place (current-audio de playbin)
 
     @property
     def decalage_lu(self):
@@ -405,6 +576,17 @@ class Piste:
     def libelle(self):
         return self.nom or LIBELLES.get(self.cle) or LIBELLES_AUTOTUNE.get(self.cle, self.cle)
 
+    @property
+    def dans_la_video(self):
+        """Vrai si la piste se lit dans la vidéo doublée elle-même, par une de ses pistes audio (sans copie)."""
+        return self.piste_audio is not None and self.video is not None
+
+    @property
+    def copie(self):
+        """La copie vidéo en cache que lit cette piste (à protéger de la purge, à fermer quand on la quitte), sinon
+        None ; jamais la vidéo doublée elle-même."""
+        return None if self.piste_audio is not None else self.video
+
 
 def fichier_voix_source(travail):
     for nom in ("voix_source.wav", "voix_source.flac"):
@@ -414,24 +596,49 @@ def fichier_voix_source(travail):
     return None
 
 
-def choisir_pistes(res, forme="video", source_choisie=None):
-    """{clé: Piste} dans l'ordre de CLES, pour un résultat (voixla.rapports.Resultat) lu en « video » ou en « mp3 ».
-    source_choisie : la vidéo d'origine indiquée à la main quand celle de source.json est introuvable."""
+def _dans_la_video(piste, video, index, titre):
+    """La piste se lit dans video (la vidéo doublée, ou sa version auto-tune), par sa piste audio n° index (a:N)."""
+    contenu = piste.explication if piste.fichier is not None or piste.a_preparer else ""
+    piste.video, piste.piste_audio = Path(video), int(index)
+    piste.video_a_preparer, piste.sans_video = False, ""
+    piste.explication = (f"{contenu} ; " if contenu else "") + f"piste « {titre} » de la vidéo doublée, lue sur place"
+
+
+def choisir_pistes(res, forme="video", source_choisie=None, sonder=False, dans_la_video=True):
+    """{clé: Piste} dans l'ordre de CLES (puis les versions auto-tune), pour un résultat (voixla.rapports.Resultat) lu
+    en « video » ou en « mp3 ». source_choisie : la vidéo d'origine indiquée à la main quand celle de source.json est
+    introuvable.
+
+    En vidéo, si la vidéo doublée a ses pistes audio (pistes_de_la_video), le beat, les voix seules et, sans la vidéo
+    d'origine, l'original s'y lisent sur place (Piste.piste_audio), sans copie ; dans_la_video faux : on s'en passe,
+    comme pour un ancien doublage à une piste. Quand rapport.json ne dit rien des pistes audio, leurs titres sont lus
+    dans les flux : par ffprobe si sonder (hors de l'interface), sinon seulement s'ils sont déjà connus (a_sonder)."""
     p = {}
     original_wav = res.original_wav
+    dans, src = {}, None
+    if forme == "video" and res.video is not None and dans_la_video:
+        dans = pistes_de_la_video(res, False, _titres(res.video, res, sonder))
     if forme == "video":
         p["doublage"] = Piste("doublage", res.video, image=True, explication="la vidéo doublée") if res.video else \
             Piste("doublage", explication="pas de vidéo doublée dans ce dossier")
+        if dans:
+            p["doublage"].piste_audio = dans["doublage"]
         src = res.video_source if res.source_presente else _fichier(source_choisie)
+        v = res.video_source
+        introuvable = "vidéo d’origine introuvable" + (f" ({v})" if v else "")
         if src is not None:
             p["original"] = Piste("original", src, res.decalage_source_s, image=True,
                                   explication="la vidéo d’origine, à la même position")
+        elif "original" in dans:
+            # la piste Original de la vidéo doublée : sur son image, calée sur le doublage à l'échantillon près
+            p["original"] = Piste("original", original_wav)
+            _dans_la_video(p["original"], res.video, dans["original"], "Original")
+            p["original"].explication = (f"{introuvable} : piste « Original » de la vidéo doublée, sur son image ; "
+                                         "« Choisir… » dans Doublage pour retrouver la vidéo d’origine")
         elif original_wav is not None:
-            v = res.video_source
             p["original"] = Piste("original", original_wav,
-                                  explication="vidéo d’origine introuvable" + (f" ({v})" if v else "")
-                                  + " : son d’origine seul (travail/original.wav), sans image ; « Choisir… » dans "
-                                    "Doublage pour retrouver l’image")
+                                  explication=introuvable + " : son d’origine seul (travail/original.wav), sans "
+                                                            "image ; « Choisir… » dans Doublage pour retrouver l’image")
         else:
             p["original"] = Piste("original", explication="ni vidéo d’origine ni travail/original.wav")
     else:
@@ -439,32 +646,46 @@ def choisir_pistes(res, forme="video", source_choisie=None):
             Piste("doublage", explication="pas de MP3 dans ce dossier")
         p["original"] = Piste("original", original_wav, explication="le son d’origine extrait (travail/original.wav)") \
             if original_wav is not None else Piste("original", explication="travail/original.wav manque")
+    p.update(_pistes_seules(res, autotune=False))
+    if getattr(res, "plusieurs_voix", False):
+        p["ma_voix"].nom = LIBELLE_VOIX_CONVERTIES
+    plan = plan_ma_voix(res.dossier_voix, res.rapport) if res.dossier_voix else plan_ma_voix(None)
+    for c in SANS_IMAGE:
+        if c in dans:
+            _dans_la_video(p[c], res.video, dans[c], p[c].libelle)
+        else:
+            _choisir_video(res, forme, p[c], plan)
+    sortie = {c: p[c] for c in CLES}
+    sortie.update(pistes_autotune(res, forme, sonder, dans_la_video, original_dans=p["original"].dans_la_video))
+    debut_son = debut_son_video(res)
+    for q in sortie.values():
+        q.debut_son = debut_son
+    if src is not None:      # la vidéo d'origine : son propre départ du son (son retard ; 0 pour un extrait)
+        sortie["original"].debut_son = decalage_son(getattr(res, "source", None)) or 0.0
+    return sortie
+
+
+def _pistes_seules(res, autotune=False):
+    """Beat seul, ma voix seule (celle de la version auto-tune si autotune, sous la clé ma_voix_at) et voix d'origine
+    seule, en son seul : fichiers de travail/, ma voix seule combinée en cache."""
+    p = {}
     beat = _fichier(res.travail / "instrumental.wav")
     p["beat"] = Piste("beat", beat, explication="la musique sans aucune voix (travail/instrumental.wav)") if beat else \
         Piste("beat", explication="travail/instrumental.wav manque : doublage inachevé ou fait avant ce fichier")
-    plan = plan_ma_voix(res.dossier_voix, res.rapport) if res.dossier_voix else \
-        plan_ma_voix(None)
+    cle = "ma_voix_at" if autotune else "ma_voix"
+    plan = plan_ma_voix(res.dossier_voix, res.rapport, autotune=autotune) if res.dossier_voix else plan_ma_voix(None)
     if plan.direct is not None:
-        p["ma_voix"] = Piste("ma_voix", plan.direct, explication=plan.explication)
+        p[cle] = Piste(cle, plan.direct, explication=plan.explication)
     elif plan.a_combiner:
         f = chemin_ma_voix(plan)
         prete = f is not None and f.is_file()
-        p["ma_voix"] = Piste("ma_voix", f if prete else None, explication=plan.explication, a_preparer=not prete)
+        p[cle] = Piste(cle, f if prete else None, explication=plan.explication, a_preparer=not prete)
     else:
-        p["ma_voix"] = Piste("ma_voix", explication=plan.explication)
+        p[cle] = Piste(cle, explication=plan.explication)
     vs = fichier_voix_source(res.travail)
     p["voix_origine"] = Piste("voix_origine", vs, explication=f"la voix d’origine isolée (travail/{vs.name})") if vs \
         else Piste("voix_origine", explication="travail/voix_source.wav manque")
-    if getattr(res, "plusieurs_voix", False):
-        p["ma_voix"].nom = LIBELLE_VOIX_CONVERTIES
-    for c in SANS_IMAGE:
-        _choisir_video(res, forme, p[c], plan)
-    sortie = {c: p[c] for c in CLES}
-    sortie.update(pistes_autotune(res, forme))
-    debut_son = decalage_son(getattr(res, "source", None)) or 0.0
-    for q in sortie.values():
-        q.debut_son = debut_son
-    return sortie
+    return p
 
 
 def source_lecteur(piste):
@@ -478,8 +699,18 @@ def sources_lecteur(dispo):
     return {c: source_lecteur(p) for c, p in dispo.items() if p.a_lire}
 
 
-def pistes_autotune(res, forme="video"):
-    """{doublage_at, ma_voix_at} si le doublage a une version auto-tune valide (rapport.autotune.applique), sinon {}."""
+def pistes_audio_lecteur(dispo):
+    """{clé: index de sa piste audio} des pistes lues dans une vidéo à plusieurs pistes, le doublage compris : le
+    lecteur lit celles d'une même vidéo dans un seul flux, et change de piste audio (current-audio), pas de fichier."""
+    return {c: p.piste_audio for c, p in dispo.items() if p.piste_audio is not None and p.a_lire is not None}
+
+
+def pistes_autotune(res, forme="video", sonder=False, dans_la_video=True, original_dans=False):
+    """{doublage_at, ma_voix_at} si le doublage a une version auto-tune valide (rapport.autotune.applique), sinon {}.
+    En vidéo, si la vidéo auto-tune a ses pistes audio (pistes_audio.video_autotune), ma voix seule auto-tunée s'y lit
+    sur place, et aussi le beat, la voix d'origine et (original_dans : sans la vidéo d'origine) l'original, sous les
+    clés beat_at, voix_origine_at et original_at : même son que dans la vidéo normale, même flux que le doublage
+    auto-tune."""
     if not getattr(res, "autotune", None):
         return {}
     p = {}
@@ -487,28 +718,47 @@ def pistes_autotune(res, forme="video"):
     p["doublage_at"] = Piste("doublage_at", media, image=forme == "video",
                              explication="la version auto-tune du doublage") if media else \
         Piste("doublage_at", explication="fichier auto-tune absent du dossier")
-    plan = plan_ma_voix(res.dossier_voix, res.rapport, autotune=True) if res.dossier_voix else plan_ma_voix(None)
-    if plan.a_combiner:
-        f = chemin_ma_voix(plan)
-        prete = f is not None and f.is_file()
-        p["ma_voix_at"] = Piste("ma_voix_at", f if prete else None, explication=plan.explication, a_preparer=not prete)
-    else:
-        p["ma_voix_at"] = Piste("ma_voix_at", explication=plan.explication)
+    dans = {}
+    if forme == "video" and media is not None and dans_la_video:
+        dans = pistes_de_la_video(res, True, _titres(media, res, sonder))
+    if dans:
+        p["doublage_at"].piste_audio = dans["doublage"]
+    seules = _pistes_seules(res, autotune=True)
+    p["ma_voix_at"] = seules["ma_voix_at"]
     if getattr(res, "plusieurs_voix", False):
         p["ma_voix_at"].nom = LIBELLE_VOIX_CONVERTIES + " (auto-tune)"
-    _choisir_video(res, forme, p["ma_voix_at"], plan)
+    if "ma_voix" in dans:
+        _dans_la_video(p["ma_voix_at"], media, dans["ma_voix"], p["ma_voix_at"].libelle)
+    else:
+        _choisir_video(res, forme, p["ma_voix_at"], plan_ma_voix(res.dossier_voix, res.rapport, autotune=True)
+                       if res.dossier_voix else plan_ma_voix(None))
+    for base, cle in CLES_AUTOTUNE_VIDEO.items():
+        if base not in dans or (base == "original" and not original_dans):
+            continue
+        q = Piste(cle, res.original_wav) if base == "original" else seules[base]
+        q.cle, q.nom = cle, LIBELLES[base]
+        _dans_la_video(q, media, dans[base], "Original" if base == "original" else LIBELLES[base])
+        q.explication += " (version auto-tune)"
+        p[cle] = q
     return p
 
 
-def cle_ecoutee(cle, autotune):
+def cle_ecoutee(cle, autotune, dispo=None):
     """La piste réellement lue : sa version auto-tune si la bascule est allumée et qu'elle existe (doublage, ma voix
-    seule), sinon la piste elle-même."""
-    return CLES_AUTOTUNE.get(cle, cle) if autotune else cle
+    seule), sinon la piste elle-même. dispo (les pistes du résultat) : en vidéo, l'original, le beat et la voix
+    d'origine se lisent aussi dans la vidéo auto-tune quand elle les a (CLES_AUTOTUNE_VIDEO) : même son, même flux que
+    le doublage auto-tune."""
+    if not autotune:
+        return cle
+    if cle in CLES_AUTOTUNE:
+        return CLES_AUTOTUNE[cle]
+    at = CLES_AUTOTUNE_VIDEO.get(cle)
+    return at if dispo is not None and at in dispo else cle
 
 
 def cle_de_base(cle):
-    """La piste d'une version auto-tune (« doublage_at » → « doublage »)."""
-    return next((b for b, a in CLES_AUTOTUNE.items() if a == cle), cle)
+    """La piste d'une version auto-tune (« doublage_at » → « doublage », « beat_at » → « beat »)."""
+    return next((b for b, a in (*CLES_AUTOTUNE.items(), *CLES_AUTOTUNE_VIDEO.items()) if a == cle), cle)
 
 
 def _choisir_video(res, forme, piste, plan):
@@ -831,27 +1081,41 @@ def exports_existants(res):
             if (res.dossier / nom_export(res, cle, ext)).is_file()]
 
 
-def commande_export(source, sortie, tmp=None):
-    """ffmpeg (sous nice) qui écrit source dans sortie, au format de son extension (.mp3 320k, .flac ou .wav)."""
+def commande_export(source, sortie, tmp=None, piste_audio=None):
+    """ffmpeg (sous nice) qui écrit source dans sortie, au format de son extension (.mp3 320k, .flac ou .wav).
+    piste_audio : la piste audio de source à prendre (a:N, une vidéo doublée à plusieurs pistes), sinon la première
+    (le doublage, dans une vidéo doublée)."""
     sortie = Path(sortie)
     ext = sortie.suffix.lower()
     if ext not in FORMATS_EXPORT:
         raise ErreurPistes(f"format non pris en charge : « {sortie.suffix or 'sans extension'} » (mp3, flac ou wav)")
     return ["nice", "-n", "10", "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", str(source),
-            "-map", "0:a:0", "-map_metadata", "-1", "-metadata", f"title={sortie.stem}", *FORMATS_EXPORT[ext],
-            str(tmp or sortie)]
+            "-map", f"0:a:{int(piste_audio or 0)}", "-map_metadata", "-1", "-metadata", f"title={sortie.stem}",
+            *FORMATS_EXPORT[ext], str(tmp or sortie)]
 
 
-def exporter(source, sortie):
-    """Écrit source dans sortie (écriture atomique : fichier temporaire à côté, puis renommage)."""
+def exporter(source, sortie, piste_audio=None):
+    """Écrit source (sa piste audio piste_audio, sinon la première) dans sortie (écriture atomique : fichier
+    temporaire à côté, puis renommage)."""
     sortie = Path(sortie)
     if sortie.suffix.lower() not in FORMATS_EXPORT:
         raise ErreurPistes(f"format non pris en charge : « {sortie.suffix or 'sans extension'} » (mp3, flac ou wav)")
     if not Path(source).is_file():
         raise ErreurPistes(f"fichier introuvable : {source}")
     tmp = _tmp(sortie)
-    _lancer(commande_export(source, sortie, tmp), tmp, sortie)
+    _lancer(commande_export(source, sortie, tmp, piste_audio), tmp, sortie)
     return sortie
+
+
+def source_export(piste):
+    """Ce qu'« Enregistrer… » écrit pour une piste : (fichier, piste audio) ou None s'il faut d'abord combiner ma voix
+    seule. Le fichier de travail/ ou du cache quand il existe sans calcul (sans perte : beat, ma voix seule déjà
+    combinée) ; sinon, la piste de la vidéo doublée qui l'a (-map 0:a:N), au lieu de recalculer ma voix seule."""
+    if piste.fichier is not None:
+        return piste.fichier, None
+    if piste.dans_la_video:
+        return piste.video, piste.piste_audio
+    return None
 
 
 # --- Ligne de commande -----------------------------------------------------------------------------------------------
@@ -859,9 +1123,18 @@ def exporter(source, sortie):
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     debut = time.time()
-    # --autotune (n'importe où) : « ma voix seule » de la version auto-tune
+    # --autotune (n'importe où) : « ma voix seule » de la version auto-tune ; --piste-audio N : la piste a:N à exporter
     autotune = "--autotune" in argv
     argv = [a for a in argv if a != "--autotune"]
+    piste_audio = None
+    if "--piste-audio" in argv:
+        i = argv.index("--piste-audio")
+        try:
+            piste_audio = int(argv[i + 1])
+        except (IndexError, ValueError):
+            print(__doc__)
+            return 2
+        del argv[i:i + 2]
     try:
         if len(argv) == 2 and argv[0] == "voix":
             f = preparer_ma_voix(argv[1], avancement=avancement_cli("voix"), autotune=autotune)
@@ -887,7 +1160,7 @@ def main(argv=None):
             else:
                 print(__doc__)
                 return 2
-            exporter(source, sortie)
+            exporter(source, sortie, piste_audio)
             print(json.dumps({"sortie": str(sortie), "duree_s": round(time.time() - debut, 2)}, ensure_ascii=False))
             return 0
         if len(argv) == 2 and argv[0] == "miniature":

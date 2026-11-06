@@ -15,6 +15,8 @@ Variables d'environnement :
   « envoi » (jeu de données refusé) ou « mix » (le mixage de la première vidéo échoue, les autres continuent) ;
 - FAUX_DOUBLER_COUPURE=1 : une coupure réseau pendant le suivi du noyau (statut « injoignable ») ;
 - FAUX_DOUBLER_DUREE : durée du son d'une vidéo entière, en secondes (défaut 30) ;
+- FAUX_DOUBLER_ESTIMATION : durée de session annoncée (estimation_s des événements « kaggle », estimation_noyau_s du
+  rapport), en secondes, à la place de son estimation inventée ;
 - FAUX_DOUBLER_ENFANT=<fichier> : lance un processus enfant qui ignore SIGTERM (comme un ffmpeg têtu) et écrit son pid
   dans ce fichier (l'annulation doit tuer tout le groupe de processus) ;
 - FAUX_DOUBLER_TRACE=<fichier> : une ligne JSON par lancement (argv, début, variables utiles) et une à la fin (code) ;
@@ -842,6 +844,8 @@ def envoyer_jeu(travaux, voix):
 
 
 def estimer_noyau_s(durees_s, pas):
+    if os.environ.get("FAUX_DOUBLER_ESTIMATION"):
+        return round(float(os.environ["FAUX_DOUBLER_ESTIMATION"]))
     return round(60 + 120.0 + sum(durees_s) * (0.8 + 0.045 * pas))
 
 

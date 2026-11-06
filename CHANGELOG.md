@@ -7,6 +7,75 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+## [0.7.0] - 2026-11-06
+
+### Performances
+
+- Noyau : sur deux cartes, les paroles (Whisper large-v3, puis NLLB) tournent sur la carte 1 pendant que la carte 0
+  commence la conversion YingMusic-SVC, puis la carte 1 rejoint la conversion : 365 → 324 s de la fin du nettoyage à
+  la fin du noyau sur une chanson de 3 min 48, son et paroles identiques au bit près. `--gpu 1` et les machines à une
+  carte gardent la chaîne d'avant.
+- Noyau : mémoire du GPU au plus fort de YingMusic-SVC et des paroles dans le journal.
+
+### Ajouté
+
+- Interface : pour un doublage dont la vidéo a ses cinq pistes audio (doubler ≥ 0.6.0), Beat seul, Ma voix seule et
+  Voix d'origine seule changent de piste audio dans la vidéo doublée elle-même (`current-audio` de playbin) : même
+  position, l'image continue, plus aucune copie vidéo (environ 150 Mo de cache en moins par chanson de 4 min, 200 Mo
+  avec l'auto-tune). Nouvelle piste entendue en 0,25 s, au même échantillon. Pistes repérées par leur titre d'après
+  `pistes_audio` de `rapport.json`, sinon d'après les titres des flux. Sans la vidéo d'origine, Original lit la piste
+  Original de la vidéo doublée, sur son image. Avec l'auto-tune, beat et voix d'origine se lisent dans la vidéo
+  auto-tune. Les anciens doublages à une piste gardent les copies.
+- Interface : « Enregistrer ma voix seule… » extrait la piste de la vidéo (`-map 0:a:N`) au lieu de recombiner la voix.
+
+### Modifié
+
+- Interface : l'estimation de la session Kaggle est celle de `doubler` lui-même (`estimer_noyau_s`, chargée depuis le
+  `doubler.py` livré avec l'interface, sans le lancer) : paroles comptées comme lui, une voix par chanteur comprise. À
+  deux cartes, l'interface annonçait environ 45 % de trop ; elle annonce maintenant la même durée que `doubler`. Sans
+  `doubler.py` utilisable, son propre modèle compte les paroles de la même façon.
+- Interface, page Travaux : une fois le noyau lancé, la durée prévue par `doubler` (`estimation_s`) s'affiche (« durée
+  prévue par doubler ≈ 17 min », ou « au-delà de la durée prévue ») et le temps restant la suit.
+- Estimation de la durée d'une session : à deux cartes avec YingMusic-SVC, les paroles comptent pour
+  max(0,5 × P, P − Y) (P : leur durée sur la carte 1, attente du chargement de la carte 0 comprise ; Y : la conversion
+  à deux cartes) au lieu de P en entier ; à une carte, en parole ou avec Seed-VC, P comme avant. Part de la conversion
+  à deux cartes tirée des sessions passées sans la moitié de `paroles_pendant_conversion_s`. Le reste de la session
+  (chargement de la séparation, fin du noyau), compté 60 s, se mesure sur les sessions passées (80 s sans
+  historique). Sans historique, paroles : 25 s fixes (90) et 0,45 s par seconde de son (0,25).
+- L'estimation lit aussi les doublages du dossier de sorties par défaut : un dossier neuf (`--sortie`) n'est plus
+  estimé sur les seuls défauts.
+- Interface : la préparation à l'avance de ces doublages se limite à la miniature ; ma voix seule n'est combinée qu'en
+  MP3 ou quand on l'écoute (son seul fenêtre fermée).
+- Interface : les analyses du son lisent toujours une piste désignée (`-map 0:a:N`), la première d'une vidéo doublée
+  (le doublage), au lieu du choix automatique de ffmpeg.
+- Étiquette de langue des cinq pistes audio de la vidéo doublée (et de sa version auto-tune) : la langue principale
+  des paroles reconnues, et non plus celle du son d'origine. Une chanson française téléchargée avec un son étiqueté
+  `eng` a désormais des pistes `fre`. Chanson bilingue : la langue chantée le plus longtemps (durée totale de ses
+  lignes, comme la langue de `paroles.json`). Sans paroles (`--sans-paroles`, rien de reconnu, langue inconnue) :
+  l'étiquette du son d'origine, comme avant. `--remix` réétiquette les anciens doublages qui ont un `paroles.json`.
+  `rapport.json` : `pistes_audio.langue`.
+
+### Corrigé
+
+- Noyau : les paroles manquaient de mémoire GPU sur certains morceaux (`CUDA OutOfMemoryError` en horodatage par mot,
+  morceau repassé deux fois en vain puis transcrit sans les mots : 4 min au lieu d'une sur une chanson de 2 min 49). Le
+  pipeline de transformers cherche en faisceau (5) et gardait toute l'attention de l'encodeur (2,7 Gio) et, à chaque
+  jeton, l'attention croisée des 32 couches du décodeur : une boucle de Whisper (448 jetons) demandait 16 Gio, plus
+  qu'une T4, sur la carte 1 comme sur la carte 0. Whisper ne garde plus que ses têtes d'alignement (7,6 Gio mesurés
+  pour une telle boucle), mêmes paroles au bit près ; allocateur à segments extensibles ; mémoire libre vérifiée avant
+  le chargement ; un morceau qui en manque encore est coupé en deux plutôt que repassé tel quel. Sur la chanson en
+  cause : transcription 253 → 101 s, douze morceaux sur douze en mot à mot, son identique au bit près. Sans morceau
+  pour YingMusic-SVC, les paroles passent sur la carte 1, libre, et non plus sur la carte 0, où le noyau garde Seed-VC.
+  `rapport.json` : `paroles.memoire_max_mo`, `memoire_passes_mo`, `coupes_memoire`.
+- `doubler --sortie` vers un dossier neuf : les outils préparés (`--preparer-outils`) n'étaient pas montés (session
+  environ 4 min plus longue). `outils.json` est cherché dans `<sortie>/.kaggle/`, dans `~/.local/state/voix-la/` (où
+  `--preparer-outils` le copie, avec le nom du noyau d'outils), puis dans `<données>/sorties/.kaggle/`. Sans outils,
+  `doubler` le dit.
+- Interface : extrait dont la copie de l'image part d'une image clé antérieure (« image sans son au début ») : le son
+  doublé y commence à `decalage_s` de `paroles.json`, et non à `decalage_son` de `source.json` (0 pour un extrait).
+  Paroles, frise, courbe et bascules (vidéo ⇄ MP3, son seul, touche B) étaient en avance d'autant (0,48 s dans
+  l'essai). La vidéo d'origine garde son propre calage.
+
 ## [0.6.0] - 2026-11-05
 
 ### Ajouté
@@ -295,7 +364,8 @@ Première version publique.
     `VOIXLA_DECODAGE_MATERIEL=1` remet le décodage matériel ;
   - les essais automatiques laissaient le son de l'application coupé.
 
-[Non publié]: https://github.com/mawena/Voix-la/compare/v0.6.0...HEAD
+[Non publié]: https://github.com/mawena/Voix-la/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/mawena/Voix-la/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/mawena/Voix-la/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/mawena/Voix-la/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/mawena/Voix-la/compare/v0.3.1...v0.4.0

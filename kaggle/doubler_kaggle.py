@@ -27,7 +27,10 @@
 6. Paroles, sauf réglage paroles à false : Whisper large-v3 (transformers) sur la voix principale sèche, sinon la voix
    isolée, seulement sur les phrases chantées, langue détectée phrase par phrase, horodatage par mot, garde-fous contre
    les hallucinations ; traduction française (NLLB-200 distillé 600M) des lignes qui ne sont pas en français. Étape à
-   part, comme le nettoyage ; un échec n'empêche jamais le doublage.
+   part, comme le nettoyage ; un échec n'empêche jamais le doublage. Mémoire du GPU (le mot à mot pouvait en manquer sur
+   un morceau dense, repassé alors deux fois en vain avant les segments) : Whisper ne garde plus les poids d'attention
+   inutiles aux horodatages (alleger_whisper, mêmes paroles au bit près), allocateur à segments extensibles, mémoire
+   libre vérifiée avant le chargement ; un morceau qui en manque encore est coupé en deux plutôt que repassé tel quel.
 7. Plusieurs voix cibles, une par chanteur (réglage voix_cibles, chant seulement ; voir decider_chanteurs) : homme /
    femme d'un duo mixte, ou chanteur 1 / chanteur 2 (ordre d'apparition) d'un duo de même genre ; décalage d'octave de
    chaque couple chanteur -> voix cible ; chaque piste nettoyée de chaque morceau prend la voix du chanteur qu'on y
@@ -40,8 +43,14 @@
    l'ordre de ses morceaux ; séparation d'un lot : les vidéos réparties. Chaque tâche ne dépend que de ses entrées et de
    sa graine (une par morceau) : le son rendu est celui d'une carte seule, au bit près (essai du 05/11/2026 : voix
    convertie, mix et mp3 identiques ; session de 26,6 à 19,4 min sur une chanson de 3 min 48). Les modèles se chargent
-   l'un après l'autre (TourDeChargement) : chargés ensemble, ils prennent deux à trois fois plus longtemps. Une seule
-   carte visible : la chaîne d'avant ; une carte arrêtée en route : ce qu'elle n'a pas fait est repris sur la carte 0.
+   l'un après l'autre (TourDeChargement) : chargés ensemble, ils prennent deux à trois fois plus longtemps. Paroles : leur
+   piste (voix principale sèche) est prête dès la fin du nettoyage ; la dernière carte les fait d'abord (Whisper chargé
+   après YingMusic-SVC sur la carte 0), pendant que les autres convertissent, puis rejoint la conversion et prend les
+   morceaux encore libres (aucun : elle ne charge rien). Jamais Whisper et YingMusic-SVC ensemble sur une carte : l'étape
+   paroles rend la mémoire de la carte en sortant. Une seule carte visible : la chaîne d'avant (paroles après la
+   conversion) ; une carte arrêtée en route : ce qu'elle n'a pas fait est repris sur la carte 0, paroles comprises ; rien
+   à convertir par YingMusic-SVC : paroles après la conversion, sur la dernière carte (le noyau garde Seed-VC chargé sur
+   la carte 0).
 
 doubler.py remplace __REGLAGES__ (JSON en base64) et SOURCE (sa propre source en base64 : le noyau tourne en carnet,
 sans fichier, et en a besoin pour ses étapes à part), puis pousse ce noyau privé (GPU T4 + internet).
@@ -64,7 +73,10 @@ Sorties dans /kaggle/working/<id>/ pour chaque vidéo :
   paroles.json               paroles horodatées par ligne et par mot, langue, traduction française (format 1 ; contrat
                              avec l'interface) ; temps du son doublé, doubler.py les cale sur la vidéo de sortie
 et /kaggle/working/session.json (installation, séparation, nettoyage, chargement des modèles, temps total ; gpus : cartes
-vues et utilisées ; nettoyage_gpu_s et yingmusic_gpu_s : temps de GPU de ces étapes, toutes cartes additionnées).
+vues et utilisées ; nettoyage_gpu_s et yingmusic_gpu_s : temps de GPU de ces étapes, toutes cartes additionnées ;
+paroles.pendant_conversion et temps.paroles_pendant_conversion_s : paroles faites sur la dernière carte pendant
+YingMusic-SVC, et leur durée, que yingmusic_total_s comprend alors ; paroles_total_s : attente de la copie des modèles et
+durée de l'étape paroles seule).
 """
 import base64
 import glob
@@ -1899,6 +1911,30 @@ def ordre_morceaux(pistes, pad, invite_s=25.0):
     return [[pi, mi] for _, pi, mi in sorted(taches, key=lambda t: (-t[0], t[1], t[2]))]
 
 
+def tous_pris(travail):
+    """Étape YingMusic sur une carte parmi plusieurs : tous ses morceaux sont-ils déjà pris par les autres cartes ? (une
+    carte qui rejoint la conversion après les paroles n'a alors rien à faire, pas même à charger le modèle)"""
+    reclamations, taches = travail.get('reclamations'), travail.get('taches')
+    return bool(reclamations and taches and all(os.path.exists(os.path.join(reclamations, f'{pi}_{mi}')) for pi, mi in taches))
+
+
+def memoire_gpu_max_mo(torch):
+    """Mémoire du GPU réservée au plus fort par ce processus (Mo), pour mémoire ; None si CUDA ne la donne pas."""
+    try:
+        return round(torch.cuda.max_memory_reserved() / 2 ** 20)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def paroles_a_reprendre(res):
+    """Paroles faites sur une autre carte pendant la conversion : à refaire sur la carte 0 si elles n'ont pas tourné, si
+    leur processus s'est arrêté en échec (carte arrêtée en route) ou si CUDA a refusé (carte en panne). Une erreur de
+    contenu (modèle introuvable…) se répéterait : elle reste."""
+    if not res:
+        return True
+    return bool(res.get('code')) or 'cuda' in str(res.get('erreur') or '').lower()
+
+
 def lire_mono(chemin):
     import soundfile as sf
     x = sf.read(chemin, dtype='float32', always_2d=True)[0]
@@ -2134,7 +2170,19 @@ PAROLES_DEFAUT = {
     'mot_voise_min': 0.25,    # un mot dont moins d'un quart tombe dans le chant est inventé
     'boucle_mot_min_s': 0.12,  # une suite répétée 3 fois ou plus, chantée à moins de 0,12 s par mot : inventée
     'compression_max': 2.4,   # texte d'un morceau plus répétitif (zlib, critère d'OpenAI) : boucles retirées d'office
+    'coupe_memoire_min_s': 4.0,  # morceau à court de mémoire GPU : coupé en deux, tant que chaque moitié fait 4 s ou plus
+    'memoire_min_mo': 8000,   # mémoire libre voulue sur la carte avant de charger Whisper (allégé : 7,3 Gio au pire)
+    'attente_memoire_max_s': 60.0,  # attente au plus de cette mémoire (une étape qui vient de finir rend encore la sienne)
 }
+# Mémoire du GPU de Whisper en horodatage par mot (calculée d'après le code de transformers 5.20). Le pipeline cherche en
+# faisceau (num_beams=5 par défaut : la configuration de large-v3 n'en fixe pas) et le mot à mot lui fait garder tous les
+# poids d'attention : ceux de l'encodeur (32 couches × 20 têtes × 1 500² en float16 : 2,7 Gio, inutiles ici), puis, à
+# chaque jeton, ceux des 32 couches du décodeur pour les 5 faisceaux (attention croisée : 9,6 Mo), recopiés une seconde
+# fois à la fin pour les horodatages. Une passe coûte ainsi 6,7 Gio (modèle, attentions de l'encodeur, cache croisé des
+# 5 faisceaux) plus 21 Mo par jeton : 8,7 Gio à 100 jetons, 10,7 à 200, 16 aux 448 d'une boucle. Les horodatages ne
+# lisent que les 10 têtes d'alignement, dans 10 couches : alleger_whisper laisse l'encodeur sans ses attentions et vide
+# les autres à leur sortie (le calcul est le même, seuls les poids gardés changent) ; une passe coûte alors 4 Gio plus
+# 8 Mo par jeton, 7,3 Gio au pire.
 GARDE_FOUS_WHISPER = {'condition_on_prev_tokens': False, 'compression_ratio_threshold': 1.35,   # 1,35 : calculé par
                       'no_speech_threshold': 0.6, 'logprob_threshold': -1.0,                   # transformers sur les
                       'temperature': (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)}                           # jetons, pas le texte
@@ -2243,6 +2291,59 @@ def grouper_morceaux(phrases, langues, reglages=None):
                 continue
         out.append((a, b, lg, [i]))
     return out
+
+
+def manque_de_memoire(e):
+    """L'erreur est-elle un manque de mémoire du GPU (torch.OutOfMemoryError, ou son message) ?"""
+    return type(e).__name__ == 'OutOfMemoryError' or 'out of memory' in str(e).lower()
+
+
+def transcrire_avec_repli(appeler, langue, mots=True, liberer=lambda: None):
+    """Un morceau transcrit des garde-fous complets à la transcription la plus simple : appeler(return_timestamps,
+    generate_kwargs) -> sortie du pipeline. Rend (sortie, mode, erreurs). Le mot à mot à court de mémoire GPU rend le
+    mode 'mémoire' sans essayer ses garde-fous réduits (la même passe y manquerait encore : transcrire_video coupe le
+    morceau) ; liberer() rend d'abord la mémoire, hors de l'erreur (sa pile lâchée). mots à False : sans horodatage par
+    mot (morceau trop court pour être coupé)."""
+    base = {'language': langue, 'task': 'transcribe'}
+    erreurs, manque = [], False
+    for mode, ts, gk in (('mots', 'word', {**base, **GARDE_FOUS_WHISPER}), ('mots, garde-fous réduits', 'word', base),
+                         ('segments', True, {**base, **GARDE_FOUS_WHISPER}), ('segments, garde-fous réduits', True, base)):
+        if ts == 'word' and not mots:
+            continue
+        try:
+            return appeler(ts, dict(gk)), mode, erreurs
+        except Exception as e:  # noqa: BLE001
+            erreurs.append(f'{mode} : {e!r}'[:300])
+            manque = manque_de_memoire(e)
+        if manque:
+            liberer()
+            if ts == 'word':
+                return None, 'mémoire', erreurs
+    return None, None, erreurs
+
+
+def couper_morceau(morceau, phrases, x16, reglages=None, sr=16000):
+    """Morceau (début, fin, langue, [indices des phrases]) à court de mémoire GPU, coupé en deux plus courts (moins de
+    jetons à générer) : entre deux de ses phrases, au plus près du milieu ; une seule phrase : au creux le plus bas du son
+    (trames de 20 ms) dans son tiers du milieu. None s'il dure moins de deux fois coupe_memoire_min_s."""
+    import numpy as np
+    R = {**PAROLES_DEFAUT, **(reglages or {})}
+    a, b, lg, idx = morceau
+    if b - a < 2 * R['coupe_memoire_min_s']:
+        return None
+    if len(idx) >= 2:
+        milieu = (a + b) / 2
+        k = min(range(1, len(idx)), key=lambda j: (abs((phrases[idx[j - 1]][1] + phrases[idx[j]][0]) / 2 - milieu), j))
+        return [(a, phrases[idx[k - 1]][1], lg, idx[:k]), (phrases[idx[k]][0], b, lg, idx[k:])]
+    fen = int(0.02 * sr)
+    lo, hi = int((a + (b - a) / 3) * sr), min(int((a + 2 * (b - a) / 3) * sr), len(x16))
+    n = (hi - lo) // fen
+    if n >= 1:
+        e = (np.asarray(x16[lo:lo + n * fen], np.float64).reshape(n, fen) ** 2).mean(1)
+        c = round((lo + int(np.argmin(e)) * fen + fen // 2) / sr, 2)
+    else:
+        c = round((a + b) / 2, 2)
+    return [(a, c, lg, list(idx)), (c, b, lg, list(idx))]
 
 
 def taux_compression(texte):
@@ -2423,10 +2524,11 @@ def script_complet():
     return COMPLET
 
 
-def etape_a_part(etape, travail):
-    """Lance une étape (nettoyer, ying) dans son propre processus : le GPU est rendu à sa sortie, et YingMusic a son
-    propre paquet « modules », homonyme de celui de Seed-VC. Rend le JSON écrit par l'étape (même partiel si elle a
-    planté en route), plus son code de sortie et sa durée."""
+def etape_a_part(etape, travail, cartes=1):
+    """Lance une étape (nettoyer, ying, paroles) dans son propre processus : le GPU est rendu à sa sortie, et YingMusic a
+    son propre paquet « modules », homonyme de celui de Seed-VC. Rend le JSON écrit par l'étape (même partiel si elle a
+    planté en route), plus son code de sortie et sa durée. Avec plusieurs cartes et travail['carte'] : sur cette carte
+    seule (env_carte) ; sinon comme toujours (la carte 0)."""
     resultat = travail['resultat']
     os.makedirs(os.path.dirname(resultat), exist_ok=True)
     if os.path.exists(resultat):
@@ -2434,7 +2536,9 @@ def etape_a_part(etape, travail):
     chemin = resultat + '.travail.json'
     ecrire_json(chemin, travail)
     t0 = time.time()
-    r = subprocess.run([sys.executable, script_complet(), etape, chemin], env={**os.environ, 'DOUBLER_DEBUT': repr(DEBUT)})
+    carte = env_carte(int(travail['carte']), cartes) if cartes > 1 and travail.get('carte') is not None else {}
+    r = subprocess.run([sys.executable, script_complet(), etape, chemin],
+                       env={**os.environ, 'DOUBLER_DEBUT': repr(DEBUT), **carte})
     res = lire_json(resultat, {}) or {}
     res.update({'code': r.returncode, 'duree_s': round(time.time() - t0, 1)})
     if r.returncode:
@@ -2442,12 +2546,16 @@ def etape_a_part(etape, travail):
     return res
 
 
-def etapes_a_part(etape, travaux, cartes):
+def etapes_a_part(etape, travaux, cartes, avant=None):
     """Plusieurs étapes à part en même temps, la k-ième sur la k-ième carte (env_carte), chacune dans son processus comme
     etape_a_part. Quand l'une s'arrête, le témoin <etat>/fin_<k> le dit aux autres (une dereverb qui attend un karaoké de
-    cette carte cesse d'attendre ; la reprise s'en chargera). Rend leurs résultats, dans l'ordre des travaux."""
-    procs = []
-    for k, travail in enumerate(travaux):
+    cette carte cesse d'attendre ; la reprise s'en chargera). Rend leurs résultats, dans l'ordre des travaux.
+    avant : {k: (étape, travail)}, une étape que la k-ième carte fait d'abord, dans son propre processus (les paroles
+    pendant que les autres cartes convertissent) : la sienne part à sa fin, sur la même carte, une fois la mémoire du GPU
+    rendue. Résultat de l'étape préalable dans « avant » ; depart_s : quand la sienne est partie, duree_s : sa durée."""
+    avant = avant or {}
+
+    def lancer_etape(k, nom, travail):
         resultat = travail['resultat']
         os.makedirs(os.path.dirname(resultat), exist_ok=True)
         if os.path.exists(resultat):
@@ -2455,12 +2563,19 @@ def etapes_a_part(etape, travaux, cartes):
         chemin = resultat + '.travail.json'
         ecrire_json(chemin, travail)
         env = {**os.environ, 'DOUBLER_DEBUT': repr(DEBUT), **env_carte(k, cartes)}
-        procs.append(subprocess.Popen([sys.executable, script_complet(), etape, chemin], env=env))
-    t0, durees = time.time(), [None] * len(procs)
+        return subprocess.Popen([sys.executable, script_complet(), nom, chemin], env=env)
+    prealables = {k: {'proc': lancer_etape(k, *avant[k]), 'duree_s': None} for k in range(len(travaux)) if k in avant}
+    procs = [None if k in prealables else lancer_etape(k, etape, travail) for k, travail in enumerate(travaux)]
+    t0, durees, departs = time.time(), [None] * len(procs), [0.0] * len(procs)
     while any(d is None for d in durees):
         for k, p in enumerate(procs):
+            if p is None:
+                if prealables[k]['proc'].poll() is not None:   # étape préalable finie : la carte passe à la sienne
+                    prealables[k]['duree_s'] = departs[k] = round(time.time() - t0, 1)
+                    procs[k] = lancer_etape(k, etape, travaux[k])
+                continue
             if durees[k] is None and p.poll() is not None:
-                durees[k] = round(time.time() - t0, 1)
+                durees[k] = round(time.time() - t0 - departs[k], 1)
                 if travaux[k].get('etat'):
                     with open(os.path.join(travaux[k]['etat'], f'fin_{k}'), 'w') as f:
                         f.write(str(p.returncode))
@@ -2471,6 +2586,14 @@ def etapes_a_part(etape, travaux, cartes):
         r.update({'code': p.returncode, 'duree_s': durees[k], 'carte': k})
         if p.returncode:
             log(f'ÉTAPE {etape} (carte {k}) : arrêtée avec le code {p.returncode}')
+        if k in prealables:
+            nom, tp = avant[k]
+            pp = prealables[k]['proc']
+            r['depart_s'] = departs[k]
+            r['avant'] = {**(lire_json(tp['resultat'], {}) or {}), 'code': pp.returncode,
+                          'duree_s': prealables[k]['duree_s'], 'carte': k}
+            if pp.returncode:
+                log(f'ÉTAPE {nom} (carte {k}, avant {etape}) : arrêtée avec le code {pp.returncode}')
         res.append(r)
     return res
 
@@ -2983,6 +3106,12 @@ def etape_ying(travail):
     chemin = travail['resultat']
     res = {'commit': YING_COMMIT, 'poids': os.path.basename(travail.get('checkpoint') or YING_POIDS[1]),
            'poids_origine': 'montage' if travail.get('checkpoint') else 'Hugging Face', 'pistes': {}}
+    if tous_pris(travail):
+        # carte arrivée après ses paroles, quand les autres ont déjà pris tous les morceaux : rien à charger
+        res.update({'carte': travail.get('carte', 0), 'morceaux_faits': {}, 'morceaux_erreurs': {}, 'saute': True})
+        log(f"YINGMUSIC carte {travail.get('carte', 0)} : tous les morceaux déjà pris par les autres cartes, modèle non chargé")
+        ecrire_json(chemin, res)
+        return
     try:
         with TourDeChargement(travail):   # plusieurs cartes : une à la fois (une carte : rien ne change)
             m = MoteurYing(travail.get('outils'), travail.get('checkpoint'))
@@ -3064,20 +3193,25 @@ def ying_morceaux(travail, m, refs, res):
             traceback.print_exc()
             res['morceaux_erreurs'][cle] = {'erreur': repr(e)[:500], 'carte': carte}
         ecrire_json(chemin, res)
+    res['memoire_gpu_max_mo'] = memoire_gpu_max_mo(m.torch)
     m.torch.cuda.empty_cache()
     res['conversion_s'] = round(time.time() - t_carte, 1)
     log(f"YINGMUSIC carte {carte} : {len(res['morceaux_faits'])} morceau(x) en {time.time() - t_carte:.0f} s"
-        + (f", {len(res['morceaux_erreurs'])} en échec" if res['morceaux_erreurs'] else ''))
+        + (f", {len(res['morceaux_erreurs'])} en échec" if res['morceaux_erreurs'] else '')
+        + f" ; mémoire du GPU au plus fort {res['memoire_gpu_max_mo']} Mo")
     ecrire_json(chemin, res)
 
 
-def ying_sur_cartes(travail, cartes, invite_s=25.0):
+def ying_sur_cartes(travail, cartes, invite_s=25.0, avant=None):
     """YingMusic-SVC sur plusieurs cartes. L'installation se fait ici, une fois (deux étapes la feraient en même temps
     dans le même dossier) ; les morceaux de toutes les pistes sont répartis (repartir_morceaux), une étape par carte ; ce
     qui n'a pas été converti (carte arrêtée, erreur sur une autre carte que la 0) est repris sur la carte 0 ; enfin
     chaque piste est assemblée dans l'ordre de ses morceaux (poser_morceaux : la piste qu'aurait rendue une carte seule)
     et écrite comme etape_ying l'écrit. Rend le résultat d'une étape seule, plus cartes (morceaux, chargement et durée
-    de chacune) ; conversion_s d'une piste : la somme de ses morceaux (temps de GPU)."""
+    de chacune) ; conversion_s d'une piste : la somme de ses morceaux (temps de GPU).
+    avant : (étape, travail) que la dernière carte fait d'abord (les paroles), pendant que les autres convertissent ; elle
+    prend ensuite les morceaux encore libres. L'étape charge son modèle après YingMusic-SVC sur la carte 0 (même tour de
+    chargement) ; son résultat revient dans « avant » (absent si rien n'a été lancé)."""
     import numpy as np
     import soundfile as sf
     try:
@@ -3091,10 +3225,13 @@ def ying_sur_cartes(travail, cartes, invite_s=25.0):
         shutil.rmtree(d, ignore_errors=True)
         os.makedirs(d)
     ordre = ordre_morceaux(pistes, travail['pad'], invite_s)
-    log(f'YINGMUSIC sur {cartes} cartes : {len(ordre)} morceau(x), pris par la première carte libre, le plus long d\'abord')
+    log(f'YINGMUSIC sur {cartes} cartes : {len(ordre)} morceau(x), pris par la première carte libre, le plus long d\'abord'
+        + (f" ; la carte {cartes - 1} fait d'abord l'étape {avant[0]}, puis rejoint la conversion" if avant and ordre else ''))
     travaux = [{**travail, 'taches': ordre, 'morceaux_dir': dossier, 'reclamations': reclamations, 'etat': etat, 'carte': k,
                 'resultat': f'/tmp/ying/resultat_{k}.json'} for k in range(cartes)] if ordre else []
-    parts = etapes_a_part('ying', travaux, cartes) if travaux else []
+    prealable = {cartes - 1: (avant[0], {**avant[1], 'etat': etat, 'carte': cartes - 1})} if avant and travaux else None
+    parts = ((etapes_a_part('ying', travaux, cartes, avant=prealable) if prealable else etapes_a_part('ying', travaux, cartes))
+             if travaux else [])
     faits, erreurs = {}, {}
 
     def recueillir(r):
@@ -3120,7 +3257,11 @@ def ying_sur_cartes(travail, cartes, invite_s=25.0):
                                           'morceaux': len(r.get('morceaux_faits') or {}),
                                           'erreurs': len(r.get('morceaux_erreurs') or {}), 'chargement_s': r.get('chargement_s'),
                                           'conversion_s': r.get('conversion_s'), 'duree_s': r.get('duree_s'),
-                                          'code': r.get('code'), 'erreur': r.get('erreur')} for r in parts]})
+                                          'code': r.get('code'), 'erreur': r.get('erreur'),
+                                          **{c: r[c] for c in ('depart_s', 'saute', 'memoire_gpu_max_mo') if c in r},
+                                          **({'avant': avant[0]} if 'avant' in r else {})} for r in parts]})
+    if prealable:
+        res['avant'] = next((r['avant'] for r in parts if 'avant' in r), None)
     if parts and all(r.get('erreur') for r in parts):
         res['erreur'] = parts[0]['erreur']
     for pi, p in enumerate(pistes):
@@ -3174,26 +3315,95 @@ def origine_modele(src, depot):
     return 'copie locale du montage' if str(src).startswith('/tmp/') else 'montage'
 
 
+def alleger_whisper(modele):
+    """Whisper sans les poids d'attention que le mot à mot fait garder pour rien (voir PAROLES_DEFAUT) : l'encodeur tourne
+    sans rendre les siens (output_attentions retiré à l'entrée), et dans le décodeur ceux de l'auto-attention de chaque
+    couche et de l'attention croisée des couches sans tête d'alignement sont remplacés, à la sortie du module, par un
+    tableau vide. Les couches jetaient déjà ces poids : le calcul et le texte sont les mêmes, au bit près ; seuls les
+    enregistreurs de transformers (output_attentions) ne les gardent plus. Rend ce qui est gardé, pour le rapport."""
+    def sans_attentions(module, args, kwargs):
+        if kwargs.get('output_attentions'):
+            kwargs = {**kwargs, 'output_attentions': False}
+        return args, kwargs
+
+    def vider(module, args, sortie):
+        if isinstance(sortie, tuple) and len(sortie) > 1 and hasattr(sortie[1], 'new_empty') and sortie[1].numel():
+            return (sortie[0], sortie[1].new_empty((*sortie[1].shape[:-1], 0)), *sortie[2:])
+        return None
+    couches = list(modele.model.decoder.layers)
+    tetes = getattr(modele.generation_config, 'alignment_heads', None) or []
+    gardees = sorted({int(c) for c, _ in tetes}) if tetes else list(range(len(couches)))
+    modele.model.encoder.register_forward_pre_hook(sans_attentions, with_kwargs=True)
+    for i, couche in enumerate(couches):
+        # en tête des crochets de sortie : avant ceux qui enregistrent les poids (posés par transformers au premier appel)
+        couche.self_attn.register_forward_hook(vider, prepend=True)
+        if i not in gardees:
+            couche.encoder_attn.register_forward_hook(vider, prepend=True)
+    return {'attention_croisee_gardee': f'{len(gardees)} couches sur {len(couches)}', 'encodeur': 'sans attentions'}
+
+
+def attendre_memoire(torch, besoin_mo, attente_max_s, pas_s=1.0):
+    """Mémoire libre de la carte avant de charger Whisper : si elle manque (une étape qui vient de finir n'a pas encore
+    rendu la sienne), attend qu'elle revienne, au plus attente_max_s. Rend (libre, totale) en Mo et la durée d'attente ;
+    (None, None, 0.0) si CUDA ne la donne pas."""
+    t0 = time.time()
+    while True:
+        try:
+            libre, totale = (int(v) for v in torch.cuda.mem_get_info())
+        except Exception:  # noqa: BLE001
+            return None, None, 0.0
+        attente = time.time() - t0
+        if libre >= besoin_mo * 2 ** 20 or attente >= attente_max_s:
+            return round(libre / 2 ** 20), round(totale / 2 ** 20), round(attente, 1)
+        time.sleep(pas_s)
+
+
 def etape_paroles(travail):
     """Paroles de toutes les vidéos, dans un processus à part (le GPU est rendu à la sortie) : Whisper large-v3 chargé une
     fois, langue détectée phrase par phrase, transcription par morceaux de phrases de même langue (au plus 25 s, hors chant
     rendu muet) avec horodatage par mot et garde-fous, puis NLLB-200 (chargé une fois) traduit vers le français les lignes
-    qui ne sont pas en français. Écrit paroles.json pour chaque vidéo ; rend les mesures et les temps dans le résultat."""
+    qui ne sont pas en français. Écrit paroles.json pour chaque vidéo ; rend les mesures et les temps dans le résultat.
+    Mémoire du GPU : Whisper allégé (alleger_whisper : mêmes paroles, 2,7 Gio de moins et 13 Mo de moins par jeton),
+    allocateur à segments extensibles, mémoire libre attendue avant le chargement (attendre_memoire) ; un morceau qui en
+    manque encore est coupé en deux (transcrire_video) au lieu d'être repassé tel quel."""
     import numpy as np
+    # avant le premier appel à CUDA de ce processus (l'allocateur lit ce réglage en démarrant) : moins de mémoire perdue
+    # entre les blocs ; les calculs ne changent pas, seulement la façon de réserver la mémoire
+    alloc = os.environ.get('PYTORCH_CUDA_ALLOC_CONF') or ''
+    if 'expandable_segments' not in alloc:
+        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = ','.join(filter(None, [alloc, 'expandable_segments:True']))
     torch = charger_torch()
+    import gc as ramasse
     import torchaudio
     import transformers
     from transformers import WhisperForConditionalGeneration, WhisperProcessor, pipeline
     chemin, cache = travail['resultat'], travail.get('cache') or '/tmp/hf_paroles'
     res = {'implementation': f'transformers {transformers.__version__} (pipeline, horodatage par mot)',
            'modele': WHISPER[1], 'traducteur': TRADUCTEUR[1], 'chargements_s': {}, 'videos': {}, 'temps': {}}
+    if travail.get('etat') or travail.get('carte') is not None:
+        res['carte'] = travail.get('carte')
+    libre, totale, attente = attendre_memoire(torch, PAROLES_DEFAUT['memoire_min_mo'], PAROLES_DEFAUT['attente_memoire_max_s'])
+    res['memoire'] = {'libre_mo': libre, 'totale_mo': totale, 'allocateur': os.environ['PYTORCH_CUDA_ALLOC_CONF']}
+    if attente:
+        res['memoire']['attente_s'] = attente
+        log(f'PAROLES {attente:.0f} s d\'attente de la mémoire du GPU : {libre} Mo libres sur {totale}')
     t0 = time.time()
     try:
-        proc, src_w, err = depuis_hf(WhisperProcessor, [travail.get('whisper'), WHISPER[0]], cache, demi=False)
-        # attention « eager » : les horodatages par mot lisent les poids d'attention croisée (sdpa ne les rend pas)
-        modele, src_w, err2 = depuis_hf(WhisperForConditionalGeneration, [src_w, WHISPER[0]], cache,
-                                        attn_implementation='eager')
-        modele = modele.to('cuda').eval()
+        # sur une carte parmi plusieurs, pendant la conversion : Whisper se charge après YingMusic-SVC sur la carte 0
+        # (tour de chargement commun) ; une carte seule : rien ne change
+        with TourDeChargement(travail):
+            if travail.get('etat'):
+                res['attente_chargement_s'] = round(time.time() - t0, 1)
+                t0 = time.time()
+            proc, src_w, err = depuis_hf(WhisperProcessor, [travail.get('whisper'), WHISPER[0]], cache, demi=False)
+            # attention « eager » : les horodatages par mot lisent les poids d'attention croisée (sdpa ne les rend pas)
+            modele, src_w, err2 = depuis_hf(WhisperForConditionalGeneration, [src_w, WHISPER[0]], cache,
+                                            attn_implementation='eager')
+            modele = modele.to('cuda').eval()
+        try:
+            res['memoire']['allegement'] = alleger_whisper(modele)
+        except Exception as e:  # noqa: BLE001 — transformers changé : Whisper tel quel, les morceaux trop gourmands coupés
+            res['memoire']['allegement'] = {'erreur': repr(e)[:300]}
         pipe = pipeline('automatic-speech-recognition', model=modele, tokenizer=proc.tokenizer,
                         feature_extractor=proc.feature_extractor, device=modele.device)
         res.update({'whisper_origine': origine_modele(src_w, WHISPER[0]), 'erreurs_chargement': err + err2})
@@ -3204,8 +3414,10 @@ def etape_paroles(travail):
         ecrire_json(chemin, res)
         return
     res['chargements_s']['whisper'] = round(time.time() - t0, 1)
+    m = res['memoire']
     log(f"PAROLES Whisper large-v3 chargé en {time.time() - t0:.0f} s ({res['whisper_origine']}) ; "
-        f"{res['implementation']}")
+        f"{res['implementation']} ; mémoire du GPU libre au départ {m.get('libre_mo')} Mo sur {m.get('totale_mo')}, "
+        f"allègement {m.get('allegement')}, {m.get('allocateur')}")
     ecrire_json(chemin, res)
     gc = modele.generation_config
     l2i = dict(getattr(gc, 'lang_to_id', None) or {})
@@ -3222,17 +3434,31 @@ def etape_paroles(travail):
         return (codes[ordre[0]].strip('<|>'), float(p[ordre[0]]),
                 [[codes[j].strip('<|>'), round(float(p[j]), 3)] for j in ordre])
 
-    def transcrire(audio, lg):
-        """Le pipeline, des garde-fous complets à la transcription la plus simple : rend (sortie, mode, erreurs)."""
-        base = {'language': lg, 'task': 'transcribe'}
-        erreurs = []
-        for mode, ts, gk in (('mots', 'word', {**base, **GARDE_FOUS_WHISPER}), ('mots, garde-fous réduits', 'word', base),
-                             ('segments', True, {**base, **GARDE_FOUS_WHISPER}), ('segments, garde-fous réduits', True, base)):
-            try:
-                return pipe(audio.copy(), return_timestamps=ts, generate_kwargs=dict(gk)), mode, erreurs
-            except Exception as e:  # noqa: BLE001
-                erreurs.append(f'{mode} : {e!r}'[:300])
-        return None, None, erreurs
+    pics, pic_reserve = [], [0]   # mémoire du GPU au plus fort de chaque passe réussie (Mo) ; réservée, sur l'étape
+
+    def pic_a_zero():
+        try:
+            pic_reserve[0] = max(pic_reserve[0], int(torch.cuda.max_memory_reserved()))
+            torch.cuda.reset_peak_memory_stats()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def passe(audio, ts, gk):
+        """Une passe du pipeline, sa mémoire au plus fort notée dans pics."""
+        pic_a_zero()
+        sortie = pipe(audio.copy(), return_timestamps=ts, generate_kwargs=gk)
+        try:
+            pics.append(round(torch.cuda.max_memory_allocated() / 2 ** 20))
+        except Exception:  # noqa: BLE001
+            pass
+        return sortie
+
+    def liberer():
+        ramasse.collect()
+        torch.cuda.empty_cache()
+
+    def transcrire(audio, lg, mots=True):
+        return transcrire_avec_repli(lambda ts, gk: passe(audio, ts, gk), lg, mots, liberer)
 
     def lot_nllb(lg, lignes):
         """Traduction vers le français d'un lot de lignes d'une langue (NLLB-200) ; None si la langue manque à NLLB."""
@@ -3256,18 +3482,23 @@ def etape_paroles(travail):
     for v in travail['videos']:
         t1 = time.time()
         r = res['videos'][v['id']] = {}
+        pics.clear()
         try:
             textes[v['id']] = transcrire_video(v, seize_khz(v['audio']), langue, transcrire, r)
+            if pics:
+                r['memoire_max_mo'], r['memoire_passes_mo'] = max(pics), list(pics)
             log(f"PAROLES {v['id']} : {r['lignes']} lignes, langue {r['langue']} {r['langues_s']}, modes {r['modes']}, "
-                f"retraits {r['retraits']}, en {time.time() - t1:.0f} s")
+                f"retraits {r['retraits']}, en {time.time() - t1:.0f} s ; mémoire du GPU au plus fort "
+                f"{r.get('memoire_max_mo')} Mo" + (f", {r['coupes_memoire']} morceau(x) coupé(s) faute de mémoire"
+                                                   if r.get('coupes_memoire') else ''))
         except Exception as e:  # noqa: BLE001 — une vidéo ratée n'empêche pas les suivantes
             import traceback
             traceback.print_exc()
             r['erreur'] = f'transcription : {e!r}'[:500]
         ecrire_json(chemin, res)
     res['temps']['transcription_s'] = round(time.time() - t0 - res['chargements_s']['whisper'], 1)
+    pic_a_zero()
     pipe = modele = None   # mémoire du GPU rendue avant le traducteur
-    import gc as ramasse
     ramasse.collect()
     torch.cuda.empty_cache()
 
@@ -3302,6 +3533,8 @@ def etape_paroles(travail):
         d = paroles_json(lignes, traductions[v['id']] if traduites else None, TRADUCTEUR[1], v.get('piste'))
         ecrire_json(v['sortie'], d)
         res['videos'][v['id']].update({'fichier': os.path.basename(v['sortie']), 'traduction': bool(d['traductions'])})
+    fin = memoire_gpu_max_mo(torch)   # depuis la dernière remise à zéro : le traducteur
+    res['memoire_gpu_max_mo'] = None if fin is None else max(fin, round(pic_reserve[0] / 2 ** 20))
     res['temps']['total_s'] = round(time.time() - t0, 1)
     ecrire_json(chemin, res)
 
@@ -3309,8 +3542,10 @@ def etape_paroles(travail):
 def transcrire_video(v, x16, detecter, transcrire_morceau, r):
     """Paroles d'une vidéo (sans torch : les modèles sont passés en fonctions). v : {phrases, chant, piste} ; x16 : sa
     piste à 16 kHz ; detecter(audio) -> (langue, probabilité) ; transcrire_morceau(audio, langue) -> (sortie du pipeline
-    {text, chunks: [{text, timestamp}]}, mode, erreurs). Langue de chaque phrase, morceaux de même langue (hors des
-    phrases : muet), mots horodatés, garde-fous, lignes. Remplit r (mesures) et rend les lignes."""
+    {text, chunks: [{text, timestamp}]}, mode, erreurs), mode 'mémoire' si le mot à mot a manqué de mémoire GPU : le
+    morceau est alors coupé en deux (couper_morceau), ou, trop court, redemandé sans horodatage par mot
+    (transcrire_morceau(audio, langue, False)). Langue de chaque phrase, morceaux de même langue (hors des phrases :
+    muet), mots horodatés, garde-fous, lignes. Remplit r (mesures) et rend les lignes."""
     import numpy as np
     t1 = time.time()
     r.update({'piste': v.get('piste'), 'phrases': len(v['phrases']),
@@ -3326,8 +3561,9 @@ def transcrire_video(v, x16, detecter, transcrire_morceau, r):
     r['langues_phrases'] = [[a, b, c, round(p, 2), lg] + ([top] if top else [])
                             for (a, b), (c, p, _), lg, top in zip(v['phrases'], langues, choisies, tops)]
     r['temps_langue_s'] = round(time.time() - t1, 1)
-    mots = []
-    for a, b, lg, idx in grouper_morceaux(v['phrases'], choisies):
+    mots, file = [], list(grouper_morceaux(v['phrases'], choisies))
+    while file:
+        a, b, lg, idx, *sans_mots = file.pop(0)
         lo, hi = int(a * 16000), int(b * 16000)
         audio = np.zeros(hi - lo, np.float32)
         for i in idx:   # hors des phrases (bruits, fuites de musique) : muet, avec fondus de 20 ms
@@ -3340,10 +3576,18 @@ def transcrire_video(v, x16, detecter, transcrire_morceau, r):
             if f:
                 w[:f], w[-f:] = np.linspace(0, 1, f), np.linspace(1, 0, f)
             audio[pa - lo:pb - lo] = x16[pa:pb] * w
-        sortie, mode, erreurs = transcrire_morceau(audio, lg)
-        r['modes'][mode or 'échec'] = r['modes'].get(mode or 'échec', 0) + 1
+        sortie, mode, erreurs = transcrire_morceau(audio, lg, False) if sans_mots else transcrire_morceau(audio, lg)
         if erreurs:
             r.setdefault('erreurs', []).extend(erreurs[:2])
+        if mode == 'mémoire' and not sans_mots:
+            # à court de mémoire GPU en mot à mot (la même passe y manquerait encore) : deux morceaux plus courts, ou,
+            # trop court pour être coupé, sans horodatage par mot
+            moities = couper_morceau((a, b, lg, idx), v['phrases'], x16)
+            if moities:
+                r['coupes_memoire'] = r.get('coupes_memoire', 0) + 1
+            file[0:0] = moities or [(a, b, lg, idx, True)]
+            continue
+        r['modes'][mode or 'échec'] = r['modes'].get(mode or 'échec', 0) + 1
         if not sortie:
             continue
         bruts = []
@@ -3884,8 +4128,10 @@ def main():
     def cle_ying(e, fichier, p):
         return f"{e['tr']['id']}|{fichier}|{p['nom']}"
 
-    def convertir_ying(etats_v):
-        """Toutes les pistes à convertir par YingMusic-SVC (toutes vidéos et variantes), dans une seule étape à part."""
+    def convertir_ying(etats_v, paroles=None):
+        """Toutes les pistes à convertir par YingMusic-SVC (toutes vidéos et variantes), dans une seule étape à part.
+        paroles : travail de l'étape paroles ; sur plusieurs cartes, la dernière le fait d'abord, pendant que les autres
+        convertissent, puis rejoint la conversion (son résultat revient dans « avant », absent s'il n'a pas tourné)."""
         pistes = []
         for e in etats_v:
             for k, (nom, pas, liste, fichier) in enumerate(e['variantes']):
@@ -3904,7 +4150,8 @@ def main():
             travail['references'] = [v['chemin'] for v in cibles['voix']]   # indice = 7e élément de chaque morceau
         try:
             # deux cartes : morceaux partagés, piste assemblée ici au bit près (invite : la référence, 25 s au plus)
-            res = (ying_sur_cartes(travail, cartes, min(25.0, float(refs['chant44k']['duree']))) if cartes > 1
+            res = (ying_sur_cartes(travail, cartes, min(25.0, float(refs['chant44k']['duree'])),
+                                   ('paroles', paroles) if paroles else None) if cartes > 1
                    else etape_a_part('ying', travail))
         except Exception as ex:  # noqa: BLE001 — repli sur Seed-VC
             res = {'erreur': repr(ex)}
@@ -4080,9 +4327,10 @@ def main():
                                                   + (rapport['temps'].get('nettoyage_s') or 0) + ying_s + time.time() - t_video, 1)
         return rapport
 
-    def transcrire(etats_v):
-        """Paroles de toutes les vidéos dans une seule étape à part (Whisper et le traducteur chargés une fois) : voix
-        principale sèche quand elle existe, sinon voix isolée complète ; seulement ses phrases chantées (hauteur RMVPE)."""
+    def preparer_paroles(etats_v):
+        """Travail de l'étape paroles pour toutes les vidéos (Whisper et le traducteur chargés une fois) : voix principale
+        sèche quand elle existe, sinon voix isolée complète ; seulement ses phrases chantées (hauteur RMVPE). Attend la
+        copie locale des modèles. Rend (début, travail), travail None s'il n'y a rien à transcrire."""
         t = time.time()
         chemins, attente = chemins_paroles(copie_paroles)
         session['temps']['paroles_attente_copie_s'] = attente
@@ -4102,20 +4350,24 @@ def main():
             else:
                 ecrire_json(os.path.join(e['tr']['dossier'], 'paroles.json'), paroles_json([], piste=p['nom']))
         if not travail['videos']:
-            return
+            return t, None
         log(f"PAROLES de {len(travail['videos'])} vidéo(s) : Whisper large-v3 "
             f"({origine_modele(travail['whisper'], None)}), traduction {TRADUCTEUR[1]} "
             f"({origine_modele(travail['traducteur'], None)}) ; attente de la copie locale {attente:.0f} s")
-        torch.cuda.empty_cache()
-        try:
-            res = etape_a_part('paroles', travail)
-        except Exception as ex:  # noqa: BLE001 — sans paroles : le doublage continue
-            res = {'erreur': repr(ex)}
-        session['temps']['paroles_total_s'] = round(time.time() - t, 1)
+        return t, travail
+
+    def recueillir_paroles(etats_v, res, total_s, pendant_conversion=False):
+        """Mesures et temps de l'étape paroles dans la session et dans le rapport de chaque vidéo."""
+        session['temps']['paroles_total_s'] = round(total_s, 1)
         session['temps']['chargement_paroles_s'] = round(sum((res.get('chargements_s') or {}).values()), 1)
         session['paroles'] = {k: res.get(k) for k in ('implementation', 'modele', 'traducteur', 'whisper_origine',
                                                       'traducteur_origine', 'chargements_s', 'temps', 'erreur',
                                                       'erreur_traduction', 'langues_sans_traduction', 'code', 'duree_s')}
+        # carte et mémoire du GPU de l'étape (mémoire libre au départ, allègement de Whisper, plus fort de l'étape)
+        session['paroles'].update({k: res[k] for k in ('carte', 'memoire', 'memoire_gpu_max_mo') if res.get(k) is not None})
+        if pendant_conversion:
+            session['paroles'].update({k: res.get(k) for k in ('carte', 'attente_chargement_s', 'memoire_gpu_max_mo', 'reprise')},
+                                      pendant_conversion=pendant_conversion)
         for e in etats_v:
             v = (res.get('videos') or {}).get(e['tr']['id'])
             if v is not None:
@@ -4124,6 +4376,51 @@ def main():
                 e['rapport']['paroles']['erreur'] = res['erreur']
             e['rapport']['temps']['paroles_s'] = (v or {}).get('transcription_s')
         ecrire_session()
+
+    def transcrire(etats_v):
+        """Paroles après la conversion, sur la carte 0 (une carte : la chaîne d'avant)."""
+        t, travail = preparer_paroles(etats_v)
+        if travail is None:
+            return
+        torch.cuda.empty_cache()
+        try:
+            res = etape_a_part('paroles', travail)
+        except Exception as ex:  # noqa: BLE001 — sans paroles : le doublage continue
+            res = {'erreur': repr(ex)}
+        recueillir_paroles(etats_v, res, time.time() - t)
+
+    def finir_paroles(etats_v, travail, res):
+        """Paroles lancées sur une autre carte pendant la conversion (res : leur résultat, None si elles n'ont pas tourné :
+        pas de morceau YingMusic-SVC, étape YingMusic en échec) ; faites ici, après la conversion, si elles n'ont pas
+        tourné ou si leur carte a lâché (paroles_a_reprendre). Pas tournées : sur la dernière carte, libre (le noyau garde
+        Seed-VC 44 kHz chargé sur la carte 0 : 2 Gio de moins pour Whisper) ; carte en échec : reprises sur la carte 0.
+        paroles_total_s : attente de la copie et durée de l'étape, pas la conversion qui tournait en même temps."""
+        total, en_parallele = session['temps'].get('paroles_attente_copie_s') or 0.0, res is not None
+        if res is not None:
+            total += res.get('duree_s') or 0.0
+            # durée de l'étape sur sa carte, comprise dans yingmusic_total_s (estimation de doubler)
+            session['temps']['paroles_pendant_conversion_s'] = res.get('duree_s')
+        if paroles_a_reprendre(res):
+            carte = cartes - 1 if res is None and cartes > 1 else 0
+            if res is not None:
+                log(f"PAROLES sur la carte {res.get('carte')} en échec (code {res.get('code')}, {res.get('erreur')}) : "
+                    'reprises sur la carte 0')
+            torch.cuda.empty_cache()
+            t = time.time()
+            try:
+                res = {**etape_a_part('paroles', {**travail, 'carte': carte} if carte else travail, cartes),
+                       'reprise': res is not None}
+            except Exception as ex:  # noqa: BLE001 — sans paroles : le doublage continue
+                res = {'erreur': repr(ex)}
+            total += time.time() - t
+        recueillir_paroles(etats_v, res, total, pendant_conversion=en_parallele)
+        if res.get('carte') is not None:
+            log(f"PAROLES sur la carte {res['carte']}" + (' pendant la conversion' if en_parallele and not res.get('reprise')
+                                                         else ' après la conversion')
+                + f" : {res.get('duree_s')} s, dont {res.get('attente_chargement_s') or 0} s d'attente du chargement de "
+                f"YingMusic-SVC, Whisper chargé en {(res.get('chargements_s') or {}).get('whisper')} s, transcription "
+                f"{(res.get('temps') or {}).get('transcription_s')} s ; mémoire du GPU au plus fort "
+                f"{res.get('memoire_gpu_max_mo')} Mo, {(res.get('memoire') or {}).get('libre_mo')} Mo libres au départ")
 
     def nettoyer_fichiers(e):
         tr = e['tr']
@@ -4188,16 +4485,30 @@ def main():
                     p['affectation'] = {s['i']: (s['cible'], s['decalage']) for s in e['segs'] if not s['muet']}
                 e['rapport']['affectation'] = {'erreur': repr(ex)[:300], 'message': 'chaque piste prend la voix du morceau'}
         e['variantes'] = variantes_de(e)
+    # 6. Paroles (avant la fin de chaque vidéo : la voix principale sèche est effacée avec ses fichiers de travail). Leur
+    # piste est prête dès le nettoyage : sur plusieurs cartes, la dernière les fait pendant que les autres convertissent,
+    # puis rejoint la conversion ; une carte : après la conversion, comme avant
+    paroles_avant = None
+    if R.get('paroles', True) and cartes > 1:
+        try:
+            paroles_avant = preparer_paroles(etats)
+        except Exception as ex:  # noqa: BLE001 — sans paroles : le doublage continue
+            import traceback
+            traceback.print_exc()
+            log(f'PAROLES impossibles : {ex!r}')
+            paroles_avant = (time.time(), None)
     try:
-        ying = convertir_ying(etats)
+        ying = convertir_ying(etats, paroles_avant and paroles_avant[1])
     except Exception as ex:  # noqa: BLE001 — repli sur Seed-VC 44 kHz
         import traceback
         traceback.print_exc()
         ying = {'erreur': repr(ex)}
-    # 6. Paroles (avant la fin de chaque vidéo : la voix principale sèche est effacée avec ses fichiers de travail)
     if R.get('paroles', True):
         try:
-            transcrire(etats)
+            if paroles_avant is None:
+                transcrire(etats)
+            elif paroles_avant[1] is not None:
+                finir_paroles(etats, paroles_avant[1], ying.pop('avant', None))
         except Exception as ex:  # noqa: BLE001 — sans paroles : le doublage continue
             import traceback
             traceback.print_exc()

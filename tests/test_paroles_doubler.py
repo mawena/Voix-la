@@ -78,7 +78,8 @@ class Configuration(Base):
         avec = self.D.estimer_noyau_s([25.0], 30, self.tmp / 'sorties')
         sans = self.D.estimer_noyau_s([25.0], 30, self.tmp / 'sorties', paroles=False)
         self.assertGreater(avec, sans)
-        self.assertAlmostEqual(avec - sans, 90 + 25 * 0.25, delta=1)
+        # sans historique : 25 s de part fixe (copie locale des modèles), 0,45 s par seconde d'audio
+        self.assertAlmostEqual(avec - sans, 25 + 25 * 0.45, delta=1)
 
     def test_estimation_d_apres_l_historique_des_paroles(self):
         """Seuls les noyaux qui copient les modèles sur le disque local comptent (avant : 5 min de chargement)."""
@@ -92,8 +93,9 @@ class Configuration(Base):
         sans_historique = self.D.estimer_noyau_s([25.0], 30, self.tmp / 'sorties')
         rapport('nouveau', {'paroles_total_s': 60.0, 'paroles_copie_s': 40.0})
         avec = self.D.estimer_noyau_s([25.0], 30, self.tmp / 'sorties')
-        # le débit de transcription de l'ancien rapport reste valable (0,2 s par seconde) ; seul le fixe change
-        self.assertAlmostEqual(sans_historique - avec, 90 - 40, delta=1)
+        # le débit de transcription de l'ancien rapport reste valable (0,2 s par seconde) ; seul le fixe change (25 s
+        # sans historique)
+        self.assertAlmostEqual(sans_historique - avec, 25 - 40, delta=1)
 
 
 class Lecture(Base):

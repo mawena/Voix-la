@@ -242,7 +242,7 @@ def ecart_lecture(paroles, avec_image=True, debut_son=None):
     temps du son au temps de la piste :
     - avec image (la vidéo doublée, ses copies des pistes séparées, qui gardent ses temps, et la vidéo d'origine au
       décalage de l'extrait) : le temps de la vidéo doublée, où le son doublé commence à debut_son
-      (voir decalage_son) ;
+      (pistes.debut_son_video : decalage_s de paroles.json, sinon decalage_son de source.json) ;
     - sans image (le MP3, travail/original.wav, le beat ou une voix seule lus sans copie vidéo, le son seul quand la
       fenêtre est fermée) : le temps du son doublé. C'est aussi le temps du lecteur de la page d'un résultat, quelle
       que soit la piste (pistes.Piste.decalage_lu).

@@ -490,11 +490,19 @@ class PageDoubler(commun.Page):
         return moteur_, sans
 
     def _estimer(self, durees, reglages):
-        nettoyage = "--sans-nettoyage" in self.fenetre.caps and not reglages.get("sans_nettoyage")
+        """Durées prévues par étape ; la session Kaggle, celle que doubler calcule lui-même sur les rapports du dossier
+        des sorties (rapports.estimer avec sorties), la même qu'il annoncera au lancement."""
+        caps = self.fenetre.caps
+        nettoyage = "--sans-nettoyage" in caps and not reglages.get("sans_nettoyage")
+        paroles = "--sans-paroles" in caps and not reglages.get("sans_paroles")
         # deux cartes T4 (clé « gpu » à auto ou 2 sur la machine par défaut) : le chant nettoyé va plus vite
-        cartes = moteur.cartes_prevues(self._conf, self.fenetre.caps)
+        cartes = moteur.cartes_prevues(self._conf, caps)
+        voix = reglages.get("voix")
+        voix_cibles = max(1, len(moteur.membres_voix(moteur.id_voix(voix)))) if voix else 1
         return rapports.estimer(durees, reglages.get("pas", 30), self.modele, nettoyage=nettoyage,
-                                mode=reglages.get("mode", "auto"), moteur=reglages.get("moteur") or None, cartes=cartes)
+                                mode=reglages.get("mode", "auto"), moteur=reglages.get("moteur") or None, cartes=cartes,
+                                paroles=paroles, voix_cibles=voix_cibles,
+                                sorties=chemins.dossier_sorties(self.fenetre.donnees))
 
     def gpu_par_defaut_change(self, gpu):
         """Depuis les Réglages : nouvelle clé « gpu » de doubler, l'estimation de durée suit."""
@@ -507,7 +515,11 @@ class PageDoubler(commun.Page):
         def fini(m):
             self.modele = m
             self._maj()
-        commun.en_fil(lambda: rapports.modele_durees(rapports.lister_resultats(sorties)), fini)
+
+        def charger():
+            moteur.module_doubler()   # doubler.py chargé ici, hors de la boucle de l'interface (son estimation)
+            return rapports.modele_durees(rapports.lister_resultats(sorties))
+        commun.en_fil(charger, fini)
 
     def paroles_par_defaut_change(self, oui):
         """Depuis les Réglages : le nouveau défaut remplace le choix fait à la main."""

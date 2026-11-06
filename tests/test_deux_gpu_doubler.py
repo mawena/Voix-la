@@ -6,6 +6,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import unittest
 from pathlib import Path
@@ -121,12 +122,94 @@ class Estimation(Base):
                              self.D.estimer_noyau_s([200.0], 30, self.tmp / 'rien', cartes=1, **k))
 
     def test_deux_cartes_plus_court_en_chant(self):
-        un = self.D.estimer_noyau_s([230.0], 30, self.tmp / 'rien')
-        deux = self.D.estimer_noyau_s([230.0], 30, self.tmp / 'rien', cartes=2)
+        un = self.D.estimer_noyau_s([230.0], 30, self.tmp / 'rien', paroles=False)
+        deux = self.D.estimer_noyau_s([230.0], 30, self.tmp / 'rien', paroles=False, cartes=2)
         self.assertLess(deux, un)
         # sans historique : nettoyage x 0,70 et conversion x 0,55 ; le reste ne change pas
         t_net, t_conv = 2.3, 1.5 * 0.045 * 30
         self.assertAlmostEqual(un - deux, 230 * (t_net * 0.30 + t_conv * 0.45), delta=1)
+
+    def test_paroles_pendant_la_conversion(self):
+        """Deux cartes, YingMusic-SVC : les paroles (P, sur la carte 1, attente du chargement de la carte 0 comprise)
+        coûtent la moitié de leur durée, pas moins que ce qui dépasse la conversion (Y) ; une carte : P en entier."""
+        est = lambda **k: self.D.estimer_noyau_s([230.0], k.pop('pas', 30), self.tmp / 'rien', **k)
+        p_seq, p_carte = 25 + 230 * 0.45, 25 + 25 + 230 * 0.45   # défauts sans historique
+        self.assertAlmostEqual(est() - est(paroles=False), p_seq, delta=1)
+        self.assertAlmostEqual(est(cartes=2) - est(cartes=2, paroles=False), 0.5 * p_carte, delta=1)
+        # conversion très courte (2 pas) : les paroles dépassent, tout ce qui dépasse compte
+        y = 230 * 1.5 * 0.045 * 2 * 0.55
+        self.assertGreater(p_carte - y, 0.5 * p_carte)
+        self.assertAlmostEqual(est(cartes=2, pas=2) - est(cartes=2, pas=2, paroles=False), p_carte - y, delta=1)
+        # parole, ou Seed-VC : rien ne tourne pendant les paroles, P en entier
+        for k in ({'mode': 'parole'}, {'moteur': 'seedvc'}):
+            self.assertAlmostEqual(est(cartes=2, **k) - est(cartes=2, paroles=False, **k), p_seq, delta=1)
+
+    def rapport(self, nom, duree, sk, temps, gpus=1, attente=5.0, reel=None, nettoyage=True, pas=30, **tl):
+        d = self.tmp / 'sorties' / nom / 'travail' / 'jules'
+        d.mkdir(parents=True)
+        (d / 'rapport.json').write_text(json.dumps({
+            'duree_s': duree, 'temps': temps, 'nettoyage': {'applique': nettoyage},
+            'variantes': {'voix_convertie.flac': {'conversion_s': temps.get('conversion_s'), 'pas_diffusion': pas}},
+            'temps_local': {'gpus': gpus, 'videos_dans_la_session': 1, 'attente_demarrage_noyau_s': attente,
+                            'noyau_depuis_envoi_s': reel, 'session_kaggle': sk, **tl}}))
+
+    def test_une_session_passee_redonne_sa_duree(self):
+        """Avec pour seul historique une session inventée, l'estimation du même doublage redonne sa durée réelle : une
+        carte, deux cartes, paroles après la conversion ou sur la carte 1 pendant la conversion. Le reste de la session
+        (démarrage, chargement de la séparation, fin du noyau) se mesure sur elle."""
+        temps = {'separation_s': 50.0, 'analyse_s': 10.0, 'nettoyage_s': 200.0, 'conversion_s': 180.0}
+        base = {'installation_s': 40.0, 'chargement_modeles_s': 30.0, 'chargement_nettoyage_s': 20.0,
+                'chargement_yingmusic_s': 15.0}
+        cas = {
+            # une carte, sans paroles : nettoyage et conversion à la suite, chargements compris
+            'une carte': (1, False, {'nettoyage_totale_s': 220.0, 'yingmusic_total_s': 195.0}, {}, 700.0),
+            # une carte, paroles après la conversion : 15 s fixes, 30 s de transcription
+            'une carte, paroles': (1, True, {'nettoyage_totale_s': 220.0, 'yingmusic_total_s': 195.0,
+                                             'paroles_copie_s': 20.0, 'paroles_total_s': 45.0}, {'paroles_s': 30.0}, 745.0),
+            # deux cartes, sans paroles : nettoyage 0,7 et conversion 0,55 de leur temps de GPU
+            'deux cartes': (2, False, {'nettoyage_totale_s': 20 + 0.7 * 200, 'nettoyage_gpu_s': 200.0,
+                                       'yingmusic_total_s': 15 + 0.55 * 180, 'yingmusic_gpu_s': 180.0}, {}, 600.0),
+            # deux cartes, paroles pendant la conversion : P = 20 + 30 s, la moitié s'ajoute à la conversion
+            'deux cartes, paroles': (2, True, {'nettoyage_totale_s': 20 + 0.7 * 200, 'nettoyage_gpu_s': 200.0,
+                                               'yingmusic_total_s': 15 + 0.55 * 180 + 0.5 * 50, 'yingmusic_gpu_s': 180.0,
+                                               'paroles_pendant_conversion_s': 50.0, 'paroles_total_s': 50.0,
+                                               'paroles_copie_s': 20.0}, {'paroles_s': 30.0}, 625.0),
+        }
+        for nom, (cartes, paroles, sk, t, reel) in cas.items():
+            with self.subTest(nom):
+                shutil.rmtree(self.tmp / 'sorties', ignore_errors=True)
+                self.rapport('clip', 100.0, {**base, **sk}, {**temps, **t}, gpus=cartes, reel=reel)
+                self.assertAlmostEqual(self.D.estimer_noyau_s([100.0], 30, self.tmp / 'sorties', paroles=paroles,
+                                                              cartes=cartes), reel, delta=1)
+
+    def test_conversion_d_apres_les_sessions_ou_les_paroles_tournaient_pendant(self):
+        """Part de la conversion à deux cartes : la moitié des paroles retirée ; une session où la carte 1 n'a pas
+        rejoint la conversion (paroles plus longues) ne dit rien de cette part."""
+        sans = lambda: self.D.estimer_noyau_s([200.0], 30, self.tmp / 'sorties', paroles=False, cartes=2)
+        t_conv = 1.5 * 0.045 * 30   # sans conversion mesurée
+        self.rapport('trop-longues', 200.0, {'yingmusic_total_s': 150.0, 'chargement_yingmusic_s': 20.0,
+                                             'yingmusic_gpu_s': 300.0, 'paroles_pendant_conversion_s': 140.0}, {}, gpus=2)
+        reference = self.D.estimer_noyau_s([200.0], 30, self.tmp / 'rien', paroles=False, cartes=2)
+        self.assertEqual(sans(), reference, 'session ignorée : part par défaut (0,55)')
+        shutil.rmtree(self.tmp / 'sorties')
+        self.rapport('pendant', 200.0, {'yingmusic_total_s': 300.0, 'chargement_yingmusic_s': 20.0,
+                                        'yingmusic_gpu_s': 400.0, 'paroles_pendant_conversion_s': 100.0}, {}, gpus=2)
+        fc = (300 - 20 - 0.5 * 100) / 400
+        self.assertAlmostEqual(reference - sans(), 200 * t_conv * (0.55 - fc), delta=1)
+
+    def test_historique_de_plusieurs_dossiers(self):
+        """Un dossier de sortie neuf n'a pas d'historique : celui du dossier par défaut compte aussi, sans doublon."""
+        self.rapport('clip', 100.0, {'installation_s': 40.0, 'chargement_modeles_s': 30.0, 'nettoyage_totale_s': 220.0,
+                                     'yingmusic_total_s': 195.0}, {'separation_s': 50.0, 'conversion_s': 180.0},
+                     reel=700.0)
+        neuf = self.tmp / 'neuf'
+        neuf.mkdir()
+        seul = self.D.estimer_noyau_s([100.0], 30, self.tmp / 'sorties')
+        self.assertNotEqual(self.D.estimer_noyau_s([100.0], 30, neuf), seul)
+        self.assertEqual(self.D.estimer_noyau_s([100.0], 30, [neuf, self.tmp / 'sorties']), seul)
+        lien = self.tmp / 'lien'
+        lien.symlink_to(self.tmp / 'sorties')
+        self.assertEqual(len(self.D.rapports_passes([self.tmp / 'sorties', str(self.tmp / 'sorties'), lien])), 1)
 
     def test_rien_a_partager(self):
         """Parole d'une vidéo seule : ni nettoyage ni YingMusic-SVC, une seule séparation : la même durée."""
@@ -147,8 +230,8 @@ class Estimation(Base):
               'yingmusic_total_s': 220.0, 'chargement_yingmusic_s': 20.0, 'yingmusic_gpu_s': 400.0}
         (d / 'rapport.json').write_text(json.dumps({'duree_s': 200.0, 'temps': {}, 'temps_local': {
             'gpus': 2, 'videos_dans_la_session': 1, 'session_kaggle': sk}}))
-        un = self.D.estimer_noyau_s([230.0], 30, self.tmp / 'sorties')
-        deux = self.D.estimer_noyau_s([230.0], 30, self.tmp / 'sorties', cartes=2)
+        un = self.D.estimer_noyau_s([230.0], 30, self.tmp / 'sorties', paroles=False)
+        deux = self.D.estimer_noyau_s([230.0], 30, self.tmp / 'sorties', paroles=False, cartes=2)
         t_net, t_conv = 2.3, 1.5 * 0.045 * 30
         self.assertAlmostEqual(un - deux, 230 * (t_net * (1 - 0.6) + t_conv * (1 - 0.5)), delta=1)
 

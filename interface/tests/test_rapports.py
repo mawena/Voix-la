@@ -315,12 +315,14 @@ class EssaiEstimation(unittest.TestCase):
         self.assertEqual(rapports.modele_durees([]), rapports.MODELE_DEFAUT)
 
     def test_estimer(self):
+        # session (modèle de l'interface, sans dossier des sorties) : 140 + 2,6 × 100, puis les paroles, 25 + 0,45 × 100
         e = rapports.estimer([60, 40])
         self.assertEqual(e, {"extraction": 1.3, "mix": 7.0, "video": 5.0, "envoi": 50.0, "rapatriement": 17.0,
-                             "kaggle": 400.0, "attente": 0.0, "fini": 0.0})
-        self.assertEqual(rapports.estimer([60, 40], pas=50)["kaggle"], 504.0)
+                             "kaggle": 470.0, "attente": 0.0, "fini": 0.0})
+        self.assertEqual(rapports.estimer([60, 40], paroles=False)["kaggle"], 400.0)
+        self.assertEqual(rapports.estimer([60, 40], pas=50)["kaggle"], 504.0 + 70.0)
         vide = rapports.estimer([])
-        self.assertEqual((vide["extraction"], vide["kaggle"], vide["envoi"]), (0.5, 140.0, 35.0))
+        self.assertEqual((vide["extraction"], vide["kaggle"], vide["envoi"]), (0.5, 165.0, 35.0))
         self.assertEqual(rapports.estimer([None, 10])["mix"], 1.0 + 1.0 + 0.05 * 10)
 
     def test_facteur_pas(self):
@@ -576,13 +578,17 @@ class EssaiNouvelleChaine(unittest.TestCase):
         res = [self.res(RAPPORT_NETTOYE)]
         m = rapports.modele_durees(res)
         self.assertAlmostEqual(m["kaggle_nettoye"][1], 228.8 / 40.5, places=6)
-        sans = rapports.estimer([60], 30, m)["kaggle"]
-        avec = rapports.estimer([60], 30, m, nettoyage=True)["kaggle"]
+        sans = rapports.estimer([60], 30, m, paroles=False)["kaggle"]
+        avec = rapports.estimer([60], 30, m, nettoyage=True, paroles=False)["kaggle"]
         self.assertGreater(avec, 1.8 * sans)
         # en parole, pas de nettoyage ; avec YingMusic, les pas ne changent rien
-        self.assertEqual(rapports.estimer([60], 30, m, nettoyage=True, mode="parole")["kaggle"], sans)
-        self.assertEqual(rapports.estimer([60], 100, m, nettoyage=True)["kaggle"], avec)
-        self.assertGreater(rapports.estimer([60], 50, m, moteur="seedvc")["kaggle"], sans)
+        self.assertEqual(rapports.estimer([60], 30, m, nettoyage=True, mode="parole", paroles=False)["kaggle"], sans)
+        self.assertEqual(rapports.estimer([60], 100, m, nettoyage=True, paroles=False)["kaggle"], avec)
+        self.assertGreater(rapports.estimer([60], 50, m, moteur="seedvc", paroles=False)["kaggle"], sans)
+        # paroles (une carte) : en entier, quel que soit le reste
+        p = 25.0 + 0.45 * 60
+        self.assertEqual(rapports.estimer([60], 30, m, nettoyage=True)["kaggle"], round(avec + p, 1))
+        self.assertEqual(rapports.estimer([60], 30, m)["kaggle"], round(sans + p, 1))
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 """Lecture des sorties de doubler (sans GTK, testable) : dossiers sorties/<titre>/, rapport.json, source.json, frise
-d'octave, durées par étape, et modèle de durée pour estimer les travaux à venir.
+d'octave, durées par étape, et modèle de durée pour estimer les travaux à venir (la session Kaggle, elle, est estimée
+par doubler lui-même ; voir « Estimation des durées »).
 
 sorties/<titre>/
   <titre> - voix <Nom>.<mp4|mkv|webm|mov>   <titre> - voix <Nom>.mp3   comparaison_<N>pas.mp3
@@ -8,6 +9,7 @@ Un résultat = un dossier de sortie × une voix (travail/<voix>/). Un dossier sa
 """
 
 import json
+import os
 import re
 import statistics
 from dataclasses import dataclass, field
@@ -645,8 +647,16 @@ def notes_durees(rapport):
 
 
 # --- Estimation des durées -------------------------------------------------------------------------------------------
+#
+# La session Kaggle (étape « kaggle » : de la poussée du noyau à sa fin) est estimée par doubler lui-même : estimer()
+# appelle sa fonction estimer_noyau_s (moteur.estimation_noyau_s) dès qu'on lui donne le dossier des sorties, comme le
+# fait la page Doubler. C'est aussi la valeur que doubler annonce une fois la session lancée (estimation_s de ses
+# événements « kaggle »), que la page Travaux prend alors (voixla.suivi). Le modèle ci-dessous estime le reste
+# (extraction, envoi, rapatriement, mixage, vidéo) ; pour la session, il n'est plus qu'un repli (doubler.py absent ou
+# trop ancien), qui compte les paroles comme doubler.
 
-# durée ≈ a + b × secondes d'audio (b par vidéo pour extraction, mix, video ; sur le total pour la session)
+# durée ≈ a + b × secondes d'audio (b par vidéo pour extraction, mix, video ; sur le total pour la session). Les
+# sessions (kaggle, kaggle_nettoye, kaggle_nettoye_2cartes) sont sans les paroles, ajoutées à part (« paroles »).
 MODELE_DEFAUT = {
     "extraction": (0.5, 0.003),
     "envoi": (35.0, 0.15),
@@ -655,9 +665,16 @@ MODELE_DEFAUT = {
     # chant nettoyé (voix principale et chœurs séparés, reverb retirée, YingMusic-SVC) : environ deux fois plus de GPU
     # par seconde de son, et deux Roformer et YingMusic à charger en plus
     "kaggle_nettoye": (230.0, 5.2),
-    # le même sur les deux cartes T4 (doubler --gpu auto ou 2) : 4,1 s par seconde de son, mesuré le 05/11/2026 sur une
-    # chanson de 3 min 48 (session de 19,4 min, contre 26,6 sur une carte, soit 6,0 s par seconde de son)
-    "kaggle_nettoye_2cartes": (230.0, 4.1),
+    # le même sur les deux cartes T4 (doubler --gpu auto ou 2) ; sans historique, à peu près les défauts de doubler :
+    # séparation 0,8 s par seconde de son, nettoyage 2,3 × 0,70, conversion 2,0 × 0,55, soit 3,5, et ses 290 s fixes
+    # (chargements, reste de la session) au lieu de 230
+    "kaggle_nettoye_2cartes": (230.0, 3.8),
+    # paroles (Whisper large-v3, puis traduction) : part fixe (démarrage, chargements depuis la copie locale des
+    # modèles), puis par seconde de son ; les défauts de doubler sans historique
+    "paroles": (25.0, 0.45),
+    # conversion YingMusic-SVC à deux cartes en temps réel, chargement à part (Y de doubler) ; sans historique, les
+    # défauts de doubler : 0,045 s par pas et par seconde de son, 1,5 fois plus en voix nettoyée, 30 pas, part 0,55
+    "conversion_2cartes": (0.0, 1.1),
     "rapatriement": (10.0, 0.07),
     "mix": (1.0, 0.05),
     "video": (1.0, 0.03),
@@ -665,8 +682,35 @@ MODELE_DEFAUT = {
 
 
 # Sans session passée à deux cartes (voir gpu_reel_deux_cartes) : part du temps de GPU (deux cartes additionnées) que le
-# nettoyage et YingMusic-SVC prennent en temps réel, chargements à part ; les mêmes que doubler (FACTEURS_DEUX_CARTES)
-FACTEURS_DEUX_CARTES = {"nettoyage": 0.70, "conversion": 0.55}
+# nettoyage et YingMusic-SVC prennent en temps réel, chargements à part ; part de leur durée que coûtent les paroles
+# faites sur la carte 1 pendant la conversion YingMusic-SVC. Les mêmes que doubler (FACTEURS_DEUX_CARTES)
+FACTEURS_DEUX_CARTES = {"nettoyage": 0.70, "conversion": 0.55, "paroles": 0.5}
+# Paroles pendant la conversion : elles attendent d'abord que YingMusic-SVC soit chargé sur la carte 0 (comme doubler
+# sans session passée de ce genre)
+ATTENTE_CARTE0_S = 25.0
+
+
+def _session(rapport):
+    return ((rapport or {}).get("temps_local") or {}).get("session_kaggle") or {}
+
+
+def _nombre(x, defaut=0.0):
+    try:
+        return float(x) if x is not None else defaut
+    except (TypeError, ValueError):
+        return defaut
+
+
+def paroles_dans_session_s(rapport):
+    """Ce que les paroles ont ajouté à une session passée (s), comme doubler le compte : toute leur durée
+    (session_kaggle.paroles_total_s) quand elles passent après la conversion ; faites sur la carte 1 pendant la
+    conversion YingMusic-SVC (paroles_pendant_conversion_s, durée comprise dans yingmusic_total_s), la moitié de cette
+    durée (FACTEURS_DEUX_CARTES["paroles"] : la carte 0 convertit seule pendant ce temps). 0 sans paroles
+    (--sans-paroles, ancien noyau)."""
+    sk = _session(rapport)
+    if sk.get("paroles_pendant_conversion_s") is not None:
+        return FACTEURS_DEUX_CARTES["paroles"] * _nombre(sk["paroles_pendant_conversion_s"])
+    return _nombre(sk.get("paroles_total_s"))
 
 
 def _sans_longue_attente(k, sk):
@@ -680,23 +724,26 @@ def _sans_longue_attente(k, sk):
 def gpu_reel_deux_cartes(rapport):
     """GPU réel d'une vidéo doublée sur deux cartes, d'après temps.total_video_s, ou None. Ce total additionne le temps
     de GPU des deux cartes pour le nettoyage et YingMusic-SVC : il est ramené au temps réel avec la part que la session
-    a mesurée (nettoyage_totale_s, chargement à part, sur nettoyage_gpu_s ; de même pour YingMusic-SVC), sinon avec
-    celle de doubler (FACTEURS_DEUX_CARTES), comme son estimation. Pour les sessions de plusieurs vidéos : pour une
-    vidéo seule, la durée réelle de la session (noyau_depuis_envoi_s) dit mieux."""
+    a mesurée (nettoyage_totale_s, chargement à part, sur nettoyage_gpu_s ; de même pour YingMusic-SVC, sans la moitié
+    des paroles faites pendant la conversion, que yingmusic_total_s comprend alors), sinon avec celle de doubler
+    (FACTEURS_DEUX_CARTES), comme son estimation. Pour les sessions de plusieurs vidéos : pour une vidéo seule, la durée
+    réelle de la session (noyau_depuis_envoi_s) dit mieux. Les paroles, étape de la session, ne sont pas dans ce total."""
     r = rapport or {}
     tv = r.get("temps") or {}
-    sk = (r.get("temps_local") or {}).get("session_kaggle") or {}
+    sk = _session(r)
     if not tv.get("total_video_s"):
         return None
 
-    def part(reel, chargement, gpu, defaut):
+    def part(reel, chargement, gpu, defaut, retrait=0.0):
         try:
-            f = (float(sk[reel]) - float(sk.get(chargement) or 0)) / float(sk[gpu])
+            f = (float(sk[reel]) - float(sk.get(chargement) or 0) - retrait) / float(sk[gpu])
         except (KeyError, TypeError, ValueError, ZeroDivisionError):
             return defaut
         return min(1.0, max(0.4, f))
+    paroles = FACTEURS_DEUX_CARTES["paroles"] * _nombre(sk.get("paroles_pendant_conversion_s"))
     fn = part("nettoyage_totale_s", "chargement_nettoyage_s", "nettoyage_gpu_s", FACTEURS_DEUX_CARTES["nettoyage"])
-    fc = part("yingmusic_total_s", "chargement_yingmusic_s", "yingmusic_gpu_s", FACTEURS_DEUX_CARTES["conversion"])
+    fc = part("yingmusic_total_s", "chargement_yingmusic_s", "yingmusic_gpu_s", FACTEURS_DEUX_CARTES["conversion"],
+              paroles)
     ying = libelle_conversion(r).endswith("YingMusic-SVC")
     reel = (float(tv["total_video_s"]) - (1 - fn) * float(tv.get("nettoyage_s") or 0)
             - ((1 - fc) * float(tv.get("conversion_s") or 0) if ying else 0.0))
@@ -708,7 +755,10 @@ def modele_durees(resultats):
     Chant nettoyé sur une carte (rapports sans temps_local.gpus, ou gpus à 1) : le GPU de la vidéo, temps.total_video_s,
     comme avant. Sur deux cartes (kaggle_nettoye_2cartes), ce total additionne le temps des deux cartes : on prend la
     durée réelle de la session pour une vidéo seule (noyau_depuis_envoi_s), sinon ce total ramené au temps réel
-    (gpu_reel_deux_cartes)."""
+    (gpu_reel_deux_cartes). Durées des sessions sans les paroles (paroles_dans_session_s), qu'estimer ajoute à part.
+    Paroles : paroles_total_s des sessions d'une vidéo aux modèles copiés en local (paroles_copie_s), sans l'attente
+    de la carte 0 quand elles passaient pendant la conversion. Conversion à deux cartes (Y) : yingmusic_total_s, sans
+    son chargement ni la moitié des paroles faites pendant la conversion."""
     obs = {k: [] for k in MODELE_DEFAUT}
     for res in resultats:
         r = res.rapport or {}
@@ -720,12 +770,13 @@ def modele_durees(resultats):
         nettoye = bool((r.get("nettoyage") or {}).get("applique"))
         seule = tl.get("videos_dans_la_session") in (1, None)
         sk = tl.get("session_kaggle") or {}
+        paroles = paroles_dans_session_s(r)
         if nettoye and d > 5 and cartes_gpu(r) >= 2:
             k = _sans_longue_attente(tl.get("noyau_depuis_envoi_s"), sk) if seule else None
             reel = None if k is not None else gpu_reel_deux_cartes(r)
             if k is not None:
                 a = MODELE_DEFAUT["kaggle_nettoye_2cartes"][0]
-                obs["kaggle_nettoye_2cartes"].append(max(0.0, (float(k) - a) / d))
+                obs["kaggle_nettoye_2cartes"].append(max(0.0, (float(k) - paroles - a) / d))
             elif reel:
                 obs["kaggle_nettoye_2cartes"].append(reel / d)
         elif nettoye:
@@ -734,8 +785,8 @@ def modele_durees(resultats):
             if tv and d > 5:
                 obs["kaggle_nettoye"].append(max(0.0, float(tv) / d))
 
-        def obs_(cle, y):
-            if y is not None and d > 1:
+        def obs_(cle, y, d_min=1):
+            if y is not None and d > d_min:
                 a = MODELE_DEFAUT[cle][0]
                 obs[cle].append(max(0.0, (float(y) - a) / d))
         obs_("extraction", tl.get("extraction_s"))
@@ -744,7 +795,15 @@ def modele_durees(resultats):
         if seule:
             obs_("envoi", tl.get("envoi_jeu_s"))
             obs_("rapatriement", tl.get("rapatriement_s"))
-            obs_("kaggle", _sans_longue_attente(tl.get("noyau_depuis_envoi_s"), sk) if not nettoye else None)
+            k = _sans_longue_attente(tl.get("noyau_depuis_envoi_s"), sk) if not nettoye else None
+            obs_("kaggle", None if k is None else float(k) - paroles)
+            pendant = sk.get("paroles_pendant_conversion_s")
+            if "paroles_copie_s" in sk and sk.get("paroles_total_s") is not None:
+                obs_("paroles", _nombre(sk["paroles_total_s"]) - (ATTENTE_CARTE0_S if pendant is not None else 0.0),
+                     d_min=5)
+            if cartes_gpu(r) >= 2 and sk.get("yingmusic_gpu_s") and sk.get("yingmusic_total_s") is not None:
+                obs_("conversion_2cartes", _nombre(sk["yingmusic_total_s"]) - _nombre(sk.get("chargement_yingmusic_s"))
+                     - FACTEURS_DEUX_CARTES["paroles"] * _nombre(pendant), d_min=5)
     modele = {}
     for cle, (a, b) in MODELE_DEFAUT.items():
         modele[cle] = (a, statistics.median(obs[cle]) if obs[cle] else b)
@@ -756,11 +815,42 @@ def facteur_pas(pas):
     return max(0.3, 1 + 0.4 * ((float(pas or 30) - 30) / 20))
 
 
-def estimer(durees_audio, pas=30, modele=None, nettoyage=False, mode="auto", moteur=None, cartes=1):
+def _noyau_selon_doubler(durees, pas, sorties, nettoyage, mode, moteur_chant, paroles, voix_cibles, cartes):
+    """La session estimée par doubler (moteur.estimation_noyau_s) d'après les rapports de sorties (un dossier ou une
+    liste), ou None."""
+    dossiers = [sorties] if isinstance(sorties, (str, os.PathLike)) else list(sorties)
+    return moteur.estimation_noyau_s(durees, pas, dossiers, nettoyage, mode, moteur_chant, paroles, voix_cibles, cartes)
+
+
+def noyau_repli(modele, total, pas=30, nettoye=False, mode="auto", moteur_chant="seedvc", paroles=True, cartes=1):
+    """Session estimée par le modèle de l'interface (repli, sans doubler.py) : sa pente, sans les paroles, puis les
+    paroles comme doubler les compte. Une carte, la parole ou Seed-VC : P en entier (P = a + b × secondes de son, modèle
+    « paroles »). Deux cartes avec YingMusic-SVC, paroles sur la carte 1 pendant la conversion : P compte aussi
+    l'attente du chargement de la carte 0, et coûte max(0,5 × P, P − Y), Y étant la conversion à deux cartes (modèle
+    « conversion_2cartes »). Sans paroles (--sans-paroles) : rien."""
+    deux = (cartes or 1) >= 2
+    a, b = modele[("kaggle_nettoye_2cartes" if deux else "kaggle_nettoye") if nettoye else "kaggle"]
+    ying = moteur_chant == "yingmusic"
+    s = a + b * total * (1.0 if ying else facteur_pas(pas))
+    if paroles:
+        ap, bp = modele["paroles"]
+        p = ap + bp * total
+        if deux and ying and mode != "parole":
+            ay, by = modele["conversion_2cartes"]
+            p += ATTENTE_CARTE0_S
+            p = max(FACTEURS_DEUX_CARTES["paroles"] * p, p - (ay + by * total))
+        s += p
+    return s
+
+
+def estimer(durees_audio, pas=30, modele=None, nettoyage=False, mode="auto", moteur=None, cartes=1, paroles=True,
+            voix_cibles=1, sorties=None):
     """{étape: secondes} pour un appel doubler avec ces vidéos (durées d'audio en secondes). nettoyage : chant nettoyé
     (le défaut du doubler actuel ; en mode auto, on suppose du chant, comme doubler) ; les pas ne changent la durée
     qu'avec Seed-VC (avec YingMusic, 50 ou 100 pas n'apportent rien de mesurable). cartes : cartes GPU que le noyau
-    prendra (moteur.cartes_prevues) ; à deux, le chant nettoyé suit les sessions passées à deux cartes."""
+    prendra (moteur.cartes_prevues). paroles : faux avec --sans-paroles. voix_cibles : 2 pour une voix par chanteur.
+    Session (« kaggle ») : avec sorties (dossier des sorties, ou liste de dossiers), celle que calcule doubler lui-même
+    sur ses rapports (moteur.estimation_noyau_s) ; sans sorties, ou si doubler.py ne répond pas, noyau_repli."""
     modele = {**MODELE_DEFAUT, **(modele or {})}
     durees = [float(d or 0) for d in durees_audio] or [0.0]
     total = sum(durees)
@@ -772,9 +862,13 @@ def estimer(durees_audio, pas=30, modele=None, nettoyage=False, mode="auto", mot
         a, b = modele[cle]
         e[cle] = a + b * total
     nettoye = bool(nettoyage) and mode != "parole"
-    a, b = modele[("kaggle_nettoye_2cartes" if (cartes or 1) >= 2 else "kaggle_nettoye") if nettoye else "kaggle"]
-    ying = (moteur or ("yingmusic" if nettoye else "seedvc")) == "yingmusic"
-    e["kaggle"] = a + b * total * (1.0 if ying else facteur_pas(pas))
+    moteur_chant = moteur or ("yingmusic" if nettoye else "seedvc")
+    noyau = None
+    if sorties is not None:
+        noyau = _noyau_selon_doubler(durees, pas, sorties, bool(nettoyage), mode, moteur_chant, paroles, voix_cibles,
+                                     cartes)
+    e["kaggle"] = noyau if noyau is not None else noyau_repli(modele, total, pas, nettoye, mode, moteur_chant, paroles,
+                                                              cartes)
     e["attente"] = 0.0
     e["fini"] = 0.0
     return {k: round(v, 1) for k, v in e.items()}

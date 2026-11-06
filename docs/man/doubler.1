@@ -48,7 +48,12 @@ défaut ; \fBOriginal\fR ; \fBBeat seul\fR (la musique sans aucune voix) ;
 et reverb à leurs gains, même limiteur ; \fBVoix converties seules\fR avec une
 voix par chanteur) ; \fBVoix d'origine seule\fR. Le lecteur les propose dans
 son menu des pistes audio ; \fB\-\-pistes\-audio doublage\fR garde le doublage
-seul.
+seul. Toutes portent la même étiquette de langue (ISO 639\-2/B), celle des
+paroles reconnues : pour une chanson qui mêle deux langues, la plus chantée,
+au temps total de ses lignes. Sans paroles (\fB\-\-sans\-paroles\fR, rien de
+reconnu, langue inconnue), elles gardent l'étiquette du son d'origine, sinon
+aucune. Une chanson française téléchargée avec un son étiqueté \fBeng\fR a donc
+des pistes \fBfre\fR.
 .PP
 Avec l'auto\-tune (\fB\-\-autotune\fR, ou la clé \fBautotune\fR de la
 configuration), une version de plus est faite sur le PC, sans GPU : la voix
@@ -104,6 +109,7 @@ En chant, convertit la voix isolée complète, sans nettoyage (plus rapide).
 .TP
 .B \-\-sans\-paroles
 Ni transcription ni traduction des paroles, ni sous-titres, \fB.srt\fR ou \fB.lrc\fR (clé \fBparoles\fR, oui par défaut).
+Les pistes audio gardent alors l'étiquette de langue du son d'origine.
 .TP
 .BR \-\-pistes\-audio " toutes|doublage"
 Pistes audio de la vidéo doublée : \fBtoutes\fR (défaut, clé
@@ -167,7 +173,8 @@ Extrait commun à toutes les vidéos, pour un essai.
 .B \-\-remix
 Refait seulement le mixage et la vidéo depuis \fItravail/\fR, sans Kaggle
 (paroles et pistes audio comprises : un ancien doublage y gagne ses cinq
-pistes ; \fIparoles.json\fR et les \fB.srt\fR d'un extrait mkv ou webm fait
+pistes, étiquetées de la langue de son \fIparoles.json\fR ;
+\fIparoles.json\fR et les \fB.srt\fR d'un extrait mkv ou webm fait
 avant le 05/11/2026, en avance sur la vidéo doublée, y sont recalés).
 .TP
 .B \-\-reprendre
@@ -178,7 +185,9 @@ suivi, rapatriement, mixage et vidéo, sans repasser sur le GPU.
 Dossier des données \fIvoix/\fR et \fIsorties/\fR.
 .TP
 .BI \-\-sortie " dossier"
-Dossier des sorties (défaut : \fI<données>/sorties\fR).
+Dossier des sorties (défaut : \fI<données>/sorties\fR). Un dossier neuf monte
+les outils déjà préparés (\fB\-\-preparer\-outils\fR), et la durée de la session
+est estimée d'après les doublages de ce dossier et du dossier par défaut.
 .TP
 .BI \-\-evenements " fichier"
 Écrit l'avancement en JSON, un événement par ligne (pour une interface).
@@ -207,7 +216,10 @@ réessaie sur celle\-ci).
 .TP
 .B \-\-preparer\-outils
 Prépare une fois sur Kaggle les paquets et les modèles, pour des installations
-plus rapides ensuite.
+plus rapides ensuite (environ 4 min de moins par session). Ces outils sont ceux
+du compte Kaggle : leur fiche, \fIoutils.json\fR, est gardée dans
+\fI<sortie>/.kaggle/\fR et dans \fI~/.local/state/voix\-la/\fR, et tout dossier
+de sortie les retrouve.
 .TP
 .B \-\-version
 Affiche la version.
@@ -240,7 +252,8 @@ Cherchées ensuite dans \fIkaggle/ancres_genre.json\fR à côté de doubler.py.
 Dossier des données par défaut : \fIvoix/\fR et \fIsorties/\fR.
 .TP
 .I ~/.local/state/voix\-la/
-Verrou commun et session Kaggle en cours (pour \fB\-\-reprendre\fR).
+Verrou commun, session Kaggle en cours (pour \fB\-\-reprendre\fR) et fiche des
+outils préparés, \fIoutils.json\fR (\fB\-\-preparer\-outils\fR).
 .TP
 .I /usr/lib/voix\-la/
 Code installé : doubler.py, le noyau \fIkaggle/doubler_kaggle.py\fR et

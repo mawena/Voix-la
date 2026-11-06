@@ -2,7 +2,10 @@
 direct, puis contrôle de qualité. Deux usages :
 - « parole » : créer une nouvelle voix (doubler --ajouter-voix), comme le script enregistrer.sh ;
 - « chant »  : une prise de chant pour l'affinage futur du modèle, comme le script enregistrer-chant.sh.
-VOIXLA_MICRO_ESSAI=1 remplace le micro par un son de synthèse (essais sans micro).
+La liste « Micro » propose aussi le micro d'un téléphone Android (scrcpy, comme « enregistrer-chant.sh pixel », voir
+voixla.telephone) : pas de niveau en direct, le contrôle de qualité le montre après la prise.
+VOIXLA_MICRO_ESSAI=1 remplace le micro par un son de synthèse (essais sans micro) ; VOIXLA_TELEPHONE_ESSAI=1 imite un
+téléphone (« aucun » : aucun téléphone).
 """
 
 import json
@@ -18,7 +21,7 @@ import gi
 gi.require_version("Gst", "1.0")
 from gi.repository import Adw, GLib, Gst, Gtk  # noqa: E402
 
-from .. import chemins, controle, formats, moteur  # noqa: E402
+from .. import chemins, controle, formats, moteur, telephone  # noqa: E402
 from . import commun  # noqa: E402
 from .lecteur import media  # noqa: E402
 from .lecture import Apercu  # noqa: E402
@@ -40,6 +43,7 @@ CONSIGNES_CHANT = (
     "voyelles (a, é, i, o, ou).\n"
     "• Chantez avec des PAROLES, pas seulement en fredonnant.")
 NIVEAU = re.compile(r"rms=\([^)]*\)[<{]\s*([-0-9.e+inf, ]+)[>}]")
+SOUS_TITRE_TELEPHONE = "Par scrcpy, son sans perte ; niveau visible après la prise"
 
 
 def sources_micro():
@@ -59,6 +63,9 @@ def sources_micro():
 
 class Enregistrement:
     """Un enregistrement GStreamer vers un WAV mono 48 kHz (16 bits en parole, 24 bits en chant)."""
+
+    par_telephone = False
+    marge_s = 0          # arrêt par l'interface dès la durée atteinte
 
     def __init__(self, fichier, micro="", bits=16, sur_niveau=None, sur_fin=None):
         Gst.init(None)
@@ -130,6 +137,46 @@ class Enregistrement:
             self.sur_fin(erreur)
 
 
+class EnregistrementTelephone:
+    """Même usage qu'Enregistrement, au micro d'un téléphone (telephone.Prise, dans un fil à part) : vers le même WAV
+    mono 48 kHz (16 ou 24 bits). Pas de niveau en direct : scrcpy n'en donne pas sans lecture sur le PC. scrcpy
+    s'arrête seul à la durée prévue (--time-limit) ; « Arrêter » lui envoie SIGINT, comme Ctrl+C dans le script."""
+
+    par_telephone = True
+    marge_s = 10         # scrcpy met un moment à démarrer : l'interface ne l'arrête qu'après durée + marge
+
+    def __init__(self, fichier, serie, duree, bits=24, sur_fin=None):
+        self.fichier = Path(fichier)
+        self.prise = telephone.Prise(serie, self.fichier, duree, bits)
+        self.sur_fin = sur_fin
+        self.debut = None
+        self.termine = self.arret_demande = False
+
+    def demarrer(self):
+        self.debut = time.time()
+        commun.en_fil(self.prise.executer, self._finir, lambda e: self._finir(str(e) or "erreur inattendue"))
+
+    def arreter(self):
+        if not self.termine:
+            self.arret_demande = True
+            self.prise.arreter()
+
+    def abandonner(self):
+        """Fenêtre fermée : la prise s'arrête et ses fichiers sont effacés, sans rappel."""
+        self.termine = True
+        self.prise.abandonner()
+
+    def ecoule(self):
+        return time.time() - self.debut if self.debut else 0.0
+
+    def _finir(self, erreur):
+        if self.termine:
+            return
+        self.termine = True
+        if self.sur_fin:
+            self.sur_fin(erreur)
+
+
 class DialogueEnregistrement(Adw.Dialog):
     """Assistant : préparer → compte à rebours → enregistrement → contrôle → créer la voix / garder la prise."""
 
@@ -141,6 +188,14 @@ class DialogueEnregistrement(Adw.Dialog):
         self.fichier = None
         self.resultat = None
         self.lecture = None
+        # sources : micros du PC (nom pulse, '' : celui par défaut) puis téléphones (telephone:<série adb>)
+        self.micros = [("", "Micro par défaut du système")]
+        self.telephones = []
+        self._sources = list(self.micros)
+        self._choix = None           # source choisie à la main dans ce dialogue
+        self._remplissage = False
+        self.source = ""
+        self._ferme = False
         # réécoute de la prise : coupe la musique en cours, et se met en pause si une autre lecture commence
         self._apercu = Apercu(lambda: self.lecture and self.lecture.pause())
         self.duree = int(fenetre.prefs.get("duree_parole_s" if mode == "parole" else "duree_prise_chant_s")
@@ -156,6 +211,7 @@ class DialogueEnregistrement(Adw.Dialog):
         self.set_child(vue)
         self.connect("closed", lambda *_: self._fermer())
         commun.en_fil(sources_micro, self._micros)
+        self.chercher_telephones(reconnecter=False)
 
     # --- pages -----------------------------------------------------------------------------------------------------
 
@@ -164,7 +220,23 @@ class DialogueEnregistrement(Adw.Dialog):
         g = Adw.PreferencesGroup(title="Avant de commencer",
                                  description=CONSIGNES_PAROLE if self.mode == "parole" else CONSIGNES_CHANT)
         self.r_micro = Adw.ComboRow(title="Micro", model=Gtk.StringList.new(["Micro par défaut du système"]))
+        self.r_micro.connect("notify::selected", lambda *_: self._source_choisie())
         g.add(self.r_micro)
+        # téléphone : état de la recherche, « Réessayer », adresse sans fil (adb connect)
+        self.r_telephone = Adw.ActionRow(title="Micro du téléphone", subtitle="Recherche d’un téléphone…",
+                                         subtitle_lines=0)
+        self.r_telephone.add_prefix(Gtk.Image(icon_name="phone-symbolic"))
+        self.s_telephone = Gtk.Spinner(spinning=True, valign=Gtk.Align.CENTER)
+        self.r_telephone.add_suffix(self.s_telephone)
+        self.b_reessayer = commun.bouton("Réessayer", valign=Gtk.Align.CENTER, clic=self.chercher_telephones,
+                                         sensitive=False)
+        self.r_telephone.add_suffix(self.b_reessayer)
+        g.add(self.r_telephone)
+        self.e_adresse = Adw.EntryRow(title="Téléphone sans fil : adresse IP:port (adb connect)",
+                                      show_apply_button=True, visible=False)
+        self.e_adresse.set_text(self._adresse_connue())
+        self.e_adresse.connect("apply", lambda *_: self.chercher_telephones())
+        g.add(self.e_adresse)
         self.r_duree = Adw.SpinRow.new_with_range(10, 600, 5)
         self.r_duree.set_title("Durée (s)")
         self.r_duree.set_subtitle("60 s conseillées" if self.mode == "parole" else
@@ -230,23 +302,99 @@ class DialogueEnregistrement(Adw.Dialog):
 
     def _micros(self, liste):
         self.micros = liste
-        self.r_micro.set_model(Gtk.StringList.new([d for _n, d in liste]))
-        pref = self.fenetre.prefs.get("micro") or ""
-        noms = [n for n, _d in liste]
-        if pref in noms:
-            self.r_micro.set_selected(noms.index(pref))
+        self._rendre_sources()
+
+    # téléphones : recherche (fil à part), liste des sources, source retenue
+
+    def _adresse_connue(self):
+        """Adresse sans fil proposée : ADB_SERIAL, sinon celle du téléphone de la dernière prise."""
+        memoire = self.fenetre.prefs.get("source_enregistrement") or ""
+        for a in (telephone.serie_preferee(), memoire.removeprefix(telephone.PREFIXE)):
+            if telephone.ADRESSE.match(a):
+                return a
+        return ""
+
+    def chercher_telephones(self, reconnecter=True):
+        """Liste les téléphones ; « Réessayer » (et l'adresse validée) fait d'abord « adb connect » sur l'adresse."""
+        self.b_reessayer.set_sensitive(False)
+        self.s_telephone.set_visible(True)
+        self.r_telephone.set_title("Micro du téléphone")
+        self.r_telephone.set_subtitle("Recherche d’un téléphone…")
+        adresses = [self.e_adresse.get_text().strip()] if reconnecter else []
+        commun.en_fil(lambda: telephone.rechercher(adresses), self._telephones_trouves,
+                      lambda e: self._telephones_trouves(telephone.Recherche([], "Recherche impossible", str(e))))
+
+    def _telephones_trouves(self, r):
+        self.telephones = r.telephones
+        self.s_telephone.set_visible(False)
+        self.b_reessayer.set_sensitive(True)
+        if r.telephones:
+            noms = ", ".join(a.nom for a in r.telephones)
+            self.r_telephone.set_title("Micro du téléphone")
+            self.r_telephone.set_subtitle(commun.echapper(f"{noms} : à choisir dans « Micro »."))
+        else:
+            self.r_telephone.set_title(commun.echapper(r.titre))
+            self.r_telephone.set_subtitle(commun.echapper(r.message))
+        # l'adresse sans fil sert quand adb répond mais qu'aucun téléphone n'est prêt
+        self.e_adresse.set_visible(not r.telephones and r.titre in (telephone.AUCUN[0],
+                                                                    telephone.ETATS["offline"][0]))
+        self._rendre_sources()
+
+    def _rendre_sources(self):
+        sources = list(self.micros) + [(a.cle, telephone.libelle(a, self.telephones)) for a in self.telephones]
+        cles = [c for c, _d in sources]
+        voulue = self._cle_voulue(cles)
+        self._remplissage = True
+        try:
+            self._sources = sources
+            self.r_micro.set_model(Gtk.StringList.new([d for _c, d in sources]))
+            self.r_micro.set_selected(cles.index(voulue) if voulue in cles else 0)
+        finally:
+            self._remplissage = False
+        self._source_choisie(manuel=False)
+
+    def _cle_voulue(self, cles):
+        """Le choix fait dans ce dialogue, sinon la source de la dernière prise, sinon le micro des Réglages. Un
+        téléphone d'avant revenu sous une autre série (port sans fil changé) cède la place au premier téléphone."""
+        for cle in (self._choix, self.fenetre.prefs.get("source_enregistrement")):
+            if not cle:
+                continue
+            if cle in cles:
+                return cle
+            if cle.startswith(telephone.PREFIXE):
+                tels = [c for c in cles if c.startswith(telephone.PREFIXE)]
+                if tels:
+                    return tels[0]
+        return self.fenetre.prefs.get("micro") or ""
+
+    def _source(self):
+        i = self.r_micro.get_selected()
+        return self._sources[i][0] if 0 <= i < len(self._sources) else ""
+
+    def _source_choisie(self, manuel=True):
+        cle = self._source()
+        if manuel and not self._remplissage:
+            self._choix = cle
+        self.r_micro.set_subtitle(SOUS_TITRE_TELEPHONE if cle.startswith(telephone.PREFIXE) else "")
+
+    def _libelle_source(self, cle):
+        return next((d for c, d in self._sources if c == cle), cle)
 
     def commencer(self):
         self.duree = int(self.r_duree.get_value())
-        micros = getattr(self, "micros", [("", "")])
-        i = self.r_micro.get_selected()
-        self.micro = micros[i][0] if 0 <= i < len(micros) else ""
+        self.source = self._source()
+        # source de la dernière prise : un téléphone, ou '' (le micro des Réglages, clé « micro »)
+        memoire = self.source if self.source.startswith(telephone.PREFIXE) else ""
+        if (self.fenetre.prefs.get("source_enregistrement") or "") != memoire:
+            self.fenetre.prefs = chemins.modifier_preference("source_enregistrement", memoire)
         self.pile.set_visible_child_name("decompte")
         self._compte = 3
         self.l_decompte.set_label("3")
         GLib.timeout_add(1000, self._decompter)
 
     def _decompter(self):
+        if self._ferme:          # fenêtre fermée pendant le compte à rebours : aucune prise ne commence
+            return False
         self._compte -= 1
         if self._compte > 0:
             self.l_decompte.set_label(str(self._compte))
@@ -263,19 +411,35 @@ class DialogueEnregistrement(Adw.Dialog):
 
     def _enregistrer(self):
         self.fichier = self._chemin()
-        self.enr = Enregistrement(self.fichier, self.micro, 24 if self.mode == "chant" else 16,
-                                  sur_niveau=self._niveau, sur_fin=self._fin_enregistrement)
+        bits = 24 if self.mode == "chant" else 16
+        if self.source.startswith(telephone.PREFIXE):
+            self.enr = EnregistrementTelephone(self.fichier, self.source.removeprefix(telephone.PREFIXE), self.duree,
+                                               bits, sur_fin=self._fin_enregistrement)
+        else:
+            self.enr = Enregistrement(self.fichier, self.source, bits, sur_niveau=self._niveau,
+                                      sur_fin=self._fin_enregistrement)
+        self._page_selon_source(self.enr.par_telephone)
         self.pile.set_visible_child_name("enregistrement")
         self.enr.demarrer()
         self._tic()
         GLib.timeout_add(250, self._tic)
 
+    def _page_selon_source(self, par_telephone):
+        """Niveau en direct au micro du PC ; au téléphone, aucun (rien d'honnête à montrer) : une phrase à la place."""
+        self.niveau.set_visible(not par_telephone)
+        self.niveau.set_value(0)
+        self.l_niveau.set_label(
+            f"{self._libelle_source(self.source)} : pas de niveau en direct, il se voit au contrôle après la prise."
+            if par_telephone else "")
+
     def _tic(self):
         if not self.enr or self.enr.termine:
             return False
         e = self.enr.ecoule()
-        self.l_temps.set_label(f"{formats.chrono(e)} / {formats.chrono(self.duree)}")
-        if e >= self.duree:
+        self.l_temps.set_label(f"{formats.chrono(min(e, self.duree))} / {formats.chrono(self.duree)}")
+        if self.enr.par_telephone and (e >= self.duree or self.enr.arret_demande):
+            self.l_niveau.set_label("Fin de la prise sur le téléphone, puis conversion…")
+        if e >= self.duree + self.enr.marge_s:
             self.arreter()
             return False
         return True
@@ -293,6 +457,8 @@ class DialogueEnregistrement(Adw.Dialog):
         if erreur:
             self.fenetre.toast(f"Enregistrement impossible : {erreur}")
             self.pile.set_visible_child_name("preparer")
+            if self.enr and self.enr.par_telephone:
+                self.chercher_telephones(reconnecter=False)     # le téléphone est peut-être parti
             return
         self._afficher_controle(None)
         f = self.fichier
@@ -432,17 +598,27 @@ class DialogueEnregistrement(Adw.Dialog):
         commun.en_fil(lambda: moteur.ajouter_voix(nom, f, donnees), fini)
 
     def _fermer(self):
+        self._ferme = True
         if self.enr and not self.enr.termine:
             self.enr.abandonner()
         if self.lecture:
             self.lecture.pause()
 
     def scenario(self, etape):
-        """Pour les captures : montrer une étape sans micro."""
-        if etape == "enregistrement":
+        """Pour les captures : montrer une étape sans micro (« telephone » : choisir le premier téléphone, imité par
+        VOIXLA_TELEPHONE_ESSAI=1)."""
+        if etape == "telephone":
+            tels = [i for i, (c, _d) in enumerate(self._sources) if c.startswith(telephone.PREFIXE)]
+            if tels:
+                self.r_micro.set_selected(tels[0])
+        elif etape == "enregistrement":
+            self.source = self._source()
+            par_telephone = self.source.startswith(telephone.PREFIXE)
             self.pile.set_visible_child_name("enregistrement")
+            self._page_selon_source(par_telephone)
             self.l_temps.set_label("0:12 / 1:00")
-            self._niveau(-18)
+            if not par_telephone:
+                self._niveau(-18)
         elif etape == "controle":
             self._afficher_controle({"duree_s": 58.4, "crete_db": -3.2, "moyen_db": -21.5, "lufs": -20.9,
                                      "bruit_db": -58.1, "silence_pct": 12, "alertes": []})

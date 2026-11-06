@@ -331,9 +331,7 @@ class DialogueEnregistrement(Adw.Dialog):
         if r.telephones:
             noms = ", ".join(a.nom for a in r.telephones)
             self.r_telephone.set_title("Micro du téléphone")
-            self.r_telephone.set_subtitle(commun.echapper(
-                f"{noms} : à choisir dans « Micro ». Son sans perte par scrcpy ; pas de niveau en direct, il se voit "
-                f"au contrôle après la prise."))
+            self.r_telephone.set_subtitle(commun.echapper(f"{noms} : à choisir dans « Micro »."))
         else:
             self.r_telephone.set_title(commun.echapper(r.titre))
             self.r_telephone.set_subtitle(commun.echapper(r.message))

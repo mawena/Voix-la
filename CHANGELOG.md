@@ -7,6 +7,23 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+### Ajouté
+
+- Interface : enregistrement au micro d'un téléphone Android, pour une voix comme pour une prise de chant. La liste
+  « Micro » propose les téléphones prêts (`adb devices -l`, `ADB_SERIAL` en premier, nom du modèle) ; scrcpy enregistre
+  le micro en FLAC sans perte (`--no-video --no-playback --no-window --audio-source=mic-voice-recognition
+  --audio-codec=flac --time-limit`, seulement les options que le scrcpy installé connaît), converti en WAV mono 48 kHz,
+  24 bits en chant et 16 bits en parole. « Arrêter » envoie SIGINT, comme Ctrl+C. Pas de niveau en direct : le temps
+  écoulé, puis le contrôle de qualité habituel. Sans téléphone, la raison (aucun, non autorisé, hors ligne, scrcpy ou
+  adb absent) et « Réessayer », avec `adb connect` sur l'adresse sans fil indiquée. La source de la dernière prise est
+  gardée (`source_enregistrement`). `VOIXLA_TELEPHONE_ESSAI=1` imite un téléphone pour les essais.
+
+### Corrigé
+
+- Interface : fermer le dialogue d'enregistrement pendant le compte à rebours ne lance plus la prise derrière lui.
+
+## [0.7.0] - 2026-11-06
+
 ### Performances
 
 - Noyau : sur deux cartes, les paroles (Whisper large-v3, puis NLLB) tournent sur la carte 1 pendant que la carte 0
@@ -25,14 +42,6 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
   Original de la vidéo doublée, sur son image. Avec l'auto-tune, beat et voix d'origine se lisent dans la vidéo
   auto-tune. Les anciens doublages à une piste gardent les copies.
 - Interface : « Enregistrer ma voix seule… » extrait la piste de la vidéo (`-map 0:a:N`) au lieu de recombiner la voix.
-- Interface : enregistrement au micro d'un téléphone Android, pour une voix comme pour une prise de chant. La liste
-  « Micro » propose les téléphones prêts (`adb devices -l`, `ADB_SERIAL` en premier, nom du modèle) ; scrcpy enregistre
-  le micro en FLAC sans perte (`--no-video --no-playback --no-window --audio-source=mic-voice-recognition
-  --audio-codec=flac --time-limit`, seulement les options que le scrcpy installé connaît), converti en WAV mono 48 kHz,
-  24 bits en chant et 16 bits en parole. « Arrêter » envoie SIGINT, comme Ctrl+C. Pas de niveau en direct : le temps
-  écoulé, puis le contrôle de qualité habituel. Sans téléphone, la raison (aucun, non autorisé, hors ligne, scrcpy ou
-  adb absent) et « Réessayer », avec `adb connect` sur l'adresse sans fil indiquée. La source de la dernière prise est
-  gardée (`source_enregistrement`). `VOIXLA_TELEPHONE_ESSAI=1` imite un téléphone pour les essais.
 
 ### Modifié
 
@@ -81,7 +90,6 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
   doublé y commence à `decalage_s` de `paroles.json`, et non à `decalage_son` de `source.json` (0 pour un extrait).
   Paroles, frise, courbe et bascules (vidéo ⇄ MP3, son seul, touche B) étaient en avance d'autant (0,48 s dans
   l'essai). La vidéo d'origine garde son propre calage.
-- Interface : fermer le dialogue d'enregistrement pendant le compte à rebours ne lance plus la prise derrière lui.
 
 ## [0.6.0] - 2026-11-05
 
@@ -371,7 +379,8 @@ Première version publique.
     `VOIXLA_DECODAGE_MATERIEL=1` remet le décodage matériel ;
   - les essais automatiques laissaient le son de l'application coupé.
 
-[Non publié]: https://github.com/mawena/Voix-la/compare/v0.6.0...HEAD
+[Non publié]: https://github.com/mawena/Voix-la/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/mawena/Voix-la/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/mawena/Voix-la/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/mawena/Voix-la/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/mawena/Voix-la/compare/v0.3.1...v0.4.0

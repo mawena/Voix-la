@@ -1,3 +1,17 @@
+voix-la (0.7.0) unstable; urgency=medium
+
+  * Paroles sur la deuxième carte T4 pendant la conversion, et Whisper sans
+    manque de mémoire GPU : session Kaggle de 19,2 à 15,2 min sur une
+    chanson.
+  * Pistes audio de la vidéo étiquetées de la langue des paroles reconnues.
+  * Interface : beat et voix seules lus directement dans la vidéo à cinq
+    pistes, sans copies à préparer.
+  * Estimation de durée calculée par doubler, la même dans l'interface.
+  * Corrections : outils Kaggle depuis un dossier de sortie neuf, extrait
+    dont l'image commence avant le son.
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Fri, 06 Nov 2026 06:00:00 +0000
+
 voix-la (0.6.0) unstable; urgency=medium
 
   * Deux GPU : la machine Kaggle T4 x2 partage le nettoyage et la

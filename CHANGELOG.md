@@ -28,6 +28,14 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ### Modifié
 
+- Estimation de la durée d'une session : à deux cartes avec YingMusic-SVC, les paroles comptent pour
+  max(0,5 × P, P − Y) (P : leur durée sur la carte 1, attente du chargement de la carte 0 comprise ; Y : la conversion
+  à deux cartes) au lieu de P en entier ; à une carte, en parole ou avec Seed-VC, P comme avant. Part de la conversion
+  à deux cartes tirée des sessions passées sans la moitié de `paroles_pendant_conversion_s`. Le reste de la session
+  (chargement de la séparation, fin du noyau), compté 60 s, se mesure sur les sessions passées (80 s sans
+  historique). Sans historique, paroles : 25 s fixes (90) et 0,45 s par seconde de son (0,25).
+- L'estimation lit aussi les doublages du dossier de sorties par défaut : un dossier neuf (`--sortie`) n'est plus
+  estimé sur les seuls défauts.
 - Interface : la préparation à l'avance de ces doublages se limite à la miniature ; ma voix seule n'est combinée qu'en
   MP3 ou quand on l'écoute (son seul fenêtre fermée).
 - Interface : les analyses du son lisent toujours une piste désignée (`-map 0:a:N`), la première d'une vidéo doublée
@@ -41,6 +49,10 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ### Corrigé
 
+- `doubler --sortie` vers un dossier neuf : les outils préparés (`--preparer-outils`) n'étaient pas montés (session
+  environ 4 min plus longue). `outils.json` est cherché dans `<sortie>/.kaggle/`, dans `~/.local/state/voix-la/` (où
+  `--preparer-outils` le copie, avec le nom du noyau d'outils), puis dans `<données>/sorties/.kaggle/`. Sans outils,
+  `doubler` le dit.
 - Interface : extrait dont la copie de l'image part d'une image clé antérieure (« image sans son au début ») : le son
   doublé y commence à `decalage_s` de `paroles.json`, et non à `decalage_son` de `source.json` (0 pour un extrait).
   Paroles, frise, courbe et bascules (vidéo ⇄ MP3, son seul, touche B) étaient en avance d'autant (0,48 s dans

@@ -216,9 +216,11 @@ suivants le montent au lieu de tout retélécharger, et se replient sur internet
 n'est pas obligatoire : sans lui, chaque session télécharge tout. Relancez-le après une mise à jour de `doubler` qui
 ajoute un modèle.
 
-`doubler` retient que les outils sont prêts dans `<sortie>/.kaggle/outils.json`, soit
-`<données>/sorties/.kaggle/outils.json` par défaut. Avec un autre dossier de sortie (`--sortie`, ou un autre dossier
-des données), relancez `doubler --preparer-outils` avec les mêmes options.
+`doubler` retient que les outils sont prêts dans `<sortie>/.kaggle/outils.json` et dans
+`~/.local/state/voix-la/outils.json` (avec le nom du noyau d'outils). Les outils sont ceux du compte Kaggle : un autre
+dossier de sortie (`--sortie`) ou un autre dossier des données les retrouve sans relancer `--preparer-outils`. Ceux
+préparés avant cette version sont retrouvés dans `<données>/sorties/.kaggle/outils.json`. Sans outils, `doubler` le
+dit (environ 4 min de plus par session).
 
 ## Configuration
 
@@ -980,8 +982,20 @@ Chaîne d'avant (`--moteur seedvc --sans-nettoyage`), une vidéo par session, av
 - Le mixage et la remise sur la vidéo prennent quelques secondes à une demi-minute sur le PC.
 - S'y ajoute l'attente d'une place GPU sur Kaggle, de zéro à quelques minutes.
 
-`doubler` annonce la durée probable de chaque session, estimée d'après les rapports des doublages passés (nettoyage et
-chœurs compris ; en mode `auto`, il suppose du chant). Mesuré : 10,9 min annoncées pour 11,2 min réelles.
+`doubler` annonce la durée probable de chaque session, estimée d'après les rapports des doublages passés : ceux du
+dossier de sortie et ceux du dossier par défaut (`<données>/sorties`), si bien qu'un dossier neuf (`--sortie`) en
+profite aussi. Nettoyage et chœurs compris ; en mode `auto`, il suppose du chant.
+
+- Les parts fixes se mesurent sur les sessions passées : démarrage et installation, chargement des modèles, et le
+  reste de la session (chargement de la séparation, fin du noyau : 80 à 90 s).
+- À deux cartes avec YingMusic-SVC, les paroles comptent pour la moitié de leur durée, jamais moins que ce qui dépasse
+  la conversion ; à une carte, en parole ou avec Seed-VC, en entier. Leur part fixe est d'environ 15 à 25 s après la
+  conversion, 40 s sur la carte 1 (attente du chargement de YingMusic-SVC comprise) ; la transcription prend 0,3 à
+  0,5 s par seconde de son, traduction comprise.
+- Sur les onze doublages du 04 au 06/11, l'écart médian est d'environ −4 %. Les grands écarts ne se prévoient pas avant
+  l'envoi : l'attente d'une place GPU (jusqu'à 3,5 min), une machine Kaggle lente, une chanson chargée en chœurs
+  (conversion jusqu'à 40 % plus longue), ou des paroles qui manquent de mémoire GPU (4 min au lieu d'une, sur une
+  chanson du 05/11).
 `--preparer-outils` prend environ 11 min de GPU, une fois (10,6 mesurées, Whisper et NLLB compris).
 
 - Paroles : 15 s de transcription pour 21 s chantées. Les modèles (5,6 Go) sont copiés sur le disque local pendant la

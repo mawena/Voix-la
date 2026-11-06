@@ -456,9 +456,10 @@ class PageVoix(commun.Page):
         if action.startswith("enregistrer"):
             d = DialogueEnregistrement(self.fenetre, "chant" if "chant" in action else "parole", self.voix_chant)
             d.present(self.fenetre)
-            etape = action.rsplit("-", 1)[1] if "-" in action else ""
-            if etape in ("enregistrement", "controle"):
-                GLib.timeout_add(500, lambda: (d.scenario(etape), False)[1])
+            # « enregistrer[-chant][-telephone][-enregistrement|-controle] », étapes jouées dans l'ordre
+            etapes = [e for e in action.split("-")[1:] if e in ("telephone", "enregistrement", "controle")]
+            if etapes:
+                GLib.timeout_add(500, lambda: ([d.scenario(e) for e in etapes], False)[1])
         elif action == "deplier":
             def deplier():
                 for r in self._lignes_voix:

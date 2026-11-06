@@ -322,7 +322,9 @@ COULEUR_AUTOTUNE = (0.90, 0.55, 0.05)   # ambre
 
 
 def legende_melodie(autotune=False):
-    b = Gtk.Box(spacing=16)
+    # les éléments passent à la ligne dans une fenêtre étroite (la page ne déborde pas à droite)
+    b = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, column_spacing=16, row_spacing=2, homogeneous=False,
+                    max_children_per_line=4, can_focus=False, can_target=False)
     for motif, libelle in (("fin", "voix d’origine"), ("tirets", "consigne (origine décalée)"),
                            ("plein", "voix convertie")) + ((("autotune", "version auto-tune"),) if autotune else ()):
         item = Gtk.Box(spacing=6)

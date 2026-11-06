@@ -16,14 +16,23 @@ tant que le lecteur est caché, et reprend au retour. Une seule lecture dans tou
 par media(), qui le confie au coordinateur (gui/lecture.py) avec son propriétaire ; lancer une lecture ailleurs coupe
 celle-ci, changer de source dans ce lecteur ne coupe rien. Fenêtre fermée, passer_en_son() remplace la vidéo par une
 source sans image de même contenu, à la même position et sans blanc ; revenir_en_video() la remet.
+
+Lecteur complet (page d'un résultat) : la vitesse (0,5× à 2×, hauteur gardée par scaletempo, gui/pistes_gst.py), le
+volume et le muet valent pour tous les flux, présents et à venir (autre piste, son seul fenêtre fermée) ; la boucle A-B
+est en temps de référence (celui du son doublé), elle survit donc aux bascules de piste. Elle est surveillée par son
+propre minuteur, pendant la lecture seulement, que la page soit affichée ou non (plein écran, autre page, fenêtre
+fermée).
 """
 
 from gi.repository import GLib, Gtk
 
 from .. import formats
+from .. import lecture as regles
 from ..lecture import Reprise
 from . import pistes_gst
 from .lecture import lectures
+
+BOUCLE_MS = 40               # surveillance de la boucle A-B pendant la lecture (dépassement de B : 40 ms au plus)
 
 
 def media(chemin, proprietaire):
@@ -58,8 +67,9 @@ class Lecteur(Gtk.Box):
 
     durable = False
 
-    def __init__(self, hauteur=280, sur_position=None, proprietaire=None):
+    def __init__(self, hauteur=280, sur_position=None, proprietaire=None, commandes=True):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.hauteur = hauteur
         self.ecran = Gtk.Picture(content_fit=Gtk.ContentFit.CONTAIN, can_shrink=True, hexpand=True,
                                  css_classes=["ecran-media"])
         self.ecran.set_size_request(-1, hauteur)
@@ -68,9 +78,18 @@ class Lecteur(Gtk.Box):
                                  valign=Gtk.Align.END, margin_start=10, margin_bottom=10, visible=False)
         self.superpose = Gtk.Overlay(child=self.ecran)
         self.superpose.add_overlay(self.bandeau)
-        self.commandes = Gtk.MediaControls(hexpand=True)
+        # commandes : Gtk.MediaControls par défaut ; commandes=False, la page pose les siennes (gui/commandes.py)
+        self.commandes = Gtk.MediaControls(hexpand=True) if commandes else None
         self.append(self.superpose)
-        self.append(self.commandes)
+        if self.commandes is not None:
+            self.append(self.commandes)
+        self.vitesse = 1.0        # vitesse de tous les flux (scaletempo : la hauteur est gardée)
+        self.volume = 1.0         # volume de tous les flux
+        self.coupe = False        # son coupé par l'utilisateur (touche M), pour tous les flux
+        self.boucle = ()          # boucle A-B en temps de référence : (a, None), (a, b) ou ()
+        self.sur_etat = None      # rappel() : lecture ou pause du flux en cours, fin, vitesse (commandes, page)
+        self._minuteur_boucle = None
+        self._hauteur = None      # (flux, son passé par scaletempo ?) du dernier flux interrogé
         self.sources = {}
         self.flux = {}
         self.cle = None
@@ -208,9 +227,30 @@ class Lecteur(Gtk.Box):
 
     def _ouvrir(self, chemin):
         m = media(chemin, self._proprio())
-        if self.muet:
+        if self.muet or self.coupe:
             m.set_muted(True)
+        if self.volume != 1.0:
+            m.set_volume(self.volume)
+        m.connect("notify::playing", lambda flux, _p: self._etat_flux(flux))
+        m.connect("notify::ended", lambda flux, _p: self._fin_flux(flux))
         return m
+
+    def _etat_flux(self, m):
+        """Lecture ou pause d'un flux : la boucle A-B se surveille pendant la lecture ; les commandes suivent."""
+        if m is not self.media():
+            return
+        self._surveiller_boucle()
+        if self.sur_etat is not None:
+            self.sur_etat()
+
+    def _fin_flux(self, m):
+        """Fin du flux en cours : avec une boucle A-B qui finit au bout du fichier, on repart de A."""
+        if m is not self.media() or not m.get_ended():
+            return
+        if regles.boucle_complete(self.boucle):
+            self.aller_a(self.boucle[0], lire=True)
+        if self.sur_etat is not None:
+            self.sur_etat()
 
     def _flux(self, cle):
         if cle not in self.flux:
@@ -258,7 +298,8 @@ class Lecteur(Gtk.Box):
                 self.ecran.set_paintable(courante.get_current_image())
                 quand_pret(m, lambda: self.flux.get(self.cle) is m and self.ecran.set_paintable(m))
             self.bandeau.set_visible(False)
-        self.commandes.set_media_stream(m)
+        if self.commandes is not None:
+            self.commandes.set_media_stream(m)
         decalage = self.sources[cle][1] or 0.0
         # tant que le flux n'est pas prêt et placé, sa position est celle qu'on lui a demandée : une nouvelle bascule
         # (la copie vidéo prête juste après) repart de là, pas de 0 ; et il « lit » déjà si on l'a demandé
@@ -266,6 +307,8 @@ class Lecteur(Gtk.Box):
 
         def placer():
             self._choisir_son(m)      # la piste audio de la source en cours (celle-ci, ou une autre du même flux)
+            if self.vitesse != 1.0:   # un flux neuf lit à 1 : la vitesse avant le déplacement, qui la garde
+                pistes_gst.regler_vitesse(m, self.vitesse)
             if position_ref or decalage:
                 m.seek(int(max(0.0, position_ref + decalage) * 1_000_000))
             a = self._attente
@@ -389,9 +432,11 @@ class Lecteur(Gtk.Box):
         self.flux = {}
         self.cle = None
         self._attente = None
+        self._hauteur = None
         self.ecran.set_paintable(None)
         self.bandeau.set_visible(False)
-        self.commandes.set_media_stream(None)
+        if self.commandes is not None:
+            self.commandes.set_media_stream(None)
         self._fin_extrait = None
 
     # --- position ------------------------------------------------------------------------------------------------
@@ -456,6 +501,96 @@ class Lecteur(Gtk.Box):
         a = self._attente
         if a is not None and a[0] is m:
             a[3] = False          # une bascule en cours ne relance pas la lecture
+
+    def duree_ref(self):
+        """Durée en temps de référence (celle de la source en cours moins son décalage), None tant qu'elle n'est pas
+        connue."""
+        d = self.duree()
+        if d is None or self.cle not in self.sources:
+            return None
+        return max(0.0, d - (self.sources[self.cle][1] or 0.0))
+
+    # --- lecteur complet : vitesse, volume, boucle A-B, sauts --------------------------------------------------------
+
+    def vitesse_possible(self):
+        """Vrai si le flux en cours sait changer de vitesse en gardant la hauteur (scaletempo) ; None s'il n'est pas
+        encore prêt."""
+        m = self.media()
+        if m is None or not m.is_prepared():
+            return None
+        connu = self._hauteur
+        if connu is None or connu[0] is not m:
+            connu = self._hauteur = (m, pistes_gst.garde_la_hauteur(m))   # une fois par flux
+        return connu[1]
+
+    def regler_vitesse(self, v):
+        """La vitesse de tous les flux (bornée de 0,5 à 2) ; un flux pas encore prêt la prendra en se plaçant. Faux si
+        le flux en cours ne peut pas la prendre sans changer la hauteur (elle reste alors à 1)."""
+        v = regles.borner_vitesse(v)
+        m = self.media()
+        if m is not None and m.is_prepared():
+            if not pistes_gst.regler_vitesse(m, v):
+                self.vitesse = 1.0
+                return False
+        self.vitesse = v
+        if self.sur_etat is not None:
+            self.sur_etat()
+        return True
+
+    def regler_volume(self, v):
+        """Le volume de tous les flux (0 à 1)."""
+        self.volume = max(0.0, min(1.0, float(v)))
+        for m in {id(f): f for f in self.flux.values()}.values():
+            m.set_volume(self.volume)
+
+    def couper_son(self, oui):
+        """Son coupé (ou rendu) pour tous les flux ; les essais (rendre_muet) restent muets."""
+        self.coupe = bool(oui)
+        for m in {id(f): f for f in self.flux.values()}.values():
+            m.set_muted(self.coupe or self.muet)
+
+    def definir_boucle(self, boucle):
+        """La boucle A-B ((a, None), (a, b) ou ()), en temps de référence : elle vaut pour toutes les pistes."""
+        self.boucle = tuple(boucle or ())
+        self._surveiller_boucle()
+
+    def _surveiller_boucle(self):
+        if self._minuteur_boucle is None and regles.boucle_complete(self.boucle) and self.en_lecture():
+            self._minuteur_boucle = GLib.timeout_add(BOUCLE_MS, self._tic_boucle)
+
+    def _tic_boucle(self):
+        m = self.media()
+        if m is None or not regles.boucle_complete(self.boucle) or not m.get_playing():
+            self._minuteur_boucle = None
+            return False
+        a = self._attente
+        if a is not None and a[0] is m and not a[2]:
+            return True           # un déplacement en cours : on attend qu'il soit fait
+        retour = regles.retour_boucle(self.boucle, self.position_ref())
+        if retour is not None:
+            self.aller_a(retour)
+        return True
+
+    def sauter(self, delta_s):
+        """Avance ou recule de delta_s secondes (flèches), dans les limites du flux."""
+        if self.media() is None:
+            return None
+        cible = max(0.0, self.position_ref() + delta_s)
+        d = self.duree_ref()
+        if d is not None:
+            cible = min(cible, max(0.0, d - 0.05))
+        self.aller_a(cible)
+        return cible
+
+    def pas_image(self, sens):
+        """Une image plus loin (sens > 0) ou plus tôt (touches « . » et « , ») : en pause (la lecture s'arrête)."""
+        m = self.media()
+        if m is None or not m.is_prepared():
+            return None
+        if self.en_lecture():
+            self.pause()
+        ips = pistes_gst.images_par_seconde(m) if not self.audio_seul and self.cle not in self.sans_image else 25.0
+        return self.sauter((1 if sens > 0 else -1) / max(1.0, ips))
 
     def _suivre(self):
         if self._minuteur is None:

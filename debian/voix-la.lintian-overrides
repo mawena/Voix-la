@@ -1,0 +1,3 @@
+# Le journal debian/changelog est en français : le correcteur anglais de lintian y voit des fautes
+# (« dont », « complet »…) qui n'en sont pas.
+voix-la: spelling-error-in-changelog

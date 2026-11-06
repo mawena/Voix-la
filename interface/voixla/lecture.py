@@ -101,6 +101,9 @@ class Etat:
     image: str | None = None       # cette image, une fois en cache : pour MPRIS et la barre
     volume: float = 1.0
     retour: bool = True            # on peut revenir à la page qui lit
+    vitesse: float = 1.0           # vitesse de lecture (la hauteur est gardée : scaletempo)
+    vitesse_reglable: bool = False     # la session sait changer de vitesse (MPRIS : MinimumRate, MaximumRate)
+    boucle: tuple = ()             # boucle A-B en cours : (a, b) en secondes, () sans boucle complète
 
     @property
     def session(self):
@@ -116,6 +119,10 @@ def ligne_detail(etat):
         morceaux.append(f"voix {etat.voix}")
     if etat.piste:
         morceaux.append(etat.piste)
+    if abs((etat.vitesse or 1.0) - 1.0) > 1e-3:
+        morceaux.append(libelle_vitesse(etat.vitesse))
+    if boucle_complete(etat.boucle):
+        morceaux.append("boucle A-B")
     return " · ".join(morceaux)
 
 
@@ -143,7 +150,136 @@ def saut(avant_s, apres_s, ecoule_s, en_lecture, tolerance_s=TOLERANCE_SAUT_S):
     return abs(apres_s - attendu) > tolerance_s
 
 
-# --- Fenêtre fermée : passer sur le son seul, puis revenir à la vidéo ------------------------------------------------
+# --- Lecteur complet : vitesse, boucle A-B, sauts, reprise à la dernière position -----------------------------------
+
+VITESSES = (0.5, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0)     # menu et touches [ ] du lecteur d'un résultat
+SAUT_S = 5.0                 # flèches gauche et droite
+BOUCLE_MIN_S = 0.2           # une boucle A-B plus courte que cela n'est pas posée
+REPRISE_MIN_S = 5.0          # en deçà, on ne retient pas la position : on reprendra au début
+REPRISE_FIN_S = 10.0         # à moins de 10 s de la fin, le doublage est fini : on reprendra au début
+POSITIONS_MAX = 200          # positions retenues au plus (les plus anciennes oubliées d'abord)
+# touches 1 à 5 du détail d'un résultat : les bascules de pistes, dans leur ordre (voixla.pistes.CLES)
+TOUCHES_PISTES = ("doublage", "original", "beat", "ma_voix", "voix_origine")
+
+
+def borner_vitesse(v):
+    """Une vitesse entre la plus lente et la plus rapide de VITESSES ; 1 si v n'est pas un nombre."""
+    if isinstance(v, bool):
+        return 1.0
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return 1.0
+    if v != v:                # NaN
+        return 1.0
+    return max(VITESSES[0], min(VITESSES[-1], v))
+
+
+def vitesse_voisine(v, sens):
+    """La vitesse de VITESSES juste au-dessus (sens > 0) ou juste en dessous (sens < 0) de v, bornée."""
+    v = borner_vitesse(v)
+    if sens > 0:
+        return next((x for x in VITESSES if x > v + 1e-6), VITESSES[-1])
+    return next((x for x in reversed(VITESSES) if x < v - 1e-6), VITESSES[0])
+
+
+def libelle_vitesse(v):
+    """« 1× », « 0,75× », « 1,5× »."""
+    texte = f"{round(borner_vitesse(v), 2):.2f}".rstrip("0").rstrip(".").replace(".", ",")
+    return f"{texte}×"
+
+
+def boucle_complete(boucle):
+    return bool(boucle) and len(boucle) == 2 and boucle[0] is not None and boucle[1] is not None
+
+
+def boucle_suivante(boucle, position_s):
+    """Touche L (et bouton A-B) : sans boucle, pose A à la position ; avec A seul, pose B (A et B remis dans l'ordre ;
+    trop près de A, rien ne change) ; avec une boucle complète, l'efface. Rend (a, None), (a, b) ou ()."""
+    p = max(0.0, float(position_s or 0.0))
+    if not boucle:
+        return (p, None)
+    if not boucle_complete(boucle):
+        a = boucle[0]
+        if abs(p - a) < BOUCLE_MIN_S:
+            return tuple(boucle)
+        return (min(a, p), max(a, p))
+    return ()
+
+
+def retour_boucle(boucle, position_s):
+    """La position où revenir (A) si la lecture a atteint B ; sinon None."""
+    if not boucle_complete(boucle) or position_s is None:
+        return None
+    a, b = boucle
+    return a if position_s >= b else None
+
+
+def libelle_boucle(boucle):
+    """« A 1:02 » (A posé), « A-B 1:02 → 1:10 », ou ""."""
+    if not boucle:
+        return ""
+    if not boucle_complete(boucle):
+        return f"A {formats.chrono(boucle[0])}"
+    return f"A-B {formats.chrono(boucle[0])} → {formats.chrono(boucle[1])}"
+
+
+def temps_restant(position_s, duree_s):
+    """« −1:23 » : ce qui reste à lire ; "" sans durée connue."""
+    if not duree_s or duree_s <= 0:
+        return ""
+    return "−" + formats.chrono(max(0.0, duree_s - max(0.0, position_s or 0.0)))
+
+
+def cle_reprise(dossier, voix):
+    """La clé d'un doublage dans les positions retenues (préférence « positions »)."""
+    return f"{dossier}|{voix or ''}"
+
+
+def position_a_garder(position_s, duree_s=None):
+    """La position à retenir pour la reprise, ou None : au tout début, ou à la fin (le doublage est fini), on
+    reprendra au début."""
+    if isinstance(position_s, (bool, str)):
+        return None
+    try:
+        p = float(position_s)
+    except (TypeError, ValueError):
+        return None
+    if p != p or p < REPRISE_MIN_S or p == float("inf"):
+        return None
+    if duree_s and p > float(duree_s) - REPRISE_FIN_S:
+        return None
+    return round(p, 2)
+
+
+def memoriser_position(positions, cle, position_s, duree_s=None, maintenant=0.0, maximum=POSITIONS_MAX):
+    """Les positions retenues, mises à jour pour cle (une copie) : la position à garder (position_a_garder), ou cle
+    oubliée ; au-delà de maximum, les plus anciennes sont oubliées. Les entrées abîmées sont écartées."""
+    sortie = {k: v for k, v in (positions if isinstance(positions, dict) else {}).items()
+              if isinstance(k, str) and isinstance(v, dict) and position_a_garder(v.get("position")) is not None}
+    p = position_a_garder(position_s, duree_s)
+    if p is None:
+        sortie.pop(cle, None)
+    else:
+        sortie[cle] = {"position": p, "date": float(maintenant or 0.0)}
+    if len(sortie) > maximum:
+        def date(k):
+            d = sortie[k].get("date")
+            return float(d) if isinstance(d, (int, float)) and not isinstance(d, bool) else 0.0
+        garder = sorted(sortie, key=date, reverse=True)[:maximum]
+        sortie = {k: sortie[k] for k in garder}
+    return sortie
+
+
+def position_reprise(positions, cle, duree_s=None):
+    """La position où reprendre ce doublage, ou None (jamais lu, lu jusqu'au bout, entrée abîmée)."""
+    v = positions.get(cle) if isinstance(positions, dict) else None
+    if not isinstance(v, dict):
+        return None
+    return position_a_garder(v.get("position"), duree_s)
+
+
+# --- Fenêtre fermée : passer sur le son seul, puis revenir à la vidéo------------------------------------------------
 
 @dataclass
 class Reprise:

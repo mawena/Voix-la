@@ -25,17 +25,21 @@ CSS = b"""
 .texte-a-lire { font-size: 1.12em; }
 .ecran-media { background: black; border-radius: 8px; }
 .bandeau-ecran { padding: 4px 10px; border-radius: 6px; }
-.paroles-ligne { padding: 2px 6px; border-radius: 6px; }
-.paroles-ligne:hover { background: alpha(currentColor, 0.06); }
-.paroles-courante { font-size: 1.22em; font-weight: 600; }
-.paroles-suivante { opacity: 0.62; }
-.paroles-traduction { font-style: italic; opacity: 0.72; }
 .pastille { min-width: 12px; min-height: 12px; border-radius: 99px; }
 .etape-icone { min-width: 16px; }
 .barre-lecture-progres trough, .barre-lecture-progres trough > progress { min-height: 3px; border-radius: 0; }
 .barre-lecture-progres trough { background: alpha(currentColor, 0.08); }
 .barre-lecture-image { border-radius: 6px; background: alpha(currentColor, 0.08); }
 .barre-lecture-retour { padding: 4px 6px; }
+.commandes-lecteur .bouton-lecture { min-width: 38px; min-height: 38px; }
+.commandes-lecteur .position-lecture { padding-top: 2px; padding-bottom: 2px; }
+.bouton-boucle { font-weight: bold; font-feature-settings: "tnum"; min-width: 34px; }
+.plein-ecran { background: black; color: white; }
+.plein-ecran-texte { color: white; }
+.plein-ecran-tete { padding: 14px 22px; border-radius: 0;
+                    background: linear-gradient(to bottom, rgba(0, 0, 0, 0.72), rgba(0, 0, 0, 0)); color: white; }
+.commandes-plein-ecran { padding: 10px 16px 8px 16px; border-radius: 16px; background: rgba(0, 0, 0, 0.66);
+                         color: white; }
 """
 
 

@@ -7,6 +7,65 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+## [0.8.0] - 2026-11-06
+
+### Ajouté
+
+- Interface : la page Résultats devient une bibliothèque, en grille de cartes ou en liste triable par colonne (choix
+  gardé). Chaque carte a une image de la vidéo doublée (16:9, préparée en tâche de fond sous `nice -n 19` et
+  `ionice -c3`, deux à la fois, celles de l'écran d'abord, dans le cache des miniatures ; la pochette d'un MP3 ; sinon
+  une pochette générée d'après le titre), le titre, les voix, la durée, la date et des badges (auto-tune, duo, extrait,
+  langue des paroles, parole). Un bouton lit le doublage sans ouvrir le détail (son seul tant qu'on ne le regarde pas,
+  puis la vidéo au même instant). Les versions d'une même chanson forment une carte « 2 versions », avec une pastille
+  par voix. Tri (date, titre, voix, durée, mode), filtres (voix, chant ou parole, entier ou extrait, auto-tune, duo)
+  avec des puces, recherche sans accents ; menu « ⋮ » et mode sélection dans les deux vues ; Ctrl+F, Espace, Suppr,
+  Ctrl+A ; état vide avec « Doubler une vidéo » ; fenêtre étroite de 360 px. Avec 200 doublages : 77 ms au plus sans
+  rendre la main au chargement, défilement sous 16 ms par image.
+- `python3 -m voixla.pistes miniature FICHIER --large` : la miniature 16:9, ou la pochette intégrée d'un MP3.
+- Interface : auto-tune dans le remix rapide des Résultats. Interrupteur « Version auto-tune », allumé si le
+  doublage en a une, avec l'intensité (celle de `rapport.json`, sinon le défaut de la configuration, sinon 70) et la
+  gamme (celle du rapport si elle avait été imposée, sinon Auto) de la page Doubler. Allumé : `--remix --autotune N`
+  (et `--autotune-gamme`) ; éteint : `--remix --sans-autotune` (une version existante va à la corbeille ; sans version,
+  la clé `autotune` de la configuration n'en refait pas). Grisé sans x42-plugins ou avec un doubler sans `--autotune`.
+  Après le remix, la bascule Auto-tune (touche T) apparaît ou disparaît.
+- Interface : enregistrement au micro d'un téléphone Android, pour une voix comme pour une prise de chant. La liste
+  « Micro » propose les téléphones prêts (`adb devices -l`, `ADB_SERIAL` en premier, nom du modèle) ; scrcpy enregistre
+  le micro en FLAC sans perte (`--no-video --no-playback --no-window --audio-source=mic-voice-recognition
+  --audio-codec=flac --time-limit`, seulement les options que le scrcpy installé connaît), converti en WAV mono 48 kHz,
+  24 bits en chant et 16 bits en parole. « Arrêter » envoie SIGINT, comme Ctrl+C. Pas de niveau en direct : le temps
+  écoulé, puis le contrôle de qualité habituel. Sans téléphone, la raison (aucun, non autorisé, hors ligne, scrcpy ou
+  adb absent) et « Réessayer », avec `adb connect` sur l'adresse sans fil indiquée. La source de la dernière prise est
+  gardée (`source_enregistrement`). `VOIXLA_TELEPHONE_ESSAI=1` imite un téléphone pour les essais.
+- Interface : plein écran du lecteur d'un résultat (bouton, F ou double-clic ; Échap ou F pour sortir). L'image seule
+  sur fond noir, titre et commandes en surimpression masqués avec le pointeur après 3 s sans mouvement, paroles sur
+  l'image, lisibles sur toute image ; pour un MP3, la pochette et les paroles en grand. Le lecteur reste celui de la
+  page : lecture continue, MPRIS, pistes dans le même flux.
+- Interface : lecteur complet. Temps écoulé et restant, volume et muet (M), vitesse de 0,5× à 2× en gardant la hauteur
+  (scaletempo ; `[` et `]`), boucle A-B qui survit aux changements de piste (L), ±5 s (flèches), une image en pause
+  (`,` et `.`), capture de l'image en PNG (S), touches 1 à 5 pour les pistes. Reprise à la dernière position en
+  rouvrant un doublage, aussi depuis la bibliothèque. MPRIS : `Rate` réglable.
+- Interface : chaque panneau du détail s'affiche ou se masque (menu « œil » et Réglages) : frise d'octave et « Voix de
+  chaque passage » en plus des visualisations et des paroles ; mode cinéma (V) qui les masque tous d'un coup.
+- Interface : paroles façon karaoké. Ligne en cours en grand et centrée, précédente et suivante estompées, mot en cours
+  rempli au fil de sa durée, transitions douces, traduction sous chaque ligne ; panneau « Toutes les paroles » qui suit
+  la lecture (P) ; sous-titres sur la vidéo hors du plein écran ; taille du texte réglable. Calage inchangé.
+
+### Modifié
+
+- Interface : le cache des miniatures passe de 20 à 60 Mo (images 16:9 de la bibliothèque en plus de celles de MPRIS).
+
+### Corrigé
+
+- Interface : fermer le dialogue d'enregistrement pendant le compte à rebours ne lance plus la prise derrière lui.
+- Interface : dans le détail d'un résultat, Espace (lecture / pause) pouvait être pris par le bouton qui avait le
+  focus, ou avalé par la fenêtre ; il va maintenant au lecteur, et le focus va à l'image à l'ouverture.
+- Interface : le détail d'un résultat débordait à droite dans une fenêtre étroite (légende de la mélodie).
+
+### Interne
+
+- Interface : le défaut de la clé `bibliotheque` d'`interface.json` est déclaré dans `chemins.py`
+  (`bibliotheque.declarer_preferences` retiré).
+
 ## [0.7.0] - 2026-11-06
 
 ### Performances
@@ -364,7 +423,8 @@ Première version publique.
     `VOIXLA_DECODAGE_MATERIEL=1` remet le décodage matériel ;
   - les essais automatiques laissaient le son de l'application coupé.
 
-[Non publié]: https://github.com/mawena/Voix-la/compare/v0.7.0...HEAD
+[Non publié]: https://github.com/mawena/Voix-la/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/mawena/Voix-la/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/mawena/Voix-la/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/mawena/Voix-la/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/mawena/Voix-la/compare/v0.4.0...v0.5.0

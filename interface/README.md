@@ -24,15 +24,57 @@ Prérequis du poste : Python 3, PyGObject avec GTK 4, libadwaita 1.5 et GStreame
 |---|---|
 | **Doubler** | Choisir une ou plusieurs vidéos, par le sélecteur (il ouvre `Vidéos/` des données, sinon le dossier Téléchargements) ou par glisser-déposer. Pour chaque vidéo, un extrait facultatif se règle dans un petit lecteur (« Début ici », « Fin ici », écouter l'extrait). Réglages : voix pour tous ou **une voix par chanteur** (duo mixte : Voix d'homme et Voix de femme ; duo de même genre : Chanteur 1 et Chanteur 2), gardée d'une session à l'autre dans `interface.json` (`voix_par_chanteur`, `duo_chanteurs`, `voix_chanteurs` ; une voix qui n'existe plus n'est pas présélectionnée), mode, octave, pas, niveau de la voix, reverb, ancien mixage v1, et, si `doubler` les connaît, la chaîne de conversion : « Par défaut » (voix principale et chœurs séparés, reverb retirée, YingMusic-SVC), « Chaîne d'avant » (Seed-VC, sans nettoyage, plus rapide) ou « Sur mesure » (moteur et nettoyage au choix), et l'interrupteur **Paroles** (transcription et traduction française ; éteint, il ajoute `--sans-paroles` ; allumé par défaut, d'après la clé `paroles` de la configuration de `doubler`), et l'**auto-tune** : interrupteur, intensité (1 à 100, 70 par défaut) et gamme (Auto, Chromatique ou une tonalité), d'après la clé `autotune` de `doubler` (éteint alors que la configuration l'allume, il ajoute `--sans-autotune`) ; grisé avec « installez x42-plugins » si `doubler` ne trouve pas le greffon. La durée de la session Kaggle est celle que `doubler` calcule lui-même (sa fonction `estimer_noyau_s`, appelée depuis le `doubler.py` livré avec l'interface, sur les rapports du dossier des sorties) : la même qu'il annoncera au lancement. Elle suit la chaîne, le moteur, les pas, les paroles, une voix par chanteur, le mode et les cartes GPU prévues (clé `gpu` et machine Kaggle de `doubler`) ; à deux cartes avec YingMusic-SVC, les paroles, faites sur la carte 1 pendant la conversion, comptent pour max(0,5 × P, P − Y). Sans `doubler.py` utilisable, l'interface garde son propre modèle, qui compte les paroles de la même façon. Le reste (extraction, envoi, rapatriement, mixage, vidéo) vient des doublages passés. Puis le bouton « Lancer » envoie le travail dans la file. |
 | **Travaux** | La file. Un seul `doubler` tourne à la fois. Les étapes s'affichent en direct, avec le temps écoulé et le temps restant estimé, l'état du noyau Kaggle et le journal complet dépliable. Avant le lancement, l'estimation est celle de la page Doubler ; une fois le noyau lancé, c'est celle de `doubler` (`estimation_s` de ses événements) : « durée prévue par doubler ≈ 17 min » (« au-delà de la durée prévue » si le noyau la dépasse), et le temps restant la suit. On peut annuler un travail. « Voir le résultat » ouvre le doublage fini. |
-| **Résultats** | Les doublages (titre, voix, mode, durée, date), avec une recherche. Chaque ligne a un menu « ⋮ » : « Ouvrir le dossier » et « Mettre à la corbeille… » ; le mode **Sélectionner** (bouton coche de l'en-tête, Échap pour en sortir) coche plusieurs doublages et les met à la corbeille d'un coup (voir [Corbeille](#corbeille)). Le détail d'un doublage montre : la lecture de la vidéo ou du MP3 et le **choix de ce qu'on écoute, à la même position** : Doublage, Original, Beat seul, Ma voix seule, Voix d'origine seule (voir [Pistes séparées](#pistes-séparées) ; touche B : doublage ⇄ original) ; la bascule **Auto-tune** (touche T) passe au doublage et à la voix seule auto-tunés, à la même position ; les **paroles** synchronisées (ci-dessous) ; la frise d'octave, où un clic va à ce moment, et, avec une voix par chanteur, la frise **Voix de chaque passage** (une couleur par voix, bandeau partagé quand les deux chantent ensemble, clic pour y aller) ; les **visualisations du son** (ci-dessous) ; les informations (moteur réellement utilisé et repli éventuel sur Seed-VC, nettoyage appliqué ou sa raison avec les niveaux de la voix principale, des chœurs et de la reverb retirée, décision d'octave et sa raison, décision par chanteur avec une voix par chanteur, tonalité détectée et écart aux notes avant et après l'auto-tune) ; les pistes séparées, avec « Enregistrer le beat… » et « Enregistrer ma voix seule… » (et « Ma voix seule (auto-tune) », enregistrable aussi) ; le remix rapide, qui redonne les mêmes voix ; les durées par étape (nettoyage, YingMusic-SVC, estimation de doubler comprise ; à deux cartes, « GPU Kaggle (2 cartes T4) », avec le temps de GPU des deux cartes additionnés à côté des durées réelles de la session) ; l'ouverture du dossier et la mise à la corbeille. Si la vidéo source a changé de place, « Choisir… » l'indique à la main (`travail/source.json` n'est pas modifié) ; en attendant, l'original se lit sans image, d'après `travail/original.wav`. |
-| **Voix** | Les voix : nom, durée de la référence, hauteur de parole, alertes. On peut écouter la référence, choisir la voix par défaut, ajouter une voix depuis un fichier (`doubler --ajouter-voix`) ou au micro (texte à lire, compte à rebours, contrôle de qualité), la renommer ou la mettre à la corbeille. La page gère aussi les prises de chant pour l'affinage, avec le total cumulé face à l'objectif de 5 à 10 min. |
+| **Résultats** | La **bibliothèque** des doublages, en **grille** de cartes ou en **liste** triable par colonne (titre, voix, mode, durée, date) ; les deux boutons de l'en-tête (ou le menu « Trier et filtrer ») basculent de l'une à l'autre. Une carte montre une image de la vidéo doublée en 16:9 (sans vidéo, la pochette intégrée au MP3 ; sinon une pochette générée : un dégradé tiré du titre et une note), le titre sur deux lignes au plus, les voix, la durée, la date et des badges : auto-tune, duo (une voix par chanteur), extrait, langue des paroles, parole, inachevé. Le bouton de lecture (au survol, toujours visible sur écran tactile ; Espace sur la carte qui a le focus) lit le doublage dans la barre « en cours de lecture », sans ouvrir le détail ; un second clic le met en pause. Un clic sur la carte ouvre le détail, celui qui joue étant retrouvé tel quel. Les **versions d'une même chanson** (même vidéo source, voix différentes) forment une seule carte « 2 versions » : une pastille par voix ouvre sa version (« +N » au-delà de trois) ; « Regrouper les versions d'une chanson » (menu « Trier et filtrer ») les déplie. Le menu « Trier et filtrer » trie par date, titre, voix ou durée (« Ordre inverse »), et filtre par voix, chant ou parole, entier ou extrait, avec auto-tune, une voix par chanteur ; chaque filtre actif a sa puce sous l'en-tête, qui l'efface. La recherche (Ctrl+F, ou en tapant) trouve un titre, une voix, une langue ou un sous-dossier, sans accents ni casse ; le compte de l'en-tête dit « 18 doublages · 12 chansons », ou « 5 sur 18 doublages » quand on filtre. La vue, le tri et le regroupement sont gardés dans `interface.json` (clé `bibliotheque`). Chaque carte ou ligne a un menu « ⋮ » : ouvrir une version, « Ouvrir le dossier » et « Mettre à la corbeille… » (toutes ses versions pour une chanson) ; le mode **Sélectionner** (bouton coche de l'en-tête, ou Ctrl+A ; Échap pour en sortir) coche plusieurs cartes ou lignes d'un clic et les met à la corbeille d'un coup (bouton, ou Suppr ; voir [Corbeille](#corbeille)). Voir [Bibliothèque des résultats](#bibliothèque-des-résultats). Le détail d'un doublage montre : la lecture de la vidéo ou du MP3 et le **choix de ce qu'on écoute, à la même position** : Doublage, Original, Beat seul, Ma voix seule, Voix d'origine seule (voir [Pistes séparées](#pistes-séparées) ; touche B : doublage ⇄ original) ; la bascule **Auto-tune** (touche T) passe au doublage et à la voix seule auto-tunés, à la même position ; les **paroles** synchronisées (ci-dessous) ; la frise d'octave, où un clic va à ce moment, et, avec une voix par chanteur, la frise **Voix de chaque passage** (une couleur par voix, bandeau partagé quand les deux chantent ensemble, clic pour y aller) ; les **visualisations du son** (ci-dessous) ; les informations (moteur réellement utilisé et repli éventuel sur Seed-VC, nettoyage appliqué ou sa raison avec les niveaux de la voix principale, des chœurs et de la reverb retirée, décision d'octave et sa raison, décision par chanteur avec une voix par chanteur, tonalité détectée et écart aux notes avant et après l'auto-tune) ; les pistes séparées, avec « Enregistrer le beat… » et « Enregistrer ma voix seule… » (et « Ma voix seule (auto-tune) », enregistrable aussi) ; le remix rapide, qui redonne les mêmes voix, avec l'interrupteur **Version auto-tune** (intensité et gamme comme sur la page Doubler, pré-remplies d'après `rapport.json`) : allumé, la version « (auto-tune) » est faite ou refaite (`--autotune N`, `--autotune-gamme`) ; éteint, `--sans-autotune` (une version existante va à la corbeille, et la clé `autotune` de la configuration n'en refait pas) ; grisé sans x42-plugins ; après le remix, la bascule Auto-tune (touche T) apparaît ou disparaît ; les durées par étape (nettoyage, YingMusic-SVC, estimation de doubler comprise ; à deux cartes, « GPU Kaggle (2 cartes T4) », avec le temps de GPU des deux cartes additionnés à côté des durées réelles de la session) ; l'ouverture du dossier et la mise à la corbeille. Si la vidéo source a changé de place, « Choisir… » l'indique à la main (`travail/source.json` n'est pas modifié) ; en attendant, l'original se lit sans image, d'après `travail/original.wav`. |
+| **Voix** | Les voix : nom, durée de la référence, hauteur de parole, alertes. On peut écouter la référence, choisir la voix par défaut, ajouter une voix depuis un fichier (`doubler --ajouter-voix`) ou au micro (texte à lire, compte à rebours, contrôle de qualité), la renommer ou la mettre à la corbeille. La page gère aussi les prises de chant pour l'affinage, avec le total cumulé face à l'objectif de 5 à 10 min. La liste « Micro » de l'enregistrement propose aussi le **micro d'un téléphone** Android branché (voir [Enregistrer au téléphone](#enregistrer-au-téléphone)). |
 | **Écoute à l'aveugle** | Les versions A, B, C… de chaque extrait du banc d'essai (`banc/ecoute/`) : mix et voix seule. L'interrupteur **Voix seule** de la barre du bas (touche V) fait passer la version en cours de son mix à sa voix seule (`X_voix.mp3`) et retour, à la même position. Vous notez les versions de 1 à 5. La correspondance lettre → version n'apparaît qu'après votre vote, qui va dans `banc/ecoute/votes.json`. Vu-mètre, spectrogramme et forme d'onde de ce qui joue, si on les allume. |
 | **État** | Kaggle : présence du jeton (son contenu n'est jamais lu), compte, statut des noyaux connus. `doubler` : options reconnues, verrou libre ou pris (verrou commun `~/.local/state/voix-la/verrou-kaggle` et `sorties/.kaggle/verrou`). Le poste : RAM, charge, `file-attente --etat`. Kaggle se rafraîchit à la demande, ou toutes les 60 s au plus quand la page est visible. |
 | **Réglages** (menu ☰, Ctrl+,) | Dossier de données, compte et noms Kaggle, moteur du chant, paroles, auto-tune et cartes GPU (Auto, 1 ou 2) par défaut (écrits par `doubler --config`, par exemple `doubler --config paroles non`, `doubler --config autotune 50` ou `doubler --config gpu 1` ; le réglage des cartes est grisé si `doubler` ne connaît pas la clé `gpu`), voix et réglages de doublage par défaut, micro et durées d'enregistrement, autre dossier de prises de chant, visualisations et paroles. |
 
 Raccourcis : Alt+1 à Alt+6 ouvrent les pages, F5 actualise, Ctrl+, ouvre les réglages, Ctrl+? les raccourcis. Dans un
-résultat, B bascule doublage ⇄ original, T avec ou sans auto-tune, et Espace lance ou arrête la lecture. Dans l'écoute à l'aveugle, V bascule
-mix ⇄ voix seule. Dans la liste des résultats en mode sélection, Échap en sort.
+résultat : Espace lecture / pause, flèches ±5 s, `,` et `.` une image en pause, Origine le début, 1 à 5 les pistes
+(doublage, original, beat seul, voix convertie, voix d'origine), B doublage ⇄ original, T avec ou sans auto-tune, L la
+boucle A-B, `[` et `]` la vitesse, M le son, F le plein écran (Échap pour sortir), V le mode cinéma, P le panneau
+« Toutes les paroles », S une capture de l'image (voir [Lecteur d'un résultat](#lecteur-dun-résultat)). Dans l'écoute
+à l'aveugle, V bascule mix ⇄ voix seule. Dans la bibliothèque des résultats : Ctrl+F cherche, Entrée ouvre la carte
+qui a le focus, Espace la lit ou la met en pause sans ouvrir le détail (en mode sélection : la coche), Suppr la met à
+la corbeille (en mode sélection : la sélection), Ctrl+A sélectionne tout, Échap sort du mode sélection.
+
+## Lecteur d'un résultat
+
+- **Commandes** sous l'image : temps écoulé, barre de progression, temps restant ; lecture / pause, ±5 s, son coupé et
+  volume (gardé dans `interface.json`, clé `volume`), boucle A-B, vitesse, capture de l'image, plein écran. Fenêtre
+  étroite : le volume, ±5 s et la capture disparaissent d'abord.
+- **Vitesse** de 0,5× à 2× (menu ou `[` `]`), **la hauteur est gardée** : le lecteur de GTK passe le son par
+  `scaletempo` (filtre audio de son playbin). Mesuré : un sinus à 440 Hz reste à 440 Hz à 0,5× et à 2×, pendant que la
+  position avance à 0,502× et 2,011×. Elle vaut pour toutes les pistes, et pour le son seul fenêtre fermée.
+- **Boucle A-B** (touche L ou bouton A-B : début, fin, puis effacée) : en temps du son doublé, elle vaut pour toutes
+  les pistes. On compare ainsi le doublage et l'original au même passage. Surveillée pendant la lecture seulement
+  (40 ms), que la page soit affichée ou non. Mesuré : B dépassé de 7 ms au plus, même après une bascule dans le même
+  flux ou vers un autre fichier. Elle est surlignée sur la barre de progression.
+- **Image par image** en pause (`,` et `.`) : un pas d'une image, d'après la cadence de la vidéo.
+- **Capture** (S ou bouton) : l'image en cours, à sa taille d'origine, en PNG dans `Images/Voix-là/`
+  (`<titre> - <piste> - 1m23,45s.png`), écrite dans un fil.
+- **Reprise à la dernière position** : en rouvrant un doublage (détail ou bouton de lecture de la bibliothèque), la
+  lecture reprend où elle s'était arrêtée, avec un bandeau « Reprise à 1:23 » et « Reprendre au début ». La position
+  est retenue à la pause, toutes les 30 s pendant la lecture, en quittant ; pas au tout début (moins de 5 s) ni à la
+  fin (moins de 10 s avant), où l'on reprend au début. Clé `positions` d'`interface.json`, 200 doublages au plus.
+- **Plein écran** (bouton, F ou double-clic sur l'image ; Échap ou F pour sortir) : l'image seule sur fond noir, le
+  titre en haut et les commandes en bas en surimpression, masqués avec le pointeur après 3 s sans mouvement (sauf
+  pointeur sur les commandes ou menu ouvert), revenus au moindre mouvement ou à une touche. Les paroles sont sur
+  l'image, en bas (texte blanc cerné de sombre, le mot en cours rempli en jaune), au-dessus des commandes quand elles
+  sont là. Un MP3 montre sa pochette (ou la miniature de la vidéo, ou la pochette générée) et les paroles en grand. Le
+  plein écran garde le lecteur de la page : pistes, vitesse, boucle, MPRIS et lecture continue tels quels. Toutes
+  les touches du détail y marchent, et le choix de la piste est aussi dans un menu.
+- **Mode cinéma** (V, ou menu « œil ») : frises, visualisations, paroles et informations masquées d'un coup, l'image
+  en grand ; V encore pour tout retrouver tel quel.
+- **Clavier** : Espace, les flèches et Origine sont pris avant la fenêtre (qui ferait d'Espace « activer le focus » et
+  des flèches un déplacement du focus), sauf par ce qui s'en sert : un bouton ou une case qui a le focus (Espace), une
+  barre, un texte, une liste. À l'ouverture du détail, le focus est sur l'image. Un clic sur une commande ne lui laisse
+  pas le focus.
+- **MPRIS** : `Rate` suit la vitesse (`MinimumRate` 0,5, `MaximumRate` 2) et se règle depuis le bureau ; la barre « en
+  cours de lecture » montre la vitesse et la boucle (« voix Jules · Beat seul · 1,25× · boucle A-B »).
+- **Sobriété** : les commandes se mettent à jour 4 fois par seconde au plus, pendant la lecture et si elles sont
+  affichées ; en plein écran, la page cachée ne se redessine plus. Mesures plus bas.
 
 ## Lecture en arrière-plan
 
@@ -68,8 +110,9 @@ mix ⇄ voix seule. Dans la liste des résultats en mode sélection, Échap en s
 
 ## Corbeille
 
-« Mettre à la corbeille… » se trouve dans l'en-tête du détail d'un résultat, dans le menu « ⋮ » de chaque ligne de la
-liste, et dans la barre du mode sélection. Les trois font la même chose, avec une seule confirmation :
+« Mettre à la corbeille… » se trouve dans l'en-tête du détail d'un résultat, dans le menu « ⋮ » de chaque carte ou
+ligne de la bibliothèque (pour une chanson à plusieurs versions : toutes ses versions), et dans la barre du mode
+sélection (ou Suppr). Les trois font la même chose, avec une seule confirmation :
 
 - **une seule voix dans le dossier** : tout le dossier va à la corbeille, avec son `travail/` ;
 - **plusieurs voix** : seulement les fichiers de cette voix, c'est-à-dire la vidéo et le MP3 doublés, le beat et la
@@ -80,6 +123,43 @@ Si l'un d'eux joue, ou si son détail est ouvert, sa lecture s'arrête et ses le
 comprises. Les fichiers partent un par un, et l'envoi s'arrête au premier échec ; le toast dit combien sont partis.
 Un dossier où un doublage en cours écrit encore est refusé. Les caches liés (copies vidéo, voix combinée, miniature)
 restent : ils ne servent plus et leur purge les efface. Tout se récupère dans la corbeille.
+
+## Bibliothèque des résultats
+
+- **Modèle** : un `Gio.ListStore` d'entrées (une version seule, ou les versions d'une même chanson), filtré par un
+  `Gtk.FilterListModel` (recherche et filtres), trié par un `Gtk.SortListModel` (le trieur des colonnes de la liste,
+  que le menu de tri pilote aussi), puis un `Gtk.NoSelection`, ou un `Gtk.MultiSelection` en mode sélection. La grille
+  (`Gtk.GridView`) et la liste (`Gtk.ColumnView`) sont virtualisées ; seule la vue affichée lit le modèle. La logique
+  (versions, badges, regroupement, filtres, tri, compte) est dans `voixla/bibliotheque.py`, sans GTK.
+- **Même chanson** : même vidéo source (`travail/source.json`) ; sans elle, le même titre (sans « (extrait …) ») dans
+  le même dossier des sorties. La carte montre la version la plus récente ; avec un filtre, on ouvre (et on lit) la
+  première version qui le passe. Deux versions de la même voix se distinguent par « extrait 1:00 » ou « entier »,
+  puis par la date.
+- **Langue des paroles** : `paroles_sorties` (langue chantée) ou `pistes_audio.langue` de `rapport.json`, sinon
+  `travail/<voix>/paroles.json`.
+- **Miniatures** : une image 16:9 (480 × 270) prise au tiers de la vidéo doublée, comme celle de la barre de lecture et
+  dans le même cache (`~/.cache/voix-la/miniatures/`, 60 Mo, les moins récemment utilisées effacées d'abord). Sans
+  vidéo, la pochette intégrée au MP3, entière, sur un fond flou tiré d'elle-même ; sans pochette, une pochette générée,
+  toujours la même pour un titre (`python3 -m voixla.pistes miniature FICHIER --large` en ligne de commande). Elles
+  se préparent en tâche de fond, sans jamais bloquer l'interface : un fil lit celles qui sont en cache, deux au plus
+  en préparent (ffprobe et ffmpeg sous `nice -n 19` et `ionice -c3`, en attente tant que la mémoire disponible est
+  sous 700 Mo). Celles des cartes à l'écran passent devant, de haut en bas ; une demande qu'aucune carte n'attend plus
+  est abandonnée. Les dernières images lues restent en mémoire (160 au plus).
+- **Lecture sans détail** : le bouton de lecture crée la page du détail sans la montrer ; elle lit le son seul (le MP3
+  du doublage, comme fenêtre fermée) tant qu'on ne la regarde pas, puis reprend la vidéo au même instant quand on
+  l'ouvre (clic sur la carte, ou barre « en cours de lecture »).
+- **Chargement** : la liste se lit dans un fil, puis s'ajoute au modèle par paquets de 24, dans l'ordre affiché (le
+  premier écran d'abord). Après un doublage fini ou F5, seules les entrées changées sont refaites : la sélection et la
+  position du défilement restent.
+- **Fenêtre étroite** (`Adw.Breakpoint`, 560 sp) : cartes plus petites (deux colonnes à 360 px), deux badges au plus ;
+  dans la liste, les colonnes Voix, Mode, Durée et Date cèdent la place à une ligne sous le titre ; Actualiser, le
+  dossier des sorties et les boutons de vue passent dans le menu « Trier et filtrer » (F5 reste).
+- **Mesuré** sous Xvfb (rendu cairo, logiciel), avec 200 doublages inventés (117 cartes, vidéos de synthèse
+  1280 × 720) : lecture du disque 0,27 s dans un fil ; remplissage en 5 paquets, 77 ms au plus sans rendre la main ;
+  miniatures du premier écran (16 cartes) en 1,5 s à froid, 17 ms depuis le cache ; défilement, par image : grille
+  12,6 ms (médiane), 15,8 ms au plus, liste 9,8 et 12 ms ; toutes les miniatures en 12 s (0,19 s de ffmpeg chacune,
+  deux à la fois) ; F5 sans changement 0,09 s ; mémoire du processus 266 Mo à l'ouverture, 355 Mo une fois toutes les
+  images chargées.
 
 ## Pistes séparées
 
@@ -174,12 +254,23 @@ perdre la position, au même instant du son, même quand le son d'une vidéo ent
 
 ## Paroles
 
-Sous le lecteur s'affichent la ligne en cours et la suivante, synchronisées sur la lecture. Le mot en cours est
-souligné quand `doubler` donne les mots, et un clic sur une ligne va à son début. Le choix « Originale », « Français »
-ou « Les deux » (la traduction sous chaque ligne) n'apparaît que s'il y a deux langues ; il est gardé dans
-`interface.json` (`paroles_langue`). L'interrupteur « Paroles » se trouve dans le menu « œil » et dans les Réglages
-(`paroles`, allumé par défaut).
+Sous le lecteur, trois lignes : la ligne en cours en grand et centrée, la précédente et la suivante plus petites et
+estompées. Quand `doubler` donne les mots, le mot en cours se **remplit** au fil de sa durée, façon karaoké, et les
+mots chantés gardent la couleur d'accent. Les lignes glissent de l'une à l'autre (0,25 s). Entre deux lignes, la
+suivante prend la place 3 s avant de commencer, sinon « ♪ ». Un clic sur une ligne va à son début. Le choix
+« Originale », « Français » ou « Les deux » (la traduction en plus petit sous chaque ligne) n'apparaît que s'il y a deux
+langues ; il est gardé dans `interface.json` (`paroles_langue`). L'interrupteur « Paroles » se trouve dans le menu
+« œil » et dans les Réglages (`paroles`, allumé par défaut).
 
+- **« Toutes les paroles »** (touche P, bouton de l'en-tête des paroles ou menu « œil ») : un panneau à droite du
+  détail, par-dessus le contenu dans une fenêtre étroite, avec toutes les lignes, leur temps et leur traduction. Il
+  suit la lecture en défilant seul (le suivi s'arrête 4 s si l'on fait défiler à la main) ; un clic ou Entrée sur une
+  ligne y va. Clé `paroles_panneau`.
+- **Sur l'image** : en plein écran (interrupteur « Paroles »), et hors du plein écran avec « Sous-titres sur la
+  vidéo » (clé `paroles_video`). Texte blanc cerné de sombre, mot en cours en jaune.
+- **Taille du texte** : Petite, Normale, Grande ou Très grande (menu « œil », Réglages ; clé `paroles_taille`). Sur
+  l'image, elle suit aussi la largeur de l'image.
+- Le calage ne change pas (ci-dessous).
 - **`travail/<voix>/paroles.json`**, écrit par `doubler` (format 1) ; `mots` et `traductions` sont facultatifs :
 
   ```json
@@ -210,11 +301,13 @@ ou « Les deux » (la traduction sous chaque ligne) n'apparaît que s'il y a deu
 
 ## Visualisations du son
 
-Chacune s'allume ou s'éteint dans le menu « œil » d'un résultat (ou dans les Réglages) ; le choix est gardé dans
-`interface.json`.
+Chaque panneau s'affiche ou se masque dans le menu « œil » d'un résultat (ou dans les Réglages) ; le choix est gardé
+dans `interface.json`. Le mode cinéma (V) les masque tous d'un coup.
 
 | Visualisation | Par défaut | Ce qu'elle montre |
 |---|---|---|
+| **Frise d'octave** | allumée | Sous le lecteur : la voix détectée de chaque passage et son décalage en demi-tons, clic pour y aller (`frise_octave`). |
+| **Voix de chaque passage** | allumée | Avec une voix par chanteur : quelle voix chante chaque passage (`frise_voix`). |
 | **Courbe de mélodie** | allumée | La voix d'origine (trait fin), la consigne, c'est-à-dire l'origine décalée du décalage de chaque passage (pointillés), et la voix convertie (trait plein, aux couleurs de la frise d'octave). Fenêtre de 12 s qui suit la lecture, échelle en notes (do, ré… ; la3 = 440 Hz) ou en Hz, clic pour aller à un moment. |
 | **Spectrogramme** | éteint | Défile avec la lecture et montre la piste écoutée (doublage, son d'origine, beat seul, ma voix seule, voix d'origine). Échelle de fréquence logarithmique, couleurs lisibles en clair comme en sombre. |
 | **Forme d'onde** | éteinte | Sous la frise d'octave : crêtes de toute la piste, partie déjà lue en couleur d'accent, curseur, clic pour y aller. |
@@ -237,22 +330,52 @@ Chacune s'allume ou s'éteint dans le menu « œil » d'un résultat (ou dans le
   - l'affichage ne recalcule rien : il redessine 25 fois par seconde au plus, seulement pendant la lecture et si la
     fenêtre est visible.
 
+## Enregistrer au téléphone
+
+Pour une voix (parole) comme pour une prise de chant, la liste « Micro » propose, après les micros du PC, les
+téléphones Android prêts : « Téléphone Pixel 7 (USB) », « Téléphone Pixel 7 (sans fil, 192.168.0.104) ».
+
+- **Brancher le téléphone** : débogage USB activé (options pour les développeurs), puis branché en USB, ou sans fil
+  après `adb connect <adresse IP>:5555`. Sans téléphone prêt, la ligne « Micro du téléphone » dit pourquoi (aucun
+  téléphone, débogage non autorisé sur son écran, hors ligne, scrcpy ou adb introuvable, scrcpy trop ancien) et
+  propose **Réessayer**. Le champ « Téléphone sans fil » fait d'abord `adb connect` sur l'adresse indiquée, préremplie
+  avec `ADB_SERIAL` ou le téléphone de la dernière prise.
+- **La prise** : `scrcpy -s <série> --no-video --no-playback --no-window --audio-source=mic-voice-recognition
+  --audio-codec=flac --require-audio --record=<fichier caché>.flac --time-limit=<durée>`, dans un fil à part. Le son
+  arrive sans perte, sans image ni son sur le PC. Il devient un WAV mono 48 kHz, 24 bits en chant et 16 bits en parole
+  (comme au micro du PC), par `ffmpeg`, puis le FLAC est effacé (gardé si la conversion échoue). Le compte à rebours,
+  l'arrêt, le contrôle de qualité, Garder, Supprimer et Recommencer sont les mêmes qu'au micro du PC.
+- **Pas de niveau en direct** : scrcpy n'en donne pas sans jouer le son sur le PC. L'écran de la prise montre le
+  temps écoulé, et le contrôle de qualité montre le niveau après la prise.
+- **Arrêt** : scrcpy s'arrête seul à la durée prévue. « Arrêter » lui envoie SIGINT, comme Ctrl+C, pour qu'il termine
+  le fichier ; s'il ne s'arrête pas dans les 10 s, il est tué. Un fichier vide donne « le téléphone n'a rien
+  enregistré (téléphone connecté ?) », avec la cause donnée par scrcpy.
+- **scrcpy et adb** : scrcpy du `PATH`, sinon `~/.local/bin/scrcpy` ; adb est celui livré à côté de scrcpy (sinon celui
+  du `PATH`), passé à scrcpy par la variable `ADB` : un seul serveur adb pour les deux. Seules les options que le
+  scrcpy installé connaît sont passées (lues dans `scrcpy --help`) : sans `mic-voice-recognition`, la source est
+  `mic`. Options vérifiées avec scrcpy 5.0.1.
+- **Mémoire** : la source de la dernière prise est gardée dans `interface.json` (`source_enregistrement` :
+  `telephone:<série>`, vide pour le micro du PC des Réglages). Un téléphone revenu sous une autre série (port sans fil
+  changé) cède la place au premier téléphone prêt ; `ADB_SERIAL` passe en premier.
+
 ## Où sont les choses
 
 - **Données** (`voix/`, `sorties/`, `Vidéos/`) : `VOIXLA_DONNEES`, sinon la clé `donnees` de
   `~/.config/voix-la/config.json`, sinon `~/Music/Voix-là`. C'est le même ordre que `doubler`, et jamais à côté du
   code.
-- **Préférences de l'interface** : `~/.config/voix-la/interface.json` (réglages par défaut, choix d'une voix par chanteur, visualisations, paroles et
-  leur langue, vidéos sources choisies à la main). L'interface ne touche pas au `config.json` de
-  `doubler`, sauf par `doubler --config`.
+- **Préférences de l'interface** : `~/.config/voix-la/interface.json` (réglages par défaut, choix d'une voix par
+  chanteur, visualisations et frises, paroles (langue, taille, panneau, sur l'image), volume et dernière position de
+  chaque doublage, choix d'affichage de la bibliothèque (vue, tri et regroupement : `bibliotheque`), vidéos sources
+  choisies à la main). L'interface ne touche pas au `config.json` de `doubler`, sauf par `doubler --config`.
 - **Caches** (`~/.cache/voix-la/`, `VOIXLA_CACHE` pour les essais), chacun purgé à part, les fichiers les moins
   récemment utilisés d'abord : `pistes/` (analyses du son, 500 Mo), `voix/` (ma voix seule, 300 Mo), `videos/`
   (copies vidéo du beat et des voix seules des anciens doublages à une piste, 2 Go par défaut, préférence `cache_pistes_mo`), `sous-titres/` (20 Mo),
-  `miniatures/` (images de MPRIS, 20 Mo). `proteges.json` liste les fichiers que l'interface lit en ce moment : la
+  `miniatures/` (images de MPRIS, de la barre de lecture et de la bibliothèque, 60 Mo). `proteges.json` liste les fichiers que l'interface lit en ce moment : la
   purge n'y touche pas. `verrous/` contient les verrous des préparations.
 - **Journal du préparateur en tâche de fond** : `~/.local/state/voix-la/preparation.log`.
 - **Beat et voix seule enregistrés** : à côté des sorties, `<titre> - voix <Nom> (beat).mp3` et
   `<titre> - voix <Nom> (voix seule).mp3` (ou ailleurs, par le sélecteur).
+- **Captures d'image** : `Images/Voix-là/` (`VOIXLA_IMAGES` pour les essais).
 - **Voix par défaut** : celle choisie dans l'interface (page Voix ou Réglages, gardée dans `interface.json`), sinon
   celle de `doubler` (clé `voix` de `config.json`, annoncée par `doubler --voix-liste --json` et
   `doubler --config --json`), sinon la seule voix. Avec plusieurs voix et aucune par défaut, rien n'est présélectionné :
@@ -263,7 +386,9 @@ Chacune s'allume ou s'éteint dans le menu « œil » d'un résultat (ou dans le
   - parole brute : `voix/.enregistrements/`, puis `voix/<nom>/enregistrement-….wav` une fois la voix créée ;
   - prises de chant : `voix/<nom>/chant/chant-AAAAMMJJ-HHMMSS.wav`, en 48 kHz et 24 bits. Un autre dossier de prises
     `chant-*.wav` (faites hors de l'interface) peut être compté en lecture seule pour la voix par défaut (Réglages,
-    préférence `prises_externes`).
+    préférence `prises_externes`) ;
+  - au téléphone, le FLAC de scrcpy passe par un fichier caché à côté du WAV (`.chant-…-telephone.flac`), effacé
+    après la conversion.
 - **Votes de l'écoute à l'aveugle** : `banc/ecoute/votes.json`.
 
 ```json
@@ -305,7 +430,7 @@ Chacune s'allume ou s'éteint dans le menu « œil » d'un résultat (ou dans le
   seul à la fois. Il est refusé si un doublage en cours écrit dans le même dossier, si la vidéo source manque, ou si le
   dossier ne porte plus le nom que `doubler` attend.
 - **L'interface ne se fige jamais.** Tout ce qui est lent passe dans un fil et revient par `GLib.idle_add` :
-  `doubler`, `kaggle` (limite de 120 s), `ffprobe`, `ffmpeg`, la liste des résultats.
+  `doubler`, `kaggle` (limite de 120 s), `ffprobe`, `ffmpeg`, la liste des résultats (lue dans un fil, puis ajoutée au modèle par paquets) et ses miniatures.
 
 ## Essais
 
@@ -321,8 +446,20 @@ aucun service activable). Le lecteur MPRIS d'essai, les notifications et le nom 
 donc jamais le bureau. Leur son est coupé. Scénarios utiles :
 
 - dans un résultat (`resultats:detail-<mot>:…`) : `lire`, `pause`, `piste-<clé>`, `puis-liste` ou `puis-<page>`
-  (quitter le résultat pendant la lecture), `retour` (y revenir) et `fermer` (fermer la fenêtre) ;
-- dans la liste : `resultats:selection` et `resultats:corbeille` (la confirmation seulement, rien n'est envoyé).
+  (quitter le résultat pendant la lecture), `retour` (y revenir), `fermer` (fermer la fenêtre), `plein-ecran`,
+  `masquer` (commandes du plein écran masquées), `cinema`, `panneau`, `sous-titres`, `taille-<nom>`, `oeil` (menu
+  « œil » ouvert), `boucle-<a>-<b>`, `vitesse-<v>`, `frises`, `clavier` (vraies touches par xdotool, l'état relevé
+  après chacune, une ligne JSON par touche). `VOIXLA_CAPTURE_ECRAN=1` capture l'écran Xvfb plutôt que la fenêtre : les
+  menus et popovers, surfaces à part, y sont ;
+- dans la bibliothèque (`resultats:<actions>`, plusieurs avec `+`) : `grille`, `liste`, `deplier`, `selection`,
+  `corbeille` et `corbeille-selection` (la confirmation seulement, rien n'est envoyé), `chercher-<mot>`,
+  `filtre-<autotune|duo|chant|parole|extrait|entier|voix-<id>>`, `tri-<critère>`, `inverse`, `lire[-<mot>]` (lecture
+  muette sans ouvrir le détail), `ouvrir[-<mot>]` (comme un clic sur la carte), `survol` (boutons de lecture visibles),
+  `pause-<s>` (la suite s secondes plus tard). Exemple :
+  `outils/capturer.sh /tmp/versions.png clair "resultats:grille+lire-lumiere" 860x620 9` ;
+- l'enregistrement (`voix:enregistrer[-chant][-telephone][-enregistrement|-controle]`) : `telephone` choisit le
+  premier téléphone, avec `VOIXLA_TELEPHONE_ESSAI=1` (`VOIXLA_TELEPHONE_ESSAI=aucun` montre « Aucun téléphone
+  connecté » et Réessayer).
 
 Les essais MPRIS lancent leur propre `dbus-daemon`, avec la même configuration.
 
@@ -338,19 +475,40 @@ Variables pour les essais :
 | `VOIXLA_DOUBLER` | commande `doubler` |
 | `VOIXLA_KAGGLE` | commande `kaggle` |
 | `VOIXLA_MICRO_ESSAI=1` | son de synthèse au lieu du micro |
+| `VOIXLA_TELEPHONE_ESSAI=1` | un téléphone imité, « Pixel 7 (essai) » : son de synthèse en temps réel par `ffmpeg`, sans adb ni scrcpy ; `aucun` : aucun téléphone |
+| `VOIXLA_SCRCPY`, `VOIXLA_ADB` | chemins de `scrcpy` et d'`adb` (sinon le `PATH`, `~/.local/bin/scrcpy` et l'adb livré à côté de scrcpy) |
+| `ADB_SERIAL` | téléphone proposé en premier, et adresse sans fil préremplie (comme le script d'enregistrement) |
 | `VOIXLA_APP_ID` | instance distincte de l'application (et lecteur MPRIS `…voixla.essai<pid>`) |
 | `VOIXLA_SANS_PREPARATION=1` | ni préparation des pistes à la fin d'un doublage, ni au démarrage |
+| `VOIXLA_IMAGES` | dossier des captures d'image du lecteur |
+| `VOIXLA_CAPTURE_ECRAN=1` | capture de l'écran Xvfb (menus compris) au lieu de la fenêtre |
 
 Le faux doubler imite les deux GPU (`--gpu`, clés `gpu` et `kaggle.machine`, `temps_local.gpus`) ;
 `FAUX_DOUBLER_SANS_GPU=1` imite un doubler d'avant les deux GPU.
 `FAUX_DOUBLER_ESTIMATION=<s>` fixe la durée de session qu'il annonce (`estimation_s`).
 
+`test_telephone` passe par un faux adb et un faux scrcpy (`tests/faux_telephone.py`) : liste d'appareils,
+`adb connect`, aide d'un scrcpy récent ou ancien, prise écrite à la fin (sur SIGINT ou à `--time-limit`), prise vide,
+échec, scrcpy qui ignore SIGINT. Aucun téléphone ni réseau.
+
 `test_pistes_dans_la_video` lit en GStreamer dans un processus à part (`fakeaudiosink`, aucun son), et le lecteur
 sous Xvfb, sur le bus privé.
 
+`test_lecteur_complet` lit sous Xvfb, sans son, deux petites vidéos de synthèse (sinus à 440, 660 et 550 Hz) : la
+hauteur gardée à 0,5× et 2×, la boucle A-B à travers une bascule dans le même flux et vers un autre fichier, l'image par
+image, le volume ; puis l'application entière au clavier (xdotool), touche par touche, dans le détail et en plein écran.
+
+`tests/fausse_bibliotheque.py` crée une bibliothèque aux titres et voix inventés (`python3 -m tests.fausse_bibliotheque
+DONNEES` : les 14 doublages des captures ; `--n 200` : 200 doublages ; `--sans-videos` : médias vides).
+`test_bibliotheque` vérifie le modèle, les miniatures 16:9 et la page elle-même dans la vraie fenêtre, sous Xvfb
+(`tests/essai_bibliotheque_gui.py`). `python3 -m tests.mesure_bibliotheque DOSSIER [N]`, sous Xvfb, mesure
+l'ouverture, les miniatures et le défilement avec N doublages.
+
 ## Limites
 
-- **Enregistrement** : seulement par un micro du PC (PulseAudio/PipeWire) ; pas de micro de téléphone.
+- **Enregistrement** : par un micro du PC (PulseAudio/PipeWire) ou par le micro d'un téléphone Android (scrcpy, Android
+  11 ou plus récent pour le son). Au téléphone, pas de niveau en direct, et la prise ne commence qu'une fois le
+  téléphone joint par scrcpy, juste après le compte à rebours.
 - **Pistes en vidéo** : le doublage et l'original gardent chacun leur lecteur ouvert jusqu'à ce qu'on quitte le
   résultat, ou jusqu'à la fin de sa lecture s'il joue en arrière-plan ; le beat et les voix seules ferment le leur
   quand on les quitte. Si la vidéo source a été déplacée,

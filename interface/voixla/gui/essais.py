@@ -28,6 +28,16 @@ def capturer(fenetre, chemin):
     texture.save_to_png(chemin)
 
 
+def capturer_ecran(fenetre, chemin):
+    """Capture de l'écran (Xvfb) à la place de la fenêtre : les menus et les popovers, qui sont des surfaces à part,
+    y sont aussi (VOIXLA_CAPTURE_ECRAN=1 ; « import » d'ImageMagick, la fenêtre en haut à gauche, sans gestionnaire
+    de fenêtres)."""
+    import subprocess
+    largeur, hauteur = fenetre.get_width(), fenetre.get_height()
+    subprocess.run(["import", "-window", "root", "-crop", f"{largeur}x{hauteur}+0+0", "+repage", chemin],
+                   check=True, timeout=20)
+
+
 def scenario(fenetre, nom):
     """Actions avant la capture : « page:detail », « voix:enregistrer », etc. (définies par les pages)."""
     if not nom:
@@ -60,7 +70,8 @@ def preparer_capture(app, fenetre):
 
     def prendre():
         try:
-            capturer(fenetre, os.environ["VOIXLA_CAPTURE"])
+            (capturer_ecran if os.environ.get("VOIXLA_CAPTURE_ECRAN") else capturer)(fenetre,
+                                                                                    os.environ["VOIXLA_CAPTURE"])
             print("capture :", os.environ["VOIXLA_CAPTURE"], flush=True)
         except RuntimeError:
             # fenêtre vide : rendu pris pendant une mise en page (bascule de piste…) ; on réessaie à l'image suivante

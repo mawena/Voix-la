@@ -349,11 +349,35 @@ class DialogueReglages(Adw.PreferencesDialog):
                 ("melodie_hz", "Mélodie en Hz", "Sinon en notes (do, ré, mi…, la3 = 440 Hz)"),
                 ("melodie_autotune", "Courbe de la version auto-tune",
                  "Sur la mélodie, en ambre, pour les doublages qui ont une version auto-tune"),
-                ("paroles", "Paroles", "Ligne en cours et suivante sous le lecteur : paroles de doubler, sinon "
-                                       "sous-titres de la vidéo")):
+                ("frise_octave", "Frise d’octave", "Sous le lecteur : la voix détectée de chaque passage et son "
+                                                   "décalage"),
+                ("frise_voix", "Voix de chaque passage", "Pour un doublage à une voix par chanteur : quelle voix "
+                                                         "chante chaque passage")):
             r = Adw.SwitchRow(title=titre, subtitle=sous_titre, active=bool(self.prefs.get(cle)))
             r.connect("notify::active", lambda w, _p, c=cle: self.fenetre.regler_visualisation(c, w.get_active()))
             g.add(r)
+        p.add(g)
+        g = Adw.PreferencesGroup(title="Paroles",
+                                 description="Paroles de doubler (paroles.json), sinon sous-titres de la vidéo "
+                                             "doublée. Mode cinéma (touche V) : tous les panneaux masqués d’un coup.")
+        for cle, titre, sous_titre in (
+                ("paroles", "Paroles", "Sous le lecteur (la ligne en cours, la précédente et la suivante, le mot "
+                                       "en cours rempli au fil du chant), et sur l’image en plein écran"),
+                ("paroles_panneau", "Toutes les paroles", "Un panneau à droite du détail, qui suit la lecture ; un "
+                                                          "clic sur une ligne y va (touche P)"),
+                ("paroles_video", "Sous-titres sur la vidéo", "Les paroles sur l’image, hors du plein écran")):
+            r = Adw.SwitchRow(title=titre, subtitle=sous_titre, active=bool(self.prefs.get(cle)))
+            r.connect("notify::active", lambda w, _p, c=cle: self.fenetre.regler_visualisation(c, w.get_active()))
+            g.add(r)
+        from .vue_paroles import TAILLES
+        noms = [n for n, _l, _f in TAILLES]
+        r = Adw.ComboRow(title="Taille du texte des paroles",
+                         model=Gtk.StringList.new([libelle for _n, libelle, _f in TAILLES]))
+        actuelle = self.prefs.get("paroles_taille")
+        r.set_selected(noms.index(actuelle) if actuelle in noms else noms.index("normale"))
+        r.connect("notify::selected", lambda w, _p: self.fenetre.regler_visualisation("paroles_taille",
+                                                                                      noms[w.get_selected()]))
+        g.add(r)
         p.add(g)
         return p
 

@@ -10,6 +10,7 @@ qui a :
   relever()                       (Raise : rouvrir la fenêtre)
   quitter()
   regler_volume(v)                (facultatif)
+  regler_vitesse(v)               (facultatif ; Rate, entre MinimumRate et MaximumRate si etat().vitesse_reglable)
 Pas de file : Next et Previous ne font rien (CanGoNext et CanGoPrevious sont faux).
 
 Nom de bus : org.mpris.MediaPlayer2.voixla ; pour les essais (VOIXLA_APP_ID défini), org.mpris.MediaPlayer2.voixla.
@@ -138,6 +139,9 @@ def metadonnees(etat):
 def proprietes(etat, nom=None):
     """{interface: {propriété: GLib.Variant}} pour cet état (Position comprise)."""
     session = etat.session
+    # vitesse : celle du lecteur d'un résultat (0,5× à 2×, hauteur gardée) ; sinon 1 seulement
+    reglable = bool(session and etat.vitesse_reglable)
+    vitesse = regles.borner_vitesse(etat.vitesse) if reglable else 1.0
     return {
         RACINE: {
             "CanQuit": GLib.Variant("b", True),
@@ -150,12 +154,12 @@ def proprietes(etat, nom=None):
         },
         LECTEUR: {
             "PlaybackStatus": GLib.Variant("s", etat.statut if session else regles.ARRET),
-            "Rate": GLib.Variant("d", 1.0),
+            "Rate": GLib.Variant("d", vitesse),
             "Metadata": GLib.Variant("a{sv}", metadonnees(etat)),
             "Volume": GLib.Variant("d", float(etat.volume)),
             "Position": GLib.Variant("x", us(etat.position_s) if session else 0),
-            "MinimumRate": GLib.Variant("d", 1.0),
-            "MaximumRate": GLib.Variant("d", 1.0),
+            "MinimumRate": GLib.Variant("d", regles.VITESSES[0] if reglable else 1.0),
+            "MaximumRate": GLib.Variant("d", regles.VITESSES[-1] if reglable else 1.0),
             "CanGoNext": GLib.Variant("b", False),
             "CanGoPrevious": GLib.Variant("b", False),
             "CanPlay": GLib.Variant("b", session),
@@ -259,7 +263,17 @@ class ServeurMpris:
                 regler(max(0.0, min(1.0, valeur.get_double())))
                 GLib.idle_add(lambda: (self.actualiser(), False)[1])
             return True
-        return True     # Rate : seul 1,0 est possible, on ignore
+        if iface == LECTEUR and nom == "Rate":
+            # 0 vaut pause (spécification MPRIS) ; sinon la vitesse, bornée à MinimumRate et MaximumRate ; une session
+            # qui ne sait pas changer de vitesse reste à 1
+            v = valeur.get_double()
+            e = self._etat()
+            if v <= 0.0:
+                self.pilote.pause()
+            elif e.session and e.vitesse_reglable and getattr(self.pilote, "regler_vitesse", None):
+                self.pilote.regler_vitesse(regles.borner_vitesse(v))
+            GLib.idle_add(lambda: (self.actualiser(), False)[1])
+        return True
 
     def _methode(self, _connexion, _envoyeur, _chemin, iface, nom, parametres, invocation):
         p = self.pilote

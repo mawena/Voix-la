@@ -76,7 +76,8 @@ class PageDetail(Adw.NavigationPage):
         self.pistes_dispo = self._choisir_pistes(self.forme)
         vue = Adw.ToolbarView()
         entete = Adw.HeaderBar()
-        entete.set_title_widget(Adw.WindowTitle(title=res.titre_court, subtitle=sous_titre(res)))
+        self.titre_fenetre = Adw.WindowTitle(title=res.titre_court, subtitle=sous_titre(res))
+        entete.set_title_widget(self.titre_fenetre)
         b_dossier = commun.bouton(icone="folder-open-symbolic", infobulle="Ouvrir le dossier",
                                   clic=lambda: commun.ouvrir_dossier(self.fenetre, res.dossier))
         entete.pack_end(b_dossier)
@@ -87,11 +88,10 @@ class PageDetail(Adw.NavigationPage):
         for action, libelle in (("vis-melodie", "Courbe de mélodie"), ("vis-spectre", "Spectrogramme"),
                                 ("vis-onde", "Forme d’onde"), ("vis-vumetre", "Vu-mètre")):
             menu_vis.append(libelle, f"win.{action}")
-        section = Gio.Menu()
-        section.append("Mélodie en Hz (sinon en notes)", "win.melodie-hz")
-        if res.autotune:
-            section.append("Courbe de la version auto-tune", "win.melodie-autotune")
-        menu_vis.append_section(None, section)
+        self.menu_melodie = Gio.Menu()
+        self.menu_melodie.append("Mélodie en Hz (sinon en notes)", "win.melodie-hz")
+        self._maj_menu_autotune()     # « Courbe de la version auto-tune », si le doublage en a une
+        menu_vis.append_section(None, self.menu_melodie)
         section = Gio.Menu()
         section.append("Paroles", "win.paroles")
         menu_vis.append_section(None, section)
@@ -186,9 +186,12 @@ class PageDetail(Adw.NavigationPage):
         corps.append(self.boite_onde)
 
         # Informations
-        corps.append(self._groupe_infos())
-        corps.append(self._groupe_pistes())
-        corps.append(self._groupe_remix())
+        self.g_infos = self._groupe_infos()
+        corps.append(self.g_infos)
+        self.g_pistes = self._groupe_pistes()
+        corps.append(self.g_pistes)
+        self.g_remix = self._groupe_remix()
+        corps.append(self.g_remix)
         corps.append(self._groupe_durees())
         if res.comparaisons:
             corps.append(self._groupe_comparaisons())
@@ -1131,6 +1134,17 @@ class PageDetail(Adw.NavigationPage):
                                   active=mix.get("version") == 1)
         self.s_v1.set_visible("--mix-v1" in self.fenetre.caps)
         g.add(self.s_v1)
+        # version auto-tune (doubler --remix --autotune N, --sans-autotune) : les réglages de la page Doubler ; allumée
+        # si le doublage en a une ; grisée sans --autotune ou sans x42-autotune
+        from .page_doubler import reglages_autotune
+        self.r_at, self.at_echelle, self.r_at_gamme = reglages_autotune("Version auto-tune")
+        self.r_at_gamme.set_visible("--autotune-gamme" in self.fenetre.caps)
+        self._conf_at = None          # « doubler --config --json » : intensité par défaut, présence de x42-autotune
+        self._maj_remix_autotune()
+        self.r_at.connect("notify::enable-expansion", lambda *_: self._sous_titre_autotune())
+        g.add(self.r_at)
+        if "--autotune" in self.fenetre.caps:
+            commun.en_fil(moteur.config_effective, self._conf_autotune)
         possible, raison = moteur.remix_possible(r.video_source, r.dossier) if r.voix and r.rapport else \
             (False, "doublage inachevé")
         ligne = Adw.ActionRow(title="Refaire le mixage", subtitle=raison if not possible else
@@ -1143,6 +1157,78 @@ class PageDetail(Adw.NavigationPage):
         g.add(ligne)
         self.l_remix = ligne
         return g
+
+    def _maj_remix_autotune(self):
+        """Réglages d'auto-tune du remix d'après le doublage : interrupteur allumé s'il a sa version auto-tune,
+        intensité de rapport.json (sinon le défaut de la configuration de doubler, sinon 70), gamme du rapport si elle
+        avait été imposée (sinon Auto) ; grisés si le remix ne peut pas faire d'auto-tune, avec la raison."""
+        version, n, gamme = moteur.autotune_du_resultat(self.res.rapport, self._conf_at)
+        self.r_at.set_enable_expansion(version)
+        self.at_echelle.set_value(n)
+        self.r_at_gamme.set_selected([v for v, _l in moteur.GAMMES].index(gamme))
+        self._sous_titre_autotune()
+
+    def _conf_autotune(self, conf):
+        """La configuration de doubler est lue : intensité par défaut (si le rapport n'en donne pas et qu'on n'y a
+        pas touché), x42-autotune absent (grisé)."""
+        if self._oubliee:
+            return
+        avant = moteur.autotune_du_resultat(self.res.rapport, self._conf_at)[1]
+        self._conf_at = conf if isinstance(conf, dict) else {}
+        n = moteur.autotune_du_resultat(self.res.rapport, self._conf_at)[1]
+        if round(self.at_echelle.get_value()) == avant:
+            self.at_echelle.set_value(n)
+        self._sous_titre_autotune()
+
+    def _sous_titre_autotune(self):
+        """Ce que le remix fera de la version auto-tune, en sous-titre de son interrupteur."""
+        from .page_doubler import TEXTE_X42_ABSENT
+        possible, cause = moteur.autotune_remix_possible(self.fenetre.caps, self._conf_at)
+        self.r_at.set_sensitive(possible)
+        version = bool(self.res.autotune)
+        if not possible:
+            texte = (TEXTE_X42_ABSENT if cause == "x42" else
+                     "doubler trop ancien, sans --autotune : le remix ne touche pas à l’auto-tune")
+        elif self.r_at.get_enable_expansion():
+            texte = ("Refaite avec ces réglages ; la version normale ne change pas" if version else
+                     "Une version « (auto-tune) » en plus (vidéo, mp3, .lrc) ; la version normale ne change pas")
+        elif version:
+            texte = "Éteinte : au remix, la version auto-tune (vidéo, mp3, .lrc) ira à la corbeille"
+        else:
+            texte = "Pas de version auto-tune ; allumez pour en faire une en plus de la version normale"
+        self.r_at.set_subtitle(texte)
+
+    def _reglages_autotune(self):
+        """Options d'auto-tune du remix (moteur.reglages_remix_autotune) d'après les réglages affichés."""
+        gamme = moteur.GAMMES[self.r_at_gamme.get_selected()][0] if self.r_at_gamme.get_visible() else "auto"
+        return moteur.reglages_remix_autotune(self.r_at.get_enable_expansion(), self.at_echelle.get_value(), gamme,
+                                              bool(self.res.autotune), possible=self.r_at.get_sensitive())
+
+    def _maj_menu_autotune(self):
+        """« Courbe de la version auto-tune » dans le menu des visualisations, seulement si le doublage en a une."""
+        n = self.menu_melodie.get_n_items()
+        if self.res.autotune and n < 2:
+            self.menu_melodie.append("Courbe de la version auto-tune", "win.melodie-autotune")
+        elif not self.res.autotune and n > 1:
+            self.menu_melodie.remove(1)
+
+    def _rafraichir(self):
+        """Après un remix, ce qui dépend des fichiers du doublage suit le rapport relu : la bascule « Auto-tune »
+        (touche T) apparaît ou disparaît, le sous-titre, le menu de la mélodie, les groupes Doublage et Pistes
+        séparées, les réglages d'auto-tune du remix."""
+        r = self.res
+        self.t_autotune.set_visible(bool(r.autotune))
+        self.titre_fenetre.set_subtitle(sous_titre(r))
+        self._maj_menu_autotune()
+        for nom, faire in (("g_infos", self._groupe_infos), ("g_pistes", self._groupe_pistes)):
+            ancien, neuf = getattr(self, nom), faire()
+            self.corps.insert_child_after(neuf, ancien)
+            self.corps.remove(ancien)
+            setattr(self, nom, neuf)
+        # préparations ratées d'une piste qui n'existe plus (ma voix seule auto-tunée d'une version retirée)
+        self._echecs = {k: m for k, m in self._echecs.items() if k in self.pistes_dispo}
+        self._maj_remix_autotune()
+        self._maj_note()
 
     def _groupe_durees(self):
         g = Adw.PreferencesGroup(title="Durées par étape")
@@ -1191,7 +1277,8 @@ class PageDetail(Adw.NavigationPage):
 
     def scenario(self, action):
         """Essai : « ab » (lecture muette, puis bascule sur l'original à la même position), « aller-<s> »,
-        « piste-<clé> » (beat, ma_voix…), « lire » (lecture muette)."""
+        « piste-<clé> » (beat, ma_voix…), « lire » (lecture muette), « remix » (défile jusqu'au remix rapide),
+        « remix-at » ou « remix-sans-at » (interrupteur « Version auto-tune »), « remixer » (lance le remix)."""
         if action.startswith("piste-"):
             # après « lire » (1,8 s) : la vidéo a déjà une image à figer
             cle = action.split("-", 1)[1]
@@ -1211,6 +1298,20 @@ class PageDetail(Adw.NavigationPage):
             GLib.timeout_add(1800, lire_muet)
         if action == "durees" and getattr(self, "depliant_durees", None):
             self.depliant_durees.set_expanded(True)
+        if action in ("remix-at", "remix-sans-at"):
+            # interrupteur « Version auto-tune » du remix rapide, allumé (déplié) ou éteint
+            GLib.timeout_add(1200, lambda: (self.r_at.set_enable_expansion(action == "remix-at"), False)[1])
+        if action == "remixer":
+            GLib.timeout_add(1500, lambda: (self.remixer(), False)[1])
+        if action == "remix":
+            def vers_remix():
+                # le groupe « Remix rapide » en haut de la vue (après les autres actions, qui changent la hauteur)
+                from gi.repository import Graphene    # chargé par gui/essais.py (captures d'essai)
+                ok, point = self.g_remix.compute_point(self.corps, Graphene.Point())
+                if ok:
+                    self.defilement.get_vadjustment().set_value(max(0.0, point.y - 12))
+                return False
+            GLib.timeout_add(3000, vers_remix)
         if action == "bas":
             def descendre():
                 a = self.defilement.get_vadjustment()
@@ -1266,6 +1367,7 @@ class PageDetail(Adw.NavigationPage):
         voix_db = round(self.s_voix.get_value(), 1)
         reverb = round(self.s_reverb.get_value(), 1) if r.mode == "chant" else None
         v1 = self.s_v1.get_visible() and self.s_v1.get_active()
+        at = self._reglages_autotune()
         pos = self.lecteur.position_ref()
         self.lecteur.liberer()   # les fichiers vont être réécrits
         self.page.remix_actif = True
@@ -1280,20 +1382,28 @@ class PageDetail(Adw.NavigationPage):
             self.roue.set_spinning(False)
             self.b_remix.set_sensitive(True)
             if ok:
-                self.l_remix.set_subtitle(f"Remixé : voix {formats.db(voix_db)}"
-                                          + (f", reverb {formats.db(reverb)}" if reverb is not None else ""))
-                self.fenetre.toast("Remix fini")
                 frais = rapports.lire_dossier(r.dossier, {v["id"]: v["nom"] for v in self.fenetre.voix},
                                               r.groupe, self.fenetre.voix_doubler)
                 self.res = next((x for x in frais if x.voix == r.voix), r)
+                if not self.res.autotune:
+                    self.autotune = False     # version auto-tune retirée (ou pas faite) : la bascule T s'éteint
+                suite = (f", auto-tune {self.res.autotune.get('intensite')}" if at.get("autotune") and self.res.autotune
+                         else ", auto-tune non appliqué" if at.get("autotune")
+                         else ", version auto-tune à la corbeille" if at.get("sans_autotune") else "")
+                self.l_remix.set_subtitle(f"Remixé : voix {formats.db(voix_db)}"
+                                          + (f", reverb {formats.db(reverb)}" if reverb is not None else "") + suite)
+                self.fenetre.toast("Remix fini")
             else:
                 lignes = [l for l in sortie.strip().splitlines() if l.strip()]
                 self.l_remix.set_subtitle(commun.echapper(lignes[-1] if lignes else "échec"))
                 commun.informer(self.fenetre, "Le remix a échoué", "\n".join(lignes[-12:]) or "sans message")
             self.changer_forme(self.forme)
             self.lecteur.aller_a(pos)
+            if ok:
+                self._rafraichir()
         spec = moteur.spec_de_rapport(r.voix, r.rapport)   # « homme:a,femme:b » pour le dossier « a+b »
-        commun.en_fil(lambda: moteur.remixer(r.video_source, spec, r.dossier, donnees, voix_db, reverb, v1), fini)
+        commun.en_fil(lambda: moteur.remixer(r.video_source, spec, r.dossier, donnees, voix_db, reverb, v1,
+                                             autotune=at), fini)
 
     def supprimer(self):
         """Bouton corbeille du détail : la même mise à la corbeille que la liste (PageResultats.mettre_a_la_corbeille),

@@ -9,6 +9,12 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ### Ajouté
 
+- Interface : auto-tune dans le remix rapide des Résultats. Interrupteur « Version auto-tune », allumé si le
+  doublage en a une, avec l'intensité (celle de `rapport.json`, sinon le défaut de la configuration, sinon 70) et la
+  gamme (celle du rapport si elle avait été imposée, sinon Auto) de la page Doubler. Allumé : `--remix --autotune N`
+  (et `--autotune-gamme`) ; éteint : `--remix --sans-autotune` (une version existante va à la corbeille ; sans version,
+  la clé `autotune` de la configuration n'en refait pas). Grisé sans x42-plugins ou avec un doubler sans `--autotune`.
+  Après le remix, la bascule Auto-tune (touche T) apparaît ou disparaît.
 - Interface : enregistrement au micro d'un téléphone Android, pour une voix comme pour une prise de chant. La liste
   « Micro » propose les téléphones prêts (`adb devices -l`, `ADB_SERIAL` en premier, nom du modèle) ; scrcpy enregistre
   le micro en FLAC sans perte (`--no-video --no-playback --no-window --audio-source=mic-voice-recognition

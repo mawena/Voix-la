@@ -454,7 +454,7 @@ def etape_separer_voix(a):
     import numpy as np
     import soundfile as sf
     torch = charger_torch()
-    tmp = '/tmp/sep_vitesse'
+    tmp = f'/tmp/sep_vitesse_{os.getpid()}'   # un dossier par processus : les deux cartes tournent en même temps
     os.makedirs(tmp, exist_ok=True)
     origs = {ex: deux_canaux(sf.read(entree(f'extrait-{ex}-original.wav'), dtype='float32', always_2d=True)[0])
              for ex in extraits_de(a)}
@@ -511,7 +511,7 @@ def etape_nettoyer_variantes(a):
     import gc
     import soundfile as sf
     torch = charger_torch()
-    tmp = '/tmp/net_vitesse'
+    tmp = f'/tmp/net_vitesse_{os.getpid()}'   # un dossier par processus : les deux cartes tournent en même temps
     os.makedirs(tmp, exist_ok=True)
     source = a.get('source', 'voix')
     voix = {ex: deux_canaux(sf.read(piste_chemin(ex, source), dtype='float32', always_2d=True)[0]) for ex in extraits_de(a)}

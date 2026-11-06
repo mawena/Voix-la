@@ -22,6 +22,10 @@
 #                   sur la voix principale sèche ; temps de chaque passe ; secondes chantées à deux ; extrait d'écoute
 #   demo            l'extrait du vrai duo doublé : voix principale d'un bloc dans une voix, ou chaque chanteur séparé
 #                   dans la sienne (YingMusic-SVC, références libres)
+#   reel_bis        complément sur l'extrait des sessions précédentes (jeu privé) : BS-Roformer karaoké frazer-becruily
+#                   sur la voix et sur la voix principale sèche ; à deux, et nature des passages à deux (unisson, octave,
+#                   autre intervalle) pour chaque séparation
+#   demo_bis        conversions de plus de l'extrait (voix principale dans la voix d'homme, pistes de reel_bis)
 # Sorties dans /kaggle/working : session.json, synth/mesures.json, reel/*.flac + reel/reel.json, demo/*.flac + demo.json.
 # Rien n'est envoyé ailleurs : poids téléchargés (GitHub, Hugging Face), aucune donnée ne sort du noyau privé.
 # ======================================================================================================================
@@ -219,11 +223,12 @@ def orchestrer():
     ecrire_json_u(SESSION_U, session)
     import threading
     fil = threading.Thread(target=installer_parole, daemon=True)   # pendant les premières phases (réseau, CPU)
-    fil.start()
+    if any(e.get('etape') == 'parole' for phase in U['phases'] for suite in phase for e in suite):
+        fil.start()
     # Chaque Roformer est téléchargé par la première étape qui s'en sert : le vrai duo (phase 0, une carte) prend les
     # modèles homme/femme avant que les deux cartes de la phase 2 ne les chargent ensemble.
     for k, phase in enumerate(U['phases']):
-        if any(e.get('etape') == 'parole' for suite in phase for e in suite):
+        if fil.is_alive() and any(e.get('etape') == 'parole' for suite in phase for e in suite):
             fil.join(timeout=180)   # au-delà, l'étape parole est sautée (lancer_etape_u)
         r = lancer_phase(phase, k)
         s = lire_json_u(SESSION_U, session) or session
@@ -494,7 +499,7 @@ def etape_parole(a):
         # extrait d'écoute d'une session précédente (FLAC du jeu, gain de l'écriture retiré)
         e = U['plan']['reel_extrait']
         ecrire_wav_u(reel, lire_mono_u(entree_u(e['fichier'])) / np.float32(e['gain']))
-    if os.path.exists(reel):
+    if os.path.exists(reel) and a.get('reel', True):   # SepFormer WHAMR! manque de mémoire sur 45 s (session 2)
         entrees.append(('reel', reel, REEL))
     for nom in a['candidats']:
         t0 = time.time()
@@ -550,6 +555,10 @@ def charger_parole(nom):
         os.chdir('/tmp/cv_travail')
         sys.path = [p for p in sys.path if os.path.abspath(p or '.') not in ('/tmp', os.path.abspath('.'))]
         from clearvoice import ClearVoice
+        import clearvoice.networks as cvn
+        # ClearVoice prend la carte la plus libre d'après nvidia-smi, qui voit les deux cartes, alors que
+        # CUDA_VISIBLE_DEVICES n'en montre qu'une : « invalid device ordinal » (session 2). La carte visible est la 0.
+        cvn.SpeechModel.get_free_gpu = lambda self: 0
         cv = ClearVoice(task='speech_separation', model_names=['MossFormer2_SS_16K'])
         import soundfile as sf
 
@@ -981,9 +990,107 @@ def etape_demo(a):
     ecrire_json_u(os.path.join(DEMO, 'demo.json'), res)
 
 
+# --- Complément (session 3) : extrait du vrai duo des sessions précédentes ---------------------------------------------
+
+def piste_jeu_u(e):
+    """Piste d'une session précédente (FLAC du jeu privé), gain de l'écriture retiré ; (n, canaux)."""
+    import numpy as np
+    import soundfile as sf
+    x, sr = sf.read(entree_u(e['fichier']), dtype='float32', always_2d=True)
+    assert sr == SR, (e['fichier'], sr)
+    return x / np.float32(e['gain'])
+
+
+def paires_pistes(pistes):
+    """{préfixe: (piste 1, piste 2)} : « …_h » avec « …_f », « …_o1 » avec « …_o2 »."""
+    p = {}
+    for k in pistes:
+        for s1, s2 in (('_h', '_f'), ('_o1', '_o2')):
+            if k.endswith(s1) and k[:-len(s1)] + s2 in pistes:
+                p[k[:-len(s1)]] = (k, k[:-len(s1)] + s2)
+    return p
+
+
+def etape_reel_bis(a):
+    """Extrait d'écoute du vrai duo (45 s, sessions précédentes) : BS-Roformer karaoké frazer-becruily, le meilleur des
+    duos synthétiques en tierce et en octave, sur la voix isolée et sur la voix principale sèche. Pour chaque séparation
+    (celles des sessions précédentes comprises) : secondes chantées à deux ; sur ces secondes, part des trames où les
+    deux pistes ont la même hauteur (unisson, moins d'un demi-ton), une octave d'écart, ou un autre intervalle (RMVPE) ;
+    hauteur médiane de chaque piste, qui donne la voix de la démo (la plus haute en femme)."""
+    import numpy as np
+    ex = U['plan']['reel_extrait']
+    lead = piste_jeu_u(ex).mean(1)
+    voix = piste_jeu_u(ex['voix'])
+    pistes = {k: piste_jeu_u(e).mean(1) for k, e in ex.get('pistes', {}).items()}
+    duree = len(lead) / SR
+    res = {'duree_s': round(duree, 1), 'passes': {}, 'a_deux': {}, 'attribution': {}}
+    gains = {}
+    r = Roformer(ROFORMERS['karaoke_bs_frazer'], '/tmp/reel_frazer')
+    for src, x in (('voix', voix), ('lead_sec', lead)):
+        cle = f'karaoke_bs_frazer_{src}'
+        (p1, p2), d, noms = r.separer(x, cle)
+        p1, p2 = (p.mean(1) if p.ndim == 2 else p for p in (p1, p2))
+        res['passes'][cle] = {'modele': r.nom, 'chargement_s': r.chargement_s, 'separation_s': d,
+                              'rtf': round(d / duree, 3), 'pistes': noms, 'precision': r.precision}
+        log(f'REEL_BIS {cle} : {d:.1f} s pour {duree:.0f} s')
+        for k, y in (('o1', p1), ('o2', p2)):
+            pistes[f'{cle}_{k}'] = y
+            gains[f'{cle}_{k}'] = ecrire_flac_u(os.path.join(REEL, f'{cle}_{k}.flac'), y)
+            ecrire_wav_u(os.path.join(REEL_TMP, f'{cle}_{k}.wav'), y)
+    del r
+    ecrire_wav_u(os.path.join(REEL_TMP, 'lead_sec.wav'), lead)
+    res['gains_flac'] = gains
+    an = Analyse()
+    for nom, (k1, k2) in sorted(paires_pistes(pistes).items()):
+        x1, x2 = pistes[k1], pistes[k2]
+        deux, a1, a2 = a_deux(x1, x2)
+        f1, f2 = an.f0(x1), an.f0(x2)
+        n = min(len(deux), len(f1), len(f2))
+        deux, a1, a2, f1, f2 = deux[:n], a1[:n], a2[:n], f1[:n], f2[:n]
+        v = deux & (f1 > 40) & (f2 > 40)
+        ecart = np.abs(12 * np.log2(np.maximum(f1[v], 1) / np.maximum(f2[v], 1)))
+        med = [float(np.median(f[(a & (f > 40))])) if (a & (f > 40)).any() else 0.0 for f, a in ((f1, a1), (f2, a2))]
+        res['a_deux'][nom] = {'secondes_a_deux': round(float(deux.sum()) / 100, 1),
+                              'secondes_1': round(float(a1.sum()) / 100, 1), 'secondes_2': round(float(a2.sum()) / 100, 1),
+                              'a_deux_voise_s': round(float(v.sum()) / 100, 1),
+                              'unisson_s': round(float((ecart < 0.5).sum()) / 100, 1),
+                              'octave_s': round(float((np.abs(ecart - 12) < 0.5).sum()) / 100, 1),
+                              'autre_s': round(float(((ecart >= 0.5) & (np.abs(ecart - 12) >= 0.5)).sum()) / 100, 1),
+                              'hauteur_mediane_hz': [round(m, 1) for m in med]}
+        res['attribution'][nom] = {k1: 'femme' if med[0] > med[1] else 'homme', k2: 'homme' if med[0] > med[1] else 'femme'}
+        log(f"REEL_BIS {nom} : {res['a_deux'][nom]}")
+    ecrire_json_u(os.path.join(REEL, 'reel_bis.json'), res)
+
+
+def etape_demo_bis(a):
+    """Conversions de l'extrait (YingMusic-SVC, références libres du jeu, décalage 0 comme la démo de la session 1) :
+    a['conversions'] = [{cle, piste, voix}] ; piste « lead_sec » ou une piste de reel_bis ; voix « homme », « femme » ou
+    « auto » (attribution de reel_bis, d'après la hauteur). Chaque piste convertie est ramenée au niveau de sa source."""
+    import numpy as np
+    outils = trouver_outils()
+    m = MoteurYing(outils, poids_ying(outils))
+    refs = {g: m.preparer_ref(entree_u(f)) for g, f in U['plan']['cibles_demo'].items()}
+    pas = int(U.get('pas_demo', 30))
+    bis = lire_json_u(os.path.join(REEL, 'reel_bis.json'), {}) or {}
+    attribution = {k: g for v in bis.get('attribution', {}).values() for k, g in v.items()}
+    res = {'chargement_s': m.chargement_s, 'conversions': {}, 'gains_flac': {}}
+    for c in a['conversions']:
+        chemin = os.path.join(REEL_TMP, f"{c['piste']}.wav")
+        x = lire_mono_u(chemin) if os.path.exists(chemin) else piste_jeu_u(U['plan']['reel_extrait']).mean(1)
+        g = attribution.get(c['piste'], 'femme') if c['voix'] == 'auto' else c['voix']
+        t0 = time.time()
+        y = convertir_piste_u(m, refs[g], x, 0, pas)
+        y = y * np.float32(rms_actif_u(x) / rms_actif_u(y)) if np.abs(y).max() > 0 else y
+        res['conversions'][c['cle']] = {'piste': c['piste'], 'voix': g, 'duree_s': round(time.time() - t0, 1),
+                                        'duree_son_s': round(len(x) / SR, 1)}
+        res['gains_flac'][c['cle']] = ecrire_flac_u(os.path.join(DEMO, f"{c['cle']}.flac"), y)
+        log(f"DEMO_BIS {c['cle']} ({c['piste']}) -> {g} : {time.time() - t0:.0f} s")
+    ecrire_json_u(os.path.join(DEMO, f"demo_bis_{a.get('nom', 'x')}.json"), res)
+
+
 ETAPES_U = {'generer': etape_generer, 'melanger': etape_melanger, 'separer_synth': etape_separer_synth,
             'parole': etape_parole, 'masque': etape_masque, 'mesurer': etape_mesurer, 'separer_reel': etape_separer_reel,
-            'demo': etape_demo}
+            'demo': etape_demo, 'reel_bis': etape_reel_bis, 'demo_bis': etape_demo_bis}
 
 
 if __name__ == '__main__':

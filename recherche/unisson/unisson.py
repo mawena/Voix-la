@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 """Recherche « unisson » : séparer deux chanteurs qui chantent ensemble, pour donner à chacun sa voix convertie.
 
-  unisson.py preparer [--video FICHIER --debut S --duree S]
+  unisson.py preparer [--video FICHIER --debut S --duree S] [--reel-extrait S1 --reel-plus S2]
                      prises chantées libres (VocalSet, CC BY 4.0, lues par requêtes HTTP Range dans l'archive Zenodo,
                      sans la télécharger en entier), fenêtres de 10 s, plan des duos synthétiques ; vrai duo facultatif
-                     (une partie de la vidéo, lue par ffmpeg seulement)
+                     (une partie de la vidéo, lue par ffmpeg seulement), ou l'extrait d'écoute de sessions précédentes
   unisson.py envoyer                jeu privé <compte>/voixla-recherche-unisson
-  unisson.py lancer S [--limite MIN]
+  unisson.py lancer S [--limite MIN] [--sans-reel | --complement]
                      noyau GPU privé <compte>/voixla-unisson-gpu : verrou Kaggle de doubler, quota vérifié avant
                      (refus s'il resterait moins de 4 h), suivi, rapatriement dans resultats/S/
   unisson.py rapatrier S            rapatrie à nouveau la sortie du noyau
-  unisson.py tableau S              tableau des mesures (Markdown)
-  unisson.py ecoute S [--ecoute D]  extraits d'écoute à l'aveugle (format de interface/voixla/ecoute.py) :
-                                    <D>/unisson/ (pistes séparées) et <D>/unisson-double/ (extrait doublé)
+  unisson.py tableau S [--plus S…]  tableau des mesures (Markdown), candidats d'autres sessions en plus
+  unisson.py ecoute S… [--ecoute D] extraits d'écoute à l'aveugle (format de interface/voixla/ecoute.py), d'après les
+                                    sessions données : <D>/unisson/ (pistes séparées) et <D>/unisson-double/ (doublé)
+
+Sessions du 06/11/2026 : s1 (tout, avec le vrai duo), s2 (duos synthétiques avec les deux voix converties, modèles de
+parole), s3 (--complement : MossFormer2, karaoké frazer sur l'extrait du vrai duo, conversions de l'extrait).
 
 Dossier de travail (entrees/, jeu/, resultats/, travail/) : $UNISSON_DONNEES, sinon banc/travail/unisson (ignoré par
 git). Compte Kaggle : « kaggle.compte » de ~/.config/voix-la/config.json, comme doubler et le banc. Aucune voix de
@@ -228,11 +231,23 @@ def preparer(a):
                       'sources': [src(B, conv=conversion(B, B, 0, f'{B}-soi')), src(A, conv=f'{paire}-octave')]})
         m.append({'id': f'{paire}-tierce_conv', 'paire': paire, 'condition': 'tierce_conv',
                   'sources': [src(A, conv=soi_a), src(B, conv=f'{paire}-tierce')]})
-    if a.reel_extrait:   # extrait d'écoute d'une session précédente (voix principale sèche), pour les modèles de parole
+    if a.reel_extrait:   # extrait d'écoute d'une session précédente : voix principale sèche, voix isolée, pistes séparées
         r = RESULTATS / a.reel_extrait / 'reel'
-        d = json.loads((r / 'reel.json').read_text())
+        g = json.loads((r / 'reel.json').read_text())['gains_flac']
+        ex = {'fichier': 'reel-lead_sec.flac', 'gain': g['lead_sec'], 'voix': {'fichier': 'reel-voix.flac', 'gain': g['voix']},
+              'pistes': {}}
         shutil.copy2(r / 'lead_sec.flac', JEU / 'reel-lead_sec.flac')
-        plan['reel_extrait'] = {'fichier': 'reel-lead_sec.flac', 'gain': d['gains_flac']['lead_sec']}
+        shutil.copy2(r / 'voix.flac', JEU / 'reel-voix.flac')
+        for f in sorted(r.glob('*_lead_sec_[hf].flac')):   # Roformer homme/femme sur la voix principale sèche
+            shutil.copy2(f, JEU / f'reel-{f.name}')
+            ex['pistes'][f.stem] = {'fichier': f'reel-{f.name}', 'gain': g[f.stem]}
+        for s in a.reel_plus or []:   # modèles de parole d'autres sessions, sur le même extrait
+            rp = RESULTATS / s
+            for nom, v in json.loads((rp / 'synth' / 'separer_parole.json').read_text()).items():
+                for cle, gain in (v.get('gains_flac_reel') or {}).items():
+                    shutil.copy2(rp / 'reel' / f'{cle}.flac', JEU / f'reel-{cle}.flac')
+                    ex['pistes'][cle] = {'fichier': f'reel-{cle}.flac', 'gain': gain}
+        plan['reel_extrait'] = ex
     if a.video:
         video = Path(a.video).expanduser()
         duree_video = float(subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0',
@@ -292,6 +307,21 @@ def phases(plan, avec_reel):
     return p
 
 
+def phases_complement():
+    """Session 3 : MossFormer2 (et MedleyVox, en repère) sur les duos synthétiques (refaits : les sons restent sur Kaggle)
+    sur la carte 0 ;
+    BS-Roformer karaoké frazer-becruily sur l'extrait du vrai duo, puis conversions de l'extrait sur la carte 1."""
+    pistes_frazer = [{'cle': f'frazer_{k}', 'piste': f'karaoke_bs_frazer_lead_sec_{k}', 'voix': 'auto'} for k in ('o1', 'o2')]
+    return [[[{'etape': 'generer'}],
+             [{'etape': 'reel_bis'},
+              {'etape': 'demo_bis', 'nom': 'bloc', 'conversions': [{'cle': 'bloc_homme', 'piste': 'lead_sec', 'voix': 'homme'}]}]],
+            # MedleyVox (quelques secondes) refait sur les mêmes mélanges : repère pour MossFormer2, et écart d'une
+            # génération des duos à l'autre (YingMusic-SVC en fp16 n'est pas déterministe d'une machine à l'autre)
+            [[{'etape': 'melanger'}, {'etape': 'parole', 'candidats': ['medleyvox_238', 'mossformer2_ss16k'], 'reel': False},
+              {'etape': 'mesurer'}],
+             [{'etape': 'demo_bis', 'nom': 'frazer', 'conversions': pistes_frazer}]]]
+
+
 def construire_noyau(reglages):
     """Fonctions de kaggle/doubler_kaggle.py (sans leur bloc final) + noyau_unisson.py, encodés dans un lanceur."""
     base = NOYAU_DEPOT.read_text()
@@ -317,7 +347,10 @@ def lancer(a):
     reglages = {'cfg': 0.7, 'fp16': True, 'pad_s': 0.25, 'fondu_s': 0.06, 'graine': 1234, 'recouvrement': 2,
                 'recouvrement_voix': 2, 'pas_synth': 20, 'pas_demo': 30, 'limite_totale_s': limite_s - 90,
                 'paquets_parole': PAQUETS_PAROLE, 'plan': plan,
-                'phases': json.loads(a.phases) if a.phases else phases(plan, 'reel' in plan and not a.sans_reel)}
+                'phases': (json.loads(a.phases) if a.phases else phases_complement() if a.complement
+                           else phases(plan, 'reel' in plan and not a.sans_reel))}
+    if a.complement and 'voix' not in plan.get('reel_extrait', {}):
+        raise SystemExit('--complement : préparer d\'abord le jeu avec « preparer --reel-extrait S1 --reel-plus S2 »')
     if 'reel' in plan and not a.sans_reel:
         reglages['reel'] = plan['reel']
     envoi = DONNEES / '.kaggle' / 'envoi-noyau'
@@ -427,6 +460,11 @@ def rapatrier(a):
 def tableau(a):
     r = RESULTATS / a.session
     resume = json.loads((r / 'synth' / 'resume.json').read_text())
+    for s in a.plus:   # candidats d'autres sessions (mêmes duos synthétiques), sans remplacer ceux de la session
+        p = RESULTATS / s / 'synth' / 'resume.json'
+        if p.exists():
+            for c, v in json.loads(p.read_text()).items():
+                resume.setdefault(c, v)
     ordre = [c for c in LIBELLES if c in resume] + sorted(c for c in resume if c not in LIBELLES)
     for titre, suffixe in (('Duos mixtes (homme + femme)', '_mixte'), ('Duos de même genre', '_meme_genre')):
         conds = [c for c in CONDITIONS if any(c + suffixe in resume[k] for k in resume)]
@@ -471,6 +509,23 @@ def tableau(a):
         for k, v in d['a_deux'].items():
             print(f"| {k} | {v['secondes_a_deux']:.1f} | {v['secondes_homme']:.1f} | {v['secondes_femme']:.1f} |")
         print(f"\nExtrait d'écoute : {d['extrait']}")
+    for s in [a.session] + a.plus:
+        p = RESULTATS / s / 'reel' / 'reel_bis.json'
+        if not p.exists():
+            continue
+        d = json.loads(p.read_text())
+        print(f"\n**Extrait du vrai duo** ({d['duree_s']:.0f} s, session {s}) : passes de plus\n")
+        print('| Passe | Séparation (s) | rtf | Chargement (s) |')
+        print('|---|---|---|---|')
+        for k, v in d['passes'].items():
+            print(f"| {k} | {v['separation_s']:.1f} | {v['rtf']:.2f} | {v['chargement_s']:.0f} |")
+        print('\nPassages à deux (deux pistes à moins de 15 dB) et écart de hauteur entre les deux pistes sur ces passages '
+              "(RMVPE ; unisson : moins d'un demi-ton)\n")
+        print('| Séparation | À deux (s) | dont voisé (s) | unisson (s) | octave (s) | autre intervalle (s) | hauteurs médianes (Hz) |')
+        print('|---|---|---|---|---|---|---|')
+        for k, v in d['a_deux'].items():
+            print(f"| {k} | {v['secondes_a_deux']:.1f} | {v['a_deux_voise_s']:.1f} | {v['unisson_s']:.1f} | {v['octave_s']:.1f} "
+                  f"| {v['autre_s']:.1f} | {' / '.join(f'{h:.0f}' for h in v['hauteur_mediane_hz'])} |")
     for f in ('generer.json', 'separer_a.json', 'separer_b.json', 'separer_parole.json', 'masque.json'):
         p = r / 'synth' / f
         if p.exists():
@@ -493,54 +548,150 @@ def lire_piste(chemin, gain):
     return x / np.float32(gain)
 
 
+def niveaux_db(x, lissage=15):
+    """Niveau (dB) par trame de 10 ms, lissé sur lissage trames."""
+    import numpy as np
+    t = len(x) // 441
+    db = 10 * np.log10((x[:t * 441].reshape(t, 441).astype(np.float64) ** 2).mean(1) + 1e-12)
+    return np.convolve(db, np.ones(lissage) / lissage, mode='same')
+
+
+def actif(l, sous_haut_db):
+    import numpy as np
+    return l > np.percentile(l, 95) - sous_haut_db
+
+
+def a_deux_local(xh, xf, ecart_db=15.0, sous_haut_db=25.0):
+    """Comme a_deux() du noyau : trames où les deux pistes chantent, à moins de ecart_db l'une de l'autre."""
+    import numpy as np
+    lh, lf = niveaux_db(xh), niveaux_db(xf)
+    n = min(len(lh), len(lf))
+    lh, lf = lh[:n], lf[:n]
+    return actif(lh, sous_haut_db) & actif(lf, sous_haut_db) & (np.abs(lh - lf) < ecart_db)
+
+
+def ouvrir_fermer(m, k):
+    """Bouche les trous de moins de k trames, puis retire les îlots de moins de k trames."""
+    import numpy as np
+    from scipy.ndimage import binary_closing, binary_opening
+    s = np.ones(k, bool)
+    return binary_opening(binary_closing(m, s), s)
+
+
+def poids_echantillons(m, n, fondu_s=0.08):
+    """Masque par trame de 10 ms -> poids par échantillon, fondus de fondu_s."""
+    import numpy as np
+    k = max(1, int(fondu_s * 100))
+    w = np.convolve(m.astype(np.float64), np.ones(k) / k, mode='same')
+    return np.interp(np.arange(n), np.arange(len(w)) * 441 + 220, w).astype(np.float32)
+
+
+def passages(lead, silence_s=0.3, sous_haut_db=35.0):
+    """Passages de la voix principale coupés aux silences d'au moins silence_s, comme les passages de doubler."""
+    import numpy as np
+    a = actif(niveaux_db(lead), sous_haut_db)
+    a = ouvrir_fermer(a, int(silence_s * 100))
+    bords = np.flatnonzero(np.diff(np.concatenate([[0], a.astype(np.int8), [0]])))
+    return list(zip(bords[::2], bords[1::2]))
+
+
+def versions_doublees(r1, r3, gains1, d1, d3):
+    """Voix doublées de l'extrait, au niveau de la voix principale (pistes FLAC des sessions 1 et 3) :
+    - « chaîne actuelle » : chaque passage dans la voix du chanteur dominant (énergie des pistes homme/femme du Roformer
+      Sucial sur ce passage), comme doubler --voix homme:…,femme:… quand le karaoké garde les deux chanteurs ;
+    - « double » : la même, mais là où les deux chantent (pistes Sucial, ≥ 0,4 s), la voix principale convertie dans
+      les deux voix, chacune à -3 dB ;
+    - les deux pistes de chaque séparation, chacune dans sa voix."""
+    import numpy as np
+    lead = lire_piste(r1 / 'reel' / 'lead_sec.flac', gains1['lead_sec']).mean(1)
+    sh = lire_piste(r1 / 'reel' / 'hf_sucial_lead_sec_h.flac', gains1['hf_sucial_lead_sec_h']).mean(1)
+    sf_ = lire_piste(r1 / 'reel' / 'hf_sucial_lead_sec_f.flac', gains1['hf_sucial_lead_sec_f']).mean(1)
+    n = len(lead)
+
+    def demo(r, d, cle):
+        y = lire_piste(r / 'demo' / f'{cle}.flac', d['gains_flac'][cle]).mean(1)
+        return y[:n] if len(y) >= n else np.pad(y, (0, n - len(y)))
+    bloc_f = demo(r1, d1, 'bloc')
+    bloc_h = demo(r3, d3['bloc'], 'bloc_homme')
+    eh, ef = niveaux_db(sh, 1), niveaux_db(sf_, 1)
+    homme = np.zeros(len(eh), bool)
+    info = []
+    for a, b in passages(lead):
+        h = float(np.sum(10 ** (eh[a:b] / 10))) > float(np.sum(10 ** (ef[a:b] / 10)))
+        homme[a:b] = h
+        info.append((round(a / 100, 2), round(b / 100, 2), 'homme' if h else 'femme'))
+    wh = poids_echantillons(homme, n)
+    actuelle = wh * bloc_h + (1 - wh) * bloc_f
+    deux = ouvrir_fermer(a_deux_local(sh, sf_), 40)
+    w2 = poids_echantillons(deux, n)
+    double = (1 - w2) * actuelle + w2 * (bloc_h + bloc_f) / np.float32(np.sqrt(2))
+    v = {'chaîne actuelle : chaque passage dans la voix du chanteur dominant': actuelle,
+         'à deux, voix principale convertie dans les deux voix (ailleurs : chaîne actuelle)': double,
+         'séparé par le Roformer chœur homme/femme (Sucial), chacun dans sa voix': demo(r1, d1, 'separe')}
+    if 'frazer' in d3:
+        v['séparé par le BS-Roformer karaoké (frazer-becruily), chacun dans sa voix'] = (
+            demo(r3, d3['frazer'], 'frazer_o1') + demo(r3, d3['frazer'], 'frazer_o2'))
+    return v, {'passages': info, 'a_deux_s': round(float(deux.sum()) / 100, 1)}
+
+
 def ecoute(a):
-    """Deux extraits : « unisson » (pistes séparées, chacune seule sur la musique) et « unisson-double » (la voix
-    principale doublée d'un bloc, ou chaque chanteur dans sa voix). Même chaîne de mix que doubler et le banc."""
+    """Deux extraits à l'aveugle, même chaîne de mix que doubler et le banc :
+    - « unisson » : la voix principale sèche non séparée, puis chaque piste des meilleures séparations, seule sur la
+      musique (on y entend ce que chaque piste a gardé de l'autre chanteur) ;
+    - « unisson-double » : l'extrait doublé (voix libres de VocalSet), chaîne actuelle, double conversion des passages
+      à deux, ou chaque chanteur séparé dans sa voix.
+    Sessions : la première a le vrai duo (reel/reel.json, demo/) ; les autres ajoutent leurs pistes (MedleyVox,
+    karaoké frazer, conversions de plus)."""
     import numpy as np
     import soundfile as sf
-    r = RESULTATS / a.session
-    reel = json.loads((r / 'reel' / 'reel.json').read_text())
-    gains = reel['gains_flac']
+    sessions = [RESULTATS / s for s in a.sessions]
+    r1 = sessions[0]
+    gains1 = json.loads((r1 / 'reel' / 'reel.json').read_text())['gains_flac']
     dossier = Path(a.ecoute).expanduser() if a.ecoute else DEPOT / 'banc' / 'ecoute'
     dossier.mkdir(parents=True, exist_ok=True)
     t = TRAVAIL / 'ecoute'
     shutil.rmtree(t, ignore_errors=True)
     t.mkdir(parents=True)
-    sf.write(str(t / 'original.wav'), lire_piste(r / 'reel' / 'original.flac', gains['original']), SR, subtype='FLOAT')
-    sf.write(str(t / 'instrumental.wav'), lire_piste(r / 'reel' / 'musique.flac', gains['musique']), SR, subtype='FLOAT')
-    sf.write(str(t / 'voix_source.wav'), lire_piste(r / 'reel' / 'voix.flac', gains['voix']), SR, subtype='FLOAT')
-    rp = RESULTATS / (a.parole or a.session)   # modèles de parole : d'une autre session, au besoin
-    resume = json.loads((rp / 'synth' / 'resume.json').read_text()) if (rp / 'synth' / 'resume.json').exists() else {}
+    sf.write(str(t / 'original.wav'), lire_piste(r1 / 'reel' / 'original.flac', gains1['original']), SR, subtype='FLOAT')
+    sf.write(str(t / 'instrumental.wav'), lire_piste(r1 / 'reel' / 'musique.flac', gains1['musique']), SR, subtype='FLOAT')
+    sf.write(str(t / 'voix_source.wav'), lire_piste(r1 / 'reel' / 'voix.flac', gains1['voix']), SR, subtype='FLOAT')
 
-    def note(c):
-        """Moyenne sur les duos mixtes chantés ensemble, deux voix converties (sans l'indice d'acoustique)."""
-        v = [resume.get(c, {}).get(k + '_mixte', {}).get('si_sdr') for k in ('unisson_conv', 'octave_conv', 'tierce_conv', 'meme_air')]
-        v = [x for x in v if x is not None]
-        return sum(v) / len(v) if v else -99
-    versions = {'voix principale sèche, non séparée (chaîne actuelle)': (r / 'reel' / 'lead_sec.flac', gains['lead_sec'])}
-    for c in CANDIDATS_HF:
-        for k, g in (('h', "voix d'homme"), ('f', 'voix de femme')):
-            f = r / 'reel' / f'{c}_lead_sec_{k}.flac'
-            if f.exists():
-                versions[f'{LIBELLES[c]} : {g}'] = (f, gains[f'{c}_lead_sec_{k}'])
-    parole = json.loads((rp / 'synth' / 'separer_parole.json').read_text()) if (rp / 'synth' / 'separer_parole.json').exists() else {}
-    meilleure_parole = max((c for c in CANDIDATS_PAROLE if c in resume and (rp / 'reel' / f'{c}_o1.flac').exists()),
-                           key=note, default=None)
-    if meilleure_parole:
-        for k in (1, 2):
-            versions[f'{LIBELLES[meilleure_parole]} : voix {k}'] = (
-                rp / 'reel' / f'{meilleure_parole}_o{k}.flac', parole[meilleure_parole]['gains_flac_reel'][f'{meilleure_parole}_o{k}'])
-    extraits = {'unisson': versions}
-    demo = r / 'demo' / 'demo.json'
-    if demo.exists():
-        d = json.loads(demo.read_text())
-        g = d['gains_flac']
-        extraits['unisson-double'] = {
-            'voix principale doublée d\'un bloc dans la voix de femme (chaîne actuelle)': (r / 'demo' / 'bloc.flac', g['bloc']),
-            f"chaque chanteur séparé ({LIBELLES[d['meilleur']]}) dans sa voix": (r / 'demo' / 'separe.flac', g['separe'])}
+    def piste(r, cle, gain):
+        return lire_piste(r / 'reel' / f'{cle}.flac', gain).mean(1)
+    separees = {'voix principale sèche, non séparée (chaîne actuelle)': piste(r1, 'lead_sec', gains1['lead_sec'])}
+    for k, g in (('h', "voix d'homme"), ('f', 'voix de femme')):
+        separees[f"{LIBELLES['hf_sucial']} : {g}"] = piste(r1, f'hf_sucial_lead_sec_{k}', gains1[f'hf_sucial_lead_sec_{k}'])
+    d3 = {}
+    for r in sessions[1:]:
+        p = r / 'synth' / 'separer_parole.json'
+        if p.exists():
+            for nom, v in json.loads(p.read_text()).items():
+                if nom in a.parole:
+                    for cle, g in (v.get('gains_flac_reel') or {}).items():
+                        separees[f"{LIBELLES[nom]} : voix {cle[-1]}"] = piste(r, cle, g)
+        p = r / 'reel' / 'reel_bis.json'
+        if p.exists():
+            bis = json.loads(p.read_text())
+            att = bis.get('attribution', {}).get('karaoke_bs_frazer_lead_sec', {})
+            for k in ('o1', 'o2'):
+                cle = f'karaoke_bs_frazer_lead_sec_{k}'
+                separees[f"{LIBELLES['karaoke_bs_frazer']}, sur la voix principale : piste {k[-1]} "
+                         f"({att.get(cle, '?')} d'après la hauteur)"] = piste(r, cle, bis['gains_flac'][cle])
+        for f in (r / 'demo').glob('demo_bis_*.json'):
+            d3[f.stem.replace('demo_bis_', '')] = json.loads(f.read_text())
+    extraits = {'unisson': separees}
+    infos = {}
+    if 'bloc' in d3:
+        r3 = next(r for r in sessions[1:] if (r / 'demo' / 'demo_bis_bloc.json').exists())
+        if 'frazer' in d3 and not (r3 / 'demo' / 'frazer_o1.flac').exists():
+            del d3['frazer']
+        d1 = json.loads((r1 / 'demo' / 'demo.json').read_text())
+        extraits['unisson-double'], infos = versions_doublees(r1, r3, gains1, d1, d3)
+        dire(f"chaîne actuelle : {len(infos['passages'])} passages ; double conversion sur {infos['a_deux_s']} s")
     titres = {'unisson': 'Unisson : duo réel', 'unisson-double': 'Unisson : duo réel, doublé'}
     correspondance = banc.lire_json_local(dossier / 'correspondance.json')
     alea = random.Random(a.graine)
+    n = sf.info(str(t / 'instrumental.wav')).frames
     for ex, vs in extraits.items():
         d = dossier / ex
         shutil.rmtree(d, ignore_errors=True)
@@ -552,9 +703,7 @@ def ecoute(a):
         lettres = {chr(65 + i): v for i, v in enumerate(noms)}
         gains_mix = {}
         for lettre, v in lettres.items():
-            chemin, gain = vs[v]
-            y = lire_piste(chemin, gain).mean(1)
-            n = sf.info(str(t / 'instrumental.wav')).frames
+            y = vs[v]
             y = y[:n] if len(y) >= n else np.pad(y, (0, n - len(y)))
             src = tv / f'{lettre}.wav'
             sf.write(str(src), y, SR, subtype='FLOAT')
@@ -573,8 +722,10 @@ def ecoute(a):
     tmp = dossier / 'correspondance.json.tmp'
     tmp.write_text(json.dumps(correspondance, ensure_ascii=False, indent=1))
     os.replace(tmp, dossier / 'correspondance.json')
+    (RESULTATS / 'ecoute.json').write_text(json.dumps({'sessions': a.sessions, 'extraits': {ex: list(vs) for ex, vs in extraits.items()},
+                                                       **infos}, ensure_ascii=False, indent=1))
     shutil.rmtree(t, ignore_errors=True)
-    dire(f'écoute : {dossier}/unisson/ et {dossier}/unisson-double/')
+    dire(f'écoute : ' + ', '.join(str(dossier / ex) for ex in extraits))
 
 
 def main():
@@ -584,7 +735,10 @@ def main():
     q.add_argument('--video', help='vrai duo (vidéo locale, lue par ffmpeg seulement)')
     q.add_argument('--debut', type=float, default=None, help='début de la partie analysée (s) ; défaut : la fin')
     q.add_argument('--duree', type=float, default=110.0, help='durée de la partie analysée (s)')
-    q.add_argument('--reel-extrait', help='session dont la voix principale sèche de l\'extrait d\'écoute part dans le jeu')
+    q.add_argument('--reel-extrait', help='session dont l\'extrait d\'écoute (voix, voix principale sèche, pistes homme/femme) '
+                                          'part dans le jeu')
+    q.add_argument('--reel-plus', action='append', help='session dont les pistes des modèles de parole sur cet extrait partent '
+                                                        'aussi dans le jeu (répétable)')
     q = sp.add_parser('envoyer')
     q.add_argument('--message')
     q = sp.add_parser('lancer')
@@ -594,15 +748,22 @@ def main():
     q.add_argument('--essai', action='store_true', help='construit le noyau sans rien envoyer')
     q.add_argument('--sans-reel', action='store_true',
                    help='duos synthétiques seuls (le vrai duo et l\'extrait doublé viennent d\'une session précédente)')
-    for nom in ('rapatrier', 'tableau'):
-        q = sp.add_parser(nom)
-        q.add_argument('session')
-    q = sp.add_parser('ecoute')
+    q.add_argument('--complement', action='store_true',
+                   help='session 3 : MossFormer2 sur les duos synthétiques, karaoké frazer et conversions sur l\'extrait')
+    q = sp.add_parser('rapatrier')
     q.add_argument('session')
+    q = sp.add_parser('tableau')
+    q.add_argument('session')
+    q.add_argument('--plus', action='append', default=[], help='session dont les candidats absents s\'ajoutent au tableau')
+    q = sp.add_parser('ecoute')
+    q.add_argument('sessions', nargs='+', help='sessions, la première avec le vrai duo (s1 s2 s3)')
     q.add_argument('--ecoute', help='dossier de l\'écoute à l\'aveugle (défaut : banc/ecoute du dépôt)')
     q.add_argument('--graine', type=int, default=20261106)
-    q.add_argument('--parole', help='session des modèles de parole (défaut : la même)')
+    q.add_argument('--parole', action='append', default=None,
+                   help='modèles de parole dont les pistes vont à l\'écoute (défaut : medleyvox_238)')
     a = p.parse_args()
+    if a.cmd == 'ecoute' and not a.parole:
+        a.parole = ['medleyvox_238']
     {'preparer': preparer, 'envoyer': envoyer, 'lancer': lancer, 'rapatrier': rapatrier, 'tableau': tableau,
      'ecoute': ecoute}[a.cmd](a)
 

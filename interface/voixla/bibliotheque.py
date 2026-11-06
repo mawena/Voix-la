@@ -14,6 +14,7 @@ et le choix d'affichage gardé dans interface.json.
 import hashlib
 import json
 import os
+import time
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -321,11 +322,39 @@ def libelles_versions(entree):
     return [tuple(p) for p in sortie]
 
 
+def ordre(a, b, tri):
+    """-1, 0 ou 1 : a avant b dans l'ordre croissant de ce critère (le trieur des colonnes de la page applique le
+    sens)."""
+    ka, kb = a.cles_tri()[tri], b.cles_tri()[tri]
+    return (ka > kb) - (ka < kb)
+
+
 def comparer(a, b, tri, inverse=False):
     """-1, 0 ou 1 : a avant b, pour ce critère, dans l'ordre affiché (decroissant())."""
-    ka, kb = a.cles_tri()[tri], b.cles_tri()[tri]
-    r = (ka > kb) - (ka < kb)
+    r = ordre(a, b, tri)
     return -r if decroissant(tri, inverse) else r
+
+
+MOIS = ("janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc.")
+
+
+def date_courte(ts, maintenant=None):
+    """« aujourd'hui », « hier », « il y a 3 jours », « 17 oct. », « 17 oct. 2025 » : la date d'une carte."""
+    if not ts:
+        return ""
+    maintenant = maintenant or time.time()
+    lt, ln = time.localtime(ts), time.localtime(maintenant)
+    jours = (time.mktime((ln.tm_year, ln.tm_mon, ln.tm_mday, 0, 0, 0, 0, 0, -1)) -
+             time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))) / 86400
+    jours = round(jours)
+    if jours <= 0:
+        return "aujourd’hui"
+    if jours == 1:
+        return "hier"
+    if jours < 7:
+        return f"il y a {jours} jours"
+    texte = f"{lt.tm_mday} {MOIS[lt.tm_mon - 1]}"
+    return texte if lt.tm_year == ln.tm_year else f"{texte} {lt.tm_year}"
 
 
 # --- Filtres et recherche ----------------------------------------------------------------------------------------------
@@ -435,8 +464,8 @@ def compte(visibles, entrees, n_versions):
 
 
 def resume_version(v, maintenant=None):
-    """« Jules · hier 18:41 » : la ligne sous le titre d'une carte."""
-    return " · ".join(x for x in (v.voix, formats.date(v.date, maintenant)) if x)
+    """« Jules · hier » : la ligne sous le titre d'une carte."""
+    return " · ".join(x for x in (v.voix, date_courte(v.date, maintenant)) if x)
 
 
 def description_accessible(entree):

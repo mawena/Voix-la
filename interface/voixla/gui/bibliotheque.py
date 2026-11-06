@@ -143,12 +143,16 @@ class Carte(Gtk.Box):
         self.badges = Gtk.Box(spacing=4, halign=Gtk.Align.START, valign=Gtk.Align.START, margin_start=8,
                               margin_top=8, can_target=True)
         self.image.add_overlay(self.badges)
-        self.duree = Gtk.Label(css_classes=["vignette-pastille", "chiffres"], halign=Gtk.Align.END,
-                               valign=Gtk.Align.END, margin_end=8, margin_bottom=8, can_target=False)
-        self.image.add_overlay(self.duree)
-        self.n_versions = Gtk.Label(css_classes=["vignette-pastille"], halign=Gtk.Align.END, valign=Gtk.Align.START,
-                                    margin_end=8, margin_top=8, can_target=False)
-        self.image.add_overlay(self.n_versions)
+        # en bas à droite : le nombre de versions (une icône de copies et le nombre), puis la durée
+        coin = Gtk.Box(spacing=4, halign=Gtk.Align.END, valign=Gtk.Align.END, margin_end=8, margin_bottom=8)
+        self.n_versions = Gtk.Box(spacing=3, css_classes=["vignette-pastille"])
+        self.n_versions.append(Gtk.Image(icon_name="edit-copy-symbolic", pixel_size=11))
+        self.l_versions = Gtk.Label(css_classes=["chiffres"])
+        self.n_versions.append(self.l_versions)
+        coin.append(self.n_versions)
+        self.duree = Gtk.Label(css_classes=["vignette-pastille", "chiffres"])
+        coin.append(self.duree)
+        self.image.add_overlay(coin)
         self.b_lire = Gtk.Button(icon_name="media-playback-start-symbolic",
                                  css_classes=["circular", "osd", "lecture-rapide"], halign=Gtk.Align.START,
                                  valign=Gtk.Align.END, margin_start=8, margin_bottom=8)
@@ -183,16 +187,17 @@ class Carte(Gtk.Box):
         sel = self.page.en_selection
         self.image.lier(p)
         commun.vider(self.badges)
-        for b in e.badges()[:4]:
+        for b in e.badges()[:2 if self.page.etroit else 4]:
             self.badges.append(_badge_image(b))
         self.duree.set_label(formats.chrono(e.duree_s) if e.duree_s else "")
         self.duree.set_visible(bool(e.duree_s))
-        self.n_versions.set_label(f"{e.n} versions")
-        self.n_versions.set_visible(e.n > 1 and not sel)
+        self.l_versions.set_label(str(e.n))
+        self.n_versions.set_tooltip_text(f"{e.n} versions : voix {e.voix}")
+        self.n_versions.set_visible(e.n > 1)
         self.titre.set_label(e.titre)
         self.titre.set_tooltip_text(e.titre if len(e.titre) > 40 else None)
         if e.n > 1:
-            self.sous.set_label(f"{e.n} versions · {formats.date(e.date)}")
+            self.sous.set_label(f"{e.n} versions · {bib.date_courte(e.date)}")
         else:
             self.sous.set_label(bib.resume_version(p))
         self.pastilles.lier(e, sel)
@@ -230,7 +235,7 @@ class CelluleTitre(Gtk.Box):
     et la date, dont les colonnes sont cachées)."""
 
     def __init__(self, page):
-        super().__init__(spacing=10, margin_top=4, margin_bottom=4)
+        super().__init__(spacing=10, margin_top=2, margin_bottom=2)
         self.page = page
         self.element = None
         self.image = Image(largeur_min=64, largeur_nat=64, rayon=6, taille_note=16)
@@ -262,8 +267,7 @@ class CelluleTitre(Gtk.Box):
         e = self.element.entree if self.element else None
         if e is None:
             return
-        morceaux = [e.voix] + ([formats.chrono(e.duree_s)] if e.duree_s else []) + [formats.date(e.date)]
-        self.sous.set_label(" · ".join(m for m in morceaux if m))
+        self.sous.set_label(" · ".join(m for m in (e.voix, bib.date_courte(e.date)) if m))
         self.sous.set_visible(oui)
         self.badges.set_visible(not oui and self.badges.get_first_child() is not None)
 
@@ -366,7 +370,7 @@ class PageBibliotheque(commun.Page):
 
         # --- modèle : magasin → filtre → tri → sélection (aucune, ou multiple en mode sélection) -------------------
         self.magasin = Gio.ListStore.new(Element)
-        self.f_filtre = Gtk.CustomFilter.new(lambda el: self.filtre.garde(el.entree))
+        self.f_filtre = Gtk.CustomFilter.new(lambda el, *_: self.filtre.garde(el.entree))
         self.m_filtre = Gtk.FilterListModel.new(self.magasin, self.f_filtre)
         self.m_tri = Gtk.SortListModel.new(self.m_filtre, None)
         self.sel_aucune = Gtk.NoSelection.new(self.m_tri)
@@ -456,14 +460,14 @@ class PageBibliotheque(commun.Page):
                                     menu_model=self._menu_tri())
         self.b_tri.update_property([Gtk.AccessibleProperty.LABEL], ["Trier et filtrer"])
         self.entete.pack_end(self.b_tri)
-        vues = Gtk.Box(css_classes=["linked"], valign=Gtk.Align.CENTER)
+        self.b_vues = Gtk.Box(css_classes=["linked"], valign=Gtk.Align.CENTER)
         for vue, icone, libelle in (("grille", "view-grid-symbolic", "Grille"),
                                     ("liste", "view-list-symbolic", "Liste")):
             b = Gtk.ToggleButton(icon_name=icone, tooltip_text=f"Afficher en {libelle.lower()}",
                                  action_name="bibliotheque.vue", action_target=GLib.Variant.new_string(vue))
             b.update_property([Gtk.AccessibleProperty.LABEL], [f"Affichage en {libelle.lower()}"])
-            vues.append(b)
-        self.entete.pack_end(vues)
+            self.b_vues.append(b)
+        self.entete.pack_end(self.b_vues)
         self.b_actualiser = commun.bouton(icone="view-refresh-symbolic", infobulle="Actualiser (F5)",
                                           clic=self.actualiser)
         self.entete.pack_end(self.b_actualiser)
@@ -476,6 +480,10 @@ class PageBibliotheque(commun.Page):
 
     def _menu_tri(self):
         menu = Gio.Menu()
+        vue = Gio.Menu()           # aussi dans l'en-tête, sauf fenêtre étroite
+        vue.append("Grille", "bibliotheque.vue::grille")
+        vue.append("Liste", "bibliotheque.vue::liste")
+        menu.append_section("Affichage", vue)
         tri = Gio.Menu()
         for cle in ("date", "titre", "voix", "duree"):
             tri.append(bib.LIBELLES_TRI[cle], f"bibliotheque.tri::{cle}")
@@ -581,8 +589,11 @@ class PageBibliotheque(commun.Page):
             lambda cell: cell.get_child().delier()), fixed_width=92)
         self.colonnes_tri = {"titre": self.col_titre, "voix": self.col_voix, "mode": self.col_mode,
                              "duree": self.col_duree, "date": self.col_date}
+        def comparateur(critere):
+            # PyGObject passe en plus les données utilisateur (None) : *_
+            return lambda a, b, *_: bib.ordre(a.entree, b.entree, critere)
         for cle, col in self.colonnes_tri.items():
-            col.set_sorter(Gtk.CustomSorter.new(lambda a, b, c=cle: bib.comparer(a.entree, b.entree, c)))
+            col.set_sorter(Gtk.CustomSorter.new(comparateur(cle)))
             col.set_id(cle)
         for col in (self.col_titre, self.col_voix, self.col_mode, self.col_duree, self.col_date, self.col_actions):
             self.colonnes.append_column(col)
@@ -621,8 +632,7 @@ class PageBibliotheque(commun.Page):
         bac.set_child(self.vue)
         self.set_child(bac)
         etroit = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 560sp"))
-        etroit.add_setter(self.grille, "css-classes", ["bibliotheque-grille", "etroite"])
-        for w in (self.b_actualiser, self.b_dossier, self.col_voix, self.col_mode, self.col_date):
+        for w in (self.b_actualiser, self.b_dossier, self.b_vues, self.col_voix, self.col_mode, self.col_date):
             etroit.add_setter(w, "visible", False)
         etroit.connect("apply", lambda *_: self._etroit(True))
         etroit.connect("unapply", lambda *_: self._etroit(False))
@@ -798,6 +808,10 @@ class PageBibliotheque(commun.Page):
 
     def _etroit(self, oui):
         self.etroit = oui
+        (self.grille.add_css_class if oui else self.grille.remove_css_class)("etroite")
+        modele = self.grille.get_model()
+        self.grille.set_model(None)           # relie les cartes visibles : moins de badges en fenêtre étroite
+        self.grille.set_model(modele)
         for c in list(self.cellules_titre):
             c.etroit(oui)
 
@@ -1177,15 +1191,21 @@ class PageBibliotheque(commun.Page):
         """Essais : « grille », « liste », « deplier », « selection » (deux entrées cochées), « corbeille »
         (confirmation pour la première entrée, sans rien envoyer), « corbeille-selection », « chercher-<mot> »,
         « filtre-<autotune|duo|chant|parole|extrait|entier|voix-<id>> », « tri-<critère> », « inverse »,
-        « lire[-<mot>] » (lecture muette sans ouvrir le détail), « survol » (bouton de lecture de la première carte
-        visible), « detail », « detail-<mot>[:actions du détail] ». Plusieurs actions : « liste+selection »."""
+        « lire[-<mot>] » (lecture muette sans ouvrir le détail), « ouvrir[-<mot>] » (comme un clic sur la carte),
+        « survol » (les boutons de lecture visibles, comme au survol), « pause-<s> » (la suite s secondes plus tard),
+        « detail », « detail-<mot>[:actions du détail] ». Plusieurs actions : « liste+selection »."""
         if action.startswith("detail"):
             self.apres_chargement(lambda: GLib.timeout_add(700, lambda: (self._scenario_detail(action), False)[1]))
             return
         etapes = [a for a in action.split("+") if a]
 
-        def jouer():
-            for a in etapes:
+        def jouer(i=0):
+            while i < len(etapes):
+                a = etapes[i]
+                i += 1
+                if a.startswith("pause-"):         # « pause-3 » : les étapes suivantes 3 s plus tard
+                    GLib.timeout_add(int(float(a.split("-", 1)[1]) * 1000), lambda: (jouer(i), False)[1])
+                    return False
                 self._scenario(a)
             return False
         self.apres_chargement(lambda: GLib.timeout_add(500, jouer))
@@ -1239,5 +1259,9 @@ class PageBibliotheque(commun.Page):
             e = self._premiere(a.split("-", 1)[1] if "-" in a else "")
             if e is not None:
                 self.lire_rapide(e, muet=True)
+        elif a == "ouvrir" or a.startswith("ouvrir-"):
+            e = self._premiere(a.split("-", 1)[1] if "-" in a else "")
+            if e is not None:
+                self.ouvrir_version(self.filtre.premiere(e))
         elif a == "survol":
             self.add_css_class("survol")

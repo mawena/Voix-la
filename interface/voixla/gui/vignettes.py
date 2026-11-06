@@ -24,7 +24,7 @@ import gi
 
 gi.require_version("Graphene", "1.0")
 gi.require_version("Gsk", "4.0")
-from gi.repository import Gdk, GLib, GObject, Graphene, Gsk, Gtk  # noqa: E402
+from gi.repository import Gdk, GLib, Graphene, Gsk, Gtk  # noqa: E402
 
 from .. import pistes, preparation  # noqa: E402
 from .. import bibliotheque as bib  # noqa: E402

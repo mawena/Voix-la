@@ -1,3 +1,15 @@
+voix-la (0.9.0) unstable; urgency=medium
+
+  * Noyau : Roformer de séparation, karaoké et dereverb en demi-précision
+    (autocast fp16) ; session Kaggle d'une chanson de 17 à 11,3 min, son
+    identique aux mesures. Réglages pour revenir en fp32.
+  * Interface : suivi du quota GPU Kaggle (lu par « kaggle quota »),
+    estimation avant chaque doublage, alerte, mise en attente jusqu'à la
+    remise à zéro du samedi.
+  * Banc d'essai de vitesse.
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Fri, 06 Nov 2026 12:00:00 +0000
+
 voix-la (0.8.0) unstable; urgency=medium
 
   * Interface : bibliothèque des résultats, en grille de cartes avec

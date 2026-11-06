@@ -3124,7 +3124,8 @@ def ying_morceaux(travail, m, refs, res):
     m.torch.cuda.empty_cache()
     res['conversion_s'] = round(time.time() - t_carte, 1)
     log(f"YINGMUSIC carte {carte} : {len(res['morceaux_faits'])} morceau(x) en {time.time() - t_carte:.0f} s"
-        + (f", {len(res['morceaux_erreurs'])} en échec" if res['morceaux_erreurs'] else ''))
+        + (f", {len(res['morceaux_erreurs'])} en échec" if res['morceaux_erreurs'] else '')
+        + f" ; mémoire du GPU au plus fort {res['memoire_gpu_max_mo']} Mo")
     ecrire_json(chemin, res)
 
 
@@ -4244,7 +4245,8 @@ def main():
         if res.get('carte') is not None:
             log(f"PAROLES sur la carte {res['carte']} pendant la conversion : {res.get('duree_s')} s, dont "
                 f"{res.get('attente_chargement_s')} s d'attente du chargement de YingMusic-SVC, Whisper chargé en "
-                f"{(res.get('chargements_s') or {}).get('whisper')} s, transcription {(res.get('temps') or {}).get('transcription_s')} s")
+                f"{(res.get('chargements_s') or {}).get('whisper')} s, transcription {(res.get('temps') or {}).get('transcription_s')} s"
+                f" ; mémoire du GPU au plus fort {res.get('memoire_gpu_max_mo')} Mo")
 
     def nettoyer_fichiers(e):
         tr = e['tr']

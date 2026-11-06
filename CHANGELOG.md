@@ -7,6 +7,20 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+### Ajouté
+
+- Interface : « Partager… » (en-tête du détail d'un doublage, menu « ⋮ » de la bibliothèque) fait une vidéo courte
+  prête à partager (TikTok, Reels, Shorts, statut WhatsApp). Extrait de 15 à 60 s repris de la boucle A-B du lecteur,
+  ou proposé (le refrain, sinon le passage le plus chanté) ; vertical 9:16, carré 1:1 ou format d'origine, image
+  entière sur fond flou ou recadrée ; paroles karaoké incrustées (sous-titres ASS à effet `\kf`, même calage que le
+  lecteur), traduction sous la ligne en option ; piste son au choix (doublage, auto-tune, beat seul, ma voix seule) ;
+  mention « Voix générée par IA » allumée par défaut ; fondus du son et de l'image ; H.264 et AAC en mp4 faststart,
+  40 Mo au plus pour 60 s. Aperçu d'une image ; export en tâche de fond par `file-attente`, avec avancement et
+  annulation, dans `<dossier du doublage>/partage/` ; « Ouvrir le dossier ». Les vidéos à partager partent à la
+  corbeille avec les fichiers de leur voix.
+- `python3 -m voixla.export_social` : le même export en ligne de commande (`--refrain`, `--proposer`, `--apercu`,
+  `--ass`).
+
 ## [0.9.0] - 2026-11-06
 
 ### Ajouté

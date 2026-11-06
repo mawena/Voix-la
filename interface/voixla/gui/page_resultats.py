@@ -1225,6 +1225,8 @@ class PageDetail(Adw.NavigationPage):
             self.corps.insert_child_after(neuf, ancien)
             self.corps.remove(ancien)
             setattr(self, nom, neuf)
+        # préparations ratées d'une piste qui n'existe plus (ma voix seule auto-tunée d'une version retirée)
+        self._echecs = {k: m for k, m in self._echecs.items() if k in self.pistes_dispo}
         self._maj_remix_autotune()
         self._maj_note()
 

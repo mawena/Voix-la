@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from voixla import moteur
+from voixla import moteur, systeme
 
 ICI = Path(__file__).resolve().parent
 FAUX_DOUBLER = ICI / "faux_doubler.py"
@@ -20,7 +20,8 @@ VRAI_DOUBLER = DEPOT / "doubler.py"
 
 # Variables effacées puis reposées pour chaque essai (les FAUX_DOUBLER_* sont toutes effacées)
 VARIABLES = ("VOIXLA_DONNEES", "VOIXLA_CONFIG", "VOIXLA_ETAT", "VOIXLA_DOUBLER", "VOIXLA_ECOUTE", "VOIXLA_KAGGLE",
-             "DOUBLER_VOIX", "XDG_CONFIG_HOME", "XDG_STATE_HOME")
+             "VOIXLA_ETAT_DOUBLER", "DOUBLER_VOIX", "XDG_CONFIG_HOME", "XDG_STATE_HOME")
+FAUX_KAGGLE = ICI / "faux_kaggle.py"
 
 
 def commande_faux(chemin=FAUX_DOUBLER):
@@ -83,13 +84,21 @@ class EssaiIsole(unittest.TestCase):
         self.etat = self.tmp / "etat"
         for d in (self.donnees, self.config, self.etat):
             d.mkdir()
-        env = {k: v for k, v in os.environ.items() if k not in VARIABLES and not k.startswith("FAUX_DOUBLER_")}
+        env = {k: v for k, v in os.environ.items()
+               if k not in VARIABLES and not k.startswith(("FAUX_DOUBLER_", "FAUX_KAGGLE_"))}
+        self.etat_doubler = self.tmp / "etat-doubler"
         env.update({"VOIXLA_DONNEES": str(self.donnees), "VOIXLA_CONFIG": str(self.config),
                     "VOIXLA_ETAT": str(self.etat), "VOIXLA_ECOUTE": str(self.tmp / "ecoute"),
                     "VOIXLA_DOUBLER": commande_faux(), "FAUX_DOUBLER_VITESSE": self.vitesse,
                     # pas de préparateur de pistes en tâche de fond lancé par l'exécuteur pendant les essais
-                    "VOIXLA_SANS_PREPARATION": "1"})
+                    "VOIXLA_SANS_PREPARATION": "1",
+                    # ni Kaggle (« kaggle quota », état des noyaux) ni l'état réel de doubler (session, verrou)
+                    "VOIXLA_KAGGLE": str(self.tmp / "kaggle-absente"),
+                    "VOIXLA_ETAT_DOUBLER": str(self.etat_doubler)})
         rustine = mock.patch.dict(os.environ, env, clear=True)
+        rustine.start()
+        self.addCleanup(rustine.stop)
+        rustine = mock.patch.object(systeme, "ETAT_DOUBLER", self.etat_doubler)
         rustine.start()
         self.addCleanup(rustine.stop)
         oublier_capacites()

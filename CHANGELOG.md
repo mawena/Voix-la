@@ -34,6 +34,19 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
   écoulé, puis le contrôle de qualité habituel. Sans téléphone, la raison (aucun, non autorisé, hors ligne, scrcpy ou
   adb absent) et « Réessayer », avec `adb connect` sur l'adresse sans fil indiquée. La source de la dernière prise est
   gardée (`source_enregistrement`). `VOIXLA_TELEPHONE_ESSAI=1` imite un téléphone pour les essais.
+- Interface : plein écran du lecteur d'un résultat (bouton, F ou double-clic ; Échap ou F pour sortir). L'image seule
+  sur fond noir, titre et commandes en surimpression masqués avec le pointeur après 3 s sans mouvement, paroles sur
+  l'image, lisibles sur toute image ; pour un MP3, la pochette et les paroles en grand. Le lecteur reste celui de la
+  page : lecture continue, MPRIS, pistes dans le même flux.
+- Interface : lecteur complet. Temps écoulé et restant, volume et muet (M), vitesse de 0,5× à 2× en gardant la hauteur
+  (scaletempo ; `[` et `]`), boucle A-B qui survit aux changements de piste (L), ±5 s (flèches), une image en pause
+  (`,` et `.`), capture de l'image en PNG (S), touches 1 à 5 pour les pistes. Reprise à la dernière position en
+  rouvrant un doublage, aussi depuis la bibliothèque. MPRIS : `Rate` réglable.
+- Interface : chaque panneau du détail s'affiche ou se masque (menu « œil » et Réglages) : frise d'octave et « Voix de
+  chaque passage » en plus des visualisations et des paroles ; mode cinéma (V) qui les masque tous d'un coup.
+- Interface : paroles façon karaoké. Ligne en cours en grand et centrée, précédente et suivante estompées, mot en cours
+  rempli au fil de sa durée, transitions douces, traduction sous chaque ligne ; panneau « Toutes les paroles » qui suit
+  la lecture (P) ; sous-titres sur la vidéo hors du plein écran ; taille du texte réglable. Calage inchangé.
 
 ### Modifié
 
@@ -42,6 +55,14 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 ### Corrigé
 
 - Interface : fermer le dialogue d'enregistrement pendant le compte à rebours ne lance plus la prise derrière lui.
+- Interface : dans le détail d'un résultat, Espace (lecture / pause) pouvait être pris par le bouton qui avait le
+  focus, ou avalé par la fenêtre ; il va maintenant au lecteur, et le focus va à l'image à l'ouverture.
+- Interface : le détail d'un résultat débordait à droite dans une fenêtre étroite (légende de la mélodie).
+
+### Interne
+
+- Interface : le défaut de la clé `bibliotheque` d'`interface.json` est déclaré dans `chemins.py`
+  (`bibliotheque.declarer_preferences` retiré).
 
 ## [0.7.0] - 2026-11-06
 

@@ -31,10 +31,50 @@ Prérequis du poste : Python 3, PyGObject avec GTK 4, libadwaita 1.5 et GStreame
 | **Réglages** (menu ☰, Ctrl+,) | Dossier de données, compte et noms Kaggle, moteur du chant, paroles, auto-tune et cartes GPU (Auto, 1 ou 2) par défaut (écrits par `doubler --config`, par exemple `doubler --config paroles non`, `doubler --config autotune 50` ou `doubler --config gpu 1` ; le réglage des cartes est grisé si `doubler` ne connaît pas la clé `gpu`), voix et réglages de doublage par défaut, micro et durées d'enregistrement, autre dossier de prises de chant, visualisations et paroles. |
 
 Raccourcis : Alt+1 à Alt+6 ouvrent les pages, F5 actualise, Ctrl+, ouvre les réglages, Ctrl+? les raccourcis. Dans un
-résultat, B bascule doublage ⇄ original, T avec ou sans auto-tune, et Espace lance ou arrête la lecture. Dans l'écoute à l'aveugle, V bascule
-mix ⇄ voix seule. Dans la bibliothèque des résultats : Ctrl+F cherche, Entrée ouvre la carte qui a le focus, Espace la lit ou la met
-en pause sans ouvrir le détail (en mode sélection : la coche), Suppr la met à la corbeille (en mode sélection : la
-sélection), Ctrl+A sélectionne tout, Échap sort du mode sélection.
+résultat : Espace lecture / pause, flèches ±5 s, `,` et `.` une image en pause, Origine le début, 1 à 5 les pistes
+(doublage, original, beat seul, voix convertie, voix d'origine), B doublage ⇄ original, T avec ou sans auto-tune, L la
+boucle A-B, `[` et `]` la vitesse, M le son, F le plein écran (Échap pour sortir), V le mode cinéma, P le panneau
+« Toutes les paroles », S une capture de l'image (voir [Lecteur d'un résultat](#lecteur-dun-résultat)). Dans l'écoute
+à l'aveugle, V bascule mix ⇄ voix seule. Dans la bibliothèque des résultats : Ctrl+F cherche, Entrée ouvre la carte
+qui a le focus, Espace la lit ou la met en pause sans ouvrir le détail (en mode sélection : la coche), Suppr la met à
+la corbeille (en mode sélection : la sélection), Ctrl+A sélectionne tout, Échap sort du mode sélection.
+
+## Lecteur d'un résultat
+
+- **Commandes** sous l'image : temps écoulé, barre de progression, temps restant ; lecture / pause, ±5 s, son coupé et
+  volume (gardé dans `interface.json`, clé `volume`), boucle A-B, vitesse, capture de l'image, plein écran. Fenêtre
+  étroite : le volume, ±5 s et la capture disparaissent d'abord.
+- **Vitesse** de 0,5× à 2× (menu ou `[` `]`), **la hauteur est gardée** : le lecteur de GTK passe le son par
+  `scaletempo` (filtre audio de son playbin). Mesuré : un sinus à 440 Hz reste à 440 Hz à 0,5× et à 2×, pendant que la
+  position avance à 0,502× et 2,011×. Elle vaut pour toutes les pistes, et pour le son seul fenêtre fermée.
+- **Boucle A-B** (touche L ou bouton A-B : début, fin, puis effacée) : en temps du son doublé, elle vaut pour toutes
+  les pistes. On compare ainsi le doublage et l'original au même passage. Surveillée pendant la lecture seulement
+  (40 ms), que la page soit affichée ou non. Mesuré : B dépassé de 7 ms au plus, même après une bascule dans le même
+  flux ou vers un autre fichier. Elle est surlignée sur la barre de progression.
+- **Image par image** en pause (`,` et `.`) : un pas d'une image, d'après la cadence de la vidéo.
+- **Capture** (S ou bouton) : l'image en cours, à sa taille d'origine, en PNG dans `Images/Voix-là/`
+  (`<titre> - <piste> - 1m23,45s.png`), écrite dans un fil.
+- **Reprise à la dernière position** : en rouvrant un doublage (détail ou bouton de lecture de la bibliothèque), la
+  lecture reprend où elle s'était arrêtée, avec un bandeau « Reprise à 1:23 » et « Reprendre au début ». La position
+  est retenue à la pause, toutes les 30 s pendant la lecture, en quittant ; pas au tout début (moins de 5 s) ni à la
+  fin (moins de 10 s avant), où l'on reprend au début. Clé `positions` d'`interface.json`, 200 doublages au plus.
+- **Plein écran** (bouton, F ou double-clic sur l'image ; Échap ou F pour sortir) : l'image seule sur fond noir, le
+  titre en haut et les commandes en bas en surimpression, masqués avec le pointeur après 3 s sans mouvement (sauf
+  pointeur sur les commandes ou menu ouvert), revenus au moindre mouvement ou à une touche. Les paroles sont sur
+  l'image, en bas (texte blanc cerné de sombre, le mot en cours rempli en jaune), au-dessus des commandes quand elles
+  sont là. Un MP3 montre sa pochette (ou la miniature de la vidéo, ou la pochette générée) et les paroles en grand. Le
+  plein écran garde le lecteur de la page : pistes, vitesse, boucle, MPRIS et lecture continue tels quels. Toutes
+  les touches du détail y marchent, et le choix de la piste est aussi dans un menu.
+- **Mode cinéma** (V, ou menu « œil ») : frises, visualisations, paroles et informations masquées d'un coup, l'image
+  en grand ; V encore pour tout retrouver tel quel.
+- **Clavier** : Espace, les flèches et Origine sont pris avant la fenêtre (qui ferait d'Espace « activer le focus » et
+  des flèches un déplacement du focus), sauf par ce qui s'en sert : un bouton ou une case qui a le focus (Espace), une
+  barre, un texte, une liste. À l'ouverture du détail, le focus est sur l'image. Un clic sur une commande ne lui laisse
+  pas le focus.
+- **MPRIS** : `Rate` suit la vitesse (`MinimumRate` 0,5, `MaximumRate` 2) et se règle depuis le bureau ; la barre « en
+  cours de lecture » montre la vitesse et la boucle (« voix Jules · Beat seul · 1,25× · boucle A-B »).
+- **Sobriété** : les commandes se mettent à jour 4 fois par seconde au plus, pendant la lecture et si elles sont
+  affichées ; en plein écran, la page cachée ne se redessine plus. Mesures plus bas.
 
 ## Lecture en arrière-plan
 
@@ -214,12 +254,23 @@ perdre la position, au même instant du son, même quand le son d'une vidéo ent
 
 ## Paroles
 
-Sous le lecteur s'affichent la ligne en cours et la suivante, synchronisées sur la lecture. Le mot en cours est
-souligné quand `doubler` donne les mots, et un clic sur une ligne va à son début. Le choix « Originale », « Français »
-ou « Les deux » (la traduction sous chaque ligne) n'apparaît que s'il y a deux langues ; il est gardé dans
-`interface.json` (`paroles_langue`). L'interrupteur « Paroles » se trouve dans le menu « œil » et dans les Réglages
-(`paroles`, allumé par défaut).
+Sous le lecteur, trois lignes : la ligne en cours en grand et centrée, la précédente et la suivante plus petites et
+estompées. Quand `doubler` donne les mots, le mot en cours se **remplit** au fil de sa durée, façon karaoké, et les
+mots chantés gardent la couleur d'accent. Les lignes glissent de l'une à l'autre (0,25 s). Entre deux lignes, la
+suivante prend la place 3 s avant de commencer, sinon « ♪ ». Un clic sur une ligne va à son début. Le choix
+« Originale », « Français » ou « Les deux » (la traduction en plus petit sous chaque ligne) n'apparaît que s'il y a deux
+langues ; il est gardé dans `interface.json` (`paroles_langue`). L'interrupteur « Paroles » se trouve dans le menu
+« œil » et dans les Réglages (`paroles`, allumé par défaut).
 
+- **« Toutes les paroles »** (touche P, bouton de l'en-tête des paroles ou menu « œil ») : un panneau à droite du
+  détail, par-dessus le contenu dans une fenêtre étroite, avec toutes les lignes, leur temps et leur traduction. Il
+  suit la lecture en défilant seul (le suivi s'arrête 4 s si l'on fait défiler à la main) ; un clic ou Entrée sur une
+  ligne y va. Clé `paroles_panneau`.
+- **Sur l'image** : en plein écran (interrupteur « Paroles »), et hors du plein écran avec « Sous-titres sur la
+  vidéo » (clé `paroles_video`). Texte blanc cerné de sombre, mot en cours en jaune.
+- **Taille du texte** : Petite, Normale, Grande ou Très grande (menu « œil », Réglages ; clé `paroles_taille`). Sur
+  l'image, elle suit aussi la largeur de l'image.
+- Le calage ne change pas (ci-dessous).
 - **`travail/<voix>/paroles.json`**, écrit par `doubler` (format 1) ; `mots` et `traductions` sont facultatifs :
 
   ```json
@@ -250,11 +301,13 @@ ou « Les deux » (la traduction sous chaque ligne) n'apparaît que s'il y a deu
 
 ## Visualisations du son
 
-Chacune s'allume ou s'éteint dans le menu « œil » d'un résultat (ou dans les Réglages) ; le choix est gardé dans
-`interface.json`.
+Chaque panneau s'affiche ou se masque dans le menu « œil » d'un résultat (ou dans les Réglages) ; le choix est gardé
+dans `interface.json`. Le mode cinéma (V) les masque tous d'un coup.
 
 | Visualisation | Par défaut | Ce qu'elle montre |
 |---|---|---|
+| **Frise d'octave** | allumée | Sous le lecteur : la voix détectée de chaque passage et son décalage en demi-tons, clic pour y aller (`frise_octave`). |
+| **Voix de chaque passage** | allumée | Avec une voix par chanteur : quelle voix chante chaque passage (`frise_voix`). |
 | **Courbe de mélodie** | allumée | La voix d'origine (trait fin), la consigne, c'est-à-dire l'origine décalée du décalage de chaque passage (pointillés), et la voix convertie (trait plein, aux couleurs de la frise d'octave). Fenêtre de 12 s qui suit la lecture, échelle en notes (do, ré… ; la3 = 440 Hz) ou en Hz, clic pour aller à un moment. |
 | **Spectrogramme** | éteint | Défile avec la lecture et montre la piste écoutée (doublage, son d'origine, beat seul, ma voix seule, voix d'origine). Échelle de fréquence logarithmique, couleurs lisibles en clair comme en sombre. |
 | **Forme d'onde** | éteinte | Sous la frise d'octave : crêtes de toute la piste, partie déjà lue en couleur d'accent, curseur, clic pour y aller. |
@@ -310,10 +363,10 @@ téléphones Android prêts : « Téléphone Pixel 7 (USB) », « Téléphone Pi
 - **Données** (`voix/`, `sorties/`, `Vidéos/`) : `VOIXLA_DONNEES`, sinon la clé `donnees` de
   `~/.config/voix-la/config.json`, sinon `~/Music/Voix-là`. C'est le même ordre que `doubler`, et jamais à côté du
   code.
-- **Préférences de l'interface** : `~/.config/voix-la/interface.json` (réglages par défaut, choix d'une voix par chanteur, visualisations, paroles et
-  leur langue, vidéos sources choisies à la main, vue, tri et regroupement de la
-  bibliothèque (`bibliotheque`)). L'interface ne touche pas au `config.json` de
-  `doubler`, sauf par `doubler --config`.
+- **Préférences de l'interface** : `~/.config/voix-la/interface.json` (réglages par défaut, choix d'une voix par
+  chanteur, visualisations et frises, paroles (langue, taille, panneau, sur l'image), volume et dernière position de
+  chaque doublage, choix d'affichage de la bibliothèque (vue, tri et regroupement : `bibliotheque`), vidéos sources
+  choisies à la main). L'interface ne touche pas au `config.json` de `doubler`, sauf par `doubler --config`.
 - **Caches** (`~/.cache/voix-la/`, `VOIXLA_CACHE` pour les essais), chacun purgé à part, les fichiers les moins
   récemment utilisés d'abord : `pistes/` (analyses du son, 500 Mo), `voix/` (ma voix seule, 300 Mo), `videos/`
   (copies vidéo du beat et des voix seules des anciens doublages à une piste, 2 Go par défaut, préférence `cache_pistes_mo`), `sous-titres/` (20 Mo),
@@ -322,6 +375,7 @@ téléphones Android prêts : « Téléphone Pixel 7 (USB) », « Téléphone Pi
 - **Journal du préparateur en tâche de fond** : `~/.local/state/voix-la/preparation.log`.
 - **Beat et voix seule enregistrés** : à côté des sorties, `<titre> - voix <Nom> (beat).mp3` et
   `<titre> - voix <Nom> (voix seule).mp3` (ou ailleurs, par le sélecteur).
+- **Captures d'image** : `Images/Voix-là/` (`VOIXLA_IMAGES` pour les essais).
 - **Voix par défaut** : celle choisie dans l'interface (page Voix ou Réglages, gardée dans `interface.json`), sinon
   celle de `doubler` (clé `voix` de `config.json`, annoncée par `doubler --voix-liste --json` et
   `doubler --config --json`), sinon la seule voix. Avec plusieurs voix et aucune par défaut, rien n'est présélectionné :
@@ -392,7 +446,11 @@ aucun service activable). Le lecteur MPRIS d'essai, les notifications et le nom 
 donc jamais le bureau. Leur son est coupé. Scénarios utiles :
 
 - dans un résultat (`resultats:detail-<mot>:…`) : `lire`, `pause`, `piste-<clé>`, `puis-liste` ou `puis-<page>`
-  (quitter le résultat pendant la lecture), `retour` (y revenir) et `fermer` (fermer la fenêtre) ;
+  (quitter le résultat pendant la lecture), `retour` (y revenir), `fermer` (fermer la fenêtre), `plein-ecran`,
+  `masquer` (commandes du plein écran masquées), `cinema`, `panneau`, `sous-titres`, `taille-<nom>`, `oeil` (menu
+  « œil » ouvert), `boucle-<a>-<b>`, `vitesse-<v>`, `frises`, `clavier` (vraies touches par xdotool, l'état relevé
+  après chacune, une ligne JSON par touche). `VOIXLA_CAPTURE_ECRAN=1` capture l'écran Xvfb plutôt que la fenêtre : les
+  menus et popovers, surfaces à part, y sont ;
 - dans la bibliothèque (`resultats:<actions>`, plusieurs avec `+`) : `grille`, `liste`, `deplier`, `selection`,
   `corbeille` et `corbeille-selection` (la confirmation seulement, rien n'est envoyé), `chercher-<mot>`,
   `filtre-<autotune|duo|chant|parole|extrait|entier|voix-<id>>`, `tri-<critère>`, `inverse`, `lire[-<mot>]` (lecture
@@ -422,6 +480,8 @@ Variables pour les essais :
 | `ADB_SERIAL` | téléphone proposé en premier, et adresse sans fil préremplie (comme le script d'enregistrement) |
 | `VOIXLA_APP_ID` | instance distincte de l'application (et lecteur MPRIS `…voixla.essai<pid>`) |
 | `VOIXLA_SANS_PREPARATION=1` | ni préparation des pistes à la fin d'un doublage, ni au démarrage |
+| `VOIXLA_IMAGES` | dossier des captures d'image du lecteur |
+| `VOIXLA_CAPTURE_ECRAN=1` | capture de l'écran Xvfb (menus compris) au lieu de la fenêtre |
 
 Le faux doubler imite les deux GPU (`--gpu`, clés `gpu` et `kaggle.machine`, `temps_local.gpus`) ;
 `FAUX_DOUBLER_SANS_GPU=1` imite un doubler d'avant les deux GPU.
@@ -433,6 +493,10 @@ Le faux doubler imite les deux GPU (`--gpu`, clés `gpu` et `kaggle.machine`, `t
 
 `test_pistes_dans_la_video` lit en GStreamer dans un processus à part (`fakeaudiosink`, aucun son), et le lecteur
 sous Xvfb, sur le bus privé.
+
+`test_lecteur_complet` lit sous Xvfb, sans son, deux petites vidéos de synthèse (sinus à 440, 660 et 550 Hz) : la
+hauteur gardée à 0,5× et 2×, la boucle A-B à travers une bascule dans le même flux et vers un autre fichier, l'image par
+image, le volume ; puis l'application entière au clavier (xdotool), touche par touche, dans le détail et en plein écran.
 
 `tests/fausse_bibliotheque.py` crée une bibliothèque aux titres et voix inventés (`python3 -m tests.fausse_bibliotheque
 DONNEES` : les 14 doublages des captures ; `--n 200` : 200 doublages ; `--sans-videos` : médias vides).

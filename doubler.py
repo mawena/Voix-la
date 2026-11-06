@@ -3102,6 +3102,27 @@ def reglages_noyau(a, voix, ancres, travaux):
     return reglages
 
 
+def fiche_outils(sortie):
+    """outils.json des outils préparés sur Kaggle (doubler --preparer-outils), ou None. Ces outils sont ceux du compte
+    Kaggle (noyau OUTILS), pas d'un dossier de sortie : la fiche est cherchée dans <sortie>/.kaggle/, puis dans ETAT
+    (copie qu'y laisse --preparer-outils, retenue pour le même noyau OUTILS seulement), puis dans le dossier des sorties
+    par défaut (<données>/sorties/.kaggle/, où --preparer-outils l'écrivait seul). Un doublage vers un dossier neuf
+    (--sortie) monte ainsi les outils déjà préparés."""
+    commune = ETAT / 'outils.json'
+    for f in (Path(sortie).expanduser().resolve() / '.kaggle' / 'outils.json', commune,
+              Path(SORTIES).expanduser().resolve() / '.kaggle' / 'outils.json'):
+        if not f.is_file():
+            continue
+        if f == commune:
+            try:
+                if json.loads(f.read_text()).get('noyau') != OUTILS:
+                    continue   # outils d'un autre compte ou d'un autre noyau (clés kaggle.* changées depuis)
+            except (OSError, ValueError, AttributeError):
+                continue
+        return f
+    return None
+
+
 def traiter_lot(videos, a, voix):
     """Toutes les vidéos dans une seule session Kaggle, puis le mixage de chacune sur le PC."""
     if SESSION.exists():   # vérifié de nouveau sous le verrou ; ici, pour ne pas extraire le son pour rien
@@ -3135,10 +3156,12 @@ def traiter_lot(videos, a, voix):
         # réglages du noyau (reglages_noyau) ; voix_cibles seulement avec plusieurs voix (sinon ceux d'avant, tels quels)
         reglages = reglages_noyau(a, voix, ancres, travaux)
         retour = kdir / 'retour'
-        sources = [OUTILS] if (kdir / 'outils.json').exists() else []
+        outils = fiche_outils(a.sortie)
+        sources = [OUTILS] if outils else []
         cartes = cartes_prevues(getattr(a, 'gpu', 'auto'), MACHINE)
-        estimation = estimer_noyau_s([tr['duree_audio_s'] for tr in travaux], a.pas, a.sortie, not a.sans_nettoyage, a.mode,
-                                     a.moteur, a.paroles, len(voix_membres(voix)), cartes)
+        # historique : les rapports de ce dossier de sortie, et ceux du dossier par défaut (un dossier neuf n'en a pas)
+        estimation = estimer_noyau_s([tr['duree_audio_s'] for tr in travaux], a.pas, [a.sortie, SORTIES],
+                                     not a.sans_nettoyage, a.mode, a.moteur, a.paroles, len(voix_membres(voix)), cartes)
         # limite du suivi : au moins le double de l'estimation (le nettoyage allonge beaucoup une longue chanson)
         attente_maxi = max((30 + 20 * len(travaux)) * 60, 2 * estimation + 30 * 60)
         dire(f"chaîne : chant → {'voix nettoyée' if not a.sans_nettoyage else 'voix complète (sans nettoyage)'}, "
@@ -3146,6 +3169,9 @@ def traiter_lot(videos, a, voix):
              f"paroles → {'Whisper large-v3 et traduction française' if a.paroles else 'non'} ; "
              f"{'deux cartes T4' if cartes == 2 else 'une carte'} (machine {MACHINE}) ; "
              f"session estimée à {estimation / 60:.0f} min")
+        if not outils:
+            dire('outils non préparés sur Kaggle : la session télécharge paquets et modèles, environ 4 min de plus '
+                 '(doubler --preparer-outils, une fois)')
         if voix.get('membres'):
             dire(f"une voix par chanteur ({'duo mixte' if voix['mode'] == 'genre' else 'chanteurs dans l’ordre d’apparition'}) : "
                  f"{decrire_voix(voix)} ; en parole, {voix['membres'][0]['id']} seule")
@@ -3239,7 +3265,8 @@ def reprendre(a):
 def preparer_outils(a):
     """Lance une fois le noyau « outils » : il dépose sur Kaggle (sortie privée de noyau) les wheels pip, Seed-VC au commit
     figé et les poids des modèles ; les doublages suivants le montent (kernel_sources) au lieu de tout retélécharger.
-    Rien ne part du PC à part ce script, et seuls outils.json et le journal reviennent."""
+    Rien ne part du PC à part ce script, et seuls outils.json et le journal reviennent. La fiche est gardée dans
+    <sortie>/.kaggle/ et, avec le nom du noyau, dans ETAT : tout dossier de sortie la retrouve (fiche_outils)."""
     kdir = Path(a.sortie).expanduser().resolve() / '.kaggle'
     kdir.mkdir(parents=True, exist_ok=True)
     retour = kdir / 'retour-outils'
@@ -3248,6 +3275,8 @@ def preparer_outils(a):
                          attendu='outils.json')
     fiche = json.loads((retour / 'outils.json').read_text())
     (kdir / 'outils.json').write_text(json.dumps(fiche, ensure_ascii=False, indent=1))
+    ETAT.mkdir(parents=True, exist_ok=True)
+    (ETAT / 'outils.json').write_text(json.dumps({**fiche, 'noyau': OUTILS}, ensure_ascii=False, indent=1))
     shutil.rmtree(retour, ignore_errors=True)
     ying = fiche.get('yingmusic') or {}
     dire(f"outils prêts sur Kaggle ({OUTILS}) en {temps['noyau_depuis_envoi_s'] / 60:.1f} min : Seed-VC {fiche['commit'][:10]}, "

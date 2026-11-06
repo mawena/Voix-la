@@ -209,17 +209,10 @@ class CarteTravail(Gtk.Box):
         elif statut == "en_attente":
             self.barre.set_fraction(0)
         self.barre.set_visible(statut in ("en_cours", "en_attente", "fini"))
-        # Kaggle
-        k = av.kaggle
-        if k.get("statut") and statut == "en_cours":
-            depuis = float(k.get("depuis_s") or 0) + max(0.0, maintenant - float(k.get("t") or maintenant))
-            texte = f"GPU Kaggle : {av.statut_kaggle()} depuis {formats.duree(depuis)}"
-            if k.get("estimation_s"):
-                texte += f" (le noyau devrait prendre {formats.duree_courte(k['estimation_s'])})"
-            self.kaggle.set_label(texte)
-            self.kaggle.set_visible(True)
-        else:
-            self.kaggle.set_visible(False)
+        # Kaggle : une fois le noyau lancé, l'estimation de doubler (le temps restant la suit, voir suivi.restant_s)
+        texte = av.texte_kaggle(maintenant) if statut == "en_cours" else None
+        self.kaggle.set_label(texte or "")
+        self.kaggle.set_visible(bool(texte))
         for nom, le in self.lignes.items():
             le.maj(av.etapes[nom], av, maintenant)
         # étapes : pendant le travail, et après un échec (pour voir où) ; un travail fini se résume en une ligne

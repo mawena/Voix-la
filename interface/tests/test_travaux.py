@@ -176,6 +176,20 @@ class EssaiExecuteur(EssaiFile):
         self.assertEqual(lancement["env"]["PYTHONPATH"], os.environ.get("PYTHONPATH"))
         self.assertEqual(lancement["env"]["VOIXLA_DONNEES"], str(self.donnees))
 
+    def test_estimation_de_doubler_une_fois_lance(self):
+        # la demande porte l'estimation de l'interface (60 s pour la session) ; doubler annonce la sienne au lancement
+        os.environ["FAUX_DOUBLER_ESTIMATION"] = "1234"
+        t = self.file.ajouter(self.demande("A.mp4"))
+        self.assertEqual(t.avancement.estimations["kaggle"], 60.0)
+        self.assertIsNone(t.avancement.estimation_doubler_s())
+        self.assertTrue(attendre(self.tous_finis, delai=30), self.file.racine)
+        t.actualiser()
+        self.assertEqual(t.statut, "fini", t.journal)
+        av = t.avancement
+        self.assertEqual(av.estimation_doubler_s(), 1234.0)
+        self.assertEqual(av.estimations["kaggle"], 1234.0)
+        self.assertIn("durée prévue par doubler ≈ 21 min", av.texte_kaggle())
+
     def test_un_seul_travail_a_la_fois(self):
         os.environ["FAUX_DOUBLER_VITESSE"] = "0.05"
         t1 = self.file.ajouter(self.demande("A.mp4"))

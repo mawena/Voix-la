@@ -341,8 +341,10 @@ def lancer_chaine(dossier, R, cartes=1, panne_paroles=False):
     def paroles(travail, carte):
         noter('paroles', carte, 'debut')
         res = {'implementation': 'fausse', 'chargements_s': {'whisper': 0.1}, 'temps': {'transcription_s': 0.2}, 'videos': {}}
+        if travail.get('etat') or travail.get('carte') is not None:   # comme etape_paroles
+            res['carte'] = travail.get('carte')
         if travail.get('etat'):
-            res.update({'carte': travail.get('carte'), 'attente_chargement_s': 0.0})
+            res['attente_chargement_s'] = 0.0
         for v in travail['videos']:
             x = lire_son(v['audio'])[0]
             x = x.mean(1) if x.ndim == 2 else x
@@ -356,7 +358,9 @@ def lancer_chaine(dossier, R, cartes=1, panne_paroles=False):
         noter('paroles', carte, 'fin')
         return {**res, 'code': 0, 'duree_s': 0.3}
 
-    def etape(nom, travail):
+    def etape(nom, travail, cartes_etape=1):
+        if travail.get('carte') is not None and cartes_etape > 1:
+            noter('carte_visible', nom, travail['carte'], cartes_etape)
         if nom == 'nettoyer':
             res = {'karaoke': 'faux', 'dereverb': 'faux', 'recouvrement': 4, 'chargements_s': {}, 'videos': {}}
             for v in travail['videos']:
@@ -477,14 +481,22 @@ class ChaineAvecParoles(unittest.TestCase):
         self.assertTrue(panne['session']['paroles']['reprise'])
 
     def test_une_carte_demandee_ou_rien_pour_yingmusic(self):
-        for nom, R in (('gpus à 1', {**reglages(Timbres(), 'yingmusic'), 'paroles': True, 'gpus': 1}),
-                       ('Seed-VC', {**reglages(Timbres(), 'seedvc'), 'paroles': True})):
+        # gpus à 1 : sur la carte 0, comme avant ; rien pour YingMusic-SVC sur deux cartes : après la conversion, sur la
+        # dernière carte, libre (le noyau garde Seed-VC chargé sur la carte 0)
+        for nom, R, carte in (('gpus à 1', {**reglages(Timbres(), 'yingmusic'), 'paroles': True, 'gpus': 1}, None),
+                              ('Seed-VC', {**reglages(Timbres(), 'seedvc'), 'paroles': True}, 1)):
             with self.subTest(nom):
                 une, deux = self.sorties(R, 1), self.sorties(R, 2)
                 self.identiques(une, deux)
                 self.assertEqual([e for e in deux['journal'] if e[0] == 'paroles'],
-                                 [('paroles', None, 'debut'), ('paroles', None, 'fin')])
+                                 [('paroles', carte, 'debut'), ('paroles', carte, 'fin')])
+                self.assertEqual([e for e in deux['journal'] if e[0] == 'carte_visible'],
+                                 [] if carte is None else [('carte_visible', 'paroles', 1, 2)])
                 self.assertNotIn('paroles_pendant_conversion_s', deux['session']['temps'])
+                self.assertNotIn('pendant_conversion', deux['session']['paroles'])
+                self.assertEqual(deux['session']['paroles'].get('carte'), carte)
+                self.assertEqual([e for e in une['journal'] if e[0] in ('paroles', 'carte_visible')],
+                                 [('paroles', None, 'debut'), ('paroles', None, 'fin')], 'une carte : rien ne change')
 
 
 if __name__ == '__main__':

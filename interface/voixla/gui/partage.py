@@ -36,6 +36,11 @@ from .analyses import analyses
 DELAI_APERCU_MS = 500        # l'aperçu est refait une demi-seconde après le dernier changement
 ARRET_FORCE_S = 5            # « Annuler » : SIGKILL si le groupe n'est pas parti après SIGTERM
 LARGEUR_APERCU = 270
+SOUS_TITRES_FORMATS = {"vertical": "1080 × 1920 : TikTok, Reels, Shorts, statut WhatsApp",
+                       "carre": "1080 × 1080 : fil d’actualité",
+                       "origine": "La taille de la vidéo (1920 au plus sur le grand côté)"}
+SOUS_TITRES_CADRAGES = {"flou": "L’image entière, sur un fond flou tiré d’elle-même ; les paroles dessous",
+                        "recadre": "L’image remplit le cadre, coupée au centre ; les paroles dessus"}
 
 CSS = b"""
 .apercu-partage { background: black; border-radius: 10px; }
@@ -206,7 +211,8 @@ class DialoguePartage(Adw.Dialog):
     """« Partager un extrait » d'un doublage : extrait, format, son, paroles, mention, aperçu et export."""
 
     def __init__(self, fenetre, res, detail=None):
-        super().__init__(title="Partager un extrait", content_width=900, content_height=780)
+        super().__init__(title="Partager un extrait", content_width=900, content_height=780, width_request=360,
+                         height_request=420)
         _installer_css()
         self.fenetre, self.res, self.detail = fenetre, res, detail
         self.paroles = None
@@ -275,10 +281,10 @@ class DialoguePartage(Adw.Dialog):
     # --- construction ---------------------------------------------------------------------------------------------
 
     def _colonne_apercu(self):
-        b = commun.boite(espace=8, valign=Gtk.Align.START)
+        b = commun.boite(espace=8, valign=Gtk.Align.START, halign=Gtk.Align.CENTER, hexpand=False)
         b.set_size_request(LARGEUR_APERCU, -1)
         b.append(Gtk.Label(label="Aperçu", xalign=0, css_classes=["heading"]))
-        cadre = Gtk.Overlay(css_classes=["apercu-partage"], overflow=Gtk.Overflow.HIDDEN)
+        cadre = Gtk.Overlay(css_classes=["apercu-partage"], overflow=Gtk.Overflow.HIDDEN, halign=Gtk.Align.CENTER)
         self.image = Gtk.Picture(content_fit=Gtk.ContentFit.CONTAIN, can_shrink=True)
         self.image.set_size_request(LARGEUR_APERCU, int(LARGEUR_APERCU * 16 / 9))
         self.image.update_property([Gtk.AccessibleProperty.LABEL], ["Aperçu d’une image de la vidéo à partager"])
@@ -287,7 +293,7 @@ class DialoguePartage(Adw.Dialog):
                                           height_request=32)
         cadre.add_overlay(self.attente_apercu)
         b.append(cadre)
-        self.curseur = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, draw_value=False, hexpand=True,
+        self.curseur = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, draw_value=False,
                                  adjustment=Gtk.Adjustment(lower=0, upper=self.reglages.duree, step_increment=0.5,
                                                            page_increment=5))
         self.curseur.update_property([Gtk.AccessibleProperty.LABEL], ["Instant de l’aperçu"])
@@ -295,6 +301,7 @@ class DialoguePartage(Adw.Dialog):
         b.append(self.curseur)
         self.l_apercu = commun.legende("")
         self.l_apercu.add_css_class("etat-partage")
+        self.l_apercu.set_max_width_chars(36)
         b.append(self.l_apercu)
         return b
 
@@ -327,12 +334,11 @@ class DialoguePartage(Adw.Dialog):
     def _groupe_image(self):
         g = Adw.PreferencesGroup(title="Image")
         self.r_format = Adw.ComboRow(title="Format", model=Gtk.StringList.new(
-            ["Vertical 9:16 · 1080 × 1920", "Carré 1:1 · 1080 × 1080", "Format d’origine"]))
+            [es.LIBELLES_FORMATS[f] for f in es.FORMATS]))
         self.r_format.set_selected(es.FORMATS.index(self.reglages.format))
         self.r_format.connect("notify::selected", lambda *_: self._regle(format=es.FORMATS[self.r_format.get_selected()]))
         g.add(self.r_format)
-        self.r_cadrage = Adw.ComboRow(title="Cadrage", model=Gtk.StringList.new(
-            [es.LIBELLES_CADRAGES[c] for c in es.CADRAGES]))
+        self.r_cadrage = Adw.ComboRow(title="Cadrage", model=Gtk.StringList.new(["Fond flou", "Recadrée"]))
         self.r_cadrage.set_selected(es.CADRAGES.index(self.reglages.cadrage))
         self.r_cadrage.connect("notify::selected",
                                lambda *_: self._regle(cadrage=es.CADRAGES[self.r_cadrage.get_selected()]))
@@ -537,6 +543,9 @@ class DialoguePartage(Adw.Dialog):
                                        "fin du passage")
         self.b_boucle.set_sensitive(bool(b))
         self.r_cadrage.set_sensitive(r.format != "origine")
+        self.r_format.set_subtitle(SOUS_TITRES_FORMATS[r.format])
+        self.r_cadrage.set_subtitle(SOUS_TITRES_CADRAGES[r.cadrage] if r.format != "origine" else
+                                    "L’image telle quelle")
         self.e_mention.set_sensitive(r.mention)
         self.r_traduction.set_sensitive(r.paroles)
         if self.export is None or self.export.fini:
@@ -618,6 +627,9 @@ class DialoguePartage(Adw.Dialog):
             texture = None
         if texture is not None:
             self.image.set_paintable(texture)
+            # le cadre de l'aperçu prend les proportions de la vidéo
+            l, h = texture.get_width(), texture.get_height()
+            self.image.set_size_request(LARGEUR_APERCU, int(LARGEUR_APERCU * h / max(1, l)))
             ancien, self._fichier_apercu = self._fichier_apercu, Path(f)
             if ancien is not None and ancien != self._fichier_apercu:
                 ancien.unlink(missing_ok=True)

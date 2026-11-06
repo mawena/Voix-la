@@ -79,9 +79,9 @@ X264 = ["-c:v", "libx264", "-preset", "medium", "-crf", "21", "-maxrate", "5M", 
 AAC = ["-c:a", "aac", "-b:a", "192k", "-ac", "2"]
 FILS_X264 = 4                # le poste est partagé : x264 n'en prend pas plus (sous nice)
 DEBIT_MAX_MO_S = (5000 + 192) / 8 / 1000   # Mo par seconde au plus (plafond vidéo + son)
-# Estimation du calcul (s de calcul par s de vidéo à 1080 × 1920, mesuré sous Xvfb sur le poste, 4 fils) et seuil
-# au-delà duquel l'export passe par file-attente, la file des travaux lourds du poste
-FACTEUR_CALCUL = 0.9
+# Estimation du calcul (s de calcul par s de vidéo à 1080 × 1920 : 64 s pour 60 s mesurées sur le poste chargé, x264 à
+# 4 fils sous nice) et seuil au-delà duquel l'export passe par file-attente, la file des travaux lourds du poste
+FACTEUR_CALCUL = 1.1
 SEUIL_FILE_S = 5.0
 TICKET_FILE = ("voix-la export", "1", "2")      # nom, Go de RAM, cœurs libres
 # Style des paroles, comme sur l'image du lecteur (gui/vue_paroles.py, style « video »)
@@ -745,7 +745,9 @@ def preparer_plan(res, reglages, paroles=None, sonder=True, preparer=True):
     elif image.genre == "pochette":
         mise = mise_en_page(r.format if r.format != "origine" else "carre", r.cadrage, image.largeur, image.hauteur)
     else:
+        # ni image ni pochette (MP3 seul) : le dégradé de la pochette générée, les paroles au milieu
         mise = mise_en_page(r.format if r.format != "origine" else "carre", "recadre", 0, 0)
+        mise.alignement, mise.marge_v = 5, 0
     p = paroles
     if r.paroles and p is None:
         p = charger_paroles(res)

@@ -6,7 +6,7 @@ sortie et corbeille ; de bout en bout, sur un petit doublage inventé (tests/fau
 commande et annulation.
 
 Titres, voix et paroles inventés ; tout dans des dossiers temporaires (VOIXLA_DONNEES, VOIXLA_CACHE). Les encodages
-de bout en bout prennent x264 « ultrafast » pour rester légers."""
+de bout en bout prennent x264 « veryfast » pour rester légers."""
 
 import json
 import os
@@ -28,7 +28,7 @@ from .commun import EssaiIsole
 
 FFMPEG = shutil.which("ffmpeg") and shutil.which("ffprobe")
 INTERFACE = Path(__file__).resolve().parents[1]
-RAPIDE = [("ultrafast" if x == "medium" else x) for x in es.X264]
+RAPIDE = [("veryfast" if x == "medium" else x) for x in es.X264]    # « ultrafast » ne ferait que du Baseline
 
 
 def ligne(debut, fin, texte, mots=None):
@@ -594,6 +594,22 @@ class EssaiDeBoutEnBout(EssaiIsole):
         f2, _t = es.apercu(self.res, es.Reglages(debut=1.0, duree=15.0), self.tmp / "avant.png", instant=1.2)
         self.assertEqual(pixels_jaunes(f2, (0.55, 0.8)), 0)
         self.assertEqual(png.parent, f.parent)
+
+    def test_mp3_seul_sur_le_degrade_du_titre(self):
+        # un doublage sans vidéo (MP3 sans pochette) : le dégradé de la pochette générée, les paroles au milieu
+        d = self.tmp / "donnees" / "sorties" / "Chanson sans image"
+        (d / "travail" / "jules").mkdir(parents=True)
+        shutil.copy2(self.res.mp3, d / "Chanson sans image - voix Jules.mp3")
+        for nom in ("paroles.json", "rapport.json"):
+            shutil.copy2(self.res.dossier_voix / nom, d / "travail" / "jules" / nom)
+        res = es.trouver_resultat(d)
+        r = es.Reglages(debut=3.5, duree=15.0)
+        plan = es.preparer_plan(res, r)
+        self.assertEqual((plan.image.genre, plan.mise.alignement), ("aucune", 5))
+        f, _t = es.apercu(res, r, self.tmp / "mp3.png")
+        info = sonder(f)["streams"][0]
+        self.assertEqual((info["width"], info["height"]), (1080, 1920))
+        self.assertGreater(pixels_jaunes(f, (0.4, 0.6)), 500)
 
     def test_ligne_de_commande_ass_proposer_apercu(self):
         env = {**os.environ, "PYTHONPATH": str(INTERFACE)}

@@ -916,6 +916,96 @@ class EssaiFragments(unittest.TestCase):
         self.assertEqual("".join(t for t, _i in paroles.fragments(l)), l.texte)
 
 
+# --- Karaoké ---------------------------------------------------------------------------------------------------------
+
+class EssaiVoisines(unittest.TestCase):
+    def setUp(self):
+        # trois lignes : un court silence (1 s) entre les deux premières, un long (10 s) avant la troisième
+        self.l = lignes((5, 8), (9, 12), (22, 25))
+
+    def test_dans_une_ligne(self):
+        self.assertEqual(paroles.voisines(self.l, 6.0), (None, 0, 1, True))
+        self.assertEqual(paroles.voisines(self.l, 10.0), (0, 1, 2, True))
+        self.assertEqual(paroles.voisines(self.l, 24.9), (1, 2, None, True))
+
+    def test_avant_la_premiere(self):
+        self.assertEqual(paroles.voisines(self.l, 0.0), (None, None, 0, False), "à 5 s : « ♪ »")
+        self.assertEqual(paroles.voisines(self.l, 2.0), (None, 0, 1, False), "à 3 s : la première, pas encore chantée")
+        self.assertEqual(paroles.voisines(self.l, 4.99), (None, 0, 1, False))
+
+    def test_entre_deux_lignes(self):
+        self.assertEqual(paroles.voisines(self.l, 8.5), (0, 1, 2, False), "silence court : la suivante au centre")
+        self.assertEqual(paroles.voisines(self.l, 13.0), (1, None, 2, False), "silence long : « ♪ »")
+        self.assertEqual(paroles.voisines(self.l, 19.0), (1, 2, None, False))
+        self.assertEqual(paroles.voisines(self.l, 13.0, avance_s=10.0), (1, 2, None, False))
+
+    def test_bord_de_fin_exclu(self):
+        self.assertEqual(paroles.voisines(self.l, 8.0), (0, 1, 2, False))
+
+    def test_apres_la_derniere(self):
+        self.assertEqual(paroles.voisines(self.l, 25.0), (2, None, None, False))
+        self.assertEqual(paroles.voisines(self.l, 1000.0), (2, None, None, False))
+
+    def test_une_seule_ligne(self):
+        l = lignes((1, 2))
+        self.assertEqual(paroles.voisines(l, 1.5), (None, 0, None, True))
+        self.assertEqual(paroles.voisines(l, 3.0), (0, None, None, False))
+
+    def test_vide(self):
+        for vide in ([], None):
+            self.assertEqual(paroles.voisines(vide, 1.0), (None, None, None, False))
+            self.assertIsNone(paroles.centre_karaoke(vide, 1.0))
+
+    def test_centre(self):
+        self.assertEqual(paroles.centre_karaoke(self.l, 6.0), 0.0)
+        self.assertEqual(paroles.centre_karaoke(self.l, 8.5), 1.0)
+        self.assertEqual(paroles.centre_karaoke(self.l, 0.0), -0.5, "avant la première : sa demi-place d'avant")
+        self.assertEqual(paroles.centre_karaoke(self.l, 13.0), 1.5, "« ♪ » entre la deuxième et la troisième")
+        self.assertEqual(paroles.centre_karaoke(self.l, 30.0), 2.5, "après la dernière")
+
+
+class EssaiRemplissage(unittest.TestCase):
+    def setUp(self):
+        self.l = Ligne(1.0, 4.0, "¿Un matin, de pluie?", [Mot(1.0, 1.5, "Un"), Mot(1.6, 2.2, "matin"),
+                                                          Mot(2.4, 2.4, "de"), Mot(2.9, 3.6, "pluie")])
+
+    def test_portees_coherentes_avec_les_fragments(self):
+        texte, mots = paroles.portees(self.l)
+        self.assertEqual(texte, "".join(t for t, _i in paroles.fragments(self.l)))
+        self.assertEqual([texte[d:f] for d, f, _s, _i in mots], ["Un", "matin", "de", "pluie"])
+        self.assertEqual([i for *_r, i in mots], [0, 1, 2, 3])
+        self.assertEqual([texte[f:s] for _d, f, s, _i in mots], [" ", ", ", " ", "?"], "ponctuation qui suit")
+
+    def test_portees_sans_mots_ou_reconstruites(self):
+        self.assertEqual(paroles.portees(Ligne(0, 1, "texte seul")), ("texte seul", []))
+        self.assertEqual(paroles.portees(None), ("", []))
+        l = Ligne(0, 2, "Bonjour tout le monde", [Mot(0, 1, "hola"), Mot(1, 2, "mundo")])
+        texte, mots = paroles.portees(l)
+        self.assertEqual(texte, "hola mundo", "mot introuvable : le texte refait à partir des mots")
+        self.assertEqual([(d, f, s) for d, f, s, _i in mots], [(0, 4, 5), (5, 10, 10)])
+
+    def test_fractions(self):
+        def fractions(t):
+            return [round(fr, 3) for _d, _f, fr in paroles.remplissage(self.l, t)]
+        self.assertEqual(fractions(0.5), [0, 0, 0, 0], "avant la ligne")
+        self.assertEqual(fractions(1.25), [0.5, 0, 0, 0], "à mi-mot : à moitié rempli")
+        self.assertEqual(fractions(1.55), [1, 0, 0, 0], "entre deux mots : le précédent est plein")
+        self.assertEqual(fractions(1.9), [1, 0.5, 0, 0])
+        self.assertEqual(fractions(2.4), [1, 1, 1, 0], "mot de durée nulle : plein dès son début")
+        self.assertEqual(fractions(2.39), [1, 1, 0, 0])
+        self.assertEqual(fractions(10.0), [1, 1, 1, 1], "après la ligne")
+
+    def test_fraction_mot(self):
+        m = Mot(2.0, 3.0, "x")
+        self.assertEqual([paroles.fraction_mot(m, t) for t in (1.0, 2.0, 2.25, 3.0, 9.0)], [0, 0, 0.25, 1, 1])
+        self.assertEqual(paroles.fraction_mot(Mot(2.0, 1.5, "à rebours"), 2.0), 1.0)
+        self.assertEqual(paroles.fraction_mot(Mot(2.0, 1.5, "à rebours"), 1.9), 0.0)
+
+    def test_sans_mots(self):
+        self.assertEqual(paroles.remplissage(Ligne(0, 1, "texte seul"), 0.5), [])
+        self.assertEqual(paroles.remplissage(None, 0.5), [])
+
+
 # --- Affichage -------------------------------------------------------------------------------------------------------
 
 ACCENT = "#3584e4"

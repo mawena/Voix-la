@@ -8,7 +8,7 @@ from gi.repository import Gtk
 
 from gi.repository import Adw
 
-from .. import formats, suivi, systeme, travaux
+from .. import formats, quota, suivi, systeme, travaux
 from . import commun
 
 STATUTS = {
@@ -49,6 +49,11 @@ def resume_reglages(demande, nom_voix=None):
     n = len(demande.get("videos") or [])
     if n > 1:
         morceaux.append(f"{n} vidéos, une session Kaggle")
+    decision = (demande.get("quota") or {}).get("decision")
+    if decision == "lancer":
+        morceaux.append("lancé malgré le quota GPU")
+    if demande.get("secours"):
+        morceaux.append(f"secours : {demande['secours']}")
     return " · ".join(morceaux)
 
 
@@ -126,10 +131,12 @@ class CarteTravail(Gtk.Box):
         haut.append(infos)
         self.boutons = Gtk.Box(spacing=6, valign=Gtk.Align.START)
         self.b_annuler = commun.bouton("Annuler", styles=("destructive-action",), clic=self.annuler)
+        self.b_maintenant = commun.bouton("Lancer maintenant", infobulle="Sans attendre la remise à zéro du quota GPU",
+                                          clic=self.lancer_maintenant)
         self.b_resultat = commun.bouton("Voir le résultat", styles=("suggested-action",), clic=self.voir)
         self.b_retirer = commun.bouton(icone="edit-clear-symbolic", infobulle="Retirer de la liste", styles=("flat",),
                                        clic=self.retirer)
-        for b in (self.b_annuler, self.b_resultat, self.b_retirer):
+        for b in (self.b_maintenant, self.b_annuler, self.b_resultat, self.b_retirer):
             self.boutons.append(b)
         haut.append(self.boutons)
         self.append(haut)
@@ -171,7 +178,8 @@ class CarteTravail(Gtk.Box):
         t, av = self.t, self.t.avancement
         maintenant = time.time()
         statut = t.statut
-        libelle, style = STATUTS.get(statut, (statut, "neutre"))
+        attend_quota = statut == "en_attente" and t.attend_le_quota
+        libelle, style = ("Attend le quota", "alerte") if attend_quota else STATUTS.get(statut, (statut, "neutre"))
         self.titre.set_label(t.titre)
         self.titre.set_tooltip_text(t.titre)
         self.badge.set_label(libelle)
@@ -179,8 +187,15 @@ class CarteTravail(Gtk.Box):
             self.badge.remove_css_class(s)
         self.badge.add_css_class(style)
         self.sous_titre.set_label(resume_reglages(t.demande, self.page.fenetre.nom_voix))
-        if statut == "en_attente":
-            avant = [x for x in self.page.fenetre.file.travaux() if x.actif and x.cree < t.cree]
+        if attend_quota:
+            besoin = quota.besoin_s(t.demande)
+            self.temps.set_label(
+                f"En attente du quota GPU : part tout seul à la remise à zéro, {quota.jour_heure(t.reprise)} (dans "
+                f"{quota.heures(t.reprise - maintenant)}), même fenêtre fermée"
+                + (f" · environ {quota.heures(besoin)} de GPU" if besoin else ""))
+        elif statut == "en_attente":
+            avant = [x for x in self.page.fenetre.file.travaux()
+                     if x.actif and x.cree < t.cree and not x.attend_le_quota]
             est = sum((av.estimations or {}).values()) if av.estimations else None
             self.temps.set_label(f"Attend son tour ({formats.pluriel(len(avant), 'travail', 'travaux')} avant lui)"
                                  + (f" · durée prévue {formats.duree_courte(est)}" if est else ""))
@@ -224,6 +239,7 @@ class CarteTravail(Gtk.Box):
         if statut == "annule" and av.kaggle_parti():
             self.erreurs.append(commun.legende("La session Kaggle déjà partie a continué seule ; son résultat n’a pas "
                                                "été rapatrié."))
+        self.b_maintenant.set_visible(attend_quota and not t.annulation_demandee)
         self.b_annuler.set_visible(statut in ("en_attente", "en_cours") and not t.annulation_demandee)
         self.b_annuler.set_label("Retirer de la file" if statut == "en_attente" else "Annuler")
         self.b_resultat.set_visible(statut == "fini" and bool(self._sortie()))
@@ -243,6 +259,23 @@ class CarteTravail(Gtk.Box):
     def retirer(self):
         self.page.fenetre.file.retirer(self.t)
         self.page.rendre()
+
+    def lancer_maintenant(self):
+        """Un travail en attente du quota part dès que la file le permet, sans attendre la remise à zéro."""
+        f = self.page.fenetre
+        e = f.quota
+        besoin = quota.besoin_s(self.t.demande)
+        corps = "Il partira dès que la file le permet, sans attendre la remise à zéro du quota GPU."
+        if e is not None:
+            corps += (f" Il prendra environ {quota.heures(besoin)} de GPU ; il en reste {quota.heures(e.reste_s)} "
+                      "cette semaine.")
+
+        def faire():
+            if f.file.lancer_maintenant(self.t):
+                f.toast("Le doublage part dès que la file le permet")
+            f.suivre_travaux()
+            self.maj()
+        commun.confirmer(f, "Lancer sans attendre le quota ?", corps, "Lancer maintenant", faire, destructif=False)
 
     def annuler(self):
         t = self.t

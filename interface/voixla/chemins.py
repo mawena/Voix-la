@@ -83,6 +83,18 @@ PREFERENCES_DEFAUT = {
     "cache_pistes_mo": None,
     # Bibliothèque des résultats (voixla.bibliotheque) : vue (grille ou liste), tri, ordre inversé, versions regroupées
     "bibliotheque": {"vue": "grille", "tri": "date", "inverse": False, "regrouper": True},
+    # Quota GPU de Kaggle (voixla/quota.py). Le total et la remise à zéro viennent de « kaggle quota » quand il
+    # répond ; sinon ceux-ci : heures par semaine, jour (lundi = 0) et heure UTC de la remise à zéro (samedi 00:00 UTC,
+    # vérifié auprès de Kaggle le 06/11/2026)
+    "quota_h": 30.0,
+    "quota_remise_jour": 5,
+    "quota_remise_heure": 0,
+    "quota_alerte_h": 2.0,      # alerte quand il reste moins que cela
+    # doublage qui ne tient plus dans le reste du quota : « demander » (dialogue, « Attendre » proposé d'abord),
+    # « attendre » (mis en attente de la remise à zéro sans demander) ou « lancer » (lancé quand même)
+    "quota_depassement": "demander",
+    # secours quand le quota ne suffit plus (voixla/secours.py) : vide, aucun ; « ancien-pc », « runpod » : à venir
+    "secours": "",
 }
 
 

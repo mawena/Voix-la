@@ -49,6 +49,7 @@ class EssaiKaggle(EssaiIsole):
         return k
 
     def test_commande(self):
+        os.environ.pop("VOIXLA_KAGGLE", None)   # posée par EssaiIsole (aucun appel à Kaggle pendant les essais)
         self.assertEqual(systeme.commande_kaggle(), Path.home() / "kaggle-venv" / "bin" / "kaggle")
         os.environ["VOIXLA_KAGGLE"] = "~/autre/kaggle"
         self.assertEqual(systeme.commande_kaggle(), Path.home() / "autre" / "kaggle")

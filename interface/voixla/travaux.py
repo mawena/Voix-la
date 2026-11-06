@@ -4,9 +4,14 @@ Un travail = un dossier ~/.local/state/voix-la/travaux/<id>/ :
 - demande.json : écrit une fois par l'interface (commande, vidéos, réglages, estimations) ;
 - etat.json    : écrit seulement par l'exécuteur (en_cours, fini, echec, annule ; pid, groupe, code) ;
 - annuler      : marque posée par l'interface pour demander l'arrêt ;
+- lancer       : marque posée par l'interface pour lancer tout de suite un travail en attente du quota GPU ;
 - journal.txt  : sortie complète de doubler ; evenements.jsonl : ses événements (--evenements).
 L'exécuteur (executeur.py) tourne détaché de la fenêtre et lance les travaux un par un : un seul doubler à la fois,
 et les travaux continuent si la fenêtre se ferme. Chaque fichier n'a qu'un seul écrivain : pas de course.
+
+Attente du quota GPU (voir quota.py) : une demande qui porte « attendre_jusqu_a » (epoch, la remise à zéro du quota)
+reste en attente jusqu'à cette heure-là, ou jusqu'à la marque « lancer ». L'exécuteur veille en attendant, fenêtre
+fermée comprise, et les travaux qui tiennent dans le quota passent devant.
 """
 
 import fcntl
@@ -23,6 +28,21 @@ from pathlib import Path
 from . import chemins, moteur, suivi
 
 TERMINES = ("fini", "echec", "annule", "interrompu")
+LANCER = "lancer"   # marque : lancer maintenant un travail en attente du quota
+
+
+def heure_de_reprise(dossier, demande=None):
+    """Heure (epoch) jusqu'à laquelle un travail pas encore commencé attend la remise à zéro du quota GPU, ou None
+    (pas en attente du quota, ou marque « lancer » posée)."""
+    dossier = Path(dossier)
+    demande = demande if demande is not None else (chemins.lire_json(dossier / "demande.json", {}) or {})
+    r = demande.get("attendre_jusqu_a") if isinstance(demande, dict) else None
+    if not r or (dossier / LANCER).exists():
+        return None
+    try:
+        return float(r)
+    except (TypeError, ValueError):
+        return None
 
 
 def demarrage_processus(pid):
@@ -116,6 +136,19 @@ class Travail:
     @property
     def actif(self):
         return self.statut in ("en_attente", "en_cours")
+
+    @property
+    def reprise(self):
+        """En attente du quota GPU : l'heure (epoch) de la remise à zéro où il repartira tout seul ; sinon None."""
+        if self.statut != "en_attente":
+            return None
+        return heure_de_reprise(self.dossier, self.demande)
+
+    @property
+    def attend_le_quota(self):
+        """Vrai tant que ce travail attend la remise à zéro du quota GPU (l'heure n'est pas encore venue)."""
+        r = self.reprise
+        return r is not None and r > time.time()
 
     # --- lecture des fichiers ----------------------------------------------------------------------------------------
 
@@ -303,6 +336,14 @@ class FileTravaux:
             chemins.ecrire_json(travail.dossier / "etat.json", {**travail.etat, "statut": "annule", "fin": time.time(),
                                                                "par": "interface"})
             travail.actualiser()
+
+    def lancer_maintenant(self, travail):
+        """Un travail en attente du quota part dès que la file le permet (marque « lancer », lue par l'exécuteur)."""
+        if travail.statut != "en_attente":
+            return False
+        (travail.dossier / LANCER).touch()
+        self.demarrer_executeur()
+        return True
 
     def retirer(self, travail):
         """Efface un travail terminé (son dossier d'état, pas ses sorties)."""

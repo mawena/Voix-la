@@ -18,6 +18,7 @@ menu « ⋮ » d'une carte ou d'une ligne de la bibliothèque.
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -181,7 +182,7 @@ def exporter(fenetre, res, reglages, sortie=None):
     if _courante is not None:
         return None
     sortie = Path(sortie) if sortie else es.sortie_par_defaut(res, reglages)
-    commande = es.commande_interface(sys.executable, res, reglages, sortie, shutil_which("file-attente"))
+    commande = es.commande_interface(sys.executable, res, reglages, sortie, shutil.which("file-attente"))
     e = Exportation(res, replace(reglages), sortie, commande)
 
     def fin():
@@ -198,11 +199,6 @@ def exporter(fenetre, res, reglages, sortie=None):
     _courante = e
     e.lancer()
     return e
-
-
-def shutil_which(nom):
-    import shutil
-    return shutil.which(nom)
 
 
 # --- Le dialogue -----------------------------------------------------------------------------------------------------

@@ -7,6 +7,10 @@ le dit : pas de second décodage, pas d'écran qui disparaît et fait sauter la 
 la remplace à la même position (ajouter). Les sources « éphémères » (ces copies) sont fermées dès qu'on les quitte :
 seuls le doublage et l'original restent ouverts, pour la touche B.
 
+Pistes audio d'une même vidéo (pistes_audio, doubler ≥ 0.6.0 : le doublage, le beat, les voix seules… dans la vidéo
+doublée) : un seul flux pour toutes, et la bascule change de piste audio dans ce flux (gui/pistes_gst.py, current-audio
+de playbin) au lieu d'ouvrir un autre fichier. Même position, l'image continue, pas de seconde ouverture.
+
 Quitter la page n'arrête pas la lecture : seul le suivi de la position (et les visualisations qu'il anime) s'arrête
 tant que le lecteur est caché, et reprend au retour. Une seule lecture dans toute l'application : chaque flux est ouvert
 par media(), qui le confie au coordinateur (gui/lecture.py) avec son propriétaire ; lancer une lecture ailleurs coupe
@@ -18,6 +22,7 @@ from gi.repository import GLib, Gtk
 
 from .. import formats
 from ..lecture import Reprise
+from . import pistes_gst
 from .lecture import lectures
 
 
@@ -73,6 +78,8 @@ class Lecteur(Gtk.Box):
         self.sans_image = set()
         self.ephemeres = set()    # sources fermées dès qu'on les quitte (copies vidéo des pistes séparées)
         self.notes = {}           # clé → texte du bandeau d'une source sans image
+        self.pistes_audio = {}    # clé → (vidéo, index de sa piste audio) : pistes d'une vidéo qui en a plusieurs
+        self.sur_echec_piste = None   # rappel : une piste audio ne peut pas être choisie (playbin introuvable)
         self.muet = False         # essais : tous les flux, même ceux ouverts plus tard, restent muets
         self.sur_position = sur_position
         self.proprietaire = proprietaire
@@ -92,16 +99,20 @@ class Lecteur(Gtk.Box):
 
     # --- sources -------------------------------------------------------------------------------------------------
 
-    def definir(self, sources, cle=None, audio_seul=False, sans_image=(), ephemeres=(), notes=None):
+    def definir(self, sources, cle=None, audio_seul=False, sans_image=(), ephemeres=(), notes=None, pistes_audio=None):
         """Remplace les sources ; garde la position si c'est le même contenu sous une autre forme. sans_image : les
         clés des sources sans image (lues sous l'image arrêtée d'une source qui en a une) ; ephemeres : celles qu'on
-        ferme dès qu'on les quitte ; notes : le texte du bandeau des sources sans image."""
+        ferme dès qu'on les quitte ; notes : le texte du bandeau des sources sans image ; pistes_audio : {clé: index}
+        des sources lues par leur piste audio dans une vidéo à plusieurs pistes (voixla.pistes.pistes_audio_lecteur)."""
         self._tout_fermer()
         self.sources = {k: v for k, v in sources.items() if v and v[0]}
         self.audio_seul = audio_seul
         self.sans_image = set(sans_image)
         self.ephemeres = set(ephemeres)
         self.notes = dict(notes or {})
+        # clé → (la vidéo à plusieurs pistes, index de la piste) : une source remplacée (son seul) n'en a plus
+        self.pistes_audio = {k: (str(self.sources[k][0]), int(v)) for k, v in (pistes_audio or {}).items()
+                             if k in self.sources and v is not None}
         self.superpose.set_visible(not audio_seul)
         cle = cle if cle in self.sources else next(iter(self.sources), None)
         if cle:
@@ -120,21 +131,61 @@ class Lecteur(Gtk.Box):
         self._remplacer(cle, source, sans_image, ephemere)
 
     def _remplacer(self, cle, source, sans_image=False, ephemere=False, flux=None):
-        """ajouter, sans le cas du son seul ; flux : un flux déjà ouvert (et prêt) pour cette source."""
+        """ajouter, sans le cas du son seul ; flux : un flux déjà ouvert (et prêt) pour cette source. Un flux que
+        d'autres pistes audio de la même vidéo lisent encore reste ouvert (en pause s'il était en cours) ; un nouveau
+        flux de la vidéo devient celui de toutes ses pistes (_unifier)."""
         courante = cle == self.cle and cle in self.flux
         pos = self.position_ref() if courante else 0.0
         lisait = bool(courante and self.en_lecture())
         ancien = self.flux.pop(cle, None)
-        if ancien is not None:
+        if ancien is not None and (courante or not self._utilise(ancien)):
             ancien.pause()
+        self.sources[cle] = source
         if flux is not None:
             self.flux[cle] = flux
-        self.sources[cle] = source
+            self._unifier(cle)
         (self.sans_image.add if sans_image else self.sans_image.discard)(cle)
         (self.ephemeres.add if ephemere else self.ephemeres.discard)(cle)
         if courante:
             self._activer(cle, pos, lisait)
-        self._fermer(ancien)
+        if ancien is not None and not self._utilise(ancien):
+            self._fermer(ancien)
+
+    def _piste_audio(self, cle):
+        """L'index de la piste audio que lit la source cle dans sa vidéo à plusieurs pistes, sinon None (y compris
+        quand la source a été remplacée par son son seul, fenêtre fermée)."""
+        v = self.pistes_audio.get(cle)
+        return v[1] if v is not None and cle in self.sources and str(self.sources[cle][0]) == v[0] else None
+
+    def _meme_flux(self, a, b):
+        """Vrai si les sources a et b sont deux pistes audio d'une même vidéo : un seul flux pour les deux."""
+        return (self._piste_audio(a) is not None and self._piste_audio(b) is not None
+                and self.pistes_audio[a][0] == self.pistes_audio[b][0])
+
+    def _utilise(self, m):
+        return any(v is m for v in self.flux.values())
+
+    def _unifier(self, cle):
+        """Les autres pistes audio de la vidéo de cle lisent désormais son flux ; l'ancien flux est fermé."""
+        m = self.flux.get(cle)
+        if m is None or self._piste_audio(cle) is None:
+            return
+        for k in list(self.flux):
+            vieux = self.flux[k]
+            if k != cle and vieux is not m and self._meme_flux(k, cle):
+                self.flux[k] = m
+                if not self._utilise(vieux):
+                    self._fermer(vieux)
+
+    def _choisir_son(self, m):
+        """m (prêt) lit la piste audio de la source en cours, si elle en a une (vidéo à plusieurs pistes) : tout de
+        suite s'il joue, sinon dès la reprise de la lecture (gui/pistes_gst.py). Si le playbin du flux est introuvable
+        sur ce poste, sur_echec_piste() : la page revient aux copies vidéo."""
+        index = self._piste_audio(self.cle)
+        if index is None or self.flux.get(self.cle) is not m:
+            return
+        if not pistes_gst.choisir(m, index) and not pistes_gst.possible() and self.sur_echec_piste is not None:
+            GLib.idle_add(lambda: (self.sur_echec_piste(), False)[1])
 
     def annoter(self, cle, texte):
         """Texte du bandeau d'une source sans image (« préparation de la vidéo… »), à jour si elle est en cours."""
@@ -163,7 +214,8 @@ class Lecteur(Gtk.Box):
 
     def _flux(self, cle):
         if cle not in self.flux:
-            self.flux[cle] = self._ouvrir(self.sources[cle][0])
+            frere = next((k for k in self.flux if k != cle and self._meme_flux(k, cle)), None)
+            self.flux[cle] = self.flux[frere] if frere is not None else self._ouvrir(self.sources[cle][0])
         return self.flux[cle]
 
     def rendre_muet(self):
@@ -213,6 +265,7 @@ class Lecteur(Gtk.Box):
         self._attente = [m, position_ref, False, lire]
 
         def placer():
+            self._choisir_son(m)      # la piste audio de la source en cours (celle-ci, ou une autre du même flux)
             if position_ref or decalage:
                 m.seek(int(max(0.0, position_ref + decalage) * 1_000_000))
             a = self._attente
@@ -225,18 +278,31 @@ class Lecteur(Gtk.Box):
         self._suivre()
 
     def basculer(self, cle):
-        """Passe à une autre source, à la même position (et en lecture si on lisait)."""
+        """Passe à une autre source, à la même position (et en lecture si on lisait). Deux pistes audio d'une même
+        vidéo : on change seulement de piste audio dans le flux en cours, sans pause ni déplacement."""
         if cle == self.cle or cle not in self.sources:
             return
+        m = self.media()
+        if m is not None and self._reprise is None and self._meme_flux(self.cle, cle):
+            self.flux[cle] = m
+            self.cle = cle
+            if m.is_prepared():
+                self._choisir_son(m)
+            # sinon, placer (_activer) la choisira dès que le flux sera prêt
+            self.bandeau.set_visible(False)
+            self._suivre()
+            return
         reprise, self._reprise = self._reprise, None
-        ancien, ancienne_cle = self.media(), self.cle
+        ancien, ancienne_cle = m, self.cle
         pos = self.position_ref()
         lisait = self.en_lecture()
         if ancien:
             ancien.pause()
         self._activer(cle, pos, lisait)
         if ancienne_cle in self.ephemeres or (reprise is not None and reprise.cle == ancienne_cle):
-            self._fermer(self.flux.pop(ancienne_cle, None))
+            vieux = self.flux.pop(ancienne_cle, None)
+            if vieux is not None and not self._utilise(vieux):
+                self._fermer(vieux)
         if reprise is not None:
             self._remettre(reprise)
 
@@ -273,6 +339,15 @@ class Lecteur(Gtk.Box):
         if self.cle != r.cle:
             self.sources[r.cle] = r.source
             return False
+        # une piste audio d'une vidéo dont le flux est resté ouvert (en pause, pour les autres pistes) : on y revient,
+        # il a déjà la bonne piste ; un nouveau flux, lui, ne peut la prendre qu'une fois en lecture (pistes_gst)
+        video = self.pistes_audio.get(r.cle)
+        frere = next((self.flux[k] for k in self.flux if k != r.cle and video is not None
+                      and self._piste_audio(k) is not None and self.pistes_audio[k][0] == video[0]
+                      and str(r.source[0]) == video[0]), None)
+        if frere is not None and frere.is_prepared():
+            self._remplacer(r.cle, r.source, r.sans_image, r.ephemere, flux=frere)
+            return True
         self._substituer(r.cle, r.source, r.sans_image, r.ephemere)
         return True
 
@@ -305,7 +380,7 @@ class Lecteur(Gtk.Box):
 
     def _tout_fermer(self):
         self._reprise = None
-        for m in self.flux.values():
+        for m in {id(v): v for v in self.flux.values()}.values():     # un flux partagé n'est fermé qu'une fois
             try:
                 m.pause()
                 m.clear()

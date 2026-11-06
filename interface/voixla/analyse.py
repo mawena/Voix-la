@@ -7,9 +7,11 @@ et analysé avec numpy ; les résultats vont en cache.
   repli local : YIN sur travail/voix_source.* et travail/<voix>/voix_convertie.flac, résultat dans le même format dans
   travail/<voix>/courbes-locales.json (avec la signature des fichiers analysés, pour savoir s'il est à jour).
 - Spectrogramme, forme d'onde, bandes : un fichier .npz par piste et par produit dans ~/.cache/voix-la/pistes/, nommé
-  d'après le chemin, la taille et la date du fichier (un fichier refait est réanalysé).
+  d'après le chemin, la taille et la date du fichier (un fichier refait est réanalysé). On lit la première piste audio
+  du fichier (le doublage d'une vidéo doublée à plusieurs pistes), ou celle que désigne « FICHIER#piste-audio=N »
+  (source_piste : le beat ou une voix seule lus dans la vidéo doublée).
 En ligne de commande (lancé par l'interface sous nice, ou par file-attente quand c'est long) :
-  python3 -m voixla.analyse pistes FICHIER… [--produits spectre,onde,bandes]
+  python3 -m voixla.analyse pistes FICHIER[#piste-audio=N]… [--produits spectre,onde,bandes]
   python3 -m voixla.analyse courbes DOSSIER_VOIX
 """
 
@@ -25,6 +27,7 @@ from pathlib import Path
 import numpy as np
 
 from . import chemins
+from .pistes import separer_source as separer
 
 VERSION = 2          # 2 : trames datées au milieu de leur fenêtre
 SR = 16000
@@ -54,9 +57,12 @@ class ErreurAnalyse(RuntimeError):
 # --- Décodage par blocs ----------------------------------------------------------------------------------------------
 
 def decoder_blocs(fichier, sr=SR, bloc_s=BLOC_S):
-    """Son mono à sr Hz, float32, bloc par bloc (ffmpeg en flux : la mémoire ne dépend pas de la durée)."""
-    p = subprocess.Popen(["ffmpeg", "-v", "error", "-nostdin", "-i", str(fichier), "-vn", "-ac", "1", "-ar", str(sr),
-                          "-f", "f32le", "-"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    """Son mono à sr Hz, float32, bloc par bloc (ffmpeg en flux : la mémoire ne dépend pas de la durée). fichier :
+    une source de pistes.source_analyse ; c'est toujours une piste audio désignée qui est lue (-map 0:a:N, la première
+    par défaut : le doublage d'une vidéo doublée), jamais le choix de ffmpeg entre les pistes d'une vidéo."""
+    chemin, n = separer(fichier)
+    p = subprocess.Popen(["ffmpeg", "-v", "error", "-nostdin", "-i", chemin, "-map", f"0:a:{n}", "-ac", "1", "-ar",
+                          str(sr), "-f", "f32le", "-"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     taille = sr * bloc_s * 4
     reste = b""
     fini = False
@@ -311,10 +317,12 @@ CLES = {"spectre": ("spectre", "spectre_fps", "spectre_f"), "bandes": ("bandes",
 
 
 def signature(fichier):
-    """Chemin réel, taille et date : change dès que le fichier est refait."""
-    p = Path(fichier).expanduser().resolve()
+    """Chemin réel, taille et date : change dès que le fichier est refait ; plus la piste audio, si ce n'est pas la
+    première (source_piste)."""
+    chemin, n = separer(fichier)
+    p = Path(chemin).expanduser().resolve()
     st = p.stat()
-    return f"{p}|{st.st_size}|{st.st_mtime_ns}|{VERSION}"
+    return f"{p}|{st.st_size}|{st.st_mtime_ns}|{VERSION}" + (f"|a:{n}" if n else "")
 
 
 def chemin_cache(fichier, produit):

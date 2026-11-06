@@ -9,7 +9,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
 from .. import chemins, corbeille, formats, moteur, pistes, rapports
 from .. import lecture as regles
-from . import commun
+from . import commun, pistes_gst
 from . import visualisations as vis
 from .analyses import analyses
 from .frise import Frise, FriseVoix, legende as legende_frise, legende_voix
@@ -73,7 +73,7 @@ class PageDetail(Adw.NavigationPage):
         self.autotune = False         # bascule « Auto-tune » (touche T) : doublage et voix seule auto-tunés
         self._preparations = set()    # voix seules en préparation (ma_voix, ma_voix_at)
         self.vue_paroles = None
-        self.pistes_dispo = pistes.choisir_pistes(res, self.forme, self.source_choisie())
+        self.pistes_dispo = self._choisir_pistes(self.forme)
         vue = Adw.ToolbarView()
         entete = Adw.HeaderBar()
         entete.set_title_widget(Adw.WindowTitle(title=res.titre_court, subtitle=sous_titre(res)))
@@ -144,6 +144,7 @@ class PageDetail(Adw.NavigationPage):
         corps.append(ligne_note)
 
         self.lecteur = Lecteur(hauteur=320, sur_position=self._position, proprietaire=self)
+        self.lecteur.sur_echec_piste = self._sans_pistes_audio
         corps.append(self.lecteur)
         # Visualisations du son (chacune s'allume et s'éteint par le menu « œil » ; préférences mémorisées)
         self.vis = {}                 # nom → widget
@@ -209,20 +210,43 @@ class PageDetail(Adw.NavigationPage):
         self.changer_forme(self.forme)
         self.fenetre.ecouter("visualisations", self._maj_visualisations)
         self._maj_visualisations()
+        if res.video is not None and pistes.a_sonder(res):
+            # rapport sans pistes_audio : les titres des pistes audio de la vidéo, lus dans un fil (ffprobe)
+            commun.en_fil(lambda: [pistes.titres_des_flux(v) for v in (res.video, res.video_autotune) if v],
+                          lambda _r: self._apres_sondage())
 
     # --- lecteur ---------------------------------------------------------------------------------------------------
+
+    def _choisir_pistes(self, forme):
+        """Les pistes de ce résultat ; en vidéo, celles que la vidéo doublée a déjà s'y lisent sur place, tant que le
+        playbin des flux est accessible (gui/pistes_gst.py), sinon par des copies vidéo comme un ancien doublage."""
+        return pistes.choisir_pistes(self.res, forme, self.source_choisie(), dans_la_video=pistes_gst.possible())
+
+    def _apres_sondage(self):
+        """Les titres des pistes de la vidéo sont lus : si elle a des pistes séparées, on les lit sur place."""
+        if self._oubliee or self.forme != "video" or self.piste == "comparaison":
+            return
+        if any(p.dans_la_video for p in self._choisir_pistes("video").values()):
+            self.changer_forme("video")
+
+    def _sans_pistes_audio(self):
+        """Le playbin du lecteur est introuvable : les pistes séparées passent par des copies vidéo (en cache)."""
+        if not self._oubliee and self.piste != "comparaison" and \
+                any(p.dans_la_video for p in self.pistes_dispo.values()):
+            self.changer_forme(self.forme)
 
     def changer_forme(self, forme):
         """Vidéo ou MP3 : recharge les pistes, garde la piste écoutée (si elle existe encore) et la position."""
         pos = self.lecteur.position_ref() if self.lecteur.media() else 0.0
         self.forme = forme
-        self.pistes_dispo = pistes.choisir_pistes(self.res, forme, self.source_choisie())
-        # le beat et les voix seules : leur copie vidéo si elle est prête (en cache), sinon le son seul ; le lecteur
-        # compte en temps du son doublé (frise, courbes, paroles), et lit une vidéo décalée du début du son en elle
-        # (pistes.source_lecteur) : on passe de la vidéo au son seul, et retour, au même instant du son
+        self.pistes_dispo = self._choisir_pistes(forme)
+        # le beat et les voix seules : sur place dans la vidéo doublée si elle a leurs pistes audio, sinon leur copie
+        # vidéo si elle est prête (en cache), sinon le son seul ; le lecteur compte en temps du son doublé (frise,
+        # courbes, paroles), et lit une vidéo décalée du début du son en elle (pistes.source_lecteur) : on passe de la
+        # vidéo au son seul, et retour, au même instant du son
         sources = pistes.sources_lecteur(self.pistes_dispo)
         sans_image = {c for c, p in self.pistes_dispo.items() if not p.avec_image}
-        ephemeres = {c for c in pistes.SANS_IMAGE_TOUTES if c in self.pistes_dispo and self.pistes_dispo[c].video}
+        ephemeres = {c for c in pistes.SANS_IMAGE_TOUTES if c in self.pistes_dispo and self.pistes_dispo[c].copie}
         cle = pistes.piste_apres_changement(self.pistes_dispo, self.voulue or self.piste)
         if cle is not None and self.pistes_dispo[cle].a_lire is None:
             # ma voix seule pas encore prête : on écoute le doublage pendant qu'elle se prépare
@@ -230,7 +254,8 @@ class PageDetail(Adw.NavigationPage):
             cle = self._effective("doublage") if "doublage" in sources else next(iter(sources), None)
         self.lecteur.definir(sources, cle, audio_seul=forme == "mp3", sans_image=sans_image, ephemeres=ephemeres,
                              notes={c: self._note_bandeau(c) for c in pistes.SANS_IMAGE_TOUTES
-                                    if c in self.pistes_dispo})
+                                    if c in self.pistes_dispo},
+                             pistes_audio=pistes.pistes_audio_lecteur(self.pistes_dispo))
         if pos:
             self.lecteur.aller_a(pos)
         self.piste = self.lecteur.cle or "doublage"
@@ -245,12 +270,13 @@ class PageDetail(Adw.NavigationPage):
 
     def _preparer_tout(self):
         """Dès l'ouverture, avant le moindre clic : ce qui manque se prépare en tâche de fond, une chose à la fois et
-        à faible priorité (beat seul, ma voix seule combinée puis copiée sur l'image, voix d'origine seule)."""
+        à faible priorité (beat seul, ma voix seule combinée puis copiée sur l'image, voix d'origine seule). Rien pour
+        une piste que la vidéo doublée a déjà : elle s'y lit sur place."""
         if self._oubliee:
             return
         for cle in pistes.SANS_IMAGE_TOUTES:
             p = self.pistes_dispo.get(cle)
-            if p is None or cle in self._echecs:
+            if p is None or cle in self._echecs or p.dans_la_video:
                 continue
             if cle in VOIX_SEULES and p.a_preparer:
                 self._preparer_ma_voix(cle=cle)      # puis sa copie vidéo
@@ -262,7 +288,7 @@ class PageDetail(Adw.NavigationPage):
         if self._oubliee:
             return []
         cache = chemins.dossier_cache()
-        fichiers = [p.video for p in self.pistes_dispo.values() if p.video]
+        fichiers = [p.copie for p in self.pistes_dispo.values() if p.copie]
         for c in VOIX_SEULES:
             m = self.pistes_dispo.get(c)
             if m is not None and m.fichier is not None and cache in Path(m.fichier).parents:
@@ -317,10 +343,10 @@ class PageDetail(Adw.NavigationPage):
             a = self._avancement.get(f"{self.voulue}_son")
             texte = (f"Préparation de « {p.libelle} » ({p.explication}){f', {round(100 * a)} %' if a else ''}, en "
                      "tâche de fond. En attendant, le doublage continue.")
-        elif c in ("doublage", "doublage_at"):
-            texte = ("Touche B : l’original à la même position." if o and o.fichier else
+        elif pistes.cle_de_base(c) == "doublage":
+            texte = ("Touche B : l’original à la même position." if o and o.disponible else
                      f"Original indisponible : {o.explication}." if o else "")
-        elif c == "original":
+        elif pistes.cle_de_base(c) == "original":
             texte = f"Original : {p.explication}. Touche B : retour au doublage."
         else:
             texte = f"{p.libelle} : {p.explication}.{self._note_image(c, p)} Touche B : retour au doublage."
@@ -336,8 +362,10 @@ class PageDetail(Adw.NavigationPage):
     def _note_image(self, cle, p):
         """Ce qu'on voit pendant le beat ou une voix seule : la vidéo qui avance, sa préparation, ou pourquoi on s'en
         passe."""
-        if cle not in pistes.SANS_IMAGE_TOUTES:
+        if pistes.cle_de_base(cle) not in pistes.SANS_IMAGE:
             return ""
+        if self.forme == "video" and p.dans_la_video:
+            return " L’image continue : seule la piste audio change."
         if self.forme == "video" and p.video:
             return " Sur l’image de la vidéo doublée, qui avance avec le son."
         if self.forme == "video" and (p.video_a_preparer or cle in self._videos):
@@ -373,16 +401,20 @@ class PageDetail(Adw.NavigationPage):
             return
         self.lecteur.basculer(cle)
         self.piste = self.lecteur.cle or cle
-        if p.video and self.forme == "video":
-            pistes.toucher(p.video)           # copie lue : la purge du cache la garde
+        if p.copie and self.forme == "video":
+            pistes.toucher(p.copie)           # copie lue : la purge du cache la garde
+        if cle in VOIX_SEULES and p.dans_la_video and p.a_preparer:
+            # lue sur place ; sa voix combinée, en tâche de fond, servira au son seul si l'on ferme la fenêtre
+            self._preparer_ma_voix(cle=cle)
         self._preparer_video(cle, prioritaire=True)
         self._maj_note()
         self._appliquer_pistes()
 
     def _effective(self, cle):
-        """La piste lue pour la bascule cle : sa version auto-tune si « Auto-tune » est allumé et qu'elle existe."""
+        """La piste lue pour la bascule cle : sa version auto-tune si « Auto-tune » est allumé et qu'elle existe (en
+        vidéo, le beat, la voix d'origine et l'original lus dans la vidéo auto-tune quand elle les a)."""
         base = pistes.cle_de_base(cle)
-        at = pistes.cle_ecoutee(base, self.autotune)
+        at = pistes.cle_ecoutee(base, self.autotune, self.pistes_dispo)
         q = self.pistes_dispo.get(at)
         return at if q is not None and q.disponible else base
 
@@ -454,7 +486,9 @@ class PageDetail(Adw.NavigationPage):
                          avancement=lambda f, _e: not self._oubliee and self._avance(cle, f), autotune=at)
 
     def _preparer_ma_voix(self, prioritaire=False, cle="ma_voix"):
-        """Ma voix seule (cle « ma_voix ») ou celle de la version auto-tune (« ma_voix_at »), combinée en cache."""
+        """Ma voix seule (cle « ma_voix ») ou celle de la version auto-tune (« ma_voix_at »), combinée en cache. Pour
+        une voix seule lue sur place dans la vidéo doublée, c'est un plus (son seul fenêtre fermée) : un échec ne se
+        signale pas."""
         at = cle == "ma_voix_at"
         if cle in self._preparations or not self.res.dossier_voix or self._oubliee:
             if cle in self._preparations and prioritaire:
@@ -469,6 +503,8 @@ class PageDetail(Adw.NavigationPage):
             self._preparations.discard(cle)
             self._avancement.pop(f"{cle}_son", None)
             p = self.pistes_dispo.get(cle)
+            if f is None and p is not None and p.dans_la_video:
+                return
             if f is None or p is None:
                 if self.voulue == cle:
                     self.voulue = None
@@ -557,7 +593,7 @@ class PageDetail(Adw.NavigationPage):
         """Touche B : doublage ⇄ original (et de toute autre piste au doublage)."""
         cible = pistes.bascule_ab(pistes.cle_de_base(self.piste))
         p = self.pistes_dispo.get(cible)
-        if p is not None and p.fichier is not None:
+        if p is not None and p.a_lire is not None:
             self.t_pistes[cible].set_active(True)
 
     def lecture_pause(self):
@@ -675,7 +711,10 @@ class PageDetail(Adw.NavigationPage):
         if self._oubliee or self.forme != "video" or cle not in self.pistes_dispo or cle in self.lecteur.sans_image:
             return
         try:
-            son = regles.source_son(cle, pistes.choisir_pistes(self.res, "mp3", self.source_choisie()),
+            # une piste lue sur place dans la vidéo doublée (ou sa version auto-tune : beat_at…) a le même son seul
+            # que celle de la vidéo normale : le fichier du beat, de la voix d'origine, travail/original.wav…
+            sons = pistes.choisir_pistes(self.res, "mp3", self.source_choisie())
+            son = regles.source_son(cle if cle in sons else pistes.cle_de_base(cle), sons,
                                     self.lecteur.sources.get(cle))
         except (OSError, pistes.ErreurPistes):
             return
@@ -720,17 +759,22 @@ class PageDetail(Adw.NavigationPage):
         return self.lecteur.position_ref(), bool(m and m.get_playing())
 
     def fichier_piste(self, cle):
-        """Le son analysé pour une piste : le doublage (MP3 de préférence), le son d'origine extrait (même temps que
-        le doublage), le beat, ma voix seule une fois prête, la voix d'origine."""
+        """Le son analysé pour une piste : le doublage (MP3 de préférence, sinon la première piste de la vidéo), le son
+        d'origine extrait (même temps que le doublage), le beat, ma voix seule une fois prête (ou sa piste dans la
+        vidéo doublée, pistes.source_analyse), la voix d'origine."""
         r = self.res
-        if cle == "original":
+        if pistes.cle_de_base(cle) == "original":
             return r.original_wav
         if cle == "doublage_at":
             return r.mp3_autotune or r.video_autotune
         if cle not in self.pistes_dispo or cle == "doublage":
             return r.mp3 or r.video
         p = self.pistes_dispo.get(cle)
-        return (p.fichier or p.video) if p else None     # le son de la copie vidéo si la voix seule a quitté le cache
+        if p is None:
+            return None
+        if p.dans_la_video and (cle in VOIX_SEULES or p.fichier is None):
+            return pistes.source_analyse(p.video, p.piste_audio)    # ce qu'on entend : la piste de la vidéo
+        return p.fichier or p.video      # le son de la copie vidéo si la voix seule a quitté le cache
 
     def _maj_paroles(self):
         """Paroles allumées ou éteintes (menu « œil ») : sous le lecteur, chargées une fois."""
@@ -738,7 +782,7 @@ class PageDetail(Adw.NavigationPage):
         if voulu and self.vue_paroles is None:
             # position du lecteur en temps du son doublé : voir voixla.paroles.ecart_lecture
             w = VueParoles(sur_clic=self._clic_frise, langue=self.fenetre.prefs.get("paroles_langue") or "deux",
-                           sur_langue=self._langue_paroles, debut_son=pistes.decalage_son(self.res.source))
+                           sur_langue=self._langue_paroles, debut_son=pistes.debut_son_video(self.res))
             w.suivre(self._fournisseur)
             self.corps.insert_child_after(w, self.lecteur)
             self.vue_paroles = w
@@ -1010,7 +1054,7 @@ class PageDetail(Adw.NavigationPage):
             if p is None:
                 continue
             texte = phrase(p.explication)
-            if cle in VOIX_SEULES and p.a_preparer:
+            if cle in VOIX_SEULES and p.a_preparer and not p.dans_la_video:
                 texte += " ; préparée en cache au premier usage."
             ligne.set_subtitle(commun.echapper(texte))
             if b is not None:
@@ -1051,11 +1095,12 @@ class PageDetail(Adw.NavigationPage):
                                    lambda: commun.montrer_fichier(self.fenetre, sortie), duree=6)
             else:
                 commun.informer(self.fenetre, "Enregistrement impossible", message)
-        if cle in VOIX_SEULES and p.fichier is None:
+        source = pistes.source_export(p)     # fichier de travail/ ou du cache, sinon la piste de la vidéo doublée
+        if source is None:
             analyses().exporter(self.res.dossier_voix, sortie, fini, self.res.duree_s, voix=True,
                                 autotune=cle == "ma_voix_at")
         else:
-            analyses().exporter(p.fichier, sortie, fini, self.res.duree_s)
+            analyses().exporter(source[0], sortie, fini, self.res.duree_s, piste_audio=source[1])
 
     def _groupe_remix(self):
         r, rap = self.res, self.res.rapport or {}

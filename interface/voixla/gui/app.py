@@ -17,7 +17,7 @@ import traceback
 
 from gi.repository import Adw, Gio, GLib, Gtk  # versions fixées dans gui/__init__.py
 
-from .. import APP_ID, NOM, __version__, chemins, moteur, travaux
+from .. import APP_ID, NOM, __version__, bibliotheque, chemins, moteur, travaux
 from .. import lecture as regles
 from .. import preparation
 from . import commun
@@ -29,7 +29,7 @@ DELAI_PREPARATION_S = 45      # après le démarrage : la fenêtre et ses premi�
 SECTIONS = [
     ("doubler", "Doubler", "video-x-generic-symbolic", "page_doubler", "PageDoubler"),
     ("travaux", "Travaux", "view-list-ordered-symbolic", "page_travaux", "PageTravaux"),
-    ("resultats", "Résultats", "media-playback-start-symbolic", "page_resultats", "PageResultats"),
+    ("resultats", "Résultats", "media-playback-start-symbolic", "bibliotheque", "PageBibliotheque"),
     ("voix", "Voix", "audio-input-microphone-symbolic", "page_voix", "PageVoix"),
     ("ecoute", "Écoute à l’aveugle", "audio-headphones-symbolic", "page_ecoute", "PageEcoute"),
     ("etat", "État", "preferences-system-details-symbolic", "page_etat", "PageEtat"),
@@ -54,6 +54,7 @@ class Fenetre(Adw.ApplicationWindow):
         commun.installer_css()
         self.config = chemins.lire_config()
         self.donnees = chemins.dossier_donnees(self.config)
+        bibliotheque.declarer_preferences()     # la clé « bibliotheque » d'interface.json (vue, tri, regroupement)
         self.prefs = chemins.lire_preferences()
         self.file = travaux.FileTravaux()
         self.caps = frozenset()
@@ -180,7 +181,14 @@ class Fenetre(Adw.ApplicationWindow):
                            ("<Control>comma", "Réglages"), ("<Control>question", "Raccourcis clavier")):
             groupe.add_shortcut(Gtk.ShortcutsShortcut(accelerator=acc, title=titre))
         section.add_group(groupe)
-        lecture = Gtk.ShortcutsGroup(title="Résultats")
+        biblio = Gtk.ShortcutsGroup(title="Résultats")
+        for acc, titre in (("<Control>f", "Chercher un titre ou une voix"), ("Return", "Ouvrir le doublage"),
+                           ("space", "Lire ou mettre en pause le doublage (sans ouvrir le détail)"),
+                           ("Delete", "Mettre à la corbeille…"), ("<Control>a", "Tout sélectionner"),
+                           ("Escape", "Quitter le mode sélection")):
+            biblio.add_shortcut(Gtk.ShortcutsShortcut(accelerator=acc, title=titre))
+        section.add_group(biblio)
+        lecture = Gtk.ShortcutsGroup(title="Détail d’un résultat")
         for acc, titre in (("b", "Basculer doublage ⇄ original"), ("t", "Avec ou sans auto-tune"),
                            ("space", "Lecture / pause")):
             lecture.add_shortcut(Gtk.ShortcutsShortcut(accelerator=acc, title=titre))

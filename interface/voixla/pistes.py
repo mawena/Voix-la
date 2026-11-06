@@ -44,7 +44,9 @@ nice -n 19 et ionice -c3, jamais par file-attente) :
   python3 -m voixla.pistes exporter (SOURCE [--piste-audio N] | --voix DOSSIER_VOIX [--autotune]) SORTIE.mp3|.flac|.wav
   (--autotune : la voix seule de la version auto-tune, d'après seche_voix_autotune.wav et reverb_voix_autotune.wav ;
    --piste-audio N : la piste audio N de SOURCE, une vidéo doublée à plusieurs pistes, au lieu de la première)
-  python3 -m voixla.pistes miniature VIDEO_DOUBLEE     (une image de la vidéo, en cache, pour MPRIS)
+  python3 -m voixla.pistes miniature VIDEO_DOUBLEE [--large]
+  (une image de la vidéo, en cache : carrée pour MPRIS, 16:9 avec --large pour la bibliothèque des résultats ; la
+   pochette intégrée d'un fichier sans image, un MP3)
 """
 
 import contextlib
@@ -996,23 +998,33 @@ def preparer_video(video, son=None, voix=None, avancement=None, autotune=False):
     return sortie
 
 
-# --- Miniature : une image de la vidéo doublée (MPRIS, barre « en cours de lecture ») -------------------------------
+# --- Miniature : une image de la vidéo doublée (MPRIS, barre « en cours de lecture », bibliothèque des résultats) -----
+#
+# Deux formes, dans le même cache (~/.cache/voix-la/miniatures/) : « carre » (512 × 512, MPRIS et barre de lecture) et
+# « large » (16:9, 480 × 270, cartes et lignes de la bibliothèque). Sans image dans le fichier (un MP3), on prend sa
+# pochette intégrée (flux attached_pic) : en 16:9, centrée sur un fond flou tiré d'elle-même.
 
 VERSION_MINIATURE = 1
-CACHE_MINIATURES_MO = 20
+CACHE_MINIATURES_MO = 60        # 200 doublages × (carré + 16:9) ≈ 15 Mo
 COTE_MINIATURE = 512
+FORMES_MINIATURE = {"carre": (COTE_MINIATURE, COTE_MINIATURE), "large": (480, 270)}
 
 
-def chemin_miniature(video):
-    """Miniature en cache (qu'elle existe ou non), nommée d'après le chemin, la taille et la date de la vidéo."""
-    cle = hashlib.sha1(f"{VERSION_MINIATURE}|{_signature(video)}".encode()).hexdigest()[:24]
+def chemin_miniature(video, forme="carre"):
+    """Miniature en cache (qu'elle existe ou non), nommée d'après le chemin, la taille et la date de la vidéo (et la
+    forme, sauf pour le carré, nommé comme avant)."""
+    if forme not in FORMES_MINIATURE:
+        raise ValueError(forme)
+    ident = f"{VERSION_MINIATURE}|{_signature(video)}" if forme == "carre" else \
+        f"{VERSION_MINIATURE}|{forme}|{_signature(video)}"
+    cle = hashlib.sha1(ident.encode()).hexdigest()[:24]
     return chemins.dossier_cache() / "miniatures" / f"{cle}.jpg"
 
 
-def miniature_prete(video):
+def miniature_prete(video, forme="carre"):
     """La miniature si elle est déjà en cache, sinon None ; ne calcule rien."""
     try:
-        f = chemin_miniature(video)
+        f = chemin_miniature(video, forme)
     except OSError:
         return None
     return f if f.is_file() else None
@@ -1024,32 +1036,67 @@ def instant_miniature(duree):
     return max(0.0, d / 3) if d and d > 3 else min(1.0, max(0.0, (d or 0.0) / 2))
 
 
-def commande_miniature(video, sortie, instant):
-    """ffmpeg (sous nice) : une image carrée de COTE_MINIATURE px, prise à instant (recadrée au centre), en JPEG."""
-    c = COTE_MINIATURE
-    return ["nice", "-n", "10", "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-            "-ss", f"{max(0.0, instant):.3f}", "-i", str(video), "-map", "0:v:0", "-frames:v", "1",
-            "-vf", f"scale={c}:{c}:force_original_aspect_ratio=increase,crop={c}:{c}", "-q:v", "4",
-            "-f", "mjpeg", str(sortie)]
+def priorite_miniature(basse=False, ionice=None):
+    """nice -n 10 ; basse : nice -n 19 et, si ionice existe, classe d'entrées-sorties « idle » (la bibliothèque, qui
+    en prépare beaucoup au fil du défilement)."""
+    if not basse:
+        return ["nice", "-n", "10"]
+    import shutil
+    ionice = shutil.which("ionice") if ionice is None else ionice
+    return ["nice", "-n", "19", *([ionice, "-c3"] if ionice else [])]
 
 
-def preparer_miniature(video):
-    """La miniature d'une vidéo doublée (en cache, calculée au besoin). Rien n'est écrit à côté de la vidéo."""
+def commande_miniature(video, sortie, instant, forme="carre", pochette=None, basse=False):
+    """ffmpeg (sous nice) : une image de la forme demandée, prise à instant (recadrée au centre), en JPEG. pochette :
+    l'index (parmi les flux vidéo) de la pochette intégrée à prendre au lieu d'une image de la vidéo ; en 16:9, elle
+    est centrée, entière, sur un fond flou et un peu assombri tiré d'elle-même."""
+    l, h = FORMES_MINIATURE[forme]
+    debut = [*priorite_miniature(basse), "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y"]
+    remplir = f"scale={l}:{h}:force_original_aspect_ratio=increase,crop={l}:{h}"
+    fin = ["-frames:v", "1", "-q:v", "4", "-f", "mjpeg", str(sortie)]
+    if pochette is None:
+        return [*debut, "-ss", f"{max(0.0, instant):.3f}", "-i", str(video), "-map", "0:v:0", "-vf", remplir, *fin]
+    if l == h:
+        return [*debut, "-i", str(video), "-map", f"0:v:{int(pochette)}", "-vf", remplir, *fin]
+    graphe = (f"[0:v:{int(pochette)}]split[a][b];[a]{remplir},boxblur=20:2,eq=brightness=-0.12[fond];"
+              f"[b]scale={l}:{h}:force_original_aspect_ratio=decrease[avant];"
+              "[fond][avant]overlay=(W-w)/2:(H-h)/2,format=yuvj420p[v]")
+    return [*debut, "-i", str(video), "-filter_complex", graphe, "-map", "[v]", *fin]
+
+
+def image_du_fichier(info):
+    """(« video », None) si le fichier a une image animée, (« pochette », index parmi les flux vidéo) s'il n'a qu'une
+    pochette intégrée (attached_pic, un MP3 par exemple), sinon (None, None)."""
+    pochette, i = None, 0
+    for f in info.get("streams") or []:
+        if f.get("codec_type") != "video":
+            continue
+        if not (f.get("disposition") or {}).get("attached_pic"):
+            return "video", None
+        if pochette is None:
+            pochette = i
+        i += 1
+    return ("pochette", pochette) if pochette is not None else (None, None)
+
+
+def preparer_miniature(video, forme="carre", basse=False):
+    """La miniature d'une vidéo doublée (en cache, calculée au besoin), ou celle de la pochette intégrée à un fichier
+    sans image (MP3). Rien n'est écrit à côté du fichier."""
     video = Path(video)
     if not video.is_file():
         raise ErreurPistes(f"vidéo introuvable : {video}")
-    sortie = chemin_miniature(video)
+    sortie = chemin_miniature(video, forme)
     if sortie.is_file():
         toucher(sortie)
         return sortie
     info = sonder(video)
-    if not any(f.get("codec_type") == "video" and not (f.get("disposition") or {}).get("attached_pic")
-               for f in info.get("streams") or []):
+    genre, pochette = image_du_fichier(info)
+    if genre is None:
         raise ErreurPistes("pas d’image dans cette vidéo")
     sortie.parent.mkdir(parents=True, exist_ok=True)
     tmp = _tmp(sortie)
-    _lancer(commande_miniature(video, tmp, instant_miniature((info.get("format") or {}).get("duration"))), tmp,
-            sortie)
+    _lancer(commande_miniature(video, tmp, instant_miniature((info.get("format") or {}).get("duration")), forme,
+                               pochette, basse), tmp, sortie)
     chemins.purger_dossier(sortie.parent, CACHE_MINIATURES_MO, garder=(sortie,))
     return sortie
 
@@ -1163,8 +1210,8 @@ def main(argv=None):
             exporter(source, sortie, piste_audio)
             print(json.dumps({"sortie": str(sortie), "duree_s": round(time.time() - debut, 2)}, ensure_ascii=False))
             return 0
-        if len(argv) == 2 and argv[0] == "miniature":
-            f = preparer_miniature(argv[1])
+        if argv[:1] == ["miniature"] and len(argv) in (2, 3) and (len(argv) == 2 or argv[2] == "--large"):
+            f = preparer_miniature(argv[1], "large" if len(argv) == 3 else "carre")
             print(json.dumps({"miniature": str(f), "duree_s": round(time.time() - debut, 2)}, ensure_ascii=False))
             return 0
     except (ErreurPistes, OSError) as e:

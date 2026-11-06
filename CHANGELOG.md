@@ -7,6 +7,8 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+## [0.7.0] - 2026-11-06
+
 ### Performances
 
 - Noyau : sur deux cartes, les paroles (Whisper large-v3, puis NLLB) tournent sur la carte 1 pendant que la carte 0
@@ -362,7 +364,8 @@ Première version publique.
     `VOIXLA_DECODAGE_MATERIEL=1` remet le décodage matériel ;
   - les essais automatiques laissaient le son de l'application coupé.
 
-[Non publié]: https://github.com/mawena/Voix-la/compare/v0.6.0...HEAD
+[Non publié]: https://github.com/mawena/Voix-la/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/mawena/Voix-la/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/mawena/Voix-la/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/mawena/Voix-la/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/mawena/Voix-la/compare/v0.3.1...v0.4.0

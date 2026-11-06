@@ -7,6 +7,8 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+## [0.8.0] - 2026-11-06
+
 ### Ajouté
 
 - Interface : la page Résultats devient une bibliothèque, en grille de cartes ou en liste triable par colonne (choix
@@ -421,7 +423,8 @@ Première version publique.
     `VOIXLA_DECODAGE_MATERIEL=1` remet le décodage matériel ;
   - les essais automatiques laissaient le son de l'application coupé.
 
-[Non publié]: https://github.com/mawena/Voix-la/compare/v0.7.0...HEAD
+[Non publié]: https://github.com/mawena/Voix-la/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/mawena/Voix-la/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/mawena/Voix-la/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/mawena/Voix-la/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/mawena/Voix-la/compare/v0.4.0...v0.5.0

@@ -1,3 +1,17 @@
+voix-la (0.8.0) unstable; urgency=medium
+
+  * Interface : bibliothèque des résultats, en grille de cartes avec
+    miniatures ou en liste triable, filtres, recherche, versions d'une même
+    chanson regroupées, lecture sans ouvrir le détail.
+  * Interface : lecteur complet, plein écran, vitesse sans changer la
+    hauteur, boucle A-B, pistes au clavier, reprise à la dernière position,
+    panneaux à afficher ou masquer (frise d'octave comprise), mode cinéma.
+  * Interface : paroles façon karaoké et panneau de toutes les paroles.
+  * Interface : auto-tune dans le remix rapide, enregistrement au micro
+    d'un téléphone Android.
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Fri, 06 Nov 2026 10:00:00 +0000
+
 voix-la (0.7.0) unstable; urgency=medium
 
   * Paroles sur la deuxième carte T4 pendant la conversion, et Whisper sans

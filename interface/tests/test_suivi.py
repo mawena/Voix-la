@@ -230,6 +230,52 @@ class EssaiTempsRestant(unittest.TestCase):
         self.assertEqual(av.restant_s(T0 + 2), 0.0)
 
 
+V = "Essai (extrait 1m00,0+0m40,0)"
+ESTIMATIONS_INTERFACE = {**ESTIMATIONS, "kaggle": 1500.0, "rapatriement": 20.0, "mix": 10.0, "video": 5.0}
+
+
+def lancement(estimation_s=1000):
+    """Une vidéo : extraction, envoi, noyau poussé à t = 50 ; premier état du noyau 20 s plus tard."""
+    return [*etape(0, "extraction", "debut", [V]), *etape(2, "extraction", "fin", [V], duree_s=2.0),
+            *etape(2, "envoi", "debut", [V]), *etape(50, "envoi", "fin", [V], duree_s=48.0),
+            *etape(50, "kaggle", "debut", [V], "noyau moi/doublage-voix-gpu, environ 17 min"),
+            ligne(70, "kaggle", V, statut="running", depuis_s=20, estimation_s=estimation_s)]
+
+
+class EssaiEstimationDeDoublerLancee(unittest.TestCase):
+    """L'estimation de l'interface avant le lancement ; celle de doubler (estimation_s) une fois le noyau lancé."""
+
+    def rejouer(self, lignes):
+        return rejouer(lignes, nb_videos=1, estimations=ESTIMATIONS_INTERFACE)
+
+    def test_avant_le_lancement_l_estimation_de_l_interface(self):
+        av = self.rejouer(lancement()[:4])                                   # envoi fini, noyau pas encore poussé
+        self.assertIsNone(av.estimation_doubler_s())
+        self.assertIsNone(av.texte_kaggle(T0 + 50))
+        self.assertAlmostEqual(av.restant_s(T0 + 50), 1500.0 + 20 + 10 + 5, places=3)
+        av = self.rejouer(lancement()[:5])                                   # poussé, aucun état encore
+        self.assertEqual(av.estimations["kaggle"], 1500.0)
+        self.assertAlmostEqual(av.restant_s(T0 + 60), 1490.0 + 35, places=3)
+
+    def test_une_fois_lance_l_estimation_de_doubler(self):
+        av = self.rejouer(lancement())
+        self.assertEqual(av.estimation_doubler_s(), 1000.0)
+        self.assertEqual(av.estimations["kaggle"], 1000.0)                 # remplace celle de l'interface
+        # reste = 1000 − (20 s au premier état + 30 s depuis) + rapatriement, mixage et vidéo
+        self.assertAlmostEqual(av.restant_s(T0 + 100), 950.0 + 35, places=3)
+        self.assertEqual(av.texte_kaggle(T0 + 100), "GPU Kaggle : en cours depuis 50 s · durée prévue par doubler ≈ 17 min")
+        # le noyau dépasse l'estimation : plus rien à attendre de lui, et la ligne le dit
+        self.assertAlmostEqual(av.restant_s(T0 + 2000), 35.0, places=3)
+        self.assertIn("au-delà de la durée prévue par doubler (≈ 17 min)", av.texte_kaggle(T0 + 2000))
+
+    def test_doubler_sans_estimation(self):
+        av = self.rejouer(lancement(estimation_s=None))
+        self.assertIsNone(av.estimation_doubler_s())
+        self.assertEqual(av.estimations["kaggle"], 1500.0)
+        self.assertEqual(av.texte_kaggle(T0 + 100), "GPU Kaggle : en cours depuis 50 s")
+        self.assertAlmostEqual(av.restant_s(T0 + 100), 1450.0 + 35, places=3)
+
+
 class EssaiCasParticuliers(unittest.TestCase):
     def test_fin_sans_debut(self):
         av = rejouer([ligne(5, "etape", A, etape="envoi", etat="fin", duree_s=3.0)])

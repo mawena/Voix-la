@@ -1,5 +1,7 @@
-"""Une fausse bibliothèque de doublages, aux titres et aux voix inventés : pour les essais, les captures d'écran et la
-mesure des performances de la page Résultats. Rien n'est écrit hors du dossier de données donné.
+"""Une fausse bibliothèque de doublages, aux titres, aux voix et aux paroles inventés : pour les essais, les captures
+d'écran et la mesure des performances de la page Résultats. Les doublages des captures qui ont une langue ont des
+paroles minutées mot à mot avec leur traduction (paroles.json), et le duo a ses passages (« Voix de chaque passage »).
+Rien n'est écrit hors du dossier de données donné.
 
   python3 -m tests.fausse_bibliotheque DONNEES               les 12 doublages des captures (petites vidéos de synthèse)
   python3 -m tests.fausse_bibliotheque DONNEES --n 200       200 doublages (20 vidéos de synthèse, liées en dur)
@@ -55,6 +57,56 @@ MOTS_B = ["d’été", "bleue", "de minuit", "lointain", "d’argent", "sans fin
           "de verre", "à Lagos", "de cuivre", "des heures", "d’automne", "secrète", "du matin"]
 
 
+# Paroles inventées (paroles.json de doubler : mots minutés et traduction française), pour les captures du lecteur
+PAROLES = {
+    "es": [("Camino despacio bajo la luz", "Je marche lentement sous la lumière"),
+           ("El viento canta sobre el agua", "Le vent chante sur l’eau"),
+           ("Y cada ola me devuelve tu nombre", "Et chaque vague me rend ton nom"),
+           ("Guardo el verano en mis manos", "Je garde l’été dans mes mains"),
+           ("La tarde arde, la noche llega", "L’après-midi brûle, la nuit arrive"),
+           ("Bailamos lento hasta el amanecer", "Nous dansons lentement jusqu’à l’aube"),
+           ("Nada se apaga si tú estás", "Rien ne s’éteint si tu es là"),
+           ("Luz de verano, quédate aquí", "Lumière d’été, reste ici")],
+    "en": [("Copper skies above the silent town", "Des ciels de cuivre sur la ville silencieuse"),
+           ("I keep the lantern burning low", "Je garde la lanterne en veilleuse"),
+           ("Every road leads back to you", "Chaque route me ramène à toi"),
+           ("Hold the morning, hold it close", "Retiens le matin, serre-le fort"),
+           ("Paper boats on a river of chalk", "Des bateaux de papier sur une rivière de craie"),
+           ("We were dancing on the edge of day", "Nous dansions au bord du jour"),
+           ("Say my name before the light goes out", "Dis mon nom avant que la lumière s’éteigne"),
+           ("Copper skies, carry me home", "Ciels de cuivre, ramenez-moi")],
+    "pt": [("Pequenas luzes dançam no jardim", "De petites lumières dansent dans le jardin"),
+           ("A noite canta só pra mim", "La nuit chante rien que pour moi"),
+           ("Vem devagar, não tenha medo", "Viens doucement, n’aie pas peur"),
+           ("O céu inteiro é um segredo", "Le ciel entier est un secret"),
+           ("Gira, gira, vagalume", "Tourne, tourne, luciole"),
+           ("Acende o mundo com teu lume", "Allume le monde de ta lueur"),
+           ("Até o sol voltar a nascer", "Jusqu’à ce que le soleil revienne"),
+           ("Dança comigo até amanhecer", "Danse avec moi jusqu’à l’aube")],
+}
+
+
+def paroles_inventees(langue, duree, debut=1.0, pas=3.6, ecart=0.4):
+    """paroles.json (format 1) aux paroles inventées de cette langue : chaque ligne dure pas − ecart, ses mots se
+    partagent ce temps (proportionnellement à leur longueur) ; une traduction française ligne à ligne."""
+    lignes, traductions, t = [], [], debut
+    for k in range(64):
+        texte, fr = PAROLES[langue][k % len(PAROLES[langue])]
+        fin = t + pas - ecart
+        if fin > duree:
+            break
+        mots, total, u = [], sum(len(m) + 1 for m in texte.split()), t
+        for m in texte.split():
+            d = (fin - t) * (len(m) + 1) / total
+            mots.append({"debut": round(u, 3), "fin": round(u + d, 3), "mot": m})
+            u += d
+        lignes.append({"debut": round(t, 3), "fin": round(fin, 3), "texte": texte, "mots": mots})
+        traductions.append({"debut": round(t, 3), "fin": round(fin, 3), "texte": fr})
+        t += pas
+    return {"format": 1, "langue": langue, "source": "transcription d’essai", "decalage_s": 0.0, "segments": lignes,
+            "traductions": {"fr": {"source": "traduction d’essai", "segments": traductions}}}
+
+
 def nice_ffmpeg(*args):
     subprocess.run(["nice", "-n", "19", "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
                     *map(str, args)], check=True, stdin=subprocess.DEVNULL, timeout=120)
@@ -102,6 +154,10 @@ def rapport(mode, duree, voix, options, morceaux=40):
     if "+" in voix:
         a, b = voix.split("+")
         r["voix_cibles"] = {"voix": [{"cle": "homme", "nom": a}, {"cle": "femme", "nom": b}]}
+        # qui chante chaque passage (frise « Voix de chaque passage ») : en alternance, et ensemble au refrain
+        r["affectation"] = {"passages": [{"debut_s": i * 12.0, "fin_s": i * 12.0 + 12.0,
+                                          "voix": [a, b] if i % 4 == 3 else [(a, b)[i % 2]]}
+                                         for i in range(int((duree or 0) // 12))]}
     return r
 
 
@@ -129,6 +185,9 @@ def doublage(donnees, titre, voix, mode, duree, options, maintenant, videos=True
     if not options.get("inacheve"):
         (travail / voix / "rapport.json").write_text(json.dumps(rapport(mode, duree, voix, options, morceaux),
                                                                 ensure_ascii=False), encoding="utf-8")
+        if videos and sources is None and options.get("langue") in PAROLES:
+            (travail / voix / "paroles.json").write_text(json.dumps(
+                paroles_inventees(options["langue"], duree_media), ensure_ascii=False), encoding="utf-8")
         mp3 = dossier / f"{base}.mp3"
         if videos and options.get("mp3"):
             mp3_de_synthese(mp3, options.get("pochette"), duree_media if sources is None else 2.0)
@@ -151,9 +210,8 @@ def doublage(donnees, titre, voix, mode, duree, options, maintenant, videos=True
     return dossier
 
 
-def creer(donnees, n=None, videos=True, graine=7):
-    """Les doublages des captures (n None), ou n doublages inventés (versions de chansons, extraits, duos, parole,
-    MP3 seuls). Rend le nombre de doublages."""
+def creer_voix(donnees):
+    """Les voix inventées (voix/<id>/voix.json) et le dossier des sorties."""
     donnees = Path(donnees)
     (donnees / "sorties").mkdir(parents=True, exist_ok=True)
     (donnees / "voix").mkdir(parents=True, exist_ok=True)
@@ -162,6 +220,13 @@ def creer(donnees, n=None, videos=True, graine=7):
         d.mkdir(exist_ok=True)
         (d / "voix.json").write_text(json.dumps({"nom": nom, "reference": "reference.wav", "duree_s": 20.0},
                                                 ensure_ascii=False), encoding="utf-8")
+
+
+def creer(donnees, n=None, videos=True, graine=7):
+    """Les doublages des captures (n None), ou n doublages inventés (versions de chansons, extraits, duos, parole,
+    MP3 seuls). Rend le nombre de doublages."""
+    donnees = Path(donnees)
+    creer_voix(donnees)
     maintenant = time.time()
     if n is None:
         for titre, voix, mode, duree, options in CAPTURES:

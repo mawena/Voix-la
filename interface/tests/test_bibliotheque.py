@@ -288,21 +288,24 @@ class EssaiPetitesFonctions(unittest.TestCase):
 
 class EssaiPreferences(EssaiIsole):
     def test_la_cle_survit_aux_autres_preferences(self):
-        """chemins ne garde que les clés déclarées : declarer_preferences y ajoute « bibliotheque », que la moindre
-        autre préférence enregistrée effacerait sinon."""
-        with mock.patch.dict(chemins.PREFERENCES_DEFAUT):
-            bib.declarer_preferences()
-            bib.declarer_preferences()
-            self.assertEqual(chemins.PREFERENCES_DEFAUT["bibliotheque"], bib.PREFERENCES)
-            chemins.modifier_preference("bibliotheque", {"vue": "liste", "tri": "titre", "inverse": False,
-                                                         "regrouper": True})
-            chemins.modifier_preference("vis_onde", True)
-            prefs = chemins.lire_preferences()
-            self.assertEqual(bib.preferences(prefs)["vue"], "liste")
-            self.assertTrue(prefs["vis_onde"])
-            ecrit = json.loads(chemins.fichier_preferences().read_text(encoding="utf-8"))
-            self.assertEqual(ecrit["bibliotheque"]["tri"], "titre")
-        self.assertNotIn("bibliotheque", chemins.PREFERENCES_DEFAUT, "rendu tel quel après l'essai")
+        """chemins ne garde que les clés qu'il connaît : « bibliotheque » y est déclarée avec son défaut, et survit à
+        l'écriture de toute autre préférence."""
+        self.assertEqual(chemins.PREFERENCES_DEFAUT["bibliotheque"], bib.PREFERENCES)
+        self.assertFalse(hasattr(bib, "declarer_preferences"), "plus de déclaration au démarrage")
+        self.assertEqual(chemins.lire_preferences()["bibliotheque"], bib.PREFERENCES, "défaut sans fichier")
+        chemins.modifier_preference("bibliotheque", {"vue": "liste", "tri": "titre", "inverse": False,
+                                                     "regrouper": True})
+        chemins.modifier_preference("vis_onde", True)
+        prefs = chemins.lire_preferences()
+        self.assertEqual(bib.preferences(prefs)["vue"], "liste")
+        self.assertTrue(prefs["vis_onde"])
+        ecrit = json.loads(chemins.fichier_preferences().read_text(encoding="utf-8"))
+        self.assertEqual(ecrit["bibliotheque"]["tri"], "titre")
+        bib.PREFERENCES["vue"] = "liste"
+        try:
+            self.assertEqual(chemins.PREFERENCES_DEFAUT["bibliotheque"]["vue"], "grille", "une copie, pas le défaut")
+        finally:
+            bib.PREFERENCES["vue"] = "grille"
 
 
 class EssaiDeuxCents(EssaiIsole):

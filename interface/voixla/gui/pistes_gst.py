@@ -81,8 +81,19 @@ def possible():
 
 def playbin(m):
     """Le playbin qui lit m (un Gtk.MediaFile ouvert sur un fichier), ou None (voir l'en-tête)."""
+    return _lecteur_et_playbin(m)[1]
+
+
+def lecteur_gst(m):
+    """Le lecteur GStreamer de m (GtkGstPlayer, copie de GstPlay ; GstPlay ailleurs), ou None : sa propriété « rate »
+    règle la vitesse de lecture."""
+    return _lecteur_et_playbin(m)[0]
+
+
+def _lecteur_et_playbin(m):
+    """(lecteur, playbin) de m, ou (None, None) (voir l'en-tête)."""
     if m is None or hors_service or not structure_connue(m):
-        return None
+        return None, None
     try:
         nouveau, gobj = _api()
         taille_pointeur = ctypes.sizeof(ctypes.c_void_p)
@@ -109,10 +120,76 @@ def playbin(m):
             pb = lecteur.get_property("pipeline")
             usine = pb.get_factory() if pb is not None else None
             if usine is not None and usine.get_name() in USINES:
-                return pb
+                return lecteur, pb
     except Exception as e:  # noqa: BLE001
         _dire(f"playbin introuvable ({type(e).__name__} : {e})")
-    return None
+    return None, None
+
+
+# --- Vitesse de lecture, image par image ------------------------------------------------------------------------------
+#
+# Le lecteur de GTK (comme GstPlay) pose scaletempo en filtre audio de son playbin (« audio-filter ») : à une autre
+# vitesse que 1, le son garde sa hauteur (indispensable pour du chant). Sa propriété « rate » relance la lecture à la
+# même position avec la nouvelle vitesse, que les déplacements suivants gardent. Vérifié avec GTK 4.14 et GStreamer
+# 1.24 (tests/essai_lecteur_complet.py : la fréquence entendue ne change pas à 0,5× ni à 2×).
+
+def garde_la_hauteur(m):
+    """Vrai si le son de m passe par scaletempo (la hauteur est gardée quand la vitesse change)."""
+    pb = playbin(m)
+    if pb is None or pb.find_property("audio-filter") is None:
+        return False
+    try:
+        f = pb.get_property("audio-filter")
+        usine = f.get_factory() if f is not None else None
+        return usine is not None and usine.get_name() == "scaletempo"
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def vitesse(m):
+    """La vitesse de lecture de m (1 si elle est inconnue)."""
+    lec = lecteur_gst(m)
+    try:
+        return float(lec.get_property("rate")) if lec is not None and lec.find_property("rate") else 1.0
+    except Exception:  # noqa: BLE001
+        return 1.0
+
+
+def regler_vitesse(m, v):
+    """Règle la vitesse de m (prêt), si son son garde sa hauteur (scaletempo) ; rien si c'est déjà elle. Vrai si m lit
+    à cette vitesse."""
+    if m is None or not m.is_prepared():
+        return False
+    lec = lecteur_gst(m)
+    if lec is None or lec.find_property("rate") is None:
+        return False
+    try:
+        if abs(float(lec.get_property("rate")) - v) < 1e-3:
+            return True
+        if not garde_la_hauteur(m):
+            return False
+        lec.set_property("rate", float(v))
+        return True
+    except Exception as e:  # noqa: BLE001
+        _dire(f"vitesse impossible ({type(e).__name__} : {e})")
+        return False
+
+
+def images_par_seconde(m, defaut=25.0):
+    """La cadence d'images de la vidéo que lit m (caps du flux vidéo choisi par playbin), sinon defaut."""
+    pb = playbin(m) if m is not None and m.is_prepared() else None
+    if pb is None:
+        return defaut
+    try:
+        pad = pb.emit("get-video-pad", max(0, pb.get_property("current-video")))
+        caps = pad.get_current_caps() if pad is not None else None
+        if caps is not None and caps.get_size():
+            ok, n, d = caps.get_structure(0).get_fraction("framerate")
+            if ok and n > 0 and d > 0:
+                return n / d
+    except Exception:  # noqa: BLE001
+        pass
+    return defaut
 
 
 def regler_file_audio(pb, secondes=FILE_AUDIO_S):

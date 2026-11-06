@@ -12,6 +12,7 @@ Un propriétaire durable a, en plus de couper(), durable et quitter_session() :
   est_visible()             sa page est celle qu'on voit
   passer_en_son(), revenir_en_video()   fenêtre fermée puis rouverte (facultatifs)
   regler_volume(v)          (facultatif)
+  regler_vitesse(v)         (facultatif : etat_lecture().vitesse_reglable le dit)
 Les propriétaires ne sont tenus ici que par des références faibles, sauf l'actif et la session (le coordinateur).
 """
 
@@ -210,6 +211,9 @@ class Lectures:
 
     def regler_volume(self, v):
         self._session("regler_volume", v)
+
+    def regler_vitesse(self, v):
+        self._session("regler_vitesse", v)
 
     def revenir(self):
         """Montre la page de ce qui joue (barre, Raise)."""

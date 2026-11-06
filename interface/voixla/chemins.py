@@ -63,13 +63,26 @@ PREFERENCES_DEFAUT = {
     "vis_vumetre": False,
     "melodie_hz": False,        # échelle de la courbe de mélodie : notes (faux) ou Hz (vrai)
     "melodie_autotune": True,   # courbe de la version auto-tune sur la mélodie (doublages qui en ont une)
+    # Frises du détail d'un résultat : frise d'octave, et « Voix de chaque passage » d'un doublage à une voix par
+    # chanteur
+    "frise_octave": True,
+    "frise_voix": True,
     # Paroles sous le lecteur des résultats (paroles.json de doubler, sinon sous-titres de la vidéo doublée)
     "paroles": True,
     "paroles_langue": "deux",   # originale, fr ou deux
+    "paroles_taille": "normale",    # petite, normale, grande ou tres-grande (gui/vue_paroles.TAILLES)
+    "paroles_panneau": False,   # panneau « Toutes les paroles », à droite du détail
+    "paroles_video": False,     # sous-titres sur la vidéo, hors du plein écran
+    # Lecteur des résultats : volume (0 à 1) de tous ses flux, et dernière position de chaque doublage, pour la reprise
+    # ({"<dossier>|<voix>": {"position": s, "date": horodatage}}, voir voixla.lecture.memoriser_position)
+    "volume": 1.0,
+    "positions": {},
     # {dossier de résultat: vidéo source} choisie à la main quand celle de travail/source.json est introuvable
     "sources_choisies": {},
     # taille du cache des copies vidéo des pistes séparées, en Mo ; None : 2 Go (voixla.pistes.CACHE_VIDEO_MO)
     "cache_pistes_mo": None,
+    # Bibliothèque des résultats (voixla.bibliotheque) : vue (grille ou liste), tri, ordre inversé, versions regroupées
+    "bibliotheque": {"vue": "grille", "tri": "date", "inverse": False, "regrouper": True},
 }
 
 
@@ -336,6 +349,31 @@ def dossier_ecoute():
     if os.environ.get("VOIXLA_ECOUTE"):
         return Path(os.environ["VOIXLA_ECOUTE"]).expanduser()
     return DEPOT / "banc" / "ecoute"
+
+
+def dossier_images(images_xdg=None):
+    """Où vont les captures d'image du lecteur : VOIXLA_IMAGES (essais), sinon <Images>/Voix-là (dossier Images du
+    bureau, donné par l'interface, sinon ~/Images ou ~/Pictures)."""
+    if os.environ.get("VOIXLA_IMAGES"):
+        return Path(os.environ["VOIXLA_IMAGES"]).expanduser()
+    if images_xdg and Path(images_xdg).is_dir():
+        return Path(images_xdg) / "Voix-là"
+    for nom in ("Images", "Pictures"):
+        if (Path.home() / nom).is_dir():
+            return Path.home() / nom / "Voix-là"
+    return Path.home() / "Voix-là"
+
+
+def nom_capture(titre, piste, position_s):
+    """« <titre> - Doublage - 1m23,45s.png » : sans caractère interdit dans un nom de fichier."""
+    s = max(0.0, float(position_s or 0.0))
+    m, r = divmod(s, 60)
+    instant = f"{int(m)}m{r:05.2f}s".replace(".", ",")
+    morceaux = [x for x in (titre, piste, instant) if x]
+    nom = " - ".join(morceaux)
+    for c in '/\\:*?"<>|\0':
+        nom = nom.replace(c, "-")
+    return nom.strip(" .")[:180] + ".png"
 
 
 def dossier_telechargements():

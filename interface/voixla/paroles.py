@@ -572,6 +572,83 @@ def fragments(ligne):
     return sortie
 
 
+# --- Karaoké : lignes voisines et remplissage des mots (sans GTK) ----------------------------------------------------
+
+AVANCE_FOCALE_S = 3.0       # entre deux lignes : la suivante prend la place centrale si elle commence dans ce délai
+
+
+def voisines(lignes, t, avance_s=AVANCE_FOCALE_S):
+    """Les lignes à montrer à l'instant t : (précédente, focale, suivante, active), des indices ou None.
+
+    - focale : la ligne en cours (active vrai) ; entre deux lignes, la prochaine si elle commence dans moins de
+      avance_s (active faux : on la montre, pas encore chantée) ; sinon None (passage instrumental, « ♪ ») ;
+    - précédente et suivante : les voisines de la focale dans la liste (indice − 1 et + 1) ; sans focale, la dernière
+      ligne commencée et la prochaine.
+    Lignes vides ou absentes : (None, None, None, False)."""
+    n = len(lignes or [])
+    if not n:
+        return None, None, None, False
+    courante, suivante = position(lignes, t)
+    if courante is not None:
+        focale, active = courante, True
+    elif suivante is not None and lignes[suivante].debut - t <= avance_s:
+        focale, active = suivante, False
+    else:
+        prec = (suivante - 1 if suivante else None) if suivante is not None else n - 1
+        return prec, None, suivante, False
+    return (focale - 1 if focale > 0 else None), focale, (focale + 1 if focale + 1 < n else None), active
+
+
+def centre_karaoke(lignes, t, avance_s=AVANCE_FOCALE_S):
+    """La place centrale du karaoké, en « indice de ligne » : la focale (voisines), sinon, en passage instrumental,
+    la demi-place entre la dernière ligne commencée et la prochaine (k − 0,5 ; −0,5 avant la première, n − 0,5 après
+    la dernière). Une transition douce fait glisser d'une valeur à l'autre ; None sans lignes."""
+    n = len(lignes or [])
+    if not n:
+        return None
+    prec, focale, suivante, _a = voisines(lignes, t, avance_s)
+    if focale is not None:
+        return float(focale)
+    return (suivante if suivante is not None else n) - 0.5
+
+
+def portees(ligne):
+    """(texte affiché, [(début, fin, suite, indice du mot)]) : pour chaque mot, sa place dans le texte affiché (en
+    caractères, celui que donne fragments) ; suite : le début du mot suivant (ou la fin du texte), pour colorer aussi la
+    ponctuation et l'espace qui suivent un mot déjà chanté. Ligne sans mots : (texte, [])."""
+    if ligne is None:
+        return "", []
+    morceaux = fragments(ligne)
+    texte = "".join(t for t, _i in morceaux)
+    mots, pos = [], 0
+    for t, i in morceaux:
+        if i is not None:
+            mots.append([pos, pos + len(t), None, i])
+        pos += len(t)
+    for k, m in enumerate(mots):
+        m[2] = mots[k + 1][0] if k + 1 < len(mots) else len(texte)
+    return texte, [tuple(m) for m in mots]
+
+
+def fraction_mot(mot, t):
+    """Part du mot déjà chantée à t, de 0 (pas commencé) à 1 (fini), linéaire de son début à sa fin. Un mot de durée
+    nulle (ou négative) passe d'un coup de 0 à 1 à son début."""
+    if t < mot.debut:
+        return 0.0
+    if mot.fin <= mot.debut or t >= mot.fin:
+        return 1.0
+    return (t - mot.debut) / (mot.fin - mot.debut)
+
+
+def remplissage(ligne, t):
+    """[(début, fin, fraction)] : pour chaque mot de la ligne, sa place dans le texte affiché (portees) et la part déjà
+    chantée à t (fraction_mot). Ligne sans mots : []."""
+    if ligne is None or not ligne.mots:
+        return []
+    _texte, mots = portees(ligne)
+    return [(d, f, fraction_mot(ligne.mots[i], t)) for d, f, _s, i in mots]
+
+
 # --- Affichage (texte Pango, sans GTK) -------------------------------------------------------------------------------
 
 def _esc(texte):

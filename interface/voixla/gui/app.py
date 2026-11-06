@@ -17,7 +17,7 @@ import traceback
 
 from gi.repository import Adw, Gio, GLib, Gtk  # versions fixées dans gui/__init__.py
 
-from .. import APP_ID, NOM, __version__, bibliotheque, chemins, moteur, travaux
+from .. import APP_ID, NOM, __version__, chemins, moteur, travaux
 from .. import lecture as regles
 from .. import preparation
 from . import commun
@@ -34,6 +34,13 @@ SECTIONS = [
     ("ecoute", "Écoute à l’aveugle", "audio-headphones-symbolic", "page_ecoute", "PageEcoute"),
     ("etat", "État", "preferences-system-details-symbolic", "page_etat", "PageEtat"),
 ]
+
+
+# actions booléennes de la fenêtre (menu « œil » d'un résultat, Réglages) → clé d'interface.json
+ACTIONS_VUE = {"vis-melodie": "vis_melodie", "vis-spectre": "vis_spectre", "vis-onde": "vis_onde",
+               "vis-vumetre": "vis_vumetre", "melodie-hz": "melodie_hz", "melodie-autotune": "melodie_autotune",
+               "frise-octave": "frise_octave", "frise-voix": "frise_voix", "paroles": "paroles",
+               "paroles-panneau": "paroles_panneau", "paroles-video": "paroles_video"}
 
 
 def charger_page(fenetre, tag, titre, module, classe):
@@ -54,7 +61,6 @@ class Fenetre(Adw.ApplicationWindow):
         commun.installer_css()
         self.config = chemins.lire_config()
         self.donnees = chemins.dossier_donnees(self.config)
-        bibliotheque.declarer_preferences()     # la clé « bibliotheque » d'interface.json (vue, tri, regroupement)
         self.prefs = chemins.lire_preferences()
         self.file = travaux.FileTravaux()
         self.caps = frozenset()
@@ -117,7 +123,13 @@ class Fenetre(Adw.ApplicationWindow):
         self.cadre = Adw.ToolbarView(content=self.toasts, bottom_bar_style=Adw.ToolbarStyle.RAISED,
                                      reveal_bottom_bars=False)
         self.cadre.add_bottom_bar(self.barre)
-        self.set_content(self.cadre)
+        # plein écran d'un lecteur (gui/plein_ecran.py) : la vue remplace tout le contenu, qui ne se dessine plus
+        self.racine = Gtk.Stack()
+        self.racine.add_named(self.cadre, "normal")
+        self.set_content(self.racine)
+        self.plein_ecran = None
+        self._plein_confirme = False  # le gestionnaire de fenêtres a mis la fenêtre en plein écran
+        self.connect("notify::fullscreened", lambda *_: self._plein_ecran_change())
         lectures().ecouteurs.append(self._maj_barre)
         etroit = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 640sp"))
         etroit.add_setter(self.split, "collapsed", True)
@@ -158,13 +170,16 @@ class Fenetre(Adw.ApplicationWindow):
             self.add_action(a)
             if raccourcis:
                 self.get_application().set_accels_for_action(f"win.{nom}", raccourcis)
-        # Visualisations du son : interrupteurs (cases du menu « œil »), mémorisés dans interface.json
-        for nom, cle in (("vis-melodie", "vis_melodie"), ("vis-spectre", "vis_spectre"), ("vis-onde", "vis_onde"),
-                         ("vis-vumetre", "vis_vumetre"), ("melodie-hz", "melodie_hz"),
-                         ("melodie-autotune", "melodie_autotune"), ("paroles", "paroles")):
+        # Visualisations du son, frises et paroles : interrupteurs (cases du menu « œil »), mémorisés dans
+        # interface.json ; la taille des paroles : un choix (boutons radio du menu)
+        for nom, cle in ACTIONS_VUE.items():
             a = Gio.SimpleAction.new_stateful(nom, None, GLib.Variant.new_boolean(bool(self.prefs.get(cle))))
             a.connect("change-state", lambda act, v, c=cle: self.basculer_visualisation(act, v, c))
             self.add_action(a)
+        a = Gio.SimpleAction.new_stateful("paroles-taille", GLib.VariantType.new("s"),
+                                          GLib.Variant.new_string(self.prefs.get("paroles_taille") or "normale"))
+        a.connect("change-state", lambda act, v: self.basculer_visualisation(act, v, "paroles_taille"))
+        self.add_action(a)
         for i, (tag, *_r) in enumerate(SECTIONS):
             a = Gio.SimpleAction.new(f"section-{tag}", None)
             a.connect("activate", lambda *_a, t=tag: self.aller(t))
@@ -189,8 +204,16 @@ class Fenetre(Adw.ApplicationWindow):
             biblio.add_shortcut(Gtk.ShortcutsShortcut(accelerator=acc, title=titre))
         section.add_group(biblio)
         lecture = Gtk.ShortcutsGroup(title="Détail d’un résultat")
-        for acc, titre in (("b", "Basculer doublage ⇄ original"), ("t", "Avec ou sans auto-tune"),
-                           ("space", "Lecture / pause")):
+        for acc, titre in (("space", "Lecture / pause"), ("Left Right", "Reculer ou avancer de 5 s"),
+                           ("comma period", "Une image plus tôt ou plus loin (en pause)"),
+                           ("Home", "Revenir au début"),
+                           ("1 2 3 4 5", "Doublage, original, beat seul, voix convertie, voix d’origine"),
+                           ("b", "Basculer doublage ⇄ original"), ("t", "Avec ou sans auto-tune"),
+                           ("l", "Boucle A-B : poser le début, la fin, puis l’effacer"),
+                           ("bracketleft bracketright", "Ralentir ou accélérer (la hauteur est gardée)"),
+                           ("m", "Couper ou rendre le son"), ("f", "Plein écran (Échap pour sortir)"),
+                           ("v", "Mode cinéma : masquer ou réafficher tous les panneaux"),
+                           ("p", "Panneau « Toutes les paroles »"), ("s", "Enregistrer l’image en PNG")):
             lecture.add_shortcut(Gtk.ShortcutsShortcut(accelerator=acc, title=titre))
         section.add_group(lecture)
         lecture = Gtk.ShortcutsGroup(title="Écoute à l’aveugle")
@@ -203,15 +226,49 @@ class Fenetre(Adw.ApplicationWindow):
 
     def basculer_visualisation(self, action, valeur, cle):
         action.set_state(valeur)
-        self.prefs = chemins.modifier_preference(cle, valeur.get_boolean())
+        lu = valeur.get_string() if valeur.is_of_type(GLib.VariantType.new("s")) else valeur.get_boolean()
+        self.prefs = chemins.modifier_preference(cle, lu)
         self.prevenir("visualisations")
 
     def regler_visualisation(self, cle, actif):
-        """Depuis les réglages : même effet qu'une case du menu."""
-        nom = {"vis_melodie": "vis-melodie", "vis_spectre": "vis-spectre", "vis_onde": "vis-onde",
-               "vis_vumetre": "vis-vumetre", "melodie_hz": "melodie-hz", "melodie_autotune": "melodie-autotune",
-               "paroles": "paroles"}[cle]
+        """Depuis les réglages : même effet qu'une case du menu (ou, pour la taille des paroles, que son choix)."""
+        if cle == "paroles_taille":
+            self.lookup_action("paroles-taille").change_state(GLib.Variant.new_string(str(actif)))
+            return
+        nom = next(n for n, c in ACTIONS_VUE.items() if c == cle)
         self.lookup_action(nom).change_state(GLib.Variant.new_boolean(bool(actif)))
+
+    # --- plein écran -----------------------------------------------------------------------------------------------
+
+    def entrer_plein_ecran(self, vue):
+        """La vue plein écran d'un lecteur remplace le contenu de la fenêtre, qui passe en plein écran."""
+        if self.plein_ecran is not None:
+            self.plein_ecran.page.quitter_plein_ecran()
+        self.plein_ecran = vue
+        self.racine.add_named(vue, "plein")
+        self.racine.set_visible_child(vue)
+        self._plein_confirme = False
+        self.fullscreen()
+
+    def sortir_plein_ecran(self):
+        """Retour au contenu d'avant ; rend la vue retirée (ou None)."""
+        vue, self.plein_ecran = self.plein_ecran, None
+        if vue is None:
+            return None
+        self.racine.set_visible_child_name("normal")
+        self.racine.remove(vue)
+        self._plein_confirme = False
+        if self.is_fullscreen():
+            self.unfullscreen()
+        return vue
+
+    def _plein_ecran_change(self):
+        """Le gestionnaire de fenêtres sort du plein écran (raccourci du bureau) : la vue plein écran se ferme aussi."""
+        if self.is_fullscreen():
+            self._plein_confirme = True
+        elif self._plein_confirme and self.plein_ecran is not None:
+            self._plein_confirme = False
+            self.plein_ecran.page.quitter_plein_ecran()
 
     def ouvrir_reglages(self, page=None):
         try:
@@ -429,6 +486,9 @@ class Fenetre(Adw.ApplicationWindow):
     # --- divers ------------------------------------------------------------------------------------------------------
 
     def toast(self, texte, bouton=None, action=None, duree=4):
+        if self.plein_ecran is not None:          # en plein écran, le reste de la fenêtre est caché
+            self.plein_ecran.toast(texte, bouton, action, duree)
+            return
         t = Adw.Toast(title=commun.echapper(texte), timeout=duree)
         if bouton and action:
             t.set_button_label(bouton)
@@ -446,6 +506,8 @@ class Fenetre(Adw.ApplicationWindow):
     def _fermeture(self, *_):
         """Fermeture par l'utilisateur : pendant une lecture, la fenêtre se cache et l'application reste ; sinon on
         quitte comme avant (les pages se ferment, le verrou de l'interface tombe avec le processus)."""
+        if self.plein_ecran is not None:
+            self.plein_ecran.page.quitter_plein_ecran()
         self._prevenir_travaux()
         e = lectures().etat_courant()
         app = self.get_application()
@@ -467,6 +529,14 @@ class Fenetre(Adw.ApplicationWindow):
             self.get_application().send_notification("fermeture", n)
 
     def _fermer_pages(self):
+        # la position de ce qui joue ou de ce qui est ouvert, pour la reprise au prochain lancement
+        pile = self.nav.get_navigation_stack()
+        for p in dict.fromkeys([lectures().session, *(pile.get_item(i) for i in range(pile.get_n_items()))]):
+            if callable(getattr(p, "garder_position", None)):
+                try:
+                    p.garder_position()
+                except Exception:  # noqa: BLE001
+                    traceback.print_exc()
         for p in self.pages.values():
             if hasattr(p, "fermer"):
                 try:

@@ -2,6 +2,9 @@
 
 1. Séparation voix / reste de chaque vidéo : MelBand-Roformer de Kim (vocals_mel_band_roformer.ckpt, audio-separator
    0.48.0), mêmes réglages que sur le PC (entrée ramenée à un pic de 0,9 puis remise à l'échelle, reste = original - voix).
+   Les Roformer (séparation et nettoyage) tournent sous autocast fp16 (PRECISIONS_ROFORMER ; réglages
+   separation_precision, nettoyage_precision ; fp32 : comme avant), recouvrement 4 (separation_recouvrement,
+   nettoyage_recouvrement).
 2. Mode : chant s'il y a une musique sous la voix et que la voix chante (notes tenues) ou est presque continue (rap),
    sinon parole.
 3. Découpage aux silences de la voix (morceaux de 8 s au plus) ; décalage de hauteur de chaque morceau :
@@ -111,6 +114,27 @@ KARAOKE = ('mel_band_roformer_karaoke_becruily.ckpt', 'mel_band_roformer_karaoke
 DEREVERB = 'dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt'
 MOTIF_KARAOKE = r'\((vocals|lead|lead vocals|karaoke)\)'
 MOTIF_DEREVERB = r'\((noreverb|no reverb|no_reverb|dry)\)'
+# Précision des Roformer (séparation, karaoké, dereverb) : options du Separator d'audio-separator 0.48.0. autocast
+# (défaut) : torch.autocast autour du modèle, les cœurs fp16 du T4 ; fp16 : poids en demi-précision (use_native_fp16,
+# vérifié par audio-separator pour les MelBand/BS-Roformer sur CUDA), même vitesse, un peu moins près du fp32 ;
+# fp16+compile : en plus torch.compile des blocs du Roformer (environ 20 s de compilation par modèle et par carte,
+# rentable au-delà de 4 min de son environ) ; fp32 : la chaîne d'avant. Un son non fini en demi-précision est refait
+# en fp32. Banc vitesse du 06/11/2026 (deux extraits de 45 s, T4) : séparation 2,4 fois plus rapide, nettoyage 2,5 fois,
+# pistes à 50-75 dB du fp32 (SDR), chœurs secs à 38-50 dB ; mélodie, timbre et paroles convertis dans le bruit de mesure.
+PRECISIONS_ROFORMER = {'fp32': {}, 'autocast': {'use_autocast': True}, 'fp16': {'use_native_fp16': True},
+                       'fp16+compile': {'use_native_fp16': True, 'use_torch_compile': True}}
+SEPARATION_DEFAUT = {'precision': 'autocast', 'recouvrement': 4}   # réglages separation_precision, separation_recouvrement
+NETTOYAGE_PRECISION_DEFAUT = 'autocast'                             # réglage nettoyage_precision
+
+
+def reglage_separation(R):
+    """Précision et recouvrement du Roformer de séparation (réglages separation_precision et separation_recouvrement,
+    sinon SEPARATION_DEFAUT), avec les options du Separator qui vont avec."""
+    precision = R.get('separation_precision') or SEPARATION_DEFAUT['precision']
+    if precision not in PRECISIONS_ROFORMER:
+        precision = 'fp32'
+    return {'precision': precision, 'options': dict(PRECISIONS_ROFORMER[precision]),
+            'recouvrement': int(R.get('separation_recouvrement') or SEPARATION_DEFAUT['recouvrement'])}
 COMPLET = '/tmp/doubler_complet.py'   # copie de ce noyau sur disque, pour les étapes à part
 SOURCE = '__SOURCE__'
 
@@ -140,23 +164,41 @@ def ecrire_flac(chemin, y, sr):
     return gain, pic
 
 
+def charger_separateur(tmp, reglage):
+    """Roformer de séparation chargé. reglage (du noyau) : options de précision d'audio-separator (use_native_fp16,
+    use_autocast) et recouvrement ; une option refusée (audio-separator plus ancien) : fp32, comme avant. Rend
+    (séparateur, précision appliquée)."""
+    from audio_separator.separator import Separator
+    options = dict(reglage.get('options') or {})
+    mdxc = {'segment_size': 801, 'override_model_segment_size': True, 'batch_size': 1,
+            'overlap': int(reglage.get('recouvrement') or 4), 'pitch_shift': 0}
+    try:
+        sep = Separator(model_file_dir='/tmp/modeles_sep', output_dir=tmp, output_format='WAV', use_soundfile=True,
+                        normalization_threshold=1.0, sample_rate=44100, mdxc_params=mdxc, **options)
+    except TypeError as e:
+        print(f'SEPARATION options {options} refusées ({e}) : fp32', flush=True)
+        sep = Separator(model_file_dir='/tmp/modeles_sep', output_dir=tmp, output_format='WAV', use_soundfile=True,
+                        normalization_threshold=1.0, sample_rate=44100, mdxc_params=mdxc)
+    sep.load_model(model_filename='vocals_mel_band_roformer.ckpt')
+    return sep, getattr(getattr(sep, 'model_instance', None), 'effective_precision', 'fp32')
+
+
 if __name__ == '__main__':
     import os
-    from audio_separator.separator import Separator
     travaux, tmp = json.loads(sys.argv[1]), sys.argv[2]
     # deux cartes : la seconde attend que la première ait chargé le modèle (chargés ensemble, ils sont bien plus lents)
     attendre, signaler = (sys.argv[3:5] + ['', ''])[:2]
+    reglage = (travaux[0].get('separation') if travaux else None) or {}
     t_attente = time.time()
     while attendre and not os.path.exists(attendre) and time.time() - t_attente < 300:
         time.sleep(0.5)
     t0 = time.time()
-    sep = Separator(model_file_dir='/tmp/modeles_sep', output_dir=tmp, output_format='WAV', use_soundfile=True,
-                    normalization_threshold=1.0, sample_rate=44100,
-                    mdxc_params={'segment_size': 801, 'override_model_segment_size': True, 'batch_size': 1, 'overlap': 4, 'pitch_shift': 0})
-    sep.load_model(model_filename='vocals_mel_band_roformer.ckpt')
+    sep, precision = charger_separateur(tmp, reglage)
+    sep_fp32 = None   # repli si la demi-précision rend un son non fini (débordement) : la vidéo est refaite en fp32
     if signaler:
         open(signaler, 'w').close()
-    print(f'SEPARATION modèle chargé en {time.time() - t0:.0f} s', flush=True)
+    print(f'SEPARATION modèle chargé en {time.time() - t0:.0f} s (précision {precision}, recouvrement '
+          f"{int(reglage.get('recouvrement') or 4)})", flush=True)
     for t in travaux:
         t1 = time.time()
         gain_entree = float(t.get('gain_entree') or 1.0)
@@ -170,6 +212,13 @@ if __name__ == '__main__':
         sf.write(f'{tmp}/entree.wav', x * gain, sr, subtype='FLOAT')
         sep.separate(f'{tmp}/entree.wav', custom_output_names={'Vocals': 'voix_brute', 'Other': 'autre_brut', 'Instrumental': 'autre_brut'})
         v, sr2 = sf.read(f'{tmp}/voix_brute.wav', dtype='float32', always_2d=True)
+        if not np.isfinite(v).all() and precision != 'fp32':
+            print(f"SEPARATION {t['id']} : son non fini en {precision}, refait en fp32", flush=True)
+            if sep_fp32 is None:
+                sep_fp32 = charger_separateur(tmp, {'recouvrement': reglage.get('recouvrement')})[0]
+            sep_fp32.separate(f'{tmp}/entree.wav', custom_output_names={'Vocals': 'voix_brute', 'Other': 'autre_brut',
+                                                                        'Instrumental': 'autre_brut'})
+            v, sr2 = sf.read(f'{tmp}/voix_brute.wav', dtype='float32', always_2d=True)
         assert sr2 == 44100, sr2
         n = min(len(v), len(x))
         if len(v) != len(x):
@@ -1865,6 +1914,10 @@ def fusionner_nettoyage(parts):
     for k, r in enumerate(parts):
         for c in ('karaoke', 'dereverb', 'recouvrement'):
             res[c] = res[c] or r.get(c)
+        if r.get('precision'):
+            res['precision'] = res.get('precision') or r['precision']
+        if r.get('repli_fp32'):
+            res.setdefault('repli_fp32', []).extend(r['repli_fp32'])
         for nom, s in (r.get('chargements_s') or {}).items():
             res['chargements_s'][nom] = max(res['chargements_s'].get(nom, 0.0), s)
         if r.get('erreur'):
@@ -2642,7 +2695,10 @@ def etape_nettoyer(travail):
     os.makedirs(tmp, exist_ok=True)
     chemin = travail['resultat']
     ov = int(travail.get('recouvrement') or 4)
+    precision = travail.get('precision') if travail.get('precision') in PRECISIONS_ROFORMER else 'fp32'
     res = {'karaoke': None, 'dereverb': travail['dereverb'], 'recouvrement': ov, 'chargements_s': {}, 'videos': {}}
+    if precision != 'fp32':
+        res['precision'] = precision
     videos = {v['id']: v for v in travail['videos']}
     taches = (travail['taches'] if travail.get('taches') is not None
               else plan_nettoyage([(v['id'], 0.0) for v in travail['videos']], 1)[0])
@@ -2650,19 +2706,28 @@ def etape_nettoyer(travail):
     if carte is not None:
         res.update({'carte': carte, 'taches_faites': []})
 
-    def separateur(nom):
+    def separateur(nom, prec=precision):
+        """Roformer nom chargé, dans la précision demandée (PRECISIONS_ROFORMER ; une option refusée : fp32)."""
         t0 = time.time()
-        s = Separator(model_file_dir='/tmp/modeles_sep', output_dir=tmp, output_format='WAV', use_soundfile=True,
+        commun = dict(model_file_dir='/tmp/modeles_sep', output_dir=tmp, output_format='WAV', use_soundfile=True,
                       normalization_threshold=1.0, sample_rate=44100,
                       mdxc_params={'segment_size': 256, 'override_model_segment_size': False, 'batch_size': 1,
                                    'overlap': ov, 'pitch_shift': 0})
+        try:
+            s = Separator(**commun, **PRECISIONS_ROFORMER[prec])
+        except TypeError as e:
+            log(f'NETTOYAGE précision {prec} refusée ({e}) : fp32')
+            s, prec = Separator(**commun), 'fp32'
         s.load_model(model_filename=nom)
+        s.modele_doubler, s.precision_doubler = nom, prec
         res['chargements_s'][nom] = round(time.time() - t0, 1)
-        log(f'NETTOYAGE modèle {nom} chargé en {time.time() - t0:.0f} s' + ('' if carte is None else f' (carte {carte})'))
+        log(f'NETTOYAGE modèle {nom} chargé en {time.time() - t0:.0f} s' + ('' if prec == 'fp32' else f' ({prec})')
+            + ('' if carte is None else f' (carte {carte})'))
         return s
 
     def separer(s, x, motif, etiquette):
-        """Pic ramené à 0,9, séparation, remise à l'échelle ; rend la piste dont le nom suit motif."""
+        """Pic ramené à 0,9, séparation, remise à l'échelle ; rend la piste dont le nom suit motif. Un son non fini en
+        demi-précision (débordement) : refait en fp32, modèle rechargé pour cette fois."""
         for f in glob.glob(f'{tmp}/*.wav'):
             os.remove(f)
         pic = float(np.abs(x).max()) or 1.0
@@ -2677,6 +2742,10 @@ def etape_nettoyer(travail):
         if len(choisis) != 1:
             raise RuntimeError(f'{etiquette} : pistes {noms}, motif {motif} : {len(choisis)} correspondance(s)')
         y = sf.read(choisis[0], dtype='float32', always_2d=True)[0]
+        if not np.isfinite(y).all() and getattr(s, 'precision_doubler', 'fp32') != 'fp32':
+            log(f'NETTOYAGE {etiquette} : son non fini en {s.precision_doubler}, refait en fp32')
+            res.setdefault('repli_fp32', []).append(etiquette)
+            return separer(separateur(s.modele_doubler, 'fp32'), x, motif, etiquette)
         out = np.zeros_like(x)
         n = min(len(y), len(x))
         out[:n] = y[:n, :x.shape[1]] / g
@@ -3708,8 +3777,11 @@ def main():
         for v in cibles['voix']:
             v['chemin'] = ref_chemin if v['fichier'] == R['voix']['fichier'] else trouver(v['fichier'])
     t = time.time()
+    sep_reglage = reglage_separation(R)
+    session['separation'] = {k: sep_reglage[k] for k in ('precision', 'recouvrement')}
     separer_videos([{'id': tr['id'], 'entree': tr['chemin'], 'voix': tr['voix'], 'reste': tr['reste'],
-                     'gain_entree': float(tr.get('gain_entree') or 1.0), 'voix_flac': tr['voix_flac']} for tr in travaux], cartes)
+                     'gain_entree': float(tr.get('gain_entree') or 1.0), 'voix_flac': tr['voix_flac'],
+                     'separation': sep_reglage} for tr in travaux], cartes)
     session['temps']['separation_totale_s'] = round(time.time() - t, 1)
 
     # 2. Modèles (une fois pour toutes les vidéos)
@@ -3990,7 +4062,8 @@ def main():
         torch.cuda.empty_cache()
         travail = {'videos': [{'id': e['tr']['id'], 'voix': e['tr']['voix'], 'dossier': f"/tmp/net/{e['tr']['id']}"} for e in videos_chant],
                    'karaoke': list(R.get('karaoke') or KARAOKE), 'dereverb': R.get('dereverb') or DEREVERB,
-                   'recouvrement': int(R.get('nettoyage_recouvrement') or 4)}
+                   'recouvrement': int(R.get('nettoyage_recouvrement') or 4),
+                   'precision': R.get('nettoyage_precision') or NETTOYAGE_PRECISION_DEFAUT}
         sur_cartes = cartes > 1 and modeles_presents(travail['karaoke'][0], travail['dereverb'])
         if cartes > 1 and not sur_cartes:
             log('NETTOYAGE sur une carte : modèles absents du montage d\'outils (deux cartes les téléchargeraient en même temps)')
@@ -4003,12 +4076,15 @@ def main():
         session['temps']['chargement_nettoyage_s'] = round(sum((res.get('chargements_s') or {}).values()), 1)
         session['temps']['nettoyage_gpu_s'] = round(sum(v.get('duree_s') or 0 for v in (res.get('videos') or {}).values()), 1)
         session['nettoyage'] = {k: res.get(k) for k in ('karaoke', 'dereverb', 'recouvrement', 'chargements_s', 'erreur', 'code')}
+        session['nettoyage']['precision'] = res.get('precision') or 'fp32'
+        if res.get('repli_fp32'):
+            session['nettoyage']['repli_fp32'] = res['repli_fp32']
         if res.get('cartes'):
             session['nettoyage']['cartes'] = res['cartes']
         for e in videos_chant:
             v = (res.get('videos') or {}).get(e['tr']['id']) or {}
             info = {'demande': True, 'applique': False, 'karaoke': res.get('karaoke'), 'dereverb': res.get('dereverb'),
-                    'recouvrement': res.get('recouvrement')}
+                    'recouvrement': res.get('recouvrement'), 'precision': res.get('precision') or 'fp32'}
             if not v.get('erreur') and all(v.get(k) and os.path.exists(v[k]) for k in ('lead_sec', 'choeurs_sec')):
                 e['net'] = {k: v[k] for k in ('lead_sec', 'choeurs_sec')}
                 info.update({'applique': True, 'niveaux_db': v.get('niveaux_db'), 'durees_s': v.get('durees_s')})

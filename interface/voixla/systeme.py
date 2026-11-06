@@ -98,7 +98,10 @@ def noyaux_connus(config_effective):
 EN_COURS = ("queued", "running", "new", "pending")
 
 
-ETAT_DOUBLER = Path.home() / ".local" / "state" / "voix-la"   # verrou commun et session en cours de doubler
+# verrou commun et fichiers de session de doubler (toujours ~/.local/state/voix-la pour doubler) ;
+# VOIXLA_ETAT_DOUBLER le déplace pour les essais et les captures seulement
+ETAT_DOUBLER = (Path(os.environ["VOIXLA_ETAT_DOUBLER"]).expanduser() if os.environ.get("VOIXLA_ETAT_DOUBLER")
+                else Path.home() / ".local" / "state" / "voix-la")
 
 
 def verrou_doubler(donnees):

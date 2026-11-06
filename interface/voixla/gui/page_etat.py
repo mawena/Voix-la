@@ -11,7 +11,7 @@ import time
 
 from gi.repository import Adw, Gdk, GLib, Gtk, Pango
 
-from .. import chemins, formats, moteur, systeme
+from .. import chemins, formats, moteur, quota, systeme
 from . import commun
 
 LOCAL_S = 10
@@ -139,16 +139,53 @@ class PageEtat(commun.Page):
                                           clic=self.actualiser)
         self.entete.pack_end(self.b_actualiser)
 
+        # alerte : moins de quota_alerte_h heures de GPU restantes cette semaine
+        self.banniere_quota = Adw.Banner()
+        self.vue.add_top_bar(self.banniere_quota)
+        self._lignes_sessions = []
+
         b = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24, margin_top=18, margin_bottom=24,
                     margin_start=12, margin_end=12)
+        b.append(self._groupe_quota())
         b.append(self._groupe_kaggle())
         b.append(self._groupe_noyaux())
         b.append(self._groupe_doubler())
         b.append(self._groupe_poste())
         self.contenu(commun.defile(b, 760))
         fenetre.ecouter("donnees", self._donnees_changees)
+        fenetre.ecouter("quota", self._peindre_quota)
+        fenetre.ecouter("travaux", lambda *_: self.visible_ and self._peindre_quota())
 
     # --- construction (une fois ; les valeurs changent sur place) -------------------------------------------------
+
+    def _groupe_quota(self):
+        g = Adw.PreferencesGroup(title="Quota GPU Kaggle", description=commun.echapper(
+            "Environ 30 h de GPU par semaine et par compte ; une session sur deux cartes compte une fois. Lu par "
+            "« kaggle quota » (le jeton n’est pas ouvert par l’interface), sinon compté d’après les sessions "
+            "enregistrées sur ce poste."))
+        self.sablier_quota = Gtk.Spinner(visible=False, valign=Gtk.Align.CENTER, tooltip_text="Lecture du quota")
+        g.set_header_suffix(self.sablier_quota)
+        self.r_q_utilise = commun.ligne("Utilisées cette semaine")
+        self.v_q_utilise = Valeur(self.r_q_utilise)
+        self.n_quota = niveau()
+        self.n_quota.set_size_request(160, -1)
+        self.r_q_utilise.add_suffix(self.n_quota)
+        self.r_q_reste = commun.ligne("Restantes")
+        self.v_q_reste = Valeur(self.r_q_reste)
+        self.r_q_remise = commun.ligne("Remise à zéro")
+        self.v_q_remise = Valeur(self.r_q_remise)
+        self.r_q_file = commun.ligne("File des travaux")
+        self.v_q_file = Valeur(self.r_q_file)
+        self.r_q_sessions = Adw.ExpanderRow(title="Sessions comptées sur ce poste")
+        self.r_q_limites = Adw.ActionRow(title="Ce qui échappe au compte local", subtitle_lines=0,
+                                         subtitle=commun.echapper("\n".join("• " + l for l in quota.LIMITES)))
+        self.r_q_sessions.add_row(self.r_q_limites)
+        for r in (self.r_q_utilise, self.r_q_reste, self.r_q_remise, self.r_q_file, self.r_q_sessions):
+            g.add(r)
+        self.v_q_utilise.mettre("lecture…")
+        for v in (self.v_q_reste, self.v_q_remise, self.v_q_file):
+            v.mettre("")
+        return g
 
     def _groupe_kaggle(self):
         g = Adw.PreferencesGroup(title="Kaggle", description=commun.echapper(
@@ -232,6 +269,7 @@ class PageEtat(commun.Page):
     def montrer(self):
         super().montrer()
         self._lire_local()
+        self._lire_quota()
         if time.time() - self._derniere_verif >= KAGGLE_S:
             self.verifier_kaggle()   # relit aussi la configuration
         else:
@@ -251,6 +289,7 @@ class PageEtat(commun.Page):
 
     def actualiser(self):
         self._lire_local()
+        self._lire_quota(age_max=0)
         if self._verif:
             self.fenetre.toast("Vérification Kaggle déjà en cours")
         else:
@@ -276,6 +315,7 @@ class PageEtat(commun.Page):
             return False
         if not self._verif and time.time() - self._derniere_verif >= KAGGLE_S - 1:
             self.verifier_kaggle()
+        self._lire_quota()
         return True
 
     def _donnees_changees(self):
@@ -286,6 +326,86 @@ class PageEtat(commun.Page):
     def _ouvrir_donnees(self):
         d = (self._config or {}).get("donnees") or self.fenetre.donnees
         commun.ouvrir_dossier(self.fenetre, d)
+
+    # --- quota GPU ---------------------------------------------------------------------------------------------------
+
+    def _lire_quota(self, age_max=KAGGLE_S):
+        """« kaggle quota » relu au plus toutes les KAGGLE_S secondes tant que la page est visible (age_max=0 : tout
+        de suite), et le compte local ; la fenêtre garde le résultat pour toutes les pages."""
+        if self._ferme:
+            return
+        self.sablier_quota.set_visible(True)
+        self.sablier_quota.start()
+
+        def fini(_etat):
+            if self._ferme:
+                return
+            self.sablier_quota.stop()
+            self.sablier_quota.set_visible(False)
+        self.fenetre.actualiser_quota(age_max=age_max, rappel=fini)
+
+    def _peindre_quota(self, *_):
+        e = self.fenetre.quota
+        if self._ferme or e is None:
+            return
+        maintenant = time.time()
+        _q, jour, heure_, seuil, _dep = quota.reglages(self.fenetre.prefs)
+        critique = e.alerte(seuil)
+        self.v_q_utilise.mettre(f"{quota.heures(e.utilise_s)} sur {quota.heures(e.total_s)}")
+        regler_niveau(self.n_quota, e.fraction, "critique" if critique else "alerte" if e.fraction >= 0.75 else "ok")
+        if e.source == "kaggle":
+            source = f"d’après Kaggle (« kaggle quota »), lu à {heure(e.lu_le)}"
+            if e.ajoute_s >= 60:
+                source += f", plus {quota.heures(e.ajoute_s)} tournées depuis"
+        else:
+            source = "compté sur ce poste : " + (f"Kaggle ne répond pas ({e.raison})" if e.raison else
+                                                 "pas de lecture de Kaggle pour cette semaine")
+        if e.en_cours_s:
+            source += f" · session en cours : {quota.heures(e.en_cours_s)}"
+        self.r_q_utilise.set_subtitle(commun.echapper(source))
+        self.v_q_reste.mettre(quota.heures(e.reste_s), "erreur" if critique else "succes")
+        self.r_q_reste.set_subtitle(commun.echapper(
+            f"alerte sous {quota.heures(seuil)}" + (" : il en reste moins" if critique else "")))
+        self.v_q_remise.mettre(quota.jour_heure(e.remise, maintenant))
+        regle = (f"chaque {quota.regle_remise()} (donnée par Kaggle)" if e.remise_verifiee else
+                 f"chaque {quota.regle_remise(jour, heure_)} : réglage, non vérifié auprès de Kaggle")
+        self.r_q_remise.set_subtitle(commun.echapper(f"dans {quota.heures(e.remise - maintenant)} · {regle}"))
+        # la file : ce qu'elle prendra encore, et les travaux en attente de la remise à zéro
+        liste = self.fenetre.file.travaux()
+        a_venir = quota.gpu_a_venir(liste, maintenant)
+        attente = [t for t in liste if t.statut == "en_attente" and t.attend_le_quota]
+        if attente:
+            self.v_q_file.mettre(f"{len(attente)} en attente du quota", "alerte")
+            self.r_q_file.set_subtitle(commun.echapper(
+                f"{'part' if len(attente) == 1 else 'partent'} tout seul{'s' if len(attente) > 1 else ''} "
+                f"{quota.jour_heure(min(t.reprise for t in attente), maintenant)}, même fenêtre fermée"
+                + (f" · la file prendra encore environ {quota.heures(a_venir)}" if a_venir >= 60 else "")))
+        else:
+            self.v_q_file.mettre(f"environ {quota.heures(a_venir)} à venir" if a_venir >= 60 else "rien en attente")
+            self.r_q_file.set_subtitle(commun.echapper("GPU que les travaux de la file prendront encore cette semaine"))
+        # sessions comptées sur ce poste (la semaine en cours)
+        for r in self._lignes_sessions:
+            self.r_q_sessions.remove(r)
+        self._lignes_sessions = []
+        semaine = [s for s in e.sessions if s.part(e.debut_semaine, maintenant) > 0]
+        for s in sorted(semaine, key=lambda x: x.debut, reverse=True)[:30]:
+            origines = ", ".join(quota.LIBELLES_ORIGINE.get(o, o) for o in (s.origines or [s.origine]))
+            duree = quota.heures(s.part(e.debut_semaine, maintenant))
+            r = commun.ligne(s.titre or s.genre, f"{formats.date(s.debut, maintenant)} · {origines}")
+            r.add_suffix(Gtk.Label(label=("≈ " if not s.mesuree else "") + duree + (" (en cours)" if s.en_cours else ""),
+                                   css_classes=["dim-label", "chiffres"], valign=Gtk.Align.CENTER))
+            self.r_q_sessions.add_row(r)
+            self._lignes_sessions.append(r)
+        # la ligne des limites reste la dernière
+        self.r_q_sessions.remove(self.r_q_limites)
+        self.r_q_sessions.add_row(self.r_q_limites)
+        self.r_q_sessions.set_subtitle(commun.echapper(
+            f"{formats.pluriel(len(semaine), 'session')}, {quota.heures(e.local_s)} cette semaine"
+            + (" ; Kaggle compte aussi les autres postes et le site" if e.source == "kaggle" else "")))
+        self.banniere_quota.set_title(commun.echapper(
+            f"Quota GPU Kaggle : plus que {quota.heures(e.reste_s)} cette semaine, remise à zéro "
+            f"{quota.jour_heure(e.remise, maintenant)}"))
+        self.banniere_quota.set_revealed(critique)
 
     # --- poste -------------------------------------------------------------------------------------------------------
 
@@ -513,13 +633,16 @@ class PageEtat(commun.Page):
     # --- essais ------------------------------------------------------------------------------------------------------
 
     def scenario(self, action):
-        """« kaggle » : vérification Kaggle ; « options » : options de doubler dépliées ; suffixe « +bas » : page
+        """« kaggle » : vérification Kaggle ; « options » : options de doubler dépliées ; « sessions » : sessions du
+        quota GPU dépliées ; suffixe « +bas » : page
         défilée jusqu'en bas (pour voir les groupes doubler et Poste sur une capture)."""
         action, bas = (action[:-4], True) if action.endswith("+bas") else (action, False)
         if action == "kaggle":
             self.verifier_kaggle()
         elif action == "options":
             self.r_options.set_expanded(True)
+        elif action == "sessions":
+            self.r_q_sessions.set_expanded(True)   # sessions du quota comptées sur ce poste
         if bas:
             GLib.timeout_add(1500, self._en_bas)
 

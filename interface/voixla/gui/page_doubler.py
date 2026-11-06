@@ -6,7 +6,7 @@ from pathlib import Path
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
-from .. import chemins, formats, moteur, rapports, systeme, travaux
+from .. import chemins, formats, moteur, quota, rapports, secours, systeme, travaux
 from . import commun
 from .lecteur import Lecteur
 
@@ -208,6 +208,9 @@ class PageDoubler(commun.Page):
 
         self.banniere = Adw.Banner(button_label="Réglages")
         self.banniere.connect("button-clicked", lambda *_: fenetre.ouvrir_reglages())
+        # alerte du quota GPU (moins de quota_alerte_h heures restantes cette semaine)
+        self.banniere_quota = Adw.Banner(button_label="Voir le quota")
+        self.banniere_quota.connect("button-clicked", lambda *_: fenetre.aller("etat"))
         page = Adw.PreferencesPage()
 
         # Vidéos
@@ -318,8 +321,14 @@ class PageDoubler(commun.Page):
         # Lancer
         g_lancer = Adw.PreferencesGroup()
         barre = Gtk.Box(spacing=12, margin_top=6)
+        colonne = commun.boite(espace=4, hexpand=True, valign=Gtk.Align.CENTER)
         self.resume = Gtk.Label(xalign=0, hexpand=True, wrap=True)
-        barre.append(self.resume)
+        colonne.append(self.resume)
+        # quota GPU : « ce doublage prendra environ X min de GPU ; il restera Y h », à côté de « Lancer »
+        self.l_quota = Gtk.Label(xalign=0, wrap=True, css_classes=["quota-doubler"])
+        self.l_quota.set_visible(False)
+        colonne.append(self.l_quota)
+        barre.append(colonne)
         self.b_lancer = commun.bouton("Lancer", "media-playback-start-symbolic", styles=("suggested-action", "pill"),
                                       clic=self.lancer)
         self.b_lancer.set_valign(Gtk.Align.CENTER)
@@ -331,6 +340,7 @@ class PageDoubler(commun.Page):
 
         corps = commun.boite(espace=0)
         corps.append(self.banniere)
+        corps.append(self.banniere_quota)
         corps.append(page)
         page.set_vexpand(True)
         self.contenu(corps)
@@ -345,6 +355,7 @@ class PageDoubler(commun.Page):
         fenetre.ecouter("voix", self._voix_changees)
         fenetre.ecouter("donnees", self._donnees_changees)
         fenetre.ecouter("preferences", self._appliquer_preferences)
+        fenetre.ecouter("quota", self._maj)
         self._voix_changees()
         self._maj()
 
@@ -450,6 +461,7 @@ class PageDoubler(commun.Page):
     def montrer(self):
         super().montrer()
         self._donnees_changees()
+        self.fenetre.actualiser_quota()
 
     def _donnees_changees(self):
         self.g_videos.set_description(
@@ -710,10 +722,12 @@ class PageDoubler(commun.Page):
         groupes = moteur.grouper_par_extrait(self.videos, self.fenetre.caps)
         n = len(self.videos)
         reglages = self.reglages() if hasattr(self, "r_pas") else {}
+        # une estimation par session (groupe de même extrait), une seule fois : la durée totale et le GPU du quota
+        estimations = [self._estimer([duree_audio(v) for v in vids], reglages) for _e, vids in groupes] if n else []
         if not n:
             self.resume.set_label("Aucune vidéo choisie")
         else:
-            est = sum(sum(self._estimer([duree_audio(v) for v in vids], reglages).values()) for _e, vids in groupes)
+            est = sum(sum(e.values()) for e in estimations)
             sessions = "une seule session Kaggle" if len(groupes) == 1 else f"{len(groupes)} sessions Kaggle (une par extrait)"
             inconnue = any(v["duree_s"] is None and not (v.get("extrait") and v["extrait"][1]) for v in self.videos)
             self.resume.set_markup(f"<b>{formats.pluriel(n, 'vidéo')}</b> · {sessions} · "
@@ -725,11 +739,56 @@ class PageDoubler(commun.Page):
         else:
             self.note.set_label("Le travail part dans la file (onglet Travaux) : il continue si vous fermez la fenêtre.")
         self.b_lancer.set_sensitive(bool(n) and bool(self._voix_choisie()))
+        self._maj_quota([e.get("kaggle") or 0.0 for e in estimations])
         if self.par_chanteur():
             a, b = self._choix_menu(self.r_voix_a), self._choix_menu(self.r_voix_b)
             self.r_duo.set_subtitle(TEXTE_PAR_CHANTEUR if not (a and b and a == b) else
                                     "La même voix pour les deux chanteurs : un doublage à une voix, comme « Une voix "
                                     "pour tous »")
+
+    # --- quota GPU -------------------------------------------------------------------------------------------------
+
+    def _verdicts(self, besoins):
+        """[quota.Verdict] des sessions à lancer (secondes de GPU de chacune), après ce que la file prendra encore ;
+        None tant que le quota n'est pas lu."""
+        e = self.fenetre.quota
+        if e is None:
+            return None
+        a_venir = quota.gpu_a_venir(self.fenetre.file.travaux())
+        return quota.juger_demandes(e, [{"estimations": {"kaggle": b}} for b in besoins], a_venir)
+
+    def _maj_quota(self, besoins):
+        """Ligne du quota à côté de « Lancer » (besoins : secondes de GPU de chaque session à lancer), et la bannière
+        d'alerte (moins de quota_alerte_h heures restantes)."""
+        e = self.fenetre.quota
+        _q, _j, _h, seuil, politique = quota.reglages(self.fenetre.prefs)
+        if e is None:
+            self.l_quota.set_visible(False)
+            self.banniere_quota.set_revealed(False)
+            return
+        remise = quota.jour_heure(e.remise)
+        if e.alerte(seuil):
+            self.banniere_quota.set_title(f"Quota GPU Kaggle : plus que {quota.heures(e.reste_s)} cette semaine, "
+                                          f"remise à zéro {remise}")
+        self.banniere_quota.set_revealed(e.alerte(seuil))
+        inconnue = any(v["duree_s"] is None and not (v.get("extrait") and v["extrait"][1]) for v in self.videos)
+        if not self.videos or inconnue:
+            self.l_quota.set_label(f"Quota GPU Kaggle : {quota.heures(e.reste_s)} restantes sur "
+                                   f"{quota.heures(e.total_s)} cette semaine, remise à zéro {remise}.")
+            self.l_quota.set_css_classes(["quota-doubler", "dim-label", "caption"])
+            self.l_quota.set_visible(True)
+            return
+        verdicts = self._verdicts(besoins)
+        total = quota.Verdict(sum(v.besoin_s for v in verdicts), verdicts[0].reste_s, verdicts[0].a_venir_s,
+                              all(v.tient for v in verdicts), e.remise)
+        texte = quota.phrase_estimation(total)
+        if not total.tient:
+            texte += {"demander": f" Au lancement : attendre la remise à zéro ({remise}) ou lancer quand même.",
+                      "attendre": f" Il attendra la remise à zéro, {remise} (réglage).",
+                      "lancer": " Il sera lancé quand même (réglage)."}[politique]
+        self.l_quota.set_label(texte)
+        self.l_quota.set_css_classes(["quota-doubler"] + ([] if total.tient else ["warning"]))
+        self.l_quota.set_visible(True)
 
     def lancer(self):
         if not self.videos or not self._voix_choisie():
@@ -741,16 +800,106 @@ class PageDoubler(commun.Page):
             demandes.append(travaux.demande_doublage(
                 [{"chemin": v["chemin"], "duree_s": v["duree_s"], "extrait": list(v["extrait"]) if v["extrait"] else None}
                  for v in vids], reglages, self.fenetre.donnees, estimations=est, extrait=extrait))
+        verdicts = self._verdicts([quota.besoin_s(d) for d in demandes])
+        if verdicts is None or all(v.tient for v in verdicts):
+            self._mettre_dans_la_file([d if v is None else quota.marquer(d, "tient", v)
+                                       for d, v in zip(demandes, verdicts or [None] * len(demandes))])
+            return
+        politique = quota.reglages(self.fenetre.prefs)[4]
+        if politique == "demander":
+            self._demander_quota(demandes, verdicts)
+        else:
+            self._decider_quota(politique, demandes, verdicts)
+
+    def _decider_quota(self, decision, demandes, verdicts, moyen=None):
+        """« attendre » : les sessions qui ne tiennent pas attendent la remise à zéro dans la file ; « lancer » : tout
+        part quand même ; « secours » : celles qui ne tiennent pas partent par ce moyen (voixla/secours.py)."""
+        sortie, attente = [], 0
+        for d, v in zip(demandes, verdicts):
+            if v.tient:
+                sortie.append(quota.marquer(d, "tient", v))
+            elif decision == "attendre":
+                sortie.append(quota.mettre_en_attente(d, v.remise + quota.REPRISE_APRES_S, v))
+                attente += 1
+            elif decision == "secours" and moyen is not None:
+                sortie.append(secours.preparer_demande(moyen, quota.marquer(d, "secours", v)))
+            else:
+                sortie.append(quota.marquer(d, "lancer", v))
+        message = None
+        if attente:
+            reprise = quota.jour_heure(verdicts[0].remise + quota.REPRISE_APRES_S)
+            message = (f"{formats.pluriel(attente, 'doublage')} en attente du quota GPU : départ tout seul {reprise}, "
+                       "même fenêtre fermée")
+        self._mettre_dans_la_file(sortie, message)
+
+    def _demander_quota(self, demandes, verdicts):
+        """Le doublage ne tient plus dans le reste du quota : attendre la remise à zéro (proposé d'abord), lancer quand
+        même, ou un moyen de secours s'il y en a un de branché (voixla/secours.py)."""
+        e = self.fenetre.quota
+        besoin = sum(v.besoin_s for v in verdicts)
+        dispo = max(0.0, verdicts[0].reste_s - verdicts[0].a_venir_s)
+        remise = quota.jour_heure(e.remise + quota.REPRISE_APRES_S)
+        corps = (f"Ce doublage prendra environ {quota.heures(besoin)} de GPU ; il n’en reste que {quota.heures(dispo)} "
+                 "cette semaine")
+        corps += (f", dont {quota.heures(verdicts[0].a_venir_s)} déjà promises à la file." if verdicts[0].a_venir_s >= 60
+                  else ".")
+        if len(verdicts) > 1:
+            n = sum(1 for v in verdicts if not v.tient)
+            corps += f" {n} session{'s' if n > 1 else ''} sur {len(verdicts)} ne {'tient' if n < 2 else 'tiennent'} pas."
+        corps += (f"\n\nAttendre : le doublage reste dans la file et part tout seul à la remise à zéro du quota, "
+                  f"{remise}, même fenêtre fermée.\n\nLancer quand même : Kaggle ne vérifie le quota qu’au démarrage "
+                  "d’une session, et une session commencée avec du quota peut le dépasser, une fois par semaine.")
+        if dispo < 60:
+            corps += " Le quota est épuisé : Kaggle refusera sans doute la session."
+        d = Adw.AlertDialog(heading="Le quota GPU ne suffit plus", body=corps)
+        d.add_response("annuler", "Annuler")
+        d.add_response("lancer", "Lancer quand même")
+        for m in secours.proposer_pour(self.fenetre.prefs):
+            d.add_response(f"secours:{m.cle}", f"Doubler sur {m.nom}")
+        d.add_response("attendre", "Attendre la remise à zéro")
+        d.set_response_appearance("attendre", Adw.ResponseAppearance.SUGGESTED)
+        d.set_default_response("attendre")
+        d.set_close_response("annuler")
+
+        def reponse(_d, r):
+            if r in ("attendre", "lancer"):
+                self._decider_quota(r, demandes, verdicts)
+            elif r.startswith("secours:"):
+                self._decider_quota("secours", demandes, verdicts, secours.PAR_CLE.get(r.partition(":")[2]))
+        d.connect("response", reponse)
+        d.present(self.fenetre)
+        self._dialogue_quota = d
+
+    def _mettre_dans_la_file(self, demandes, message=None):
         self.fenetre.ajouter_travaux(demandes)
         n = len(self.videos)
         self.videos = []
         self._rendre()
-        self.fenetre.toast(f"{formats.pluriel(n, 'vidéo')} dans la file", "Voir", lambda: self.fenetre.aller("travaux"))
+        self.fenetre.toast(message or f"{formats.pluriel(n, 'vidéo')} dans la file", "Voir",
+                           lambda: self.fenetre.aller("travaux"), duree=8 if message else 4)
         self.fenetre.aller("travaux")
 
     # --- essais ------------------------------------------------------------------------------------------------------
 
+    def _defiler_en_bas(self):
+        """Fait défiler la page jusqu'en bas (le Gtk.ScrolledWindow de l'Adw.PreferencesPage)."""
+        a_voir = [self.vue.get_content()]
+        while a_voir:
+            w = a_voir.pop()
+            if isinstance(w, Gtk.ScrolledWindow):
+                adj = w.get_vadjustment()
+                adj.set_value(adj.get_upper() - adj.get_page_size())
+                return
+            enfant = w.get_first_child()
+            while enfant is not None:
+                a_voir.append(enfant)
+                enfant = enfant.get_next_sibling()
+
     def scenario(self, action):
+        if action.endswith("+bas"):
+            # le bas de la page (« Lancer » et la ligne du quota), une fois la vidéo et le quota lus
+            action = action[:-4]
+            GLib.timeout_add(3000, lambda: (self._defiler_en_bas(), False)[1])
         if action == "exemple":
             vids = sorted(chemins.dossier_videos(self.fenetre.donnees).glob("*.mp4"))[:1] or \
                 sorted(chemins.dossier_videos(chemins.DONNEES_DEFAUT).glob("*.mp4"))[:1]
@@ -775,3 +924,10 @@ class PageDoubler(commun.Page):
         elif action == "exemple-extrait":
             self.scenario("exemple")
             GLib.timeout_add(600, lambda: (self.scenario("extrait"), False)[1])
+        elif action == "exemple-entier":
+            self.ajouter(sorted(chemins.dossier_videos(self.fenetre.donnees).glob("*.mp4"))[:1])
+        elif action == "quota-dialogue":
+            # vidéo entière, puis « Lancer » une fois sa durée et le quota lus : le dialogue du quota s'ouvre si le
+            # doublage ne tient pas (rien n'entre dans la file tant qu'on n'a pas répondu)
+            self.scenario("exemple-entier")
+            GLib.timeout_add(2500, lambda: (self.lancer(), False)[1])

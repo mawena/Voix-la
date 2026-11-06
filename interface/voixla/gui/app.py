@@ -17,7 +17,7 @@ import traceback
 
 from gi.repository import Adw, Gio, GLib, Gtk  # versions fixées dans gui/__init__.py
 
-from .. import APP_ID, NOM, __version__, bibliotheque, chemins, moteur, travaux
+from .. import APP_ID, NOM, __version__, bibliotheque, chemins, moteur, quota, travaux
 from .. import lecture as regles
 from .. import preparation
 from . import commun
@@ -25,6 +25,7 @@ from .barre_lecture import BarreLecture
 from .lecture import lectures
 
 DELAI_PREPARATION_S = 45      # après le démarrage : la fenêtre et ses premières lectures d'abord
+DELAI_QUOTA_S = 2             # première lecture du quota GPU, juste après l'ouverture
 
 SECTIONS = [
     ("doubler", "Doubler", "video-x-generic-symbolic", "page_doubler", "PageDoubler"),
@@ -61,7 +62,11 @@ class Fenetre(Adw.ApplicationWindow):
         self.voix = []
         self.voix_doubler = None   # voix que doubler prend sans --voix (voir moteur.voix_par_defaut)
         self.ecouteurs = {"voix": [], "travaux": [], "resultats": [], "donnees": [], "preferences": [],
-                          "visualisations": []}
+                          "visualisations": [], "quota": []}
+        self.quota = None               # quota.EtatQuota : quota GPU Kaggle de la semaine (actualiser_quota)
+        self._quota_en_cours = False
+        self._quota_suites = []
+        self._quota_alerte_donnee = None   # remise à zéro de la semaine pour laquelle l'alerte a déjà été donnée
         self.statuts_vus = {}
         self._verrou = None
         self._prendre_verrou_interface()
@@ -134,6 +139,7 @@ class Fenetre(Adw.ApplicationWindow):
         self.suivre_travaux()
         # au démarrage, quand le poste est calme : les pistes des derniers doublages, en tâche de fond
         GLib.timeout_add_seconds(DELAI_PREPARATION_S, self._preparer_recents)
+        GLib.timeout_add_seconds(DELAI_QUOTA_S, lambda: (self.actualiser_quota(), False)[1])
 
     def _preparer_recents(self):
         """Les MAX_RECENTS doublages les plus récents à qui il manque des copies : préparés par le préparateur en tâche
@@ -375,6 +381,49 @@ class Fenetre(Adw.ApplicationWindow):
         self.prefs = chemins.lire_preferences()
         self.prevenir("preferences")
         self.prevenir("voix")
+        self.actualiser_quota(interroger=False)   # quota, remise à zéro ou seuil d'alerte changés
+
+    # --- quota GPU -----------------------------------------------------------------------------------------------
+
+    def actualiser_quota(self, age_max=quota.AGE_MAX_S, interroger=True, rappel=None):
+        """Relit le quota GPU de la semaine dans un fil (« kaggle quota » si la dernière lecture a plus de age_max
+        secondes, et le compte local des sessions), puis prévient les pages (sujet « quota »)."""
+        if rappel:
+            self._quota_suites.append(rappel)
+        if self._quota_en_cours:
+            return
+        self._quota_en_cours = True
+        prefs, donnees, racine = dict(self.prefs), self.donnees, self.file.racine
+
+        def lire():
+            return quota.etat(prefs, donnees, racine, age_max=age_max, interroger=interroger)
+
+        def fini(etat):
+            self._quota_en_cours = False
+            self.quota = etat
+            self._alerter_quota()
+            suites, self._quota_suites = self._quota_suites, []
+            for s in suites:
+                s(etat)
+            self.prevenir("quota")
+
+        def echec(e):
+            self._quota_en_cours = False
+            print(f"quota GPU illisible : {e}", file=sys.stderr)
+            suites, self._quota_suites = self._quota_suites, []
+            for s in suites:
+                s(self.quota)
+        commun.en_fil(lire, fini, echec)
+
+    def _alerter_quota(self):
+        """Une fois par semaine de quota : un message quand il reste moins que le seuil d'alerte."""
+        e = self.quota
+        seuil = quota.reglages(self.prefs)[3]
+        if e is None or not e.alerte(seuil) or self._quota_alerte_donnee == e.remise:
+            return
+        self._quota_alerte_donnee = e.remise
+        self.toast(f"Quota GPU Kaggle : plus que {quota.heures(e.reste_s)} cette semaine, remise à zéro "
+                   f"{quota.jour_heure(e.remise)}", "État", lambda: self.aller("etat"), duree=8)
 
     # --- travaux -----------------------------------------------------------------------------------------------------
 
@@ -425,6 +474,7 @@ class Fenetre(Adw.ApplicationWindow):
             self.get_application().send_notification(f"travail-{t.id}", n)
         self.toast(f"{titre} : {t.titre}")
         self.prevenir("resultats")
+        self.actualiser_quota(age_max=0)   # la session vient de finir : le compteur de Kaggle a bougé
 
     # --- divers ------------------------------------------------------------------------------------------------------
 

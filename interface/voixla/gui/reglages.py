@@ -5,7 +5,7 @@ import os
 
 from gi.repository import Adw, Gio, GLib, Gtk
 
-from .. import chemins, formats, moteur, systeme
+from .. import chemins, formats, moteur, quota, secours, systeme
 from . import commun
 from .enregistreur import sources_micro
 from .page_doubler import MODES, OCTAVES, TEXTE_PAS, TEXTE_X42_ABSENT
@@ -63,6 +63,7 @@ class DialogueReglages(Adw.PreferencesDialog):
         self.r_jeton = commun.ligne("Jeton Kaggle", "vérification…")
         self.g_kaggle.add(self.r_jeton)
         p.add(self.g_kaggle)
+        p.add(self._groupe_quota())
         return p
 
     def _config_lue(self, conf):
@@ -316,6 +317,51 @@ class DialogueReglages(Adw.PreferencesDialog):
         gc.add(r_cache)
         p.add(gc)
         return p
+
+    def _groupe_quota(self):
+        """Quota GPU de Kaggle : quota et remise à zéro de repli, seuil d'alerte, que faire d'un doublage qui ne tient
+        plus, et le secours (à venir)."""
+        g = Adw.PreferencesGroup(title="Quota GPU Kaggle", description=commun.echapper(
+            "Kaggle donne environ 30 h de GPU par semaine, remises à zéro chaque samedi à 00:00 UTC. Le total et la "
+            "remise à zéro viennent de « kaggle quota » quand il répond ; ceux-ci servent sinon."))
+        quota_s, jour, heure, alerte_s, depassement = quota.reglages(self.prefs)
+        r_h = Adw.SpinRow.new_with_range(1, 100, 1)
+        r_h.set_title("Heures de GPU par semaine")
+        r_h.set_subtitle("Sans réponse de « kaggle quota »")
+        r_h.set_value(quota_s / quota.HEURE)
+        r_h.connect("notify::value", lambda r, _p: self._pref("quota_h", float(r.get_value())))
+        g.add(r_h)
+        r_jour = Adw.ComboRow(title="Remise à zéro : jour", subtitle="Sans réponse de « kaggle quota »",
+                              model=Gtk.StringList.new([j.capitalize() for j in quota.JOURS]))
+        r_jour.set_selected(jour)
+        r_jour.connect("notify::selected", lambda r, _p: self._pref("quota_remise_jour", int(r.get_selected())))
+        g.add(r_jour)
+        r_heure = Adw.SpinRow.new_with_range(0, 23, 1)
+        r_heure.set_title("Remise à zéro : heure UTC")
+        r_heure.set_subtitle("0 : minuit UTC ; les pages l’affichent à l’heure du poste")
+        r_heure.set_value(heure)
+        r_heure.connect("notify::value", lambda r, _p: self._pref("quota_remise_heure", int(r.get_value())))
+        g.add(r_heure)
+        r_alerte = Adw.SpinRow.new_with_range(0.5, 10, 0.5)
+        r_alerte.set_title("Alerte sous (heures restantes)")
+        r_alerte.set_digits(1)
+        r_alerte.set_value(alerte_s / quota.HEURE)
+        r_alerte.connect("notify::value", lambda r, _p: self._pref("quota_alerte_h", round(r.get_value(), 1)))
+        g.add(r_alerte)
+        cles = [c for c, _l in quota.DEPASSEMENTS]
+        r_dep = Adw.ComboRow(title="Doublage qui ne tient plus dans le quota",
+                             subtitle="Demander : « Attendre la remise à zéro » est proposé d’abord. Attendre : le "
+                                      "doublage reste dans la file et part tout seul à la remise à zéro",
+                             model=Gtk.StringList.new([l for _c, l in quota.DEPASSEMENTS]))
+        r_dep.set_selected(cles.index(depassement))
+        r_dep.connect("notify::selected", lambda r, _p: self._pref("quota_depassement", cles[r.get_selected()]))
+        g.add(r_dep)
+        r_secours = Adw.ComboRow(title="Secours",
+                                 subtitle="Doubler ailleurs quand le quota ne suffit plus : à venir",
+                                 model=Gtk.StringList.new(["Aucun"] + [f"{m.nom} (à venir)" for m in secours.MOYENS]))
+        r_secours.set_sensitive(False)
+        g.add(r_secours)
+        return g
 
     def choisir_externes(self):
         d = Gtk.FileDialog(title="Dossier de prises de chant", modal=True)

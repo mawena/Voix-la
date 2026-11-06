@@ -105,10 +105,11 @@ class EssaiCommandeRemix(EssaiIsole):
         self.assertEqual(self.argv(r), self.base("--sans-autotune"))
 
     def test_eteint_sans_version(self):
+        # --sans-autotune quand même : sinon doubler en referait une si la clé « autotune » de sa configuration est allumée
         r = moteur.reglages_remix_autotune(False, 70, "auto", version=False)
-        self.assertEqual(r, {})
-        self.assertEqual(self.argv(r), self.base())
-        self.assertEqual(self.argv(None), self.base(), "comme avant l'auto-tune")
+        self.assertEqual(r, {"sans_autotune": True})
+        self.assertEqual(self.argv(r), self.base("--sans-autotune"))
+        self.assertEqual(self.argv(None), self.base(), "sans réglage d'auto-tune : comme avant l'auto-tune")
 
     def test_grise(self):
         for allume, version in ((True, False), (True, True), (False, True)):
@@ -201,9 +202,9 @@ class EssaiRemixFauxDoubler(EssaiIsole):
                           "Clip - voix Jules (auto-tune).mp4"])
         self.assertEqual(moteur.autotune_du_resultat(r.rapport), (False, 70, "auto"))
 
-        # éteint et sans version : la commande d'avant l'auto-tune, rien ne revient
+        # éteint et sans version : --sans-autotune quand même (la configuration ne la refait pas), rien ne revient
         argv, _ = self.remixer(False)
-        self.assertFalse([x for x in argv if "autotune" in x])
+        self.assertEqual([x for x in argv if "autotune" in x], ["--sans-autotune"])
         self.assertIsNone(self.resultat().autotune)
         self.assertEqual(self.fichiers_at(), [])
 

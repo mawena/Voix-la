@@ -287,8 +287,9 @@ def autotune_remix_possible(caps, conf=None):
 
 def reglages_remix_autotune(allume, intensite, gamme, version, possible=True):
     """Réglages d'auto-tune d'un remix, pour args_autotune : interrupteur allumé, --autotune N (et sa gamme si elle
-    n'est pas « auto ») ; éteint alors que le doublage a sa version auto-tune, --sans-autotune (elle va à la
-    corbeille) ; éteint sans version, ou auto-tune impossible : rien, comme un remix d'avant l'auto-tune."""
+    n'est pas « auto ») ; éteint : --sans-autotune, toujours (avec une version, elle va à la corbeille ; sans version,
+    doubler n'en refait pas une même si la clé « autotune » de sa configuration est allumée) ; auto-tune impossible :
+    rien, comme un remix d'avant l'auto-tune. version : sert au sous-titre de la page, plus à la commande."""
     if not possible:
         return {}
     if allume:
@@ -296,7 +297,7 @@ def reglages_remix_autotune(allume, intensite, gamme, version, possible=True):
         if gamme and gamme != "auto":
             r["autotune_gamme"] = gamme
         return r
-    return {"sans_autotune": True} if version else {}
+    return {"sans_autotune": True}
 
 
 def args_doublage(videos, reglages, donnees, extrait=None, evenements=None, caps=None):

@@ -124,15 +124,16 @@ class PleinEcran(Adw.Bin):
     def _vue_son(self):
         from .vignettes import Image
         page = self.page
-        boite = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14, halign=Gtk.Align.CENTER,
-                        valign=Gtk.Align.CENTER, margin_top=72, margin_bottom=130, margin_start=48, margin_end=48)
-        self.pochette = Image(largeur_min=200, largeur_nat=480, rayon=14, taille_note=96)
-        self.pochette.set_halign(Gtk.Align.CENTER)
+        # largeurs bornées (Adw.Clamp) : la pochette (16:9) et les paroles (dont la taille suit la largeur) ne
+        # réclament pas la hauteur de tout l'écran ; rien ne dépasse, même à 720 px de haut
+        boite = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, valign=Gtk.Align.CENTER, margin_top=56,
+                        margin_bottom=112, margin_start=48, margin_end=48)
+        self.pochette = Image(largeur_min=160, largeur_nat=400, rayon=14, taille_note=80)
         try:
             self.pochette.lier(bib.version(page.res, {v["id"]: v["nom"] for v in page.fenetre.voix}))
         except Exception:  # noqa: BLE001 — sans image, la pochette générée
             pass
-        boite.append(self.pochette)
+        boite.append(Adw.Clamp(maximum_size=440, tightening_threshold=440, child=self.pochette))
         titre = Gtk.Label(label=page.res.titre_court, wrap=True, justify=Gtk.Justification.CENTER,
                           css_classes=["title-1", "plein-ecran-texte"])
         boite.append(titre)
@@ -141,8 +142,7 @@ class PleinEcran(Adw.Bin):
             boite.append(Gtk.Label(label=f"voix {voix}", css_classes=["title-4", "plein-ecran-texte", "dim-label"]))
         # les paroles en grand sous la pochette (une ligne de plus que sur l'image)
         self.paroles_son = page.creer_karaoke("video", precedente=True, taille_min="grande")
-        self.paroles_son.set_size_request(560, -1)
-        boite.append(self.paroles_son)
+        boite.append(Adw.Clamp(maximum_size=960, tightening_threshold=960, child=self.paroles_son))
         return boite
 
     def forme_changee(self):

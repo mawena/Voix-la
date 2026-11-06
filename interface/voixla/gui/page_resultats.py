@@ -95,6 +95,7 @@ class PageDetail(Adw.NavigationPage):
         self._minuteur_position = None    # pendant la lecture : la position retenue toutes les POSITION_S
         self._volume_a_ecrire = None
         self._maj_panneau = False
+        self._attente_panneau = None
         self.passages = rapports.passages_voix(res.rapport)
         self.pistes_dispo = self._choisir_pistes(self.forme)
         self.actions = self._creer_actions()
@@ -253,6 +254,8 @@ class PageDetail(Adw.NavigationPage):
         tres_etroit.add_setter(self.partage, "collapsed", True)
         for w in self.commandes.secondaires:
             tres_etroit.add_setter(w, "visible", False)
+        for cote in ("margin-start", "margin-end"):
+            tres_etroit.add_setter(corps, cote, 8)
         cadre.add_breakpoint(tres_etroit)
         self.set_child(cadre)
         self.add_controller(self.raccourcis())
@@ -1019,9 +1022,16 @@ class PageDetail(Adw.NavigationPage):
                   self.g_comparaisons, self.vue_paroles):
             if w is not None:
                 w.set_visible(not c)
+        voulu = not c and bool(p.get("paroles_panneau"))
+        if voulu and self.partage.get_width() <= 0:
+            # ouvert avant la première mise en page, le panneau recevrait une largeur absurde (libadwaita 1.5) : il
+            # s'ouvre à la première image où la page a sa largeur
+            if self._attente_panneau is None:
+                self._attente_panneau = self.partage.add_tick_callback(self._panneau_affiche)
+            voulu = False
         self._maj_panneau = True
         try:
-            self.partage.set_show_sidebar(not c and bool(p.get("paroles_panneau")))
+            self.partage.set_show_sidebar(voulu)
         finally:
             self._maj_panneau = False
         if self.paroles_image is not None:
@@ -1032,6 +1042,14 @@ class PageDetail(Adw.NavigationPage):
             w.set_vexpand(c)
         self.clamp.set_maximum_size(1800 if c else 980)
         self.clamp.set_tightening_threshold(1600 if c else 784)
+
+    def _panneau_affiche(self, *_):
+        if self.partage.get_width() <= 0 and not self._oubliee:
+            return GLib.SOURCE_CONTINUE
+        self._attente_panneau = None
+        if not self._oubliee:
+            self._maj_visibilites()
+        return GLib.SOURCE_REMOVE
 
     def _panneau_ferme(self):
         """Le panneau « Toutes les paroles » refermé par un clic à côté (fenêtre étroite) : la préférence suit."""
@@ -1910,6 +1928,14 @@ class PageDetail(Adw.NavigationPage):
             GLib.timeout_add(2400, lambda: (self.regler_vitesse(v), False)[1])
         if action == "clavier":
             GLib.timeout_add(2600, lambda: (self._essai_clavier(), False)[1])
+        if action == "frises":
+            def vers_frises():
+                from gi.repository import Graphene    # chargé par gui/essais.py (captures d'essai)
+                ok, point = self.g_octave.compute_point(self.corps, Graphene.Point())
+                if ok:
+                    self.defilement.get_vadjustment().set_value(max(0.0, point.y - 12))
+                return False
+            GLib.timeout_add(3000, vers_frises)
 
     def _essai_clavier(self):
         """Essai (scénario « clavier », sous Xvfb) : de vraies touches envoyées par xdotool, et l'état relevé après

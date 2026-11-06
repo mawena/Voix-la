@@ -89,6 +89,7 @@ class Lecteur(Gtk.Box):
         self.boucle = ()          # boucle A-B en temps de référence : (a, None), (a, b) ou ()
         self.sur_etat = None      # rappel() : lecture ou pause du flux en cours, fin, vitesse (commandes, page)
         self._minuteur_boucle = None
+        self._hauteur = None      # (flux, son passé par scaletempo ?) du dernier flux interrogé
         self.sources = {}
         self.flux = {}
         self.cle = None
@@ -431,6 +432,7 @@ class Lecteur(Gtk.Box):
         self.flux = {}
         self.cle = None
         self._attente = None
+        self._hauteur = None
         self.ecran.set_paintable(None)
         self.bandeau.set_visible(False)
         if self.commandes is not None:
@@ -516,7 +518,10 @@ class Lecteur(Gtk.Box):
         m = self.media()
         if m is None or not m.is_prepared():
             return None
-        return pistes_gst.garde_la_hauteur(m)
+        connu = self._hauteur
+        if connu is None or connu[0] is not m:
+            connu = self._hauteur = (m, pistes_gst.garde_la_hauteur(m))   # une fois par flux
+        return connu[1]
 
     def regler_vitesse(self, v):
         """La vitesse de tous les flux (bornée de 0,5 à 2) ; un flux pas encore prêt la prendra en se plaçant. Faux si

@@ -17,6 +17,7 @@
 - Le choix de la vue, du tri et du regroupement est gardé dans interface.json (clé « bibliotheque »).
 """
 
+import functools
 import time
 import weakref
 from pathlib import Path
@@ -60,6 +61,7 @@ CSS = b"""
 GENRES = list(bib.GENRES.items())
 LONGUEURS = list(bib.LONGUEURS.items())
 MAX_PASTILLES = 3
+PAQUET = 24          # entrées ajoutées au modèle par passage de la boucle (premier chargement, regroupement)
 
 
 def _installer_css():
@@ -83,9 +85,35 @@ class Element(GObject.Object):
         self.entree = entree
 
 
-def _badge_image(b):
-    lb = Gtk.Label(label=b.texte, css_classes=["badge-image", b.style], tooltip_text=b.infobulle)
-    return lb
+# GTK relie souvent une carte à une autre entrée (défilement, tri, filtre) : les cartes et les lignes gardent leurs
+# widgets d'une liaison à l'autre (badges, pastilles), et les menus ne se construisent qu'à l'ouverture.
+
+class Badges(Gtk.Box):
+    """n badges réutilisés ; montrer(badges, n) en affiche n au plus. classes : celles de chaque badge, plus son
+    style (accent, neutre, alerte)."""
+
+    def __init__(self, n, classes, **k):
+        super().__init__(spacing=4, **k)
+        self.classes = list(classes)
+        self.etiquettes = [Gtk.Label(css_classes=self.classes, visible=False) for _ in range(n)]
+        for lb in self.etiquettes:
+            self.append(lb)
+
+    def montrer(self, badges, n=None):
+        n = min(len(self.etiquettes), len(badges) if n is None else n, len(badges))
+        for i, lb in enumerate(self.etiquettes):
+            if i < n:
+                b = badges[i]
+                lb.set_label(b.texte)
+                lb.set_tooltip_text(b.infobulle)
+                lb.set_css_classes(self.classes + [b.style])
+            lb.set_visible(i < n)
+        return n > 0
+
+
+def _menu_a_la_demande(bouton, fabrique):
+    """Le menu d'un Gtk.MenuButton construit à son ouverture (fabrique() → Gio.Menu), pas à chaque liaison."""
+    bouton.set_create_popup_func(lambda b, *_: b.set_menu_model(fabrique()))
 
 
 class Pastilles(Gtk.Box):
@@ -95,40 +123,56 @@ class Pastilles(Gtk.Box):
     def __init__(self, page):
         super().__init__(spacing=4)
         self.page = page
+        self.entree = None
+        self.boutons = []
+        for _ in range(MAX_PASTILLES):
+            b = Gtk.Button(child=Gtk.Label(ellipsize=Pango.EllipsizeMode.END), css_classes=["pastille-voix"],
+                           valign=Gtk.Align.CENTER, visible=False)
+            b.version = None
+            b.connect("clicked", lambda bb: bb.version is not None and self.page.ouvrir_version(bb.version))
+            self.append(b)
+            self.boutons.append(b)
+        self.plus = Gtk.MenuButton(css_classes=["pastille-voix"], valign=Gtk.Align.CENTER, visible=False,
+                                   tooltip_text="Les autres versions")
+        _menu_a_la_demande(self.plus, self._menu_plus)
+        self.append(self.plus)
 
     def lier(self, entree, en_selection=False):
-        commun.vider(self)
+        self.entree = entree
         libelles = bib.libelles_versions(entree)
-        for v, libelle in libelles[:MAX_PASTILLES]:
-            b = Gtk.Button(label=libelle, css_classes=["pastille-voix"], valign=Gtk.Align.CENTER,
-                           sensitive=not en_selection,
-                           tooltip_text=f"Ouvrir la version voix {v.voix}" +
-                                        (f" (extrait à {formats.chrono(v.extrait[0])})" if v.extrait else ""))
-            lb = b.get_child()
-            if isinstance(lb, Gtk.Label):
-                lb.set_ellipsize(Pango.EllipsizeMode.END)
-            b.update_property([Gtk.AccessibleProperty.LABEL], [f"Ouvrir la version voix {libelle}"])
-            b.connect("clicked", lambda _b, v=v: self.page.ouvrir_version(v))
-            b.version_cle = v.cle
-            self.append(b)
-        if len(libelles) > MAX_PASTILLES:
-            menu = Gio.Menu()
-            for v, libelle in libelles[MAX_PASTILLES:]:
-                item = Gio.MenuItem.new(f"Voix {libelle}", None)
-                item.set_action_and_target_value("bibliotheque.ouvrir", GLib.Variant.new_string(v.cle))
-                menu.append_item(item)
-            plus = Gtk.MenuButton(label=f"+{len(libelles) - MAX_PASTILLES}", menu_model=menu,
-                                  css_classes=["pastille-voix"], sensitive=not en_selection, valign=Gtk.Align.CENTER,
-                                  tooltip_text="Les autres versions")
-            self.append(plus)
+        for i, b in enumerate(self.boutons):
+            if i < len(libelles):
+                v, libelle = libelles[i]
+                b.version = v
+                b.get_child().set_label(libelle)
+                b.set_tooltip_text(f"Ouvrir la version voix {v.voix}" +
+                                   (f" (extrait à {formats.chrono(v.extrait[0])})" if v.extrait else ""))
+                b.update_property([Gtk.AccessibleProperty.LABEL], [f"Ouvrir la version voix {libelle}"])
+                b.set_sensitive(not en_selection)
+                b.remove_css_class("en-cours")
+            else:
+                b.version = None
+            b.set_visible(i < len(libelles))
+        reste = len(libelles) - MAX_PASTILLES
+        self.plus.set_menu_model(None)
+        self.plus.set_visible(reste > 0)
+        if reste > 0:
+            self.plus.set_label(f"+{reste}")
+            self.plus.set_sensitive(not en_selection)
+
+    def _menu_plus(self):
+        menu = Gio.Menu()
+        for v, libelle in bib.libelles_versions(self.entree)[MAX_PASTILLES:] if self.entree else []:
+            item = Gio.MenuItem.new(f"Voix {libelle}", None)
+            item.set_action_and_target_value("bibliotheque.ouvrir", GLib.Variant.new_string(v.cle))
+            menu.append_item(item)
+        return menu
 
     def marquer(self, cle_version):
         """La pastille de la version qui joue, en couleur d'accent."""
-        b = self.get_first_child()
-        while b is not None:
-            if hasattr(b, "version_cle"):
-                (b.add_css_class if b.version_cle == cle_version else b.remove_css_class)("en-cours")
-            b = b.get_next_sibling()
+        for b in self.boutons:
+            if b.version is not None:
+                (b.add_css_class if b.version.cle == cle_version else b.remove_css_class)("en-cours")
 
 
 class Carte(Gtk.Box):
@@ -140,8 +184,8 @@ class Carte(Gtk.Box):
         self.element = None
         self._signal = None
         self.image = Image(largeur_min=120, largeur_nat=256, rayon=10, taille_note=40)
-        self.badges = Gtk.Box(spacing=4, halign=Gtk.Align.START, valign=Gtk.Align.START, margin_start=8,
-                              margin_top=8, can_target=True)
+        self.badges = Badges(4, ["badge-image"], halign=Gtk.Align.START, valign=Gtk.Align.START, margin_start=8,
+                             margin_top=8)
         self.image.add_overlay(self.badges)
         # en bas à droite : le nombre de versions (une icône de copies et le nombre), puis la durée
         coin = Gtk.Box(spacing=4, halign=Gtk.Align.END, valign=Gtk.Align.END, margin_end=8, margin_bottom=8)
@@ -176,8 +220,11 @@ class Carte(Gtk.Box):
         self.menu = Gtk.MenuButton(icon_name="view-more-symbolic", css_classes=["flat", "circular"],
                                    valign=Gtk.Align.START, tooltip_text="Actions")
         self.menu.update_property([Gtk.AccessibleProperty.LABEL], ["Actions"])
+        _menu_a_la_demande(self.menu, lambda: self.page.menu_pour(self.element.entree) if self.element else
+                           Gio.Menu())
         bas.append(self.menu)
         self.append(bas)
+        page.cartes.add(self)
 
     def lier(self, element, item):
         self.delier()
@@ -186,9 +233,7 @@ class Carte(Gtk.Box):
         p = e.principale
         sel = self.page.en_selection
         self.image.lier(p)
-        commun.vider(self.badges)
-        for b in e.badges()[:2 if self.page.etroit else 4]:
-            self.badges.append(_badge_image(b))
+        self.badges.montrer(e.badges(), 2 if self.page.etroit else 4)
         self.duree.set_label(formats.chrono(e.duree_s) if e.duree_s else "")
         self.duree.set_visible(bool(e.duree_s))
         self.l_versions.set_label(str(e.n))
@@ -200,9 +245,10 @@ class Carte(Gtk.Box):
             self.sous.set_label(f"{e.n} versions · {bib.date_courte(e.date)}")
         else:
             self.sous.set_label(bib.resume_version(p))
-        self.pastilles.lier(e, sel)
+        if e.n > 1:
+            self.pastilles.lier(e, sel)
         self.pastilles.set_visible(e.n > 1)
-        self.menu.set_menu_model(self.page.menu_pour(e))
+        self.menu.set_menu_model(None)        # refait à l'ouverture, pour cette entrée
         self.menu.set_visible(not sel)
         self.b_lire.set_visible(not sel and any(v.complet for v in e.versions))
         self.case.set_visible(sel)
@@ -244,7 +290,8 @@ class CelluleTitre(Gtk.Box):
         textes = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3, valign=Gtk.Align.CENTER, hexpand=True)
         self.titre = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, css_classes=["ligne-titre"])
         self.sous = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, css_classes=["caption", "dim-label"])
-        self.badges = Gtk.Box(spacing=4)
+        self.badges = Badges(4, ["badge"])
+        self._a_des_badges = False
         textes.append(self.titre)
         textes.append(self.sous)
         textes.append(self.badges)
@@ -256,11 +303,7 @@ class CelluleTitre(Gtk.Box):
         self.image.lier(e.principale)
         self.titre.set_label(e.titre)
         self.titre.set_tooltip_text(e.titre)
-        commun.vider(self.badges)
-        for b in e.badges()[:4]:
-            lb = commun.badge(b.texte, "accent" if b.style == "accent" else b.style)
-            lb.set_tooltip_text(b.infobulle)
-            self.badges.append(lb)
+        self._a_des_badges = self.badges.montrer(e.badges())
         self.etroit(self.page.etroit)
 
     def etroit(self, oui):
@@ -269,7 +312,7 @@ class CelluleTitre(Gtk.Box):
             return
         self.sous.set_label(" · ".join(m for m in (e.voix, bib.date_courte(e.date)) if m))
         self.sous.set_visible(oui)
-        self.badges.set_visible(not oui and self.badges.get_first_child() is not None)
+        self.badges.set_visible(not oui and self._a_des_badges)
 
     def delier(self):
         self.element = None
@@ -288,7 +331,8 @@ class CelluleVoix(Gtk.Box):
         e = element.entree
         self.label.set_label(e.principale.voix)
         self.label.set_visible(e.n == 1)
-        self.pastilles.lier(e, en_selection)
+        if e.n > 1:
+            self.pastilles.lier(e, en_selection)
         self.pastilles.set_visible(e.n > 1)
 
 
@@ -303,6 +347,8 @@ class CelluleActions(Gtk.Box):
         self.menu = Gtk.MenuButton(icon_name="view-more-symbolic", css_classes=["flat", "circular"],
                                    tooltip_text="Actions")
         self.menu.update_property([Gtk.AccessibleProperty.LABEL], ["Actions"])
+        _menu_a_la_demande(self.menu, lambda: self.page.menu_pour(self.element.entree) if self.element else
+                           Gio.Menu())
         self.append(self.b_lire)
         self.append(self.menu)
 
@@ -311,7 +357,7 @@ class CelluleActions(Gtk.Box):
         self.element = element
         e = element.entree
         sel = self.page.en_selection
-        self.menu.set_menu_model(self.page.menu_pour(e))
+        self.menu.set_menu_model(None)
         self.menu.set_visible(not sel)
         self.b_lire.set_visible(not sel and any(v.complet for v in e.versions))
         self._signal = element.connect("notify::en-lecture", lambda *_: self._maj_lecture())
@@ -366,6 +412,9 @@ class PageBibliotheque(commun.Page):
         self._en_lecture = None       # (dossier, voix) du résultat qui joue
         self._maj_tri = False
         self.cellules_titre = weakref.WeakSet()
+        self.cartes = weakref.WeakSet()
+        self._remplissage = 0
+        self._priorites = None
         self.mesures = {}
 
         # --- modèle : magasin → filtre → tri → sélection (aucune, ou multiple en mode sélection) -------------------
@@ -385,6 +434,9 @@ class PageBibliotheque(commun.Page):
         self._barre_selection()
         self._raccourcis()
         self._appliquer_tri()
+        self._brancher()
+        for defile in (self.defil_grille, self.defil_liste):
+            defile.get_vadjustment().connect("value-changed", self._planifier_priorites)
 
         fenetre.ecouter("resultats", self.charger)
         fenetre.ecouter("donnees", self.charger)
@@ -528,7 +580,7 @@ class PageBibliotheque(commun.Page):
             item.set_child(c)
             item.connect("notify::selected", lambda it, _p: c.case.set_active(it.get_selected()))
 
-        self.grille = Gtk.GridView(model=self.sel_aucune, factory=_fabrique(
+        self.grille = Gtk.GridView(model=None, factory=_fabrique(
             setup, lambda it: it.get_child().lier(it.get_item(), it), lambda it: it.get_child().delier()),
             single_click_activate=True, max_columns=8, min_columns=1, enable_rubberband=False,
             tab_behavior=Gtk.ListTabBehavior.ITEM, css_classes=["bibliotheque-grille"])
@@ -538,7 +590,7 @@ class PageBibliotheque(commun.Page):
                                                vexpand=True)
 
         # --- liste ---------------------------------------------------------------------------------------------------
-        self.colonnes = Gtk.ColumnView(model=self.sel_aucune, single_click_activate=True, show_row_separators=True,
+        self.colonnes = Gtk.ColumnView(model=None, single_click_activate=True, show_row_separators=True,
                                        reorderable=False, tab_behavior=Gtk.ListTabBehavior.ITEM,
                                        css_classes=["bibliotheque-liste"])
         self.colonnes.update_property([Gtk.AccessibleProperty.LABEL], ["Doublages"])
@@ -700,20 +752,11 @@ class PageBibliotheque(commun.Page):
         def fini(r):
             if n != self._chargement:
                 return            # un chargement plus récent arrive
-            t0 = time.monotonic()
             self.resultats, self.versions, duree_lecture = r
             self.par_cle = {v.cle: v for v in self.versions}
+            self.mesures.update({"lecture_disque_s": duree_lecture, "doublages": len(self.versions),
+                                 "debut_chargement": debut})
             self._remplir()
-            self._charge = True
-            self.mesures.update({"lecture_disque_s": duree_lecture, "remplissage_s": time.monotonic() - t0,
-                                 "chargement_s": time.monotonic() - debut, "doublages": len(self.versions)})
-            if self.a_ouvrir:
-                dossier, voix = self.a_ouvrir
-                self.a_ouvrir = None
-                self.ouvrir(dossier, voix)
-            apres, self._apres = self._apres, []
-            for rappel in apres:
-                rappel()
 
         def erreur(e):
             if n == self._chargement:
@@ -734,33 +777,101 @@ class PageBibliotheque(commun.Page):
             self.charger()
 
     def _remplir(self):
-        """Met le magasin à jour d'après self.versions, sans tout refaire : une entrée inchangée garde son élément
-        (et sa carte, sa sélection, la position du défilement)."""
+        """Met le magasin à jour d'après self.versions. Peu de changements (un doublage fini, F5) : seulement ce qui a
+        changé ; une entrée inchangée garde son élément, sa carte, sa sélection et la position du défilement.
+        Sinon (premier chargement, regroupement) : tout, par paquets de PAQUET dans l'ordre affiché, le premier écran
+        d'abord, pour que l'interface ne se fige pas pendant que GTK crée et relie les cartes."""
+        t0 = time.monotonic()
         entrees = bib.regrouper(self.versions, self.choix["regrouper"])
         self.entrees = {e.cle: e for e in entrees}
+        self._remplissage += 1
         n = self.magasin.get_n_items()
-        if n == 0:
-            self.magasin.splice(0, 0, [Element(e) for e in entrees])
+        anciennes = {self.magasin.get_item(i).entree.cle for i in range(n)}
+        if n == 0 or len(anciennes ^ set(self.entrees)) > PAQUET:
+            self.magasin.remove_all()
+            tri, inverse = self.choix["tri"], self.choix["inverse"]
+            ordre = functools.cmp_to_key(lambda a, b: bib.comparer(a, b, tri, inverse))
+            entrees = sorted(entrees, key=lambda e: (not self.filtre.garde(e), ordre(e)))
+            self.mesures["paquets_s"] = []
+            self._ajouter_par_paquets(entrees, self._remplissage, t0)
+            return
+        for i in reversed(range(n)):
+            el = self.magasin.get_item(i)
+            e = self.entrees.get(el.entree.cle)
+            if e is None:
+                self.magasin.remove(i)
+            elif e.signature() != el.entree.signature():
+                self.magasin.splice(i, 1, [Element(e)])
+            else:
+                el.entree = e          # mêmes données ; les Resultat frais servent à ouvrir le détail
+        neufs = [Element(e) for e in entrees if e.cle not in anciennes]
+        if neufs:
+            self.magasin.splice(self.magasin.get_n_items(), 0, neufs)
+        self.mesures["paquets_s"] = [time.monotonic() - t0]
+        self._fin_remplissage(t0)
+
+    def _ajouter_par_paquets(self, entrees, n, t0):
+        if n != self._remplissage:
+            return False          # un remplissage plus récent a pris la place
+        debut = time.monotonic()
+        paquet, reste = entrees[:PAQUET], entrees[PAQUET:]
+        self.magasin.splice(self.magasin.get_n_items(), 0, [Element(e) for e in paquet])
+        self.mesures["paquets_s"].append(time.monotonic() - debut)
+        if reste:
+            # priorité « idle » : GTK met en page et dessine ce paquet avant le suivant
+            GLib.idle_add(self._ajouter_par_paquets, reste, n, t0)
         else:
-            presents = {}
-            for i in reversed(range(n)):
-                el = self.magasin.get_item(i)
-                e = self.entrees.get(el.entree.cle)
-                if e is None:
-                    self.magasin.remove(i)
-                elif e.signature() != el.entree.signature():
-                    self.magasin.splice(i, 1, [Element(e)])
-                    presents[e.cle] = True
-                else:
-                    el.entree = e          # mêmes données ; les Resultat frais servent à ouvrir le détail
-                    presents[e.cle] = True
-            neufs = [Element(e) for e in entrees if e.cle not in presents]
-            if neufs:
-                self.magasin.splice(self.magasin.get_n_items(), 0, neufs)
+            self._fin_remplissage(t0)
+        return False
+
+    def _fin_remplissage(self, t0):
         self._remplir_menu_voix()
         self._en_lecture = None
         self._lecture_changee(lectures().dernier)
+        premier = not self._charge
+        self._charge = True
         self._maj_affichage()
+        self._planifier_priorites()
+        debut = self.mesures.pop("debut_chargement", None)
+        self.mesures.update({"remplissage_s": time.monotonic() - t0,
+                             "paquet_max_s": max(self.mesures.get("paquets_s") or [0.0])})
+        if debut is not None:
+            self.mesures["chargement_s"] = time.monotonic() - debut
+        if premier:
+            self.mesures["premier"] = True
+        if self.a_ouvrir:
+            dossier, voix = self.a_ouvrir
+            self.a_ouvrir = None
+            self.ouvrir(dossier, voix)
+        apres, self._apres = self._apres, []
+        for rappel in apres:
+            rappel()
+
+    # --- miniatures : celles qu'on voit d'abord ----------------------------------------------------------------------
+
+    def _planifier_priorites(self, *_):
+        if self._priorites is None:
+            self._priorites = GLib.timeout_add(80, self._prioriser)
+
+    def _prioriser(self):
+        """Les miniatures attendues des cartes (ou lignes) à l'écran passent devant, de haut en bas : GTK relie
+        d'avance bien plus de cartes qu'on n'en voit, et la file des miniatures sert sinon la dernière demande."""
+        self._priorites = None
+        grille = self.choix["vue"] == "grille"
+        defile = self.defil_grille if grille else self.defil_liste
+        hauteur = defile.get_height()
+        visibles = []
+        for c in list(self.cartes if grille else self.cellules_titre):
+            cle = c.image.cle_attendue
+            if cle is None or not c.get_mapped():
+                continue
+            ok, r = c.compute_bounds(defile)
+            if ok and r.origin.y + r.size.height > 0 and r.origin.y < hauteur:
+                visibles.append((round(r.origin.y), r.origin.x, cle))
+        if visibles:
+            visibles.sort(key=lambda x: (x[0], x[1]))
+            miniatures().prioriser([cle for _y, _x, cle in visibles])
+        return False
 
     # --- affichage -----------------------------------------------------------------------------------------------
 
@@ -804,10 +915,21 @@ class PageBibliotheque(commun.Page):
         self.r_puces.set_reveal_child(bool(etiquettes))
         (self.b_tri.add_css_class if self.filtre.actif else self.b_tri.remove_css_class)("filtre-actif")
 
+    def _brancher(self):
+        """Seule la vue affichée lit le modèle : GTK crée et relie d'avance des dizaines de cartes ou de lignes,
+        inutile pour la vue cachée."""
+        modele = self.sel_multiple if self.en_selection else self.sel_aucune
+        for vue, nom in ((self.grille, "grille"), (self.colonnes, "liste")):
+            voulu = modele if nom == self.choix["vue"] else None
+            if vue.get_model() is not voulu:
+                vue.set_model(voulu)
+        self._planifier_priorites()
+
     def changer_vue(self, vue):
         if vue not in bib.VUES:
             return
         self.choix["vue"] = vue
+        self._brancher()
         self._sauver()
         self._maj_affichage()
         (self.grille if vue == "grille" else self.colonnes).grab_focus()
@@ -815,9 +937,9 @@ class PageBibliotheque(commun.Page):
     def _etroit(self, oui):
         self.etroit = oui
         (self.grille.add_css_class if oui else self.grille.remove_css_class)("etroite")
-        modele = self.grille.get_model()
-        self.grille.set_model(None)           # relie les cartes visibles : moins de badges en fenêtre étroite
-        self.grille.set_model(modele)
+        if self.grille.get_model() is not None:
+            self.grille.set_model(None)       # relie les cartes visibles : moins de badges en fenêtre étroite
+            self._brancher()
         for c in list(self.cellules_titre):
             c.etroit(oui)
 
@@ -1090,10 +1212,8 @@ class PageBibliotheque(commun.Page):
         if self.b_selection.get_active() != oui:
             self.b_selection.set_active(oui)
         self.sel_multiple.unselect_all()
-        modele = self.sel_multiple if oui else self.sel_aucune
         # changer de modèle relie toutes les cartes visibles : elles prennent leur case à cocher (ou la perdent)
-        self.grille.set_model(modele)
-        self.colonnes.set_model(modele)
+        self._brancher()
         self.col_case.set_visible(oui)
         self.vue.set_reveal_bottom_bars(oui)
         self._maj_selection()

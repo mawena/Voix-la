@@ -221,6 +221,7 @@ class Entree:
     cle: str
     versions: list = field(default_factory=list)     # la plus récente d'abord
     _cles: dict | None = field(default=None, repr=False, compare=False)
+    _badges: list | None = field(default=None, repr=False, compare=False)
 
     @property
     def principale(self):
@@ -255,7 +256,13 @@ class Entree:
         return tuple(v.signature() for v in self.versions)
 
     def badges(self):
-        """Ceux de la version seule ; pour plusieurs versions, ceux d'au moins une version (« inachevé » : toutes)."""
+        """Ceux de la version seule ; pour plusieurs versions, ceux d'au moins une version (« inachevé » : toutes).
+        Calculés une fois : chaque liaison d'une carte les redemande."""
+        if self._badges is None:
+            self._badges = self._calculer_badges()
+        return self._badges
+
+    def _calculer_badges(self):
         if self.n == 1:
             return badges(self.principale)
         vus, sortie = set(), []

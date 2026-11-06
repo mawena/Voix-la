@@ -110,6 +110,16 @@ class Miniatures:
             if d is not None:
                 d.rappels.pop(n, None)
 
+    def prioriser(self, cles):
+        """Les images de ces clés passent devant (la page les donne dans l'ordre de l'écran : la première est servie
+        d'abord). GTK relie d'avance bien plus de cartes qu'on n'en voit : sans cela, la dernière reliée, hors de
+        l'écran, passerait devant celles qu'on regarde."""
+        with self._cond:
+            for cle in reversed(list(cles)):
+                for file in (self._lecture, self._preparation):
+                    if cle in file:
+                        file.move_to_end(cle)
+
     def oublier_impossibles(self):
         """Actualiser (F5) : on réessaie les fichiers sans image (une pochette a pu être ajoutée)."""
         self._impossibles.clear()
@@ -285,7 +295,7 @@ class Vignette(Gtk.Widget):
             tl, th = t.get_width(), t.get_height()
             e = max(l / tl, h / th)
             dl, dh = tl * e, th * e
-            s.append_scaled_texture(t, Gsk.ScalingFilter.TRILINEAR,
+            s.append_scaled_texture(t, Gsk.ScalingFilter.LINEAR,
                                     Graphene.Rect().init((l - dl) / 2, (h - dh) / 2, dl, dh))
         else:
             a, b, angle = self.couleurs
@@ -322,6 +332,11 @@ class Image(Gtk.Overlay):
         self.add_overlay(self.note)
         self._jeton = None
         self._cle = None
+
+    @property
+    def cle_attendue(self):
+        """La clé de l'image que cette vignette attend encore (None si elle l'a, ou n'en aura pas)."""
+        return self._cle if self._jeton is not None else None
 
     def lier(self, version):
         self.delier()

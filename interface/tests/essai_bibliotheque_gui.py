@@ -126,7 +126,13 @@ def scenario(app):
     page.selectionner(True)
     yield 200
     verifier(page.grille.get_model() is page.sel_multiple, "sélection multiple dans la grille")
-    verifier(page.colonnes.get_model() is page.sel_multiple, "et dans la liste")
+    verifier(page.colonnes.get_model() is None, "la liste cachée ne lit pas le modèle")
+    page.a_vue.change_state(GLib.Variant.new_string("liste"))
+    yield 200
+    verifier(page.colonnes.get_model() is page.sel_multiple and page.col_case.get_visible(), "et dans la liste")
+    verifier(page.grille.get_model() is None, "la grille cachée ne lit plus le modèle")
+    page.a_vue.change_state(GLib.Variant.new_string("grille"))
+    yield 200
     page._active(0)
     yield 100
     verifier(page.l_selection.get_label() == "2 doublages sélectionnés", page.l_selection.get_label())
@@ -228,6 +234,10 @@ def scenario(app):
     yield 200
     verifier(len(page.versions) == 15 and titres(page)[0] == "Nouvelle aube", f"liste relue : {titres(page)[:2]}")
     dire(page=page.mesures)
+    # plus de ffmpeg de miniature en cours : rien n'écrit plus dans le dossier de l'essai après la fin
+    debut = time.monotonic()
+    while miniatures().occupe() and time.monotonic() - debut < 30:
+        yield 100
 
 
 def lancer(app):

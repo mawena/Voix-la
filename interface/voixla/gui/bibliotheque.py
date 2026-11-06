@@ -277,8 +277,8 @@ class Carte(Gtk.Box):
 
 
 class CelluleTitre(Gtk.Box):
-    """Colonne « Titre » de la liste : petite miniature, titre, et dessous les badges (ou, fenêtre étroite, les voix
-    et la date, dont les colonnes sont cachées)."""
+    """Colonne « Titre » de la liste : petite miniature, titre, et dessous les badges (ou, fenêtre étroite, les voix,
+    la durée et la date, dont les colonnes sont cachées)."""
 
     def __init__(self, page):
         super().__init__(spacing=10, margin_top=2, margin_bottom=2)
@@ -310,7 +310,8 @@ class CelluleTitre(Gtk.Box):
         e = self.element.entree if self.element else None
         if e is None:
             return
-        self.sous.set_label(" · ".join(m for m in (e.voix, bib.date_courte(e.date)) if m))
+        duree = formats.chrono(e.duree_s) if e.duree_s else ""
+        self.sous.set_label(" · ".join(m for m in (e.voix, duree, bib.date_courte(e.date)) if m))
         self.sous.set_visible(oui)
         self.badges.set_visible(not oui and self._a_des_badges)
 
@@ -690,7 +691,8 @@ class PageBibliotheque(commun.Page):
         bac.set_child(self.vue)
         self.set_child(bac)
         etroit = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 560sp"))
-        for w in (self.b_actualiser, self.b_dossier, self.b_vues, self.col_voix, self.col_mode, self.col_date):
+        for w in (self.b_actualiser, self.b_dossier, self.b_vues, self.col_voix, self.col_mode, self.col_duree,
+                  self.col_date):
             etroit.add_setter(w, "visible", False)
         etroit.connect("apply", lambda *_: self._etroit(True))
         etroit.connect("unapply", lambda *_: self._etroit(False))
@@ -1259,8 +1261,8 @@ class PageBibliotheque(commun.Page):
         return True
 
     def _ctrl_a(self):
-        if self.choix["vue"] not in (self.pile.get_visible_child_name(),):
-            return False
+        if self.pile.get_visible_child_name() != self.choix["vue"]:
+            return False          # rien à sélectionner (attente, aucun doublage, rien ne correspond)
         self.selectionner(True)
         self._tout_selectionner()
         return True
@@ -1277,13 +1279,24 @@ class PageBibliotheque(commun.Page):
 
     def _element_du_focus(self):
         """L'élément de la carte (ou de la ligne) qui a le focus, s'il y en a une."""
+        def dedans(w, profondeur=3):
+            """La carte ou la cellule liée sous w (le focus est sur la case de la grille, ou la ligne, elle-même)."""
+            enfant = w.get_first_child() if profondeur else None
+            while enfant is not None:
+                if isinstance(enfant, (Carte, CelluleTitre, CelluleActions)) and enfant.element is not None:
+                    return enfant.element
+                trouve = dedans(enfant, profondeur - 1)
+                if trouve is not None:
+                    return trouve
+                enfant = enfant.get_next_sibling()
+            return None
+
         w = self.fenetre.get_focus()
         while w is not None and w is not self:
             if isinstance(w, (Carte, CelluleTitre, CelluleActions)) and w.element is not None:
                 return w.element
-            enfant = w.get_first_child()
-            if isinstance(enfant, Carte) and enfant.element is not None:
-                return enfant.element         # le focus est sur la case de la grille elle-même
+            if w.get_parent() in (self.grille, self.colonnes) or isinstance(w.get_parent(), Gtk.ListView):
+                return dedans(w)
             w = w.get_parent()
         return None
 

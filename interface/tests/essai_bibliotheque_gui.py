@@ -167,6 +167,14 @@ def scenario(app):
              vues["Danse des lucioles"].image.vignette.texture is not None, "la pochette du MP3")
     dire(miniatures=m)
 
+    # --- clavier : la carte qui a le focus ------------------------------------------------------------------------------
+    ciel = vues.get("Ciel de craie")
+    if ciel is not None:
+        ciel.get_parent().grab_focus()
+        yield 100
+        verifier(page._element_du_focus() is ciel.element, "Espace et Suppr trouvent la carte qui a le focus")
+        page.grille.grab_focus()
+
     # --- lecture sans ouvrir le détail --------------------------------------------------------------------------------
     vagues = next(e for e in page._visibles() if e.titre == "Les vagues bleues")
     d = page.lire_rapide(vagues, muet=True)

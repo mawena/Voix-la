@@ -66,7 +66,9 @@ flowchart TD
   que le WAV flottant. Il part avec la référence de la voix cible. Le FLAC est en entiers et écrêterait au-dessus de
   0 dBFS : la crête est donc ramenée à −1 dBFS par un gain connu, que le noyau retire à la lecture. La voix isolée
   revient de la même façon, et `doubler` retire le gain à son tour.
-- **Séparation (Kaggle).** MelBand-Roformer (via audio-separator) isole la voix.
+- **Séparation (Kaggle).** MelBand-Roformer (via audio-separator) isole la voix. Comme les Roformer du nettoyage, il
+  tourne en demi-précision (autocast fp16, les cœurs fp16 des T4) : 2,4 fois plus vite qu'en fp32, pour la même voix
+  à 70 dB près.
 - **Mode (Kaggle).** `chant` s'il y a une musique sous la voix et que la voix chante, ou rappe sur un fond tonal ;
   sinon `parole`. Voir [Modes](#modes--chant-parole-duo-rap).
 - **Hauteur (Kaggle).** La voix est découpée aux silences en passages de quelques secondes. En chant, chaque
@@ -302,6 +304,7 @@ Il contient `voix/` (les voix) et `sorties/` (les doublages). Deux réglages gar
 | `verrou-kaggle` | verrou commun : une seule session Kaggle à la fois sur le poste, quel que soit le dossier de sortie |
 | `session-en-cours.json` | la session envoyée sur Kaggle et pas encore rapatriée : c'est elle que `--reprendre` finit |
 | `session-precedente.json` | la dernière session close (rapatriée, reprise ou en échec), gardée pour mémoire |
+| `quota-kaggle.json` | écrit par l'interface : dernière lecture de `kaggle quota` (heures de GPU utilisées, total, remise à zéro) |
 
 ### Voix
 
@@ -840,8 +843,9 @@ les mots faux reconnus dans la voix convertie, améliore la tenue des notes, et 
 est devant Seed-VC sur la justesse (écart médian de 14 cents contre 17), les paroles et les aigus, et arrive en tête à
 l'écoute à l'aveugle.
 
-Le nettoyage coûte du GPU : trois passes de Roformer de plus, environ 9 min pour 4 min de chant, et une conversion
-environ 1,5 fois plus longue, à cause des chœurs. `--sans-nettoyage` revient à la voix isolée complète.
+Le nettoyage coûte du GPU : trois passes de Roformer de plus, environ 2,3 min de GPU pour une chanson de 2 min 49
+(5,9 min en fp32 avant le 06/11/2026), et une conversion environ 1,5 fois plus longue, à cause des chœurs.
+`--sans-nettoyage` revient à la voix isolée complète.
 
 ### Voix seule et duo
 
@@ -937,6 +941,16 @@ Mesures sur une voix de synthèse fausse de 29 cents (médiane), avec un vibrato
 
 Temps mesurés de bout en bout, à 30 pas, avec les outils préparés (`--preparer-outils`).
 
+Roformer en demi-précision, le 06/11/2026 (chanson de 2 min 49, deux cartes) :
+
+| Version | Séparation | Nettoyage (GPU) | Conversion (GPU) | Noyau | Session depuis l'envoi |
+|---|---|---|---|---|---|
+| fp32 (0.7.0) | 116 s | 351 s | 496 s | 852 s | 17,0 min |
+| autocast fp16 | 60 s | 137 s | 482 s | 656 s | 11,3 min |
+
+- Voix séparée identique à 72 dB près ; la voix convertie reste aussi juste et aussi ressemblante.
+- Par seconde de son : séparation environ 0,25 à 0,35 fois la durée ; nettoyage environ 0,8 fois.
+
 Deux cartes T4, le 05/11/2026, une vidéo par session :
 
 | Vidéo | Durée | GPU Kaggle | Temps total |
@@ -949,6 +963,9 @@ Deux cartes T4, le 05/11/2026, une vidéo par session :
   changent pas.
 - Le nettoyage prend environ 0,7 fois son temps de GPU, et la conversion YingMusic-SVC 0,55 fois.
 - Le quota GPU se compte par heure de session, pas par carte : une chanson coûte moins de quota.
+- Le quota est d'environ 30 h par semaine, remises à zéro chaque samedi à 00:00 UTC. `kaggle quota` (CLI 2.2.4 ou plus
+  récente) donne l'utilisé et le reste ; l'interface les affiche (page État) et met un doublage en attente quand il ne
+  tient plus (voir [interface/README.md](interface/README.md#quota-gpu-kaggle)).
 
 Paroles pendant la conversion, le 06/11/2026 (même chanson de 3 min 48, deux sessions le même soir) :
 
@@ -1063,7 +1080,11 @@ profite aussi. Nettoyage et chœurs compris ; en mode `auto`, il suppose du chan
 - **Son** : la sortie est en stéréo, même si la vidéo était en 5.1.
 - **Kaggle** : il faut une connexion internet et le quota GPU gratuit du compte. Chaque appel à Kaggle a une limite
   de temps (2 min pour un état, 30 min pour un envoi). Une coupure réseau est tolérée jusqu'à 3 h ; au-delà,
-  `doubler --reprendre` finit la session.
+  `doubler --reprendre` finit la session. Kaggle ne vérifie le quota qu'au démarrage d'une session : `doubler` lancé
+  en ligne de commande ne le vérifie pas encore.
+- **Demi-précision** : la voix convertie n'est plus identique au bit près à celle d'avant le 06/11/2026 : la
+  demi-précision change à peine les pistes nettoyées, et la diffusion en tire une réalisation voisine, de même qualité
+  aux mesures. `separation_precision` et `nettoyage_precision` à `fp32` reviennent à l'ancienne chaîne.
 
 ## Usage responsable
 

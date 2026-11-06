@@ -5,7 +5,7 @@ plusieurs en mode sélection).
 Un dossier de sortie peut contenir plusieurs voix (travail/<voix>/) :
 - si toutes ses voix partent (ou s'il n'en a qu'une), c'est le dossier entier qui va à la corbeille, avec travail/ ;
 - sinon, seulement les fichiers des voix choisies : vidéo et MP3 doublés, leur version « (auto-tune) » (vidéo, MP3,
-  .lrc), beat et voix seule enregistrés par l'interface, travail/<voix>/. Les sons communs de travail/ restent pour
+  .lrc), beat et voix seule enregistrés par l'interface, vidéos à partager de partage/, travail/<voix>/. Les sons communs de travail/ restent pour
   les autres voix. Une voix par chanteur (« a+b ») est une voix comme une autre : ses fichiers « voix A et B ».
 Les caches (copies vidéo des pistes, ma voix seule, miniatures, analyses) ne sont pas touchés : ils sont nommés d'après
 les fichiers, ne servent plus, et leur purge les efface le moment venu. Rien n'en dépend ici.
@@ -14,7 +14,7 @@ les fichiers, ne servent plus, et leur purge les efface le moment venu. Rien n'e
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import pistes
+from . import export_social, pistes
 
 
 @dataclass
@@ -53,7 +53,7 @@ def fichiers_autotune(res):
 
 def _fichiers_de_la_voix(res):
     return [p for p in (res.video, res.mp3) if p] + fichiers_autotune(res) + pistes.exports_existants(res) + \
-        ([res.dossier_voix] if res.dossier_voix else [])
+        export_social.fichiers_partages(res) + ([res.dossier_voix] if res.dossier_voix else [])
 
 
 def plans(resultats):

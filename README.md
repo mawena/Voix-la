@@ -87,9 +87,11 @@ flowchart TD
   paroles, prêtes dès la fin du nettoyage, passent sur la carte 1 pendant que la carte 0 commence la conversion ; la
   carte 1 rejoint ensuite la conversion. Les modèles se chargent l'un après l'autre, et Whisper ne partage jamais une
   carte avec YingMusic-SVC. Chaque morceau garde sa graine et les pistes sont assemblées dans le même ordre : le son et
-  les paroles sont ceux d'une carte seule, au bit près. `--gpu 1` revient à une carte (paroles après la conversion).
+  les paroles sont ceux d'une carte seule, au bit près, sauf le texte d'un morceau où Whisper boucle et repasse en
+  températures échantillonnées (ce qu'il en reste après les garde-fous peut varier d'une carte à l'autre). `--gpu 1` revient à une carte (paroles après la conversion).
   Avec une machine à une seule carte, ou une carte arrêtée en route, le noyau se replie de lui-même sur une carte,
-  paroles comprises.
+  paroles comprises. Sans morceau pour YingMusic-SVC (Seed-VC, parole), les paroles passent après la conversion sur la
+  carte 1, que le noyau n'occupe pas (il garde Seed-VC chargé sur la carte 0).
 - **Musique seule (PC).** Le reste (musique, bruits) vaut exactement l'original moins la voix isolée. Il est
   recalculé à chaque mixage, puis vérifié par trois garde-fous :
   - reconstruction : musique seule + voix redonnent l'original ;
@@ -902,6 +904,11 @@ morceau à l'autre, seuils de non-parole et de répétition, mots hors du chant,
 NLLB-200 traduit ensuite en français, ligne par ligne, ce qui n'est pas en français. `--sans-paroles` (ou la clé
 `paroles`) s'en passe.
 
+Whisper ne garde que les poids d'attention utiles aux horodatages par mot (ses 10 têtes d'alignement) : une passe tient
+en 4 Gio de GPU plus 8 Mo par jeton, 7,6 Gio mesurés pour une boucle de 448 jetons, au lieu de 6,7 Gio plus 21 Mo
+(environ 16 Gio pour la même boucle, plus qu'une T4). Les paroles sont les mêmes au bit près. La mémoire libre est
+vérifiée avant le chargement, et un morceau qui en manquerait encore est coupé en deux au lieu d'être repassé tel quel.
+
 ### Auto-tune
 
 L'auto-tune est désactivé par défaut. Avec `--autotune N` (ou `doubler --config autotune N`), `doubler` fait, en plus
@@ -953,6 +960,20 @@ Paroles pendant la conversion, le 06/11/2026 (même chanson de 3 min 48, deux se
 - Whisper large-v3 se charge en 5 à 6 s depuis la copie locale (310 s lu sur le montage, 26 s téléchargé) ; la
   transcription prend 70 s pour 177 s de phrases chantées.
 
+Paroles et mémoire du GPU, le 06/11/2026 (chanson de 2 min 49, celle de deux doublages du 05/11 dont les paroles
+avaient manqué de mémoire) :
+
+| Version | Transcription | Mot à mot | Mémoire au plus fort | Noyau | GPU Kaggle |
+|---|---|---|---|---|---|
+| 0.6.0 (paroles après la conversion, carte 0) | 253 s | 10 morceaux sur 12, 4 passes en panne | plus de 12,5 Gio | 1 121 s | 19,2 min |
+| corrigée, deux cartes | 101 s | 12 sur 12 | 7,6 Gio | 863 s | 15,2 min |
+| corrigée, une carte (`--gpu 1`) | 101 s | 12 sur 12 | 7,6 Gio (12,5 libres) | 1 342 s | 22,8 min |
+
+- Son, mix et paroles des dix autres morceaux identiques au bit près à ceux du 05/11, à une comme à deux cartes ; seuls
+  changent les deux morceaux en panne, des boucles de Whisper (448 jetons) qui demandaient environ 16 Gio.
+- `--gpu 1` reproduit la configuration de la panne (paroles sur la carte 0, où le noyau garde Seed-VC : 12,5 Gio libres
+  au départ) : plus aucune erreur de mémoire.
+
 Chaîne actuelle (chant : voix nettoyée, YingMusic-SVC), le 04/11/2026 :
 
 | Vidéos | Durée | Temps total | dont Kaggle |
@@ -994,8 +1015,8 @@ profite aussi. Nettoyage et chœurs compris ; en mode `auto`, il suppose du chan
   0,5 s par seconde de son, traduction comprise.
 - Sur les onze doublages du 04 au 06/11, l'écart médian est d'environ −4 %. Les grands écarts ne se prévoient pas avant
   l'envoi : l'attente d'une place GPU (jusqu'à 3,5 min), une machine Kaggle lente, une chanson chargée en chœurs
-  (conversion jusqu'à 40 % plus longue), ou des paroles qui manquent de mémoire GPU (4 min au lieu d'une, sur une
-  chanson du 05/11).
+  (conversion jusqu'à 40 % plus longue), ou des paroles qui manquaient de mémoire GPU (4 min au lieu d'une, sur une
+  chanson du 05/11 ; corrigé depuis).
 `--preparer-outils` prend environ 11 min de GPU, une fois (10,6 mesurées, Whisper et NLLB compris).
 
 - Paroles : 15 s de transcription pour 21 s chantées. Les modèles (5,6 Go) sont copiés sur le disque local pendant la

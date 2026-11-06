@@ -55,6 +55,16 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ### Corrigé
 
+- Noyau : les paroles manquaient de mémoire GPU sur certains morceaux (`CUDA OutOfMemoryError` en horodatage par mot,
+  morceau repassé deux fois en vain puis transcrit sans les mots : 4 min au lieu d'une sur une chanson de 2 min 49). Le
+  pipeline de transformers cherche en faisceau (5) et gardait toute l'attention de l'encodeur (2,7 Gio) et, à chaque
+  jeton, l'attention croisée des 32 couches du décodeur : une boucle de Whisper (448 jetons) demandait 16 Gio, plus
+  qu'une T4, sur la carte 1 comme sur la carte 0. Whisper ne garde plus que ses têtes d'alignement (7,6 Gio mesurés
+  pour une telle boucle), mêmes paroles au bit près ; allocateur à segments extensibles ; mémoire libre vérifiée avant
+  le chargement ; un morceau qui en manque encore est coupé en deux plutôt que repassé tel quel. Sur la chanson en
+  cause : transcription 253 → 101 s, douze morceaux sur douze en mot à mot, son identique au bit près. Sans morceau
+  pour YingMusic-SVC, les paroles passent sur la carte 1, libre, et non plus sur la carte 0, où le noyau garde Seed-VC.
+  `rapport.json` : `paroles.memoire_max_mo`, `memoire_passes_mo`, `coupes_memoire`.
 - `doubler --sortie` vers un dossier neuf : les outils préparés (`--preparer-outils`) n'étaient pas montés (session
   environ 4 min plus longue). `outils.json` est cherché dans `<sortie>/.kaggle/`, dans `~/.local/state/voix-la/` (où
   `--preparer-outils` le copie, avec le nom du noyau d'outils), puis dans `<données>/sorties/.kaggle/`. Sans outils,

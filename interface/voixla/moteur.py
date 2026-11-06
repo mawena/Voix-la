@@ -9,6 +9,8 @@ Options récentes, utilisées seulement si « doubler --help » les annonce, ave
 - --gpu auto|1|2       : cartes GPU du noyau, et clé « gpu » de la configuration. Sans elle : une carte, réglage grisé.
 VOIXLA_DOUBLER (essais) remplace la commande doubler, par exemple par un faux doubler. Sinon, « doubler » du PATH
 (/usr/bin/doubler avec le paquet Debian), puis doubler.py à côté du code : celui du dépôt, ou /usr/lib/voix-la.
+L'estimation de durée d'une session vient de doubler.py lui-même (estimation_noyau_s : sa fonction estimer_noyau_s,
+chargée depuis le doubler.py livré avec l'interface, sans le lancer).
 """
 
 import json
@@ -18,7 +20,9 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import time
+import types
 from datetime import datetime
 from pathlib import Path
 
@@ -632,6 +636,58 @@ def ecrire_config(cle, valeur):
         return True, ""
     except OSError as e:
         return False, str(e)
+
+
+# --- Estimation de durée de doubler -----------------------------------------------------------------------------------
+
+_doubler = {"cle": None, "module": None}
+_verrou_doubler = threading.Lock()
+
+
+def fichier_doubler():
+    """doubler.py livré avec l'interface : celui du dépôt, ou /usr/lib/voix-la une fois le paquet Debian installé
+    (chemins.DEPOT), le même fichier que lance /usr/bin/doubler."""
+    return chemins.DEPOT / "doubler.py"
+
+
+def module_doubler():
+    """doubler.py chargé comme module, pour appeler ses fonctions sans le lancer : son programme ne tourne que sous
+    « if __name__ == '__main__' », et ses constantes ne font que nommer des chemins. Ni .pyc écrit à côté, ni entrée dans
+    sys.modules. Gardé tant que le fichier ne change pas ; None s'il manque ou ne se charge pas."""
+    f = fichier_doubler()
+    try:
+        cle = (str(f), f.stat().st_mtime_ns)
+    except OSError:
+        return None
+    with _verrou_doubler:
+        if _doubler["cle"] != cle:
+            module = types.ModuleType("voixla_doubler")
+            module.__file__ = str(f)
+            try:
+                exec(compile(f.read_bytes(), str(f), "exec"), module.__dict__)   # noqa: S102 — le doubler livré
+            except (Exception, SystemExit):  # noqa: BLE001 — doubler.py illisible : l'interface garde son repli
+                module = None
+            _doubler.update(cle=cle, module=module)
+        return _doubler["module"]
+
+
+def estimation_noyau_s(durees_s, pas, sorties, nettoyage=True, mode="auto", moteur_chant="yingmusic", paroles=True,
+                       voix_cibles=1, cartes=1):
+    """Durée probable de la session Kaggle (de la poussée du noyau à sa fin) calculée par doubler lui-même
+    (doubler.estimer_noyau_s, sur les rapports passés de sorties) : la valeur qu'il annoncera au lancement, dans
+    estimation_s de ses événements « kaggle ». None si doubler.py manque, ne se charge pas, ou n'accepte pas ces
+    paramètres (doubler d'avant les paroles pendant la conversion) : l'interface prend alors son propre modèle."""
+    d = module_doubler()
+    estimer = getattr(d, "estimer_noyau_s", None)
+    if not callable(estimer):
+        return None
+    try:
+        s = estimer([float(x or 0) for x in durees_s], int(pas or 30), [Path(x) for x in sorties],
+                    nettoyage=bool(nettoyage), mode=mode or "auto", moteur=moteur_chant or "yingmusic",
+                    paroles=bool(paroles), voix_cibles=max(1, int(voix_cibles or 1)), cartes=max(1, int(cartes or 1)))
+        return float(s) if s is not None and float(s) >= 0 else None
+    except Exception:  # noqa: BLE001 — erreur dans doubler.py : le repli de l'interface
+        return None
 
 
 # --- Événements ------------------------------------------------------------------------------------------------------

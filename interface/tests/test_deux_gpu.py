@@ -59,9 +59,12 @@ def avec(rapport, **temps_local):
 # --- Estimation des durées --------------------------------------------------------------------------------------------
 
 class EssaiEstimation(unittest.TestCase):
+    """Le modèle de l'interface (repli sans doubler.py), sans les paroles : voir test_estimation pour elles."""
+
     def kaggle(self, resultats, cartes, durees=(D,)):
         m = rapports.modele_durees([res(r) for r in resultats])
-        return rapports.estimer(list(durees), 30, m, nettoyage=True, moteur="yingmusic", cartes=cartes)["kaggle"]
+        return rapports.estimer(list(durees), 30, m, nettoyage=True, moteur="yingmusic", cartes=cartes,
+                                paroles=False)["kaggle"]
 
     def test_une_carte_comme_avant(self):
         # ancien rapport (sans gpus) ou gpus à 1 : temps.total_video_s, comme avant ; la pente à deux cartes reste
@@ -115,7 +118,7 @@ class EssaiEstimation(unittest.TestCase):
 
     def test_sans_historique(self):
         self.assertEqual(self.kaggle([], 1), round(230.0 + 5.2 * D, 1))     # défaut d'avant, inchangé
-        self.assertEqual(self.kaggle([], 2), round(230.0 + 4.1 * D, 1))     # mesuré sur deux T4
+        self.assertEqual(self.kaggle([], 2), round(230.0 + 3.8 * D, 1))     # défauts de doubler, paroles à part
         self.assertEqual(rapports.modele_durees([]), rapports.MODELE_DEFAUT)
 
     def test_cartes_sans_effet_hors_chant_nettoye(self):

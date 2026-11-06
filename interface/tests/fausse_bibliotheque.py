@@ -1,5 +1,7 @@
-"""Une fausse bibliothèque de doublages, aux titres et aux voix inventés : pour les essais, les captures d'écran et la
-mesure des performances de la page Résultats. Rien n'est écrit hors du dossier de données donné.
+"""Une fausse bibliothèque de doublages, aux titres, aux voix et aux paroles inventés : pour les essais, les captures
+d'écran et la mesure des performances de la page Résultats. Les doublages des captures qui ont une langue ont des
+paroles minutées mot à mot avec leur traduction (paroles.json), et le duo a ses passages (« Voix de chaque passage »).
+Rien n'est écrit hors du dossier de données donné.
 
   python3 -m tests.fausse_bibliotheque DONNEES               les 12 doublages des captures (petites vidéos de synthèse)
   python3 -m tests.fausse_bibliotheque DONNEES --n 200       200 doublages (20 vidéos de synthèse, liées en dur)

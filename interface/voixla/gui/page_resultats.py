@@ -1,7 +1,14 @@
 """Détail d'un résultat (la liste des doublages est la bibliothèque, gui/bibliotheque.py) : un lecteur (vidéo ou MP3)
 où l'on choisit ce qu'on écoute à la même position (doublage, original, beat seul, ma voix seule, voix d'origine
-seule ; touche B : doublage ⇄ original), les paroles synchronisées, la frise d'octave, les durées par étape, un remix
-rapide, l'enregistrement du beat ou de la voix seule, ouvrir le dossier, supprimer vers la corbeille.
+seule ; touches 1 à 5, B : doublage ⇄ original), les paroles synchronisées, la frise d'octave, les durées par étape,
+un remix rapide, l'enregistrement du beat ou de la voix seule, ouvrir le dossier, supprimer vers la corbeille.
+
+Lecteur complet (gui/commandes.py) : temps écoulé et restant, volume et muet (M), vitesse de 0,5× à 2× en gardant la
+hauteur ([ et ]), boucle A-B qui vaut pour toutes les pistes (L), ±5 s (flèches), une image en pause (« , » et « . »),
+capture de l'image en PNG (S), plein écran (F, double-clic ; gui/plein_ecran.py), reprise à la dernière position
+(préférence « positions »). Chaque panneau (frises, visualisations, paroles) s'affiche ou se masque par le menu « œil »
+et les Réglages ; le mode cinéma (V) les masque tous d'un coup. Paroles (gui/vue_paroles.py) : sous le lecteur, dans le
+panneau « Toutes les paroles » à droite (P), sur l'image (option, et en plein écran).
 
 La page qui crée un détail (page, ici la bibliothèque) fournit : fenetre, remix_actif, proteger_caches(),
 ouvrir_detail(res), revenir_au_detail(detail) et mettre_a_la_corbeille(resultats, apres)."""
@@ -96,6 +103,7 @@ class PageDetail(Adw.NavigationPage):
         self._volume_a_ecrire = None
         self._maj_panneau = False
         self._attente_panneau = None
+        self.reprise = None           # position de reprise (préférence « positions »), lue à la fin de __init__
         self.passages = rapports.passages_voix(res.rapport)
         self.pistes_dispo = self._choisir_pistes(self.forme)
         self.actions = self._creer_actions()

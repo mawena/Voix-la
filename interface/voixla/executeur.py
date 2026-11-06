@@ -6,6 +6,10 @@ etat.json, et tue le groupe si la marque « annuler » apparaît. Il s'arrête q
 (executeur.verrou) garantit qu'il n'en tourne qu'un. Si la fenêtre est fermée (verrou interface.verrou libre), il
 prévient par une notification du bureau (notify-send) à la fin de chaque travail. À la fin de chaque travail, il lance
 aussi la préparation des pistes séparées des doublages produits (voixla/preparation.py), en tâche de fond.
+
+Un travail en attente du quota GPU (« attendre_jusqu_a » de sa demande, voir quota.py) n'est lancé qu'à cette heure-là,
+ou plus tôt si la marque « lancer » apparaît ; les travaux suivants qui sont prêts passent devant. Tant qu'il en reste,
+l'exécuteur ne s'arrête pas : il garde la file et la relit toutes les VEILLE_S secondes, fenêtre fermée comprise.
 """
 
 import fcntl
@@ -19,9 +23,10 @@ import time
 from pathlib import Path
 
 from . import chemins
-from .travaux import demarrage_processus, verrou_tenu
+from .travaux import demarrage_processus, heure_de_reprise, verrou_tenu
 
 DELAI_SIGKILL = 8.0
+VEILLE_S = 3.0   # relecture de la file pendant l'attente du quota (nouveau travail, « lancer », heure venue)
 
 
 def journal(*a):
@@ -32,16 +37,32 @@ def ecrire_etat(dossier, etat):
     chemins.ecrire_json(Path(dossier) / "etat.json", etat)
 
 
-def prochain(racine):
-    """Le plus ancien travail ni commencé ni annulé ; les travaux annulés avant d'avoir commencé sont clos ici."""
+def _a_venir(racine):
+    """Les travaux ni commencés ni annulés, du plus ancien au plus récent ; ceux annulés avant d'avoir commencé sont
+    clos ici."""
     for d in sorted(Path(racine).iterdir()):
         if not d.is_dir() or not (d / "demande.json").exists() or (d / "etat.json").exists():
             continue
         if (d / "annuler").exists():
             ecrire_etat(d, {"statut": "annule", "fin": time.time(), "avant_debut": True})
             continue
-        return d
+        yield d
+
+
+def prochain(racine, maintenant=None):
+    """Le plus ancien travail prêt : ni commencé, ni annulé, ni en attente du quota GPU (heure de reprise à venir)."""
+    maintenant = time.time() if maintenant is None else maintenant
+    for d in _a_venir(racine):
+        r = heure_de_reprise(d)
+        if r is None or r <= maintenant:
+            return d
     return None
+
+
+def prochaine_reprise(racine):
+    """La plus proche heure de reprise des travaux en attente du quota GPU, ou None s'il n'y en a pas."""
+    heures = [r for r in (heure_de_reprise(d) for d in _a_venir(racine)) if r is not None]
+    return min(heures) if heures else None
 
 
 def notifier(racine, titre, corps):
@@ -146,13 +167,22 @@ def main(argv=None):
     except BlockingIOError:
         return 0   # un autre exécuteur tient la file
     journal(f"exécuteur {os.getpid()} : {racine}")
+    annoncee = None
     while True:
         d = prochain(racine)
         if d is None:
+            reprise = prochaine_reprise(racine)
+            if reprise is not None:
+                # des travaux attendent la remise à zéro du quota GPU : on garde la file et on veille
+                if reprise != annoncee:
+                    journal("en attente du quota GPU jusqu'à " + time.strftime("%Y-%m-%d %H:%M", time.localtime(reprise)))
+                    annoncee = reprise
+                time.sleep(max(0.5, min(VEILLE_S, reprise - time.time())))
+                continue
             # file vide : on relâche, puis on regarde une dernière fois (un travail ajouté juste avant le relâchement
             # serait sinon oublié : l'interface a vu le verrou pris et n'a pas lancé d'exécuteur)
             fcntl.flock(verrou, fcntl.LOCK_UN)
-            if prochain(racine) is None:
+            if prochain(racine) is None and prochaine_reprise(racine) is None:
                 journal("file vide, arrêt")
                 return 0
             try:

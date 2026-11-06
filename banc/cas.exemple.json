@@ -3,6 +3,7 @@
  "aide": {
   "voix.nom": "identifiant de la voix cible : préfixe des fichiers envoyés sur Kaggle (<nom>-reference-A.wav, <nom>-ft-001.wav…), des points de contrôle affinés (<nom>_ft_500pas.pth) et clé des mesures du juge",
   "voix.reference": "référence de la voix (celle de doubler, voix/<nom>/reference.wav) ; sert aussi à trouver le dossier des données",
+  "voix.references_en_plus": "autres références à essayer (facultatif) : {lettre : chemin}, envoyées en <nom>-reference-<lettre>.wav et choisies par « reference » d'une version de conversion",
   "voix.dossier_prises": "dossier des enregistrements de la voix cible",
   "voix.prises_entrainement": "prises de l'affinage (défaut de « preparer --prises »)",
   "voix.prises_vides": "prises écartées (notées dans entrees/preparation.json)",
@@ -12,7 +13,10 @@
   "extraits.<id>.debut, fin": "bornes de l'extrait (s), aux silences de la voix",
   "extraits.<id>.decalage": "décalage fixe en demi-tons (p. ex. -12 : voix de femme vers une voix d'homme)",
   "extraits.<id>.original, voix": "son complet et voix séparée (44,1 kHz), alignés échantillon par échantillon",
-  "extraits.<id>.paroles": "paroles chantées dans l'extrait, pour le taux d'erreur de mots (null : pas de mesure)"
+  "extraits.<id>.paroles": "paroles chantées dans l'extrait, pour le taux d'erreur de mots (null : pas de mesure)",
+  "extraits.<id>.video": "à la place d'« original » et « voix » : vidéo dont le son est tiré par ffmpeg (de debut à fin), puis séparé sur le GPU (étape separer_voix du banc vitesse)",
+  "extraits.<id>.titre_ecoute": "titre de l'extrait dans l'Écoute à l'aveugle (facultatif)",
+  "kaggle": "noms du jeu et du noyau sur Kaggle, sans le compte, différents l'un de l'autre (Kaggle refuse un noyau du nom d'un jeu : 409 Conflict) ; facultatif, défaut : doublage-banc-entrees et doublage-banc"
  },
  "voix": {
   "nom": "cible",
@@ -31,6 +35,9 @@
   "chanteur": {"titre": "Chanteur 1 — Chanson 2, 1er couplet", "debut": 15.0, "fin": 45.0, "decalage": 0,
                "original": "sorties/Chanteur 1 - Chanson 2/travail/original.wav",
                "voix": "sorties/Chanteur 1 - Chanson 2/travail/voix_source.wav",
-               "paroles": null}
- }
+               "paroles": null},
+  "refrain": {"titre": "Chanteur 2 — Chanson 3, refrain final", "titre_ecoute": "Refrain final (chanteur 2)",
+              "video": "~/Vidéos/Chanteur 2 - Chanson 3.mp4", "debut": 120.0, "fin": 165.0, "decalage": 0, "paroles": null}
+ },
+ "kaggle": {"jeu": "doublage-banc-entrees", "noyau": "doublage-banc"}
 }

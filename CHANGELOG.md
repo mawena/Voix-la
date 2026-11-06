@@ -7,6 +7,29 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+## [0.9.0] - 2026-11-06
+
+### Ajouté
+
+- Interface : suivi du quota GPU Kaggle. La page État montre les heures utilisées et restantes de la semaine (jauge),
+  la remise à zéro (samedi 00:00 UTC), les sessions comptées sur le poste et ce qui échappe au compte. Les chiffres
+  viennent de `kaggle quota` quand il répond, sinon du compte local des sessions (rapports, file des travaux, sessions
+  de `doubler` même lancées en ligne de commande, outils préparés, banc), chaque session comptée une fois. La page
+  Doubler annonce « ce doublage prendra environ X min de GPU ; il restera Y », avec une alerte sous 2 h. Un doublage
+  qui ne tient plus peut attendre la remise à zéro dans la file : il part tout seul à l'heure dite, même fenêtre fermée
+  (« Lancer maintenant » dans la page Travaux), ou être lancé quand même. Réglages : quota et remise à zéro de repli,
+  seuil d'alerte, comportement par défaut (Demander). Point d'accroche d'un secours (ancien PC, RunPod), rien de
+  branché.
+- Banc d'essai vitesse : extraits tirés des vidéos, variantes de précision et de recouvrement, de pas, de référence et
+  d'égalisation, une suite d'étapes par carte, verrou Kaggle de doubler, `banc.py rapport`.
+
+### Modifié
+
+- Noyau : Roformer de séparation, karaoké et dereverb en demi-précision (autocast fp16). Sur une chanson de 2 min 49,
+  le noyau passe de 852 à 656 s : nettoyage 351 → 137 s de GPU, séparation 116 → 60 s. Réglages
+  `separation_precision`, `nettoyage_precision` (`autocast`, `fp16`, `fp16+compile`, `fp32`) et
+  `separation_recouvrement`. Un son non fini en demi-précision est refait en fp32.
+
 ## [0.8.0] - 2026-11-06
 
 ### Ajouté
@@ -423,7 +446,8 @@ Première version publique.
     `VOIXLA_DECODAGE_MATERIEL=1` remet le décodage matériel ;
   - les essais automatiques laissaient le son de l'application coupé.
 
-[Non publié]: https://github.com/mawena/Voix-la/compare/v0.8.0...HEAD
+[Non publié]: https://github.com/mawena/Voix-la/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/mawena/Voix-la/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/mawena/Voix-la/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/mawena/Voix-la/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/mawena/Voix-la/compare/v0.5.0...v0.6.0

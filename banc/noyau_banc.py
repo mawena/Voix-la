@@ -10,19 +10,39 @@
 #                doubler (morceaux de 8 s au plus, fondus, porte sur les silences), décalage fixe par extrait
 #   entrainer  : affinage de Seed-VC (train.py, classe Trainer) sur la parole de la voix cible, points de contrôle « net »
 #                seuls
-#   juger      : ressemblance (WavLM-SV, ECAPA, CAMPPlus), mélodie (RMVPE), paroles (Whisper large-v3), aigus
+#   juger      : ressemblance (WavLM-SV, ECAPA, CAMPPlus), mélodie (RMVPE), paroles (Whisper large-v3), aigus, équilibre
+#                spectral (écart des bandes de tiers d'octave à la voix d'origine sèche)
+# Banc « vitesse » (06/11/2026), avec le noyau actuel du dépôt (réglage base « depot » de banc.py) :
+#   separer_voix       : séparation voix / reste (Roformer de doubler) en plusieurs variantes de précision (fp32,
+#                        autocast, fp16 natif, torch.compile) et de recouvrement ; temps, mémoire, SDR à la variante de
+#                        référence ; la référence devient la voix des étapes suivantes
+#   nettoyer_variantes : nettoyage (karaoké puis dereverb des deux pistes) dans les mêmes variantes ; temps de chaque
+#                        passe, SDR de chaque piste à la référence ; <piste>_<variante>.wav, la référence sans suffixe
+#   deriver            : versions tirées d'une autre sans GPU (égalisation du timbre sur la voix d'origine sèche)
+#   parallele          : des suites d'étapes, une par carte (CUDA_VISIBLE_DEVICES), en même temps ; une seule carte : à
+#                        la suite sur la carte 0
 # Sorties dans /kaggle/working/<extrait>/ : <version>.flac (voix convertie sèche, 44,1 kHz mono, même nombre
 # d'échantillons que l'extrait, calée sur l'échantillon 0), <version>_<piste>.flac, <version>.json ; juge_<session>.json ;
-# session.json ; modeles/ (points de contrôle affinés). Fichiers de la voix cible dans le jeu : <cible>-reference-A.wav,
-# <cible>-ft-*.wav (affinage), <cible>-tenue-*.wav (prise gardée pour le juge), <cible> = REGLAGES['voix_cible'].
+# session.json ; modeles/ (points de contrôle affinés) ; banc vitesse : separation_voix.json, nettoyage.json, voix.flac
+# (voix séparée de référence, pour le mix d'écoute). Pistes séparées et nettoyées : dans REGLAGES['dossier_pistes']
+# (banc vitesse : /tmp, elles ne reviennent pas), sinon avec les sorties. Fichiers de la voix cible dans le jeu :
+# <cible>-reference-A.wav (et d'autres références : <cible>-reference-<X>.wav), <cible>-ft-*.wav (affinage),
+# <cible>-tenue-*.wav (prise gardée pour le juge), <cible> = REGLAGES['voix_cible'] ; extraits : extrait-<ex>-voix.wav
+# (voix déjà séparée) ou extrait-<ex>-original.wav (son d'origine, séparé par separer_voix).
 # ======================================================================================================================
 import re
 from argparse import Namespace
 
 B = REGLAGES
 TRAVAIL = SORTIE
+PISTES = B.get('dossier_pistes') or TRAVAIL   # voix séparées et nettoyées (banc vitesse : /tmp, seules les mesures reviennent)
 CIBLE = B.get('voix_cible', 'cible')   # identifiant de la voix cible (banc.py, fichier des cas)
 COMPLET = '/tmp/banc_complet.py'
+PAROLES_LOCALES = '/tmp/banc_paroles.json'   # chemins de Whisper copié du montage d'outils (orchestrer), pour le juge
+# Noyau actuel du dépôt (base « depot ») : son moteur YingMusic-SVC et son installation, gardés avant que les définitions
+# du banc, plus bas, ne reprennent ces noms (copie figée du 03/11 : ils n'existent pas, le banc garde les siens)
+_MOTEUR_YING_NOYAU = globals().get('MoteurYing')
+_INSTALLER_YING_NOYAU = globals().get('installer_ying')
 YING = '/tmp/yingmusic'
 YING_DEPOT = 'https://github.com/GiantAILab/YingMusic-SVC.git'
 YING_COMMIT = '4974a80c6044c4557059548409379f6365129f88'   # main au 29/12/2025
@@ -57,9 +77,20 @@ def entree(nom):
 
 
 def piste_chemin(ex, piste):
+    """Une piste d'un extrait : « voix » (séparée au banc par separer_voix, sinon celle du jeu de données),
+    « <piste> » ou « <piste>@<variante> » (<piste>_<variante>.wav : sortie d'une variante de séparation ou de nettoyage)."""
+    if '@' in piste:
+        base, variante = piste.split('@', 1)
+        return os.path.join(PISTES, ex, f'{base}_{variante}.wav')
     if piste == 'voix':
-        return entree(f'extrait-{ex}-voix.wav')
-    return os.path.join(TRAVAIL, ex, f'{piste}.wav')
+        local = os.path.join(PISTES, ex, 'voix.wav')
+        return local if os.path.exists(local) else entree(f'extrait-{ex}-voix.wav')
+    return os.path.join(PISTES, ex, f'{piste}.wav')
+
+
+def extraits_de(a):
+    """Les extraits d'une étape : ceux qu'elle nomme (a['extraits'], une carte n'en fait qu'une part), sinon tous."""
+    return {ex: e for ex, e in B['extraits'].items() if not a.get('extraits') or ex in a['extraits']}
 
 
 def charger_torch():
@@ -112,12 +143,14 @@ def orchestrer():
     corriger(os.path.join(SEEDVC, 'modules/openvoice/mel_processing.py'),
              [('return_complex=False,\n    )\n\n    spec = torch.sqrt(spec.pow(2).sum(-1) + 1e-6)',
                'return_complex=True,\n    )\n\n    spec = torch.sqrt(torch.view_as_real(spec).pow(2).sum(-1) + 1e-6)')])
+    precharger(outils, session)
     session['installation_s'] = round(time.time() - t, 1)
     copies = []
     for ex in B['extraits']:
         os.makedirs(os.path.join(TRAVAIL, ex), exist_ok=True)
+        os.makedirs(os.path.join(PISTES, ex), exist_ok=True)
         for piste in PISTES_SEPAREES:
-            dest = os.path.join(TRAVAIL, ex, f'{piste}.wav')
+            dest = os.path.join(PISTES, ex, f'{piste}.wav')
             src = entree(f'stem-{ex}-{piste}.wav')
             if src and not os.path.exists(dest) and not any(e['etape'] == 'separer' for e in B['etapes']):
                 shutil.copy2(src, dest)
@@ -134,28 +167,101 @@ def orchestrer():
         log(f'voix séparées et sorties précédentes reprises du jeu de données : {len(copies)} fichiers')
     ecrire_json(os.path.join(TRAVAIL, 'session.json'), session)
     for etape in B['etapes']:
-        nom = etape.get('nom', etape['etape'])
-        reste = B['limite_totale_s'] - (time.time() - DEBUT)
-        if reste < etape.get('minimum_s', 120):
-            log(f'ÉTAPE {nom} : sautée, il ne reste que {reste:.0f} s sur la limite de la session')
-            session['etapes'].append({'nom': nom, 'etape': etape['etape'], 'code': 'sautée'})
-            continue
-        log(f'ÉTAPE {nom} : début ({etape["etape"]})')
-        t = time.time()
-        try:
-            r = subprocess.run([sys.executable, COMPLET, etape['etape'], json.dumps(etape)], timeout=min(reste, etape.get('limite_s', reste)))
-            code = r.returncode
-        except subprocess.TimeoutExpired:
-            code = 'limite de temps'
-        d = round(time.time() - t, 1)
-        log(f'ÉTAPE {nom} : fin, code {code}, {d:.0f} s')
-        session['etapes'].append({'nom': nom, 'etape': etape['etape'], 'code': code, 'duree_s': d})
+        if etape['etape'] == 'parallele':
+            lancer_en_parallele(etape, session)
+        else:
+            session['etapes'].append(lancer_etape(etape))
         ecrire_json(os.path.join(TRAVAIL, 'session.json'), session)
     for c in copies:
         os.remove(c)
     session['total_s'] = round(time.time() - DEBUT, 1)
     ecrire_json(os.path.join(TRAVAIL, 'session.json'), session)
     log(f'MESURE temps total du noyau : {time.time() - DEBUT:.0f} s')
+
+
+def lancer_etape(etape, env=None, prefixe=''):
+    """Une étape dans son propre processus (le GPU est rendu à sa sortie), dans la limite de temps de la session."""
+    nom = prefixe + etape.get('nom', etape['etape'])
+    reste = B['limite_totale_s'] - (time.time() - DEBUT)
+    if reste < etape.get('minimum_s', 120):
+        log(f'ÉTAPE {nom} : sautée, il ne reste que {reste:.0f} s sur la limite de la session')
+        return {'nom': nom, 'etape': etape['etape'], 'code': 'sautée'}
+    log(f'ÉTAPE {nom} : début ({etape["etape"]})')
+    t = time.time()
+    try:
+        r = subprocess.run([sys.executable, COMPLET, etape['etape'], json.dumps(etape)],
+                           timeout=min(reste, etape.get('limite_s', reste)), env=env)
+        code = r.returncode
+    except subprocess.TimeoutExpired:
+        code = 'limite de temps'
+    d = round(time.time() - t, 1)
+    log(f'ÉTAPE {nom} : fin, code {code}, {d:.0f} s')
+    return {'nom': nom, 'etape': etape['etape'], 'code': code, 'duree_s': d, 'debut_s': round(t - DEBUT, 1)}
+
+
+def nombre_cartes():
+    """Cartes GPU de la machine (nvidia-smi -L), sans créer de contexte CUDA dans l'orchestrateur."""
+    try:
+        r = subprocess.run(['nvidia-smi', '-L'], capture_output=True, text=True, timeout=60)
+        return max(1, sum(1 for l in r.stdout.splitlines() if l.startswith('GPU ')))
+    except Exception:  # noqa: BLE001
+        return 1
+
+
+def lancer_en_parallele(etape, session):
+    """etape['cartes'] : une suite d'étapes par carte, chaque suite dans l'ordre sur sa carte (CUDA_VISIBLE_DEVICES), les
+    suites en même temps. Moins de cartes que de suites : toutes les suites l'une après l'autre sur la carte 0."""
+    import threading
+    suites = etape['cartes']
+    n = nombre_cartes()
+    if n < len(suites):
+        log(f'PARALLELE {n} carte(s) pour {len(suites)} suites : tout sur la carte 0, à la suite')
+        suites = [[e for suite in suites for e in suite]]
+    verrou = threading.Lock()
+
+    def suite(k, liste):
+        env = {**os.environ, 'CUDA_VISIBLE_DEVICES': str(k)} if len(suites) > 1 else None
+        for e in liste:
+            r = lancer_etape(e, env, f'[carte {k}] ' if len(suites) > 1 else '')
+            r['carte'] = k
+            with verrou:
+                session['etapes'].append(r)
+                ecrire_json(os.path.join(TRAVAIL, 'session.json'), session)
+    fils = [threading.Thread(target=suite, args=(k, liste)) for k, liste in enumerate(suites)]
+    for f in fils:
+        f.start()
+    for f in fils:
+        f.join()
+
+
+def precharger(outils, session):
+    """Ce que plusieurs cartes feraient en même temps au même endroit, fait une fois avant les étapes
+    (REGLAGES['precharger']) : installation de YingMusic-SVC (noyau du dépôt : depuis le montage d'outils), modèles
+    audio-separator absents du montage (téléchargés ici), copie de Whisper du montage sur le disque local (dans un fil :
+    le juge attend PAROLES_LOCALES, sinon il le télécharge)."""
+    pre = B.get('precharger') or {}
+    if pre.get('yingmusic') and _INSTALLER_YING_NOYAU is not None:
+        try:
+            session['yingmusic_installation'] = _INSTALLER_YING_NOYAU(outils)
+        except Exception as e:  # noqa: BLE001 — chaque étape réessaiera
+            log(f'PRECHARGEMENT YingMusic-SVC : {e!r}')
+    for nom in pre.get('modeles_sep') or []:
+        if os.path.exists(os.path.join('/tmp/modeles_sep', nom)):
+            continue
+        t0 = time.time()
+        r = subprocess.run([sys.executable, '-c', 'from audio_separator.separator import Separator; '
+                            f"Separator(model_file_dir='/tmp/modeles_sep', output_dir='/tmp').load_model(model_filename='{nom}')"])
+        log(f'PRECHARGEMENT {nom} : code {r.returncode}, {time.time() - t0:.0f} s')
+    if pre.get('whisper') and outils and 'copier_paroles' in globals():
+        import threading
+        etat = copier_paroles(outils)
+        if etat.get('fil') is not None:
+            def fin_copie():
+                etat['fil'].join()
+                ecrire_json(PAROLES_LOCALES, {**chemins_paroles(etat, attendre=False)[0], 'duree_s': etat.get('duree_s'),
+                                              'erreur': etat.get('erreur')})
+            open(PAROLES_LOCALES + '.attendu', 'w').close()
+            threading.Thread(target=fin_copie, daemon=True).start()
 
 
 # --- Séparation : voix principale / chœurs, puis reverb retirée ------------------------------------------------------
@@ -227,7 +333,7 @@ def etape_separer(a):
     torch.cuda.empty_cache()
     s = separateur(a['dereverb'])
     for ex in voix:
-        d = os.path.join(TRAVAIL, ex)
+        d = os.path.join(PISTES, ex)
         os.makedirs(d, exist_ok=True)
         lead_sec, i1 = separer(s, lead[ex], a.get('motif_dereverb', r'\((noreverb|no reverb|no_reverb|dry)\)'), f'{ex}_lead_dereverb')
         ch_sec, i2 = separer(s, choeurs[ex], a.get('motif_dereverb', r'\((noreverb|no reverb|no_reverb|dry)\)'), f'{ex}_choeurs_dereverb')
@@ -240,6 +346,340 @@ def etape_separer(a):
         rapport['extraits'][ex].update({'dereverb_lead': i1, 'dereverb_choeurs': i2, 'niveaux_db': niv})
         log(f'SEPARATION {ex} : niveaux (dBFS, trames où la voix sonne) {json.dumps(niv)}')
     ecrire_json(os.path.join(TRAVAIL, 'separation.json'), rapport)
+
+
+# --- Banc vitesse : variantes de précision et de recouvrement des Roformer ------------------------------------------
+
+# Précisions d'audio-separator 0.48.0 (Separator : use_autocast, use_native_fp16, use_torch_compile ; le fp16 natif et
+# torch.compile ne s'appliquent qu'aux Roformer sur CUDA, sinon fp32 avec un avertissement : effective_precision le dit)
+PRECISIONS = {'fp32': {}, 'autocast': {'use_autocast': True}, 'fp16': {'use_native_fp16': True},
+              'autocast+compile': {'use_autocast': True, 'use_torch_compile': True},
+              'fp16+compile': {'use_native_fp16': True, 'use_torch_compile': True}}
+# Piste gardée : le premier motif qui désigne une seule piste (un karaoké peut rendre « Vocals » et « karaoke », celle-ci
+# étant alors la musique avec les chœurs)
+MOTIF_VOIX = (r'\((vocals|vocal|voice)\)',)
+MOTIF_KARAOKE_BANC = (r'\((lead|lead vocals|lead_vocals)\)', r'\((vocals|vocal)\)', r'\(karaoke\)')
+MOTIF_DEREVERB_BANC = (r'\((noreverb|no reverb|no_reverb|dry)\)',)
+KARAOKE_BANC = 'mel_band_roformer_karaoke_becruily.ckpt'
+DEREVERB_BANC = 'dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt'
+
+
+def sdr_db(ref, est):
+    """Rapport signal / erreur (dB) d'une piste à sa référence : 10 log10(Σ ref² / Σ (ref - est)²), sur la longueur
+    commune ; 200 dB pour deux pistes identiques."""
+    import numpy as np
+    n = min(len(ref), len(est))
+    r, e = np.asarray(ref[:n], np.float64), np.asarray(est[:n], np.float64)
+    num, den = float((r ** 2).sum()), float(((r - e) ** 2).sum())
+    if den <= 0:
+        return 200.0
+    return round(10 * math.log10(max(num, 1e-30) / den), 2)
+
+
+def memoire_max_mo(torch):
+    try:
+        return round(torch.cuda.max_memory_allocated() / 2 ** 20)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def deux_canaux(x):
+    import numpy as np
+    return np.ascontiguousarray(x[:, :2] if x.shape[1] >= 2 else np.repeat(x, 2, axis=1))
+
+
+def separateur_banc(nom, v, tmp, segment, override):
+    """Separator d'audio-separator pour la variante v (precision, recouvrement), modèle chargé ; rend aussi la précision
+    réellement appliquée (effective_precision, effective_torch_compile) et le temps de chargement."""
+    from audio_separator.separator import Separator
+    t0 = time.time()
+    s = Separator(model_file_dir='/tmp/modeles_sep', output_dir=tmp, output_format='WAV', use_soundfile=True,
+                  normalization_threshold=1.0, sample_rate=44100, **PRECISIONS[v.get('precision', 'fp32')],
+                  mdxc_params={'segment_size': segment, 'override_model_segment_size': override, 'batch_size': 1,
+                               'overlap': int(v.get('recouvrement', 4)), 'pitch_shift': 0})
+    s.load_model(model_filename=nom)
+    mi = getattr(s, 'model_instance', None)
+    return s, {'modele': nom, 'chargement_s': round(time.time() - t0, 1),
+               'precision_effective': getattr(mi, 'effective_precision', None),
+               'compile_effectif': getattr(mi, 'effective_torch_compile', None)}
+
+
+def separer_banc(s, x, tmp, etiquette, motifs):
+    """Comme le noyau : pic ramené à 0,9, séparation, remise à l'échelle. Rend (piste gardée, durée de la séparation
+    seule en s, noms des pistes) ; piste gardée : celle du premier des motifs qui n'en désigne qu'une."""
+    import numpy as np
+    import soundfile as sf
+    for f in glob.glob(f'{tmp}/*.wav'):
+        os.remove(f)
+    pic = float(np.abs(x).max()) or 1.0
+    g = 0.9 / pic
+    fichier = f'{tmp}/{etiquette}.wav'
+    sf.write(fichier, x * g, 44100, subtype='FLOAT')
+    t0 = time.time()
+    sorties = s.separate(fichier)
+    duree = time.time() - t0
+    sorties = [p if os.path.isabs(p) else os.path.join(tmp, p) for p in sorties]
+    noms = [os.path.basename(p) for p in sorties]
+    choisis = []
+    for motif in motifs:
+        choisis = [p for p in sorties if re.search(motif, os.path.basename(p), re.I)]
+        if len(choisis) == 1:
+            break
+    if len(choisis) != 1:
+        raise RuntimeError(f'{etiquette} : pistes {noms}, motifs {motifs} : aucune piste seule')
+    y = sf.read(choisis[0], dtype='float32', always_2d=True)[0]
+    out = np.zeros_like(x)
+    n = min(len(y), len(x))
+    out[:n] = y[:n, :x.shape[1]] / g
+    for f in glob.glob(f'{tmp}/*.wav'):
+        os.remove(f)
+    return out, round(duree, 2), [*noms, '=> ' + os.path.basename(choisis[0])]
+
+
+def chauffer(s, x, tmp, motif):
+    """Une séparation de 12 s avant la mesure (noyaux CUDA, allocateur) : la mesure ne compte que le régime établi. Plus
+    de 10 s, sans quoi audio-separator changerait la taille des segments (son court)."""
+    t0 = time.time()
+    separer_banc(s, x[:12 * SR], tmp, 'chauffe', motif)
+    return round(time.time() - t0, 1)
+
+
+def etape_separer_voix(a):
+    """Séparation voix / reste des extraits (extrait-<ex>-original.wav) en plusieurs variantes, toutes avec le modèle
+    et les segments du noyau (a['modele'], a['segment'], a['override']). Pour chaque variante : modèle chargé, chauffe,
+    puis chaque extrait ; temps, mémoire du GPU au plus fort, SDR de la voix et du reste à la variante de référence
+    (a['reference'], sinon la première). Voix de la référence : voix.wav (pistes) et voix.flac (sorties, pour le mix
+    d'écoute) ; des autres : voix_<variante>.wav."""
+    import gc
+    import numpy as np
+    import soundfile as sf
+    torch = charger_torch()
+    tmp = f'/tmp/sep_vitesse_{os.getpid()}'   # un dossier par processus : les deux cartes tournent en même temps
+    os.makedirs(tmp, exist_ok=True)
+    origs = {ex: deux_canaux(sf.read(entree(f'extrait-{ex}-original.wav'), dtype='float32', always_2d=True)[0])
+             for ex in extraits_de(a)}
+    ref_nom = a.get('reference') or a['variantes'][0]['nom']
+    refs = {}
+    res = {ex: {'modele': a['modele'], 'reference': ref_nom, 'duree_s': round(len(x) / SR, 2), 'variantes': {}}
+           for ex, x in origs.items()}
+    for v in sorted(a['variantes'], key=lambda v: v['nom'] != ref_nom):   # la référence d'abord
+        nom = v['nom']
+        try:
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()
+            s, info = separateur_banc(v.get('modele', a['modele']), v, tmp, a.get('segment', 801), a.get('override', True))
+            info['chauffe_s'] = chauffer(s, next(iter(origs.values())), tmp, MOTIF_VOIX)
+        except Exception as e:  # noqa: BLE001 — variante impossible : les autres continuent
+            import traceback
+            traceback.print_exc()
+            for ex in origs:
+                res[ex]['variantes'][nom] = {'erreur': repr(e)[:400]}
+            continue
+        for ex, x in origs.items():
+            try:
+                voix, duree, noms = separer_banc(s, x, tmp, f'{ex}_{nom}', MOTIF_VOIX)
+                m = {**info, **{k: v[k] for k in ('precision', 'recouvrement') if k in v}, 'separation_s': duree,
+                     'rtf': round(duree / (len(x) / SR), 3), 'memoire_gpu_max_mo': memoire_max_mo(torch), 'pistes': noms}
+                if nom == ref_nom:
+                    refs[ex] = voix
+                    os.makedirs(os.path.join(PISTES, ex), exist_ok=True)
+                    sf.write(os.path.join(PISTES, ex, 'voix.wav'), voix, SR, subtype='FLOAT')
+                    sf.write(os.path.join(TRAVAIL, ex, 'voix.flac'), np.clip(voix, -1, 1), SR, subtype='PCM_24')
+                else:
+                    sf.write(piste_chemin(ex, f'voix@{nom}'), voix, SR, subtype='FLOAT')
+                if ex in refs:
+                    m['sdr_voix_db'] = sdr_db(refs[ex], voix)
+                    m['sdr_reste_db'] = sdr_db(x - refs[ex], x - voix)
+                res[ex]['variantes'][nom] = m
+                log(f'VITESSE séparation {ex} {nom} : {json.dumps(m, ensure_ascii=False)}')
+            except Exception as e:  # noqa: BLE001
+                import traceback
+                traceback.print_exc()
+                res[ex]['variantes'][nom] = {**info, 'erreur': repr(e)[:400]}
+            ecrire_json(os.path.join(TRAVAIL, ex, 'separation_voix.json'), res[ex])
+        del s
+        gc.collect()
+
+
+def etape_nettoyer_variantes(a):
+    """Nettoyage des extraits (voix séparée de référence, ou a['source']) en plusieurs variantes, comme le noyau :
+    karaoké (voix principale ; chœurs = voix - voix principale, en numpy), puis dereverb de la voix principale et des
+    chœurs. Variante : precision, recouvrement, et facultativement karaoke / dereverb (un autre modèle). Pour chaque
+    variante et chaque extrait : temps de chaque passe (chauffe à part), mémoire du GPU, SDR de la voix principale, de la
+    voix principale sèche et des chœurs secs à la variante de référence (a['reference'], sinon la première).
+    Pistes : lead_sec.wav et choeurs_sec.wav pour la référence, lead_sec_<variante>.wav… pour les autres."""
+    import gc
+    import soundfile as sf
+    torch = charger_torch()
+    tmp = f'/tmp/net_vitesse_{os.getpid()}'   # un dossier par processus : les deux cartes tournent en même temps
+    os.makedirs(tmp, exist_ok=True)
+    source = a.get('source', 'voix')
+    voix = {ex: deux_canaux(sf.read(piste_chemin(ex, source), dtype='float32', always_2d=True)[0]) for ex in extraits_de(a)}
+    ref_nom = a.get('reference') or a['variantes'][0]['nom']
+    refs = {ex: {} for ex in voix}
+    res = {ex: {'source': source, 'reference': ref_nom, 'duree_s': round(len(x) / SR, 2), 'variantes': {}}
+           for ex, x in voix.items()}
+    voix_defaut = voix
+    for v in sorted(a['variantes'], key=lambda v: v['nom'] != ref_nom):
+        nom = v['nom']
+        suffixe = '' if nom == ref_nom else f'@{nom}'
+        # une variante peut partir d'une autre voix séparée (p. ex. « voix@H2 » : séparation et nettoyage rapides
+        # ensemble) ; ses SDR restent pris à la référence, de bout en bout
+        voix = ({ex: deux_canaux(sf.read(piste_chemin(ex, v['source']), dtype='float32', always_2d=True)[0])
+                 for ex in voix_defaut} if v.get('source') else voix_defaut)
+        par_ex = {ex: {k: v[k] for k in ('precision', 'recouvrement', 'karaoke', 'dereverb', 'source') if k in v} for ex in voix}
+        leads = {}
+        for passe, modele, motif in (('karaoke', v.get('karaoke', a.get('karaoke', KARAOKE_BANC)), MOTIF_KARAOKE_BANC),
+                                     ('dereverb', v.get('dereverb', a.get('dereverb', DEREVERB_BANC)), MOTIF_DEREVERB_BANC)):
+            try:
+                torch.cuda.empty_cache()
+                torch.cuda.reset_peak_memory_stats()
+                s, info = separateur_banc(modele, v, tmp, a.get('segment', 256), a.get('override', False))
+                info['chauffe_s'] = chauffer(s, next(iter(voix.values())), tmp, motif)
+            except Exception as e:  # noqa: BLE001
+                import traceback
+                traceback.print_exc()
+                for ex in voix:
+                    par_ex[ex]['erreur'] = f'{passe} : {e!r}'[:400]
+                break
+            for ex, x in voix.items():
+                m = par_ex[ex]
+                if m.get('erreur'):
+                    continue
+                try:
+                    m[passe] = info
+                    if passe == 'karaoke':
+                        lead, d, noms_k = separer_banc(s, x, tmp, f'{ex}_{nom}_karaoke', motif)
+                        leads[ex] = lead
+                        m['durees_s'] = {'karaoke': d}
+                        m['pistes_karaoke'] = noms_k
+                        if nom == ref_nom:
+                            refs[ex]['lead'] = lead
+                        elif 'lead' in refs[ex]:
+                            m['sdr_db'] = {'lead': sdr_db(refs[ex]['lead'], lead)}
+                    else:
+                        for piste, y_in in (('lead', leads[ex]), ('choeurs', x - leads[ex])):
+                            y, d, _ = separer_banc(s, y_in, tmp, f'{ex}_{nom}_{piste}_dereverb', motif)
+                            m['durees_s'][f'dereverb_{piste}'] = d
+                            cle = f'{piste}_sec'
+                            sf.write(piste_chemin(ex, cle + suffixe), y, SR, subtype='FLOAT')
+                            if nom == ref_nom:
+                                refs[ex][cle] = y
+                            elif cle in refs[ex]:
+                                m.setdefault('sdr_db', {})[cle] = sdr_db(refs[ex][cle], y)
+                        m['nettoyage_s'] = round(sum(m['durees_s'].values()), 2)
+                        m['rtf'] = round(m['nettoyage_s'] / (len(x) / SR), 3)
+                    m.setdefault('memoire_gpu_max_mo', {})[passe] = memoire_max_mo(torch)
+                except Exception as e:  # noqa: BLE001
+                    import traceback
+                    traceback.print_exc()
+                    m['erreur'] = f'{passe} : {e!r}'[:400]
+            del s
+            gc.collect()
+        for ex in voix:
+            res[ex]['variantes'][nom] = par_ex[ex]
+            log(f'VITESSE nettoyage {ex} {nom} : {json.dumps(par_ex[ex], ensure_ascii=False)}')
+            ecrire_json(os.path.join(TRAVAIL, ex, 'nettoyage.json'), res[ex])
+
+
+# --- Banc vitesse : versions tirées d'une autre, sans GPU (égalisation du timbre) -----------------------------------
+
+def spectre_actif(x, sr=SR):
+    """Spectre de puissance moyen (STFT de 4096) des trames actives de x (à moins de 35 dB du 95e centile d'énergie)."""
+    import numpy as np
+    import scipy.signal
+    f, _, z = scipy.signal.stft(np.asarray(x, np.float64), fs=sr, nperseg=4096, noverlap=3072)
+    p = np.abs(z) ** 2
+    e = p.sum(0)
+    act = 10 * np.log10(e + 1e-20) > 10 * np.log10(np.percentile(e, 95) + 1e-20) - 35
+    return f, (p[:, act].mean(1) if act.any() else p.mean(1))
+
+
+def bandes_tiers_octave(x, sr=SR, fmin=100.0, fmax=12500.0):
+    """Niveaux (dB) des bandes de tiers d'octave du spectre actif de x, de fmin à fmax."""
+    import numpy as np
+    f, p = spectre_actif(x, sr)
+    centres = fmin * 2 ** (np.arange(0, round(math.log2(fmax / fmin) * 3) + 1) / 3)
+    return np.array([10 * math.log10(float(p[(f >= c * 2 ** (-1 / 6)) & (f < c * 2 ** (1 / 6))].mean()) + 1e-20)
+                     for c in centres])
+
+
+def ecart_spectral_db(x, ref, sr=SR):
+    """Écart moyen (dB) des bandes de tiers d'octave de x à celles de ref (100 Hz - 12,5 kHz), niveaux globaux ramenés
+    l'un sur l'autre : 0 = même équilibre spectral (même « couleur »)."""
+    import numpy as np
+    a, b = bandes_tiers_octave(x, sr), bandes_tiers_octave(ref, sr)
+    d = a - b
+    return round(float(np.mean(np.abs(d - np.median(d)))), 2)
+
+
+def courbe_egalisation(src, conv, lissage_oct=1.0, max_db=6.0, sr=SR):
+    """Correction (dB par case de STFT) qui rapproche l'équilibre spectral moyen de conv de celui de src : spectres
+    actifs lissés sur lissage_oct octave, différence centrée (niveau global inchangé, pondéré par l'énergie de conv entre
+    100 Hz et 10 kHz), bornée à ±max_db ; nulle sous 60 Hz, ramenée à 0 de 16 à 20 kHz."""
+    import numpy as np
+    f, ps = spectre_actif(src, sr)
+    _, pc = spectre_actif(conv, sr)
+    lf = np.log2(np.maximum(f, 20.0))
+    sigma = lissage_oct / 2.355   # largeur à mi-hauteur = lissage_oct octave
+    w = np.exp(-0.5 * ((lf[:, None] - lf[None, :]) / sigma) ** 2)
+    w /= w.sum(1, keepdims=True)
+    d = 10 * np.log10(w @ ps + 1e-20) - 10 * np.log10(w @ pc + 1e-20)
+    bande = (f >= 100) & (f <= 10000)
+    poids = pc[bande] / (pc[bande].sum() + 1e-20)
+    d = np.clip(d - float((d[bande] * poids).sum()), -max_db, max_db)
+    d[f < 60] = 0.0
+    haut = f > 16000
+    d[haut] *= np.clip((20000 - f[haut]) / 4000, 0, 1)
+    return f, d
+
+
+def appliquer_egalisation(x, d_db, sr=SR):
+    """Gain par case de STFT (phase nulle), reconstruction par recouvrement-addition ; même longueur que x."""
+    import numpy as np
+    import scipy.signal
+    _, _, z = scipy.signal.stft(np.asarray(x, np.float64), fs=sr, nperseg=4096, noverlap=3072)
+    _, y = scipy.signal.istft(z * (10 ** (d_db / 20))[:, None], fs=sr, nperseg=4096, noverlap=3072)
+    y = y[:len(x)] if len(y) >= len(x) else np.pad(y, (0, len(x) - len(y)))
+    return y.astype(np.float32)
+
+
+def etape_deriver(a):
+    """Versions tirées d'une autre sans GPU : égalisation de chaque piste convertie de <de> (<de>_<piste>.flac, sinon
+    <de>.flac) sur sa piste source sèche, même niveau, puis somme comme la version d'origine. La fiche <nom>.json
+    reprend celle de <de> (type version : le juge la prend) avec la correction moyenne par bande."""
+    import numpy as np
+    import soundfile as sf
+    for ex in extraits_de(a):
+        for v in a['versions']:
+            de = v['de']
+            fiche = lire_json(os.path.join(TRAVAIL, ex, f'{de}.json'))
+            if not fiche:
+                log(f'DERIVER {ex} {v["nom"]} : {de} absente')
+                continue
+            pistes = list((fiche.get('pistes') or {}).keys())
+            total, courbes = None, {}
+            for piste in pistes:
+                chemin = os.path.join(TRAVAIL, ex, f'{de}_{piste}.flac')
+                y = sf.read(chemin if len(pistes) > 1 else os.path.join(TRAVAIL, ex, f'{de}.flac'), dtype='float32')[0]
+                src = mono(sf.read(piste_chemin(ex, piste), dtype='float32', always_2d=True)[0])
+                f, d = courbe_egalisation(src, y, v.get('lissage_oct', 1.0), v.get('max_db', 6.0))
+                z = appliquer_egalisation(y, d)
+                z = (z * (rms_actif(y) / max(rms_actif(z, y), 1e-9))).astype(np.float32)   # niveau de la piste d'origine
+                courbes[piste] = {f'{lo}-{hi} Hz': round(float(d[(f >= lo) & (f < hi)].mean()), 2)
+                                  for lo, hi in ((60, 250), (250, 1000), (1000, 4000), (4000, 8000), (8000, 16000))}
+                if len(pistes) > 1:
+                    sf.write(os.path.join(TRAVAIL, ex, f"{v['nom']}_{piste}.flac"), np.clip(z, -1, 1), SR, subtype='PCM_24')
+                total = z if total is None else total + z
+            crete = float(np.abs(total).max())
+            if crete > 0.99:
+                total *= 0.99 / crete
+            sf.write(os.path.join(TRAVAIL, ex, f"{v['nom']}.flac"), total, SR, subtype='PCM_24')
+            ecrire_json(os.path.join(TRAVAIL, ex, f"{v['nom']}.json"),
+                        {**fiche, 'version': v['nom'], 'description': v.get('description'), 'derivee_de': de,
+                         'egalisation': {'lissage_oct': v.get('lissage_oct', 1.0), 'max_db': v.get('max_db', 6.0),
+                                         'moyenne_par_bande_db': courbes}})
+            log(f"DERIVER {ex} {v['nom']} (de {de}) : {json.dumps(courbes)}")
 
 
 # --- Moteurs de conversion -------------------------------------------------------------------------------------------
@@ -423,9 +863,13 @@ class MoteurYing(MoteurSeedVC):
                                         pas, inference_cfg_rate=B['cfg'], style_r=style_cat)
 
 
-def installer_ying():
+def installer_ying(outils=None):
     """YingMusic-SVC au commit figé ; ses poids auxiliaires (Whisper-small, BigVGAN 44 kHz, RMVPE, CAMPPlus) sont ceux de
-    Seed-VC, déjà dans le montage : son dossier checkpoints pointe sur celui de Seed-VC (même cache Hugging Face)."""
+    Seed-VC, déjà dans le montage : son dossier checkpoints pointe sur celui de Seed-VC (même cache Hugging Face).
+    Noyau actuel du dépôt (base « depot ») : son installation à lui (archive du montage d'outils), que son MoteurYing
+    appelle sous ce nom."""
+    if _INSTALLER_YING_NOYAU is not None:
+        return _INSTALLER_YING_NOYAU(outils if outils is not None else trouver_outils())
     if os.path.exists(os.path.join(YING, '.pret')):
         return
     t0 = time.time()
@@ -444,11 +888,13 @@ def installer_ying():
     log(f'YingMusic-SVC {YING_COMMIT[:10]} installé en {time.time() - t0:.0f} s')
 
 
-def convertir_piste(m, ref, x, decalage, pas):
+def convertir_piste(m, ref, x, decalage, pas, graine=None):
     """Même chaîne que traiter() de doubler_kaggle.py : découpage aux silences de la piste source (morceaux de 8 s au
-    plus), 0,25 s de marge, fondus aux coupes, porte sur les silences. Décalage fixe pour tout l'extrait."""
+    plus), 0,25 s de marge, fondus aux coupes, porte sur les silences. Décalage fixe pour tout l'extrait. graine : celle
+    des réglages par défaut (le morceau i prend graine + i)."""
     import numpy as np
     torch = m.torch
+    graine = B['graine'] if graine is None else graine
     n = len(x)
     env = enveloppe_db(x)
     lisse = lisser_db(env)
@@ -468,7 +914,7 @@ def convertir_piste(m, ref, x, decalage, pas):
         if float(lisse[a // PAS:b // PAS + 1].max()) < seuil:
             continue
         lo, hi = max(0, a - pad), min(n, b + pad)
-        torch.manual_seed(B['graine'] + i)
+        torch.manual_seed(graine + i)
         y = m.convertir_morceau(x[lo:hi], ref, decalage, pas)
         tt = np.arange(lo, hi)
         w = np.ones(hi - lo)
@@ -482,7 +928,42 @@ def convertir_piste(m, ref, x, decalage, pas):
     return sortie * gain, {'morceaux': morceaux, 'secondes_converties': round(convertis / SR, 2), 'coeur_max_s': round(coeur_max / SR, 2)}
 
 
+def chronometrer(m):
+    """Temps de GPU de chaque composant de la conversion (encodeur Whisper, RMVPE, diffusion, vocodeur), CUDA synchronisé
+    autour de chaque appel. Rend (temps, rétablir) : rétablir() remet les fonctions d'origine."""
+    torch = m.torch
+    temps, originaux = {}, []
+
+    def envelopper(attr, cle):
+        f = getattr(m, attr)
+        originaux.append((attr, f, attr in vars(m)))
+
+        def g(*a, **k):
+            torch.cuda.synchronize()
+            t0 = time.time()
+            r = f(*a, **k)
+            torch.cuda.synchronize()
+            temps[cle] = temps.get(cle, 0.0) + time.time() - t0
+            return r
+        setattr(m, attr, g)
+    for attr, cle in (('semantic_fn', 'whisper_s'), ('f0_fn', 'rmvpe_s'), ('inference', 'diffusion_s'),
+                      ('vocoder_fn', 'vocodeur_s'), ('mel_fn', 'mel_s'), ('length_regulator', 'regulateur_s')):
+        envelopper(attr, cle)
+
+    def retablir():
+        for attr, f, propre in reversed(originaux):
+            if propre:
+                setattr(m, attr, f)
+            else:
+                delattr(m, attr)
+    return temps, retablir
+
+
 def etape_convertir(a):
+    """Conversion des pistes de chaque version. Moteur : seedvc, yingmusic (classes du banc) ou yingmusic_noyau (la
+    classe MoteurYing du noyau actuel du dépôt, poids du montage d'outils : la conversion de doubler, telle quelle).
+    Par version, facultatif : pas, graine, reference (un fichier du jeu, préparé une fois), extraits, limite_s (seulement
+    le début des pistes), profil (temps de chaque composant), vocodeur_fp16 (BigVGAN sous autocast fp16)."""
     import numpy as np
     import soundfile as sf
     mot = a['moteur']
@@ -492,25 +973,56 @@ def etape_convertir(a):
     cfg = mot.get('config')
     if cfg and not os.path.isabs(cfg):
         cfg = os.path.join(TRAVAIL, cfg) if os.path.exists(os.path.join(TRAVAIL, cfg)) else entree(os.path.basename(cfg))
-    m = (MoteurYing if mot['type'] == 'yingmusic' else MoteurSeedVC)(ck, cfg)
+    if mot['type'] == 'yingmusic_noyau':
+        outils = trouver_outils()
+        m = _MOTEUR_YING_NOYAU(outils, ck or poids_ying(outils))
+    else:
+        m = (MoteurYing if mot['type'] == 'yingmusic' else MoteurSeedVC)(ck, cfg)
     log(f"CONVERSION moteur {mot['type']} {ck or 'zéro-shot'} chargé en {m.chargement_s:.0f} s")
-    ref = m.preparer_ref(entree(B.get('reference', f'{CIBLE}-reference-A.wav')))
+    torch = m.torch
+    refs = {}
+
+    def reference(nom):
+        if nom not in refs:
+            t0 = time.time()
+            refs[nom] = m.preparer_ref(entree(nom))
+            log(f'CONVERSION référence {nom} préparée en {time.time() - t0:.1f} s ({refs[nom]["duree"]:.2f} s)')
+        return refs[nom]
+    ref_defaut = B.get('reference', f'{CIBLE}-reference-A.wav')
+    reference(ref_defaut)
+    extraits = extraits_de(a)
     for v in a['versions']:
-        for ex, e in B['extraits'].items():
+        for ex, e in extraits.items():
             if v.get('extraits') and ex not in v['extraits']:
                 continue
             t0 = time.time()
             pas = v.get('pas', B['pas'])
+            ref = reference(v.get('reference') or ref_defaut)
+            temps_profil, retablir = chronometrer(m) if v.get('profil') else (None, None)
+            vocodeur = None
+            if v.get('vocodeur_fp16'):
+                vocodeur = m.vocoder_fn
+
+                def vocodeur16(c, f=vocodeur):
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                        return f(c).float()
+                m.vocoder_fn = vocodeur16
             fiche = {'type': 'version', 'version': v['nom'], 'description': v.get('description'), 'moteur': mot['type'],
                      'checkpoint': os.path.basename(ck) if ck else None, 'pas': pas, 'cfg': B['cfg'], 'decalage_dt': e['decalage'],
+                     'graine': v.get('graine', B['graine']), 'reference': v.get('reference') or ref_defaut,
+                     'reference_s': round(float(ref['duree']), 2), 'vocodeur_fp16': bool(v.get('vocodeur_fp16')),
                      'pistes': {}}
             total = None
             for piste in v['pistes']:
                 x2 = sf.read(piste_chemin(ex, piste), dtype='float32', always_2d=True)[0]
                 x = mono(x2)
+                if v.get('limite_s'):
+                    x = x[:int(v['limite_s'] * SR)]
+                torch.cuda.reset_peak_memory_stats()
                 t1 = time.time()
-                y, info = convertir_piste(m, ref, x, e['decalage'], pas)
+                y, info = convertir_piste(m, ref, x, e['decalage'], pas, v.get('graine'))
                 duree = time.time() - t1
+                info['memoire_gpu_max_mo'] = memoire_max_mo(torch)
                 # niveau : la piste convertie reprend celui de sa source (équilibre voix principale / chœurs d'origine)
                 g = rms_actif(x) / max(rms_actif(y, x), 1e-9)
                 y = (y * g).astype(np.float32)
@@ -521,12 +1033,19 @@ def etape_convertir(a):
                                           'rtf': round(duree / max(info['secondes_converties'], 1e-3), 3)}
                 torch_ = m.torch
                 torch_.cuda.empty_cache()
+            if retablir:
+                retablir()
+                fiche['profil_s'] = {k: round(t, 2) for k, t in sorted(temps_profil.items())}
+            if vocodeur is not None:
+                m.vocoder_fn = vocodeur
             crete = float(np.abs(total).max())
             if crete > 0.99:   # garde-fou : jamais d'écrêtage dans le fichier (le mix renormalise de toute façon)
                 total *= 0.99 / crete
             sf.write(os.path.join(TRAVAIL, ex, f"{v['nom']}.flac"), total, SR, subtype='PCM_24')
             fiche.update({'conversion_s': round(sum(p['conversion_s'] for p in fiche['pistes'].values()), 1),
                           'total_s': round(time.time() - t0, 1), 'chargement_moteur_s': m.chargement_s, 'crete': round(crete, 3)})
+            if v.get('profil') or v.get('limite_s'):
+                fiche['type'] = 'mesure'   # pas une version à juger ni à écouter
             ecrire_json(os.path.join(TRAVAIL, ex, f"{v['nom']}.json"), fiche)
             log(f"CONVERSION {ex} {v['nom']} : {json.dumps(fiche, ensure_ascii=False)}")
 
@@ -660,6 +1179,8 @@ def etape_juger(a):
     wl = WavLMForXVector.from_pretrained('microsoft/wavlm-base-plus-sv').to(dev).eval()
     ecapa = None
     try:
+        if a.get('ecapa') is False:
+            raise RuntimeError('non demandé')
         if importlib.util.find_spec('speechbrain') is None:
             subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', '--no-deps', 'speechbrain==1.0.3', 'hyperpyyaml==1.2.2',
                             'ruamel.yaml==0.18.10', 'ruamel.yaml.clib'], check=True, timeout=300)
@@ -676,8 +1197,22 @@ def etape_juger(a):
     except Exception as e:  # noqa: BLE001 — mesure facultative
         log(f'JUGE ECAPA indisponible : {e!r}'[:400])
     nom_w = a.get('whisper', 'openai/whisper-large-v3')
-    proc = WhisperProcessor.from_pretrained(nom_w)
-    wh = WhisperForConditionalGeneration.from_pretrained(nom_w, dtype=torch.float16).to(dev).eval()
+    if os.path.exists(PAROLES_LOCALES + '.attendu'):   # copie du montage d'outils (orchestrer) : plus rapide que le réseau
+        attente = time.time()
+        while not os.path.exists(PAROLES_LOCALES) and time.time() - attente < 600:
+            time.sleep(2)
+        local = (lire_json(PAROLES_LOCALES, {}) or {}).get('whisper')
+        if local and os.path.isfile(os.path.join(local, 'config.json')):
+            nom_w = local
+        log(f'JUGE Whisper : {nom_w} (attente de la copie {time.time() - attente:.0f} s)')
+    try:
+        proc = WhisperProcessor.from_pretrained(nom_w)
+        wh = WhisperForConditionalGeneration.from_pretrained(nom_w, dtype=torch.float16).to(dev).eval()
+    except Exception as e:  # noqa: BLE001 — copie locale incomplète : Hugging Face
+        log(f'JUGE Whisper {nom_w} : {e!r}'[:300] + ' ; repli sur openai/whisper-large-v3')
+        nom_w = 'openai/whisper-large-v3'
+        proc = WhisperProcessor.from_pretrained(nom_w)
+        wh = WhisperForConditionalGeneration.from_pretrained(nom_w, dtype=torch.float16).to(dev).eval()
     log(f'JUGE modèles chargés en {time.time() - t0:.0f} s (ECAPA {"oui" if ecapa else "non"})')
 
     def charger16(chemin):
@@ -752,22 +1287,27 @@ def etape_juger(a):
     if ft:
         z = np.concatenate([charger16(f) for f in ft[:12]])
         resultat['bases'][CIBLE]['sim_entrainement_vs_prise_tenue'] = cos(empreintes(z), e_cible)
-    for ex, e in B['extraits'].items():
+    sortie_juge = os.path.join(TRAVAIL, f"juge_{B.get('session')}{a.get('suffixe', '')}.json")
+    for ex, e in extraits_de(a).items():
         lead_sec = lire44(piste_chemin(ex, 'lead_sec'))
         voix = lire44(piste_chemin(ex, 'voix'))
+        ch_src = piste_chemin(ex, 'choeurs_sec')
+        seche = lead_sec + lire44(ch_src)[:len(lead_sec)] if os.path.exists(ch_src) else lead_sec   # voix d'origine sèche
         e_src = empreintes(charger16(piste_chemin(ex, 'lead_sec')))
         f0_src = f0_10ms(lead_sec)
         act_src = actif_10ms(voix)
         tr_src = transcrire(charger16(piste_chemin(ex, 'lead_sec')))
         tr_voix = transcrire(charger16(piste_chemin(ex, 'voix')))
         base = {f'sim_source_vs_{CIBLE}': cos(e_src, e_cible), 'transcription_source': tr_src, 'transcription_voix_complete': tr_voix,
+                'aigus_db_voix_seche': aigus_db(seche),
                 'wer_voix_complete_vs_source': wer(tr_src, tr_voix), 'aigus_db_source': aigus_db(lead_sec),
                 'part_voisee_source': round(float((f0_src > 1)[act_src[:len(f0_src)]].mean()), 3)}
         if e.get('paroles'):
             base['wer_source_vs_paroles'] = wer(e['paroles'], tr_src)
         resultat['bases'][ex] = base
         log(f'JUGE base {ex} : {json.dumps(base, ensure_ascii=False)}')
-        for v in a.get('versions') or sorted(os.path.basename(p)[:-5] for p in glob.glob(f'{TRAVAIL}/{ex}/*.json')):
+        for v in a.get('versions') or sorted(os.path.basename(p)[:-5] for p in glob.glob(f'{TRAVAIL}/{ex}/*.json')
+                                             if (lire_json(p, {}) or {}).get('type') == 'version'):
             chemin = os.path.join(TRAVAIL, ex, f'{v}.flac')
             if not os.path.exists(chemin):
                 continue
@@ -786,7 +1326,8 @@ def etape_juger(a):
                    'accord_voise': round(float(((fr > 1) == (fo > 1))[act].mean()), 3), 'trames_comparees': int(deux.sum())}
             tr = transcrire(charger16(chemin))
             m = {'sim': {k: {CIBLE: round(float(em[k] @ e_cible[k]), 4), 'source': round(float(em[k] @ e_src[k]), 4)} for k in em},
-                 'f0': f0m, 'transcription': tr, 'wer': {'source': wer(tr_src, tr)}, 'aigus_db': aigus_db(y)}
+                 'f0': f0m, 'transcription': tr, 'wer': {'source': wer(tr_src, tr)}, 'aigus_db': aigus_db(y),
+                 'ecart_spectral_db': ecart_spectral_db(y, seche)}
             if e.get('paroles'):
                 m['wer']['paroles'] = wer(e['paroles'], tr)
             ch = os.path.join(TRAVAIL, ex, f'{v}_choeurs_sec.flac')
@@ -796,9 +1337,9 @@ def etape_juger(a):
             m['juge_s'] = round(time.time() - t1, 1)
             resultat['versions'].setdefault(ex, {})[v] = m
             log(f'JUGE {ex} {v} : {json.dumps(m, ensure_ascii=False)}')
-            ecrire_json(os.path.join(TRAVAIL, f"juge_{B.get('session')}.json"), resultat)
+            ecrire_json(sortie_juge, resultat)
     resultat['duree_s'] = round(time.time() - t0, 1)
-    ecrire_json(os.path.join(TRAVAIL, f"juge_{B.get('session')}.json"), resultat)
+    ecrire_json(sortie_juge, resultat)
 
 
 def principal():
@@ -807,7 +1348,8 @@ def principal():
     etape, args = sys.argv[1], json.loads(sys.argv[2])
     if SOUCHES not in sys.path and os.path.isdir(SOUCHES):
         sys.path.insert(0, SOUCHES)
-    {'separer': etape_separer, 'convertir': etape_convertir, 'entrainer': etape_entrainer, 'juger': etape_juger}[etape](args)
+    {'separer': etape_separer, 'convertir': etape_convertir, 'entrainer': etape_entrainer, 'juger': etape_juger,
+     'separer_voix': etape_separer_voix, 'nettoyer_variantes': etape_nettoyer_variantes, 'deriver': etape_deriver}[etape](args)
 
 
 if __name__ == '__main__':

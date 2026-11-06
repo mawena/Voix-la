@@ -25,7 +25,7 @@ Prérequis du poste : Python 3, PyGObject avec GTK 4, libadwaita 1.5 et GStreame
 | **Doubler** | Choisir une ou plusieurs vidéos, par le sélecteur (il ouvre `Vidéos/` des données, sinon le dossier Téléchargements) ou par glisser-déposer. Pour chaque vidéo, un extrait facultatif se règle dans un petit lecteur (« Début ici », « Fin ici », écouter l'extrait). Réglages : voix pour tous ou **une voix par chanteur** (duo mixte : Voix d'homme et Voix de femme ; duo de même genre : Chanteur 1 et Chanteur 2), gardée d'une session à l'autre dans `interface.json` (`voix_par_chanteur`, `duo_chanteurs`, `voix_chanteurs` ; une voix qui n'existe plus n'est pas présélectionnée), mode, octave, pas, niveau de la voix, reverb, ancien mixage v1, et, si `doubler` les connaît, la chaîne de conversion : « Par défaut » (voix principale et chœurs séparés, reverb retirée, YingMusic-SVC), « Chaîne d'avant » (Seed-VC, sans nettoyage, plus rapide) ou « Sur mesure » (moteur et nettoyage au choix), et l'interrupteur **Paroles** (transcription et traduction française ; éteint, il ajoute `--sans-paroles` ; allumé par défaut, d'après la clé `paroles` de la configuration de `doubler`), et l'**auto-tune** : interrupteur, intensité (1 à 100, 70 par défaut) et gamme (Auto, Chromatique ou une tonalité), d'après la clé `autotune` de `doubler` (éteint alors que la configuration l'allume, il ajoute `--sans-autotune`) ; grisé avec « installez x42-plugins » si `doubler` ne trouve pas le greffon. La durée de la session Kaggle est celle que `doubler` calcule lui-même (sa fonction `estimer_noyau_s`, appelée depuis le `doubler.py` livré avec l'interface, sur les rapports du dossier des sorties) : la même qu'il annoncera au lancement. Elle suit la chaîne, le moteur, les pas, les paroles, une voix par chanteur, le mode et les cartes GPU prévues (clé `gpu` et machine Kaggle de `doubler`) ; à deux cartes avec YingMusic-SVC, les paroles, faites sur la carte 1 pendant la conversion, comptent pour max(0,5 × P, P − Y). Sans `doubler.py` utilisable, l'interface garde son propre modèle, qui compte les paroles de la même façon. Le reste (extraction, envoi, rapatriement, mixage, vidéo) vient des doublages passés. Puis le bouton « Lancer » envoie le travail dans la file. |
 | **Travaux** | La file. Un seul `doubler` tourne à la fois. Les étapes s'affichent en direct, avec le temps écoulé et le temps restant estimé, l'état du noyau Kaggle et le journal complet dépliable. Avant le lancement, l'estimation est celle de la page Doubler ; une fois le noyau lancé, c'est celle de `doubler` (`estimation_s` de ses événements) : « durée prévue par doubler ≈ 17 min » (« au-delà de la durée prévue » si le noyau la dépasse), et le temps restant la suit. On peut annuler un travail. « Voir le résultat » ouvre le doublage fini. |
 | **Résultats** | Les doublages (titre, voix, mode, durée, date), avec une recherche. Chaque ligne a un menu « ⋮ » : « Ouvrir le dossier » et « Mettre à la corbeille… » ; le mode **Sélectionner** (bouton coche de l'en-tête, Échap pour en sortir) coche plusieurs doublages et les met à la corbeille d'un coup (voir [Corbeille](#corbeille)). Le détail d'un doublage montre : la lecture de la vidéo ou du MP3 et le **choix de ce qu'on écoute, à la même position** : Doublage, Original, Beat seul, Ma voix seule, Voix d'origine seule (voir [Pistes séparées](#pistes-séparées) ; touche B : doublage ⇄ original) ; la bascule **Auto-tune** (touche T) passe au doublage et à la voix seule auto-tunés, à la même position ; les **paroles** synchronisées (ci-dessous) ; la frise d'octave, où un clic va à ce moment, et, avec une voix par chanteur, la frise **Voix de chaque passage** (une couleur par voix, bandeau partagé quand les deux chantent ensemble, clic pour y aller) ; les **visualisations du son** (ci-dessous) ; les informations (moteur réellement utilisé et repli éventuel sur Seed-VC, nettoyage appliqué ou sa raison avec les niveaux de la voix principale, des chœurs et de la reverb retirée, décision d'octave et sa raison, décision par chanteur avec une voix par chanteur, tonalité détectée et écart aux notes avant et après l'auto-tune) ; les pistes séparées, avec « Enregistrer le beat… » et « Enregistrer ma voix seule… » (et « Ma voix seule (auto-tune) », enregistrable aussi) ; le remix rapide, qui redonne les mêmes voix ; les durées par étape (nettoyage, YingMusic-SVC, estimation de doubler comprise ; à deux cartes, « GPU Kaggle (2 cartes T4) », avec le temps de GPU des deux cartes additionnés à côté des durées réelles de la session) ; l'ouverture du dossier et la mise à la corbeille. Si la vidéo source a changé de place, « Choisir… » l'indique à la main (`travail/source.json` n'est pas modifié) ; en attendant, l'original se lit sans image, d'après `travail/original.wav`. |
-| **Voix** | Les voix : nom, durée de la référence, hauteur de parole, alertes. On peut écouter la référence, choisir la voix par défaut, ajouter une voix depuis un fichier (`doubler --ajouter-voix`) ou au micro (texte à lire, compte à rebours, contrôle de qualité), la renommer ou la mettre à la corbeille. La page gère aussi les prises de chant pour l'affinage, avec le total cumulé face à l'objectif de 5 à 10 min. |
+| **Voix** | Les voix : nom, durée de la référence, hauteur de parole, alertes. On peut écouter la référence, choisir la voix par défaut, ajouter une voix depuis un fichier (`doubler --ajouter-voix`) ou au micro (texte à lire, compte à rebours, contrôle de qualité), la renommer ou la mettre à la corbeille. La page gère aussi les prises de chant pour l'affinage, avec le total cumulé face à l'objectif de 5 à 10 min. La liste « Micro » de l'enregistrement propose aussi le **micro d'un téléphone** Android branché (voir [Enregistrer au téléphone](#enregistrer-au-téléphone)). |
 | **Écoute à l'aveugle** | Les versions A, B, C… de chaque extrait du banc d'essai (`banc/ecoute/`) : mix et voix seule. L'interrupteur **Voix seule** de la barre du bas (touche V) fait passer la version en cours de son mix à sa voix seule (`X_voix.mp3`) et retour, à la même position. Vous notez les versions de 1 à 5. La correspondance lettre → version n'apparaît qu'après votre vote, qui va dans `banc/ecoute/votes.json`. Vu-mètre, spectrogramme et forme d'onde de ce qui joue, si on les allume. |
 | **État** | Kaggle : présence du jeton (son contenu n'est jamais lu), compte, statut des noyaux connus. `doubler` : options reconnues, verrou libre ou pris (verrou commun `~/.local/state/voix-la/verrou-kaggle` et `sorties/.kaggle/verrou`). Le poste : RAM, charge, `file-attente --etat`. Kaggle se rafraîchit à la demande, ou toutes les 60 s au plus quand la page est visible. |
 | **Réglages** (menu ☰, Ctrl+,) | Dossier de données, compte et noms Kaggle, moteur du chant, paroles, auto-tune et cartes GPU (Auto, 1 ou 2) par défaut (écrits par `doubler --config`, par exemple `doubler --config paroles non`, `doubler --config autotune 50` ou `doubler --config gpu 1` ; le réglage des cartes est grisé si `doubler` ne connaît pas la clé `gpu`), voix et réglages de doublage par défaut, micro et durées d'enregistrement, autre dossier de prises de chant, visualisations et paroles. |
@@ -237,6 +237,34 @@ Chacune s'allume ou s'éteint dans le menu « œil » d'un résultat (ou dans le
   - l'affichage ne recalcule rien : il redessine 25 fois par seconde au plus, seulement pendant la lecture et si la
     fenêtre est visible.
 
+## Enregistrer au téléphone
+
+Pour une voix (parole) comme pour une prise de chant, la liste « Micro » propose, après les micros du PC, les
+téléphones Android prêts : « Téléphone Pixel 7 (USB) », « Téléphone Pixel 7 (sans fil, 192.168.0.104) ».
+
+- **Brancher le téléphone** : débogage USB activé (options pour les développeurs), puis branché en USB, ou sans fil
+  après `adb connect <adresse IP>:5555`. Sans téléphone prêt, la ligne « Micro du téléphone » dit pourquoi (aucun
+  téléphone, débogage non autorisé sur son écran, hors ligne, scrcpy ou adb introuvable, scrcpy trop ancien) et
+  propose **Réessayer**. Le champ « Téléphone sans fil » fait d'abord `adb connect` sur l'adresse indiquée, préremplie
+  avec `ADB_SERIAL` ou le téléphone de la dernière prise.
+- **La prise** : `scrcpy -s <série> --no-video --no-playback --no-window --audio-source=mic-voice-recognition
+  --audio-codec=flac --require-audio --record=<fichier caché>.flac --time-limit=<durée>`, dans un fil à part. Le son
+  arrive sans perte, sans image ni son sur le PC. Il devient un WAV mono 48 kHz, 24 bits en chant et 16 bits en parole
+  (comme au micro du PC), par `ffmpeg`, puis le FLAC est effacé (gardé si la conversion échoue). Le compte à rebours,
+  l'arrêt, le contrôle de qualité, Garder, Supprimer et Recommencer sont les mêmes qu'au micro du PC.
+- **Pas de niveau en direct** : scrcpy n'en donne pas sans jouer le son sur le PC. L'écran de la prise montre le
+  temps écoulé, et le contrôle de qualité montre le niveau après la prise.
+- **Arrêt** : scrcpy s'arrête seul à la durée prévue. « Arrêter » lui envoie SIGINT, comme Ctrl+C, pour qu'il termine
+  le fichier ; s'il ne s'arrête pas dans les 10 s, il est tué. Un fichier vide donne « le téléphone n'a rien
+  enregistré (téléphone connecté ?) », avec la cause donnée par scrcpy.
+- **scrcpy et adb** : scrcpy du `PATH`, sinon `~/.local/bin/scrcpy` ; adb est celui livré à côté de scrcpy (sinon celui
+  du `PATH`), passé à scrcpy par la variable `ADB` : un seul serveur adb pour les deux. Seules les options que le
+  scrcpy installé connaît sont passées (lues dans `scrcpy --help`) : sans `mic-voice-recognition`, la source est
+  `mic`. Options vérifiées avec scrcpy 5.0.1.
+- **Mémoire** : la source de la dernière prise est gardée dans `interface.json` (`source_enregistrement` :
+  `telephone:<série>`, vide pour le micro du PC des Réglages). Un téléphone revenu sous une autre série (port sans fil
+  changé) cède la place au premier téléphone prêt ; `ADB_SERIAL` passe en premier.
+
 ## Où sont les choses
 
 - **Données** (`voix/`, `sorties/`, `Vidéos/`) : `VOIXLA_DONNEES`, sinon la clé `donnees` de
@@ -263,7 +291,9 @@ Chacune s'allume ou s'éteint dans le menu « œil » d'un résultat (ou dans le
   - parole brute : `voix/.enregistrements/`, puis `voix/<nom>/enregistrement-….wav` une fois la voix créée ;
   - prises de chant : `voix/<nom>/chant/chant-AAAAMMJJ-HHMMSS.wav`, en 48 kHz et 24 bits. Un autre dossier de prises
     `chant-*.wav` (faites hors de l'interface) peut être compté en lecture seule pour la voix par défaut (Réglages,
-    préférence `prises_externes`).
+    préférence `prises_externes`) ;
+  - au téléphone, le FLAC de scrcpy passe par un fichier caché à côté du WAV (`.chant-…-telephone.flac`), effacé
+    après la conversion.
 - **Votes de l'écoute à l'aveugle** : `banc/ecoute/votes.json`.
 
 ```json
@@ -322,7 +352,10 @@ donc jamais le bureau. Leur son est coupé. Scénarios utiles :
 
 - dans un résultat (`resultats:detail-<mot>:…`) : `lire`, `pause`, `piste-<clé>`, `puis-liste` ou `puis-<page>`
   (quitter le résultat pendant la lecture), `retour` (y revenir) et `fermer` (fermer la fenêtre) ;
-- dans la liste : `resultats:selection` et `resultats:corbeille` (la confirmation seulement, rien n'est envoyé).
+- dans la liste : `resultats:selection` et `resultats:corbeille` (la confirmation seulement, rien n'est envoyé) ;
+- l'enregistrement (`voix:enregistrer[-chant][-telephone][-enregistrement|-controle]`) : `telephone` choisit le
+  premier téléphone, avec `VOIXLA_TELEPHONE_ESSAI=1` (`VOIXLA_TELEPHONE_ESSAI=aucun` montre « Aucun téléphone
+  connecté » et Réessayer).
 
 Les essais MPRIS lancent leur propre `dbus-daemon`, avec la même configuration.
 
@@ -338,6 +371,9 @@ Variables pour les essais :
 | `VOIXLA_DOUBLER` | commande `doubler` |
 | `VOIXLA_KAGGLE` | commande `kaggle` |
 | `VOIXLA_MICRO_ESSAI=1` | son de synthèse au lieu du micro |
+| `VOIXLA_TELEPHONE_ESSAI=1` | un téléphone imité, « Pixel 7 (essai) » : son de synthèse en temps réel par `ffmpeg`, sans adb ni scrcpy ; `aucun` : aucun téléphone |
+| `VOIXLA_SCRCPY`, `VOIXLA_ADB` | chemins de `scrcpy` et d'`adb` (sinon le `PATH`, `~/.local/bin/scrcpy` et l'adb livré à côté de scrcpy) |
+| `ADB_SERIAL` | téléphone proposé en premier, et adresse sans fil préremplie (comme le script d'enregistrement) |
 | `VOIXLA_APP_ID` | instance distincte de l'application (et lecteur MPRIS `…voixla.essai<pid>`) |
 | `VOIXLA_SANS_PREPARATION=1` | ni préparation des pistes à la fin d'un doublage, ni au démarrage |
 
@@ -345,12 +381,18 @@ Le faux doubler imite les deux GPU (`--gpu`, clés `gpu` et `kaggle.machine`, `t
 `FAUX_DOUBLER_SANS_GPU=1` imite un doubler d'avant les deux GPU.
 `FAUX_DOUBLER_ESTIMATION=<s>` fixe la durée de session qu'il annonce (`estimation_s`).
 
+`test_telephone` passe par un faux adb et un faux scrcpy (`tests/faux_telephone.py`) : liste d'appareils,
+`adb connect`, aide d'un scrcpy récent ou ancien, prise écrite à la fin (sur SIGINT ou à `--time-limit`), prise vide,
+échec, scrcpy qui ignore SIGINT. Aucun téléphone ni réseau.
+
 `test_pistes_dans_la_video` lit en GStreamer dans un processus à part (`fakeaudiosink`, aucun son), et le lecteur
 sous Xvfb, sur le bus privé.
 
 ## Limites
 
-- **Enregistrement** : seulement par un micro du PC (PulseAudio/PipeWire) ; pas de micro de téléphone.
+- **Enregistrement** : par un micro du PC (PulseAudio/PipeWire) ou par le micro d'un téléphone Android (scrcpy, Android
+  11 ou plus récent pour le son). Au téléphone, pas de niveau en direct, et la prise ne commence qu'une fois le
+  téléphone joint par scrcpy, juste après le compte à rebours.
 - **Pistes en vidéo** : le doublage et l'original gardent chacun leur lecteur ouvert jusqu'à ce qu'on quitte le
   résultat, ou jusqu'à la fin de sa lecture s'il joue en arrière-plan ; le beat et les voix seules ferment le leur
   quand on les quitte. Si la vidéo source a été déplacée,

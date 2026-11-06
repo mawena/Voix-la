@@ -45,6 +45,9 @@ PREFERENCES_DEFAUT = {
     "voix_db": None,            # None : laissé à doubler (+4 dB en chant, 0 en parole)
     "reverb_db": -13.0,
     "micro": "",                # vide : micro par défaut du système
+    # source de la dernière prise : vide, le micro du PC (clé « micro ») ; « telephone:<série adb> », le micro de ce
+    # téléphone par scrcpy (s'il revient sous une autre série, le premier téléphone branché)
+    "source_enregistrement": "",
     "duree_prise_chant_s": 120,
     "duree_parole_s": 60,
     # {voix: dossier} : prises de chant faites hors de l'interface (chant-*.wav, p. ex. par un script

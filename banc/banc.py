@@ -141,6 +141,8 @@ def configurer(fichier):
         for cle, nom in (cas.get('kaggle') or {}).items():   # autres noms du jeu et du noyau (sans le compte)
             if cle in NOMS_KAGGLE and re.fullmatch(r'[a-z0-9-]+', str(nom)):
                 NOMS_KAGGLE[cle] = str(nom)
+        if NOMS_KAGGLE['noyau'] == NOMS_KAGGLE['jeu']:   # Kaggle refuse alors de créer le noyau (409 Conflict)
+            raise KeyError('kaggle : le noyau et le jeu de données doivent porter des noms différents')
     except (KeyError, TypeError) as e:
         raise SystemExit(f'{fichier} : champ manquant ou mal formé ({e!r}) ; voir banc/cas.exemple.json')
     if not re.fullmatch(r'[\w.-]+', CIBLE):

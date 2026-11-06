@@ -16,7 +16,7 @@
   "extraits.<id>.paroles": "paroles chantées dans l'extrait, pour le taux d'erreur de mots (null : pas de mesure)",
   "extraits.<id>.video": "à la place d'« original » et « voix » : vidéo dont le son est tiré par ffmpeg (de debut à fin), puis séparé sur le GPU (étape separer_voix du banc vitesse)",
   "extraits.<id>.titre_ecoute": "titre de l'extrait dans l'Écoute à l'aveugle (facultatif)",
-  "kaggle": "noms du jeu et du noyau sur Kaggle, sans le compte (facultatif ; défaut : doublage-banc-entrees et doublage-banc)"
+  "kaggle": "noms du jeu et du noyau sur Kaggle, sans le compte, différents l'un de l'autre (Kaggle refuse un noyau du nom d'un jeu : 409 Conflict) ; facultatif, défaut : doublage-banc-entrees et doublage-banc"
  },
  "voix": {
   "nom": "cible",

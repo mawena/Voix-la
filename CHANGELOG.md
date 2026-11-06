@@ -73,6 +73,19 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
   doublé y commence à `decalage_s` de `paroles.json`, et non à `decalage_son` de `source.json` (0 pour un extrait).
   Paroles, frise, courbe et bascules (vidéo ⇄ MP3, son seul, touche B) étaient en avance d'autant (0,48 s dans
   l'essai). La vidéo d'origine garde son propre calage.
+- Estimation de la durée d'une session à une carte (`--gpu 1`) : 18,5 min annoncées pour 22,8 sur une chanson de
+  2 min 49 doublée le 06/11 (−19 %), contre −8 % à deux cartes sur la même chanson. La conversion en manquait 3 min :
+  le débit médian des sessions passées (0,067 s par pas et par seconde de son) pour une chanson aux chœurs partout,
+  convertis comme une seconde piste entière (0,099 mesurés), et des sessions à 50 pas comptées comme si la conversion
+  était proportionnelle aux pas (50 pas en prennent 1,3 fois 30). Le reste : nettoyage 30 s, paroles plus denses
+  40 s. Désormais, la conversion se mesure sur les sessions au même nombre de pas, et sur la même chanson si elle a
+  déjà été doublée (même durée de son à 0,05 s près, plus d'une minute). À une carte, le temps de GPU noté par une
+  session à deux cartes (cartes additionnées, sans la lecture ni l'écriture des pistes) compte 1,09 fois pour le
+  nettoyage et 1,04 fois pour YingMusic-SVC, et ces deux étapes coûtent 3 et 13 s de plus que leur temps de GPU et
+  leur chargement, oubliées jusqu'ici. Même chanson, même historique : 21,5 min annoncées à une carte (−6 %), 15,2 à
+  deux (0 %, au lieu de −8 %). Rejouée sur les treize sessions du 04 au 06/11 (chacune d'après les autres) : écart
+  médian +7 % à une carte comme avant, extrêmes −12 à +28 % (avant −18 à +20 %) ; à deux cartes −17 % au lieu de
+  −21 %, la session au noyau actuel passant de −7 à +1 %.
 
 ## [0.6.0] - 2026-11-05
 

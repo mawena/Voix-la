@@ -87,7 +87,14 @@ def playbin(m):
         nouveau, gobj = _api()
         taille_pointeur = ctypes.sizeof(ctypes.c_void_p)
         parent = GObject.type_query(Gtk.MediaFile.__gtype__).instance_size
-        adresse = hash(m)        # PyGObject : le hachage d'un objet est l'adresse de son GObject
+        # adresse du GObject : la capsule __gpointer__ de PyGObject (API publique), jamais déduite d'autre chose ;
+        # sans elle, pas de lecture en mémoire (une adresse fausse ferait planter toute l'interface)
+        lire = ctypes.pythonapi.PyCapsule_GetPointer
+        lire.restype = ctypes.c_void_p
+        lire.argtypes = [ctypes.py_object, ctypes.c_char_p]
+        adresse = lire(m.__gpointer__, None)
+        if not adresse:
+            raise ValueError("adresse du GObject inconnue")
         for decalage in (parent, parent + taille_pointeur):
             p = ctypes.c_void_p.from_address(adresse + decalage).value
             if not p or p % taille_pointeur:

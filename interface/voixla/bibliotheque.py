@@ -322,17 +322,27 @@ def libelles_versions(entree):
     return [tuple(p) for p in sortie]
 
 
-def ordre(a, b, tri):
-    """-1, 0 ou 1 : a avant b dans l'ordre croissant de ce critère (le trieur des colonnes de la page applique le
-    sens)."""
+def _inconnue(e, tri):
+    return (tri == "duree" and e.duree_s is None) or (tri == "mode" and not e.mode)
+
+
+def ordre(a, b, tri, sens_decroissant=False):
+    """-1, 0 ou 1 : a avant b dans l'ordre croissant de ce critère ; le trieur des colonnes de la page retourne
+    ensuite le résultat si le tri est décroissant. Une durée ou un mode inconnus restent à la fin dans les deux sens :
+    sens_decroissant dit au comparateur que son résultat sera retourné."""
+    ia, ib = _inconnue(a, tri), _inconnue(b, tri)
+    if ia != ib:
+        r = 1 if ia else -1
+        return -r if sens_decroissant else r
     ka, kb = a.cles_tri()[tri], b.cles_tri()[tri]
     return (ka > kb) - (ka < kb)
 
 
 def comparer(a, b, tri, inverse=False):
     """-1, 0 ou 1 : a avant b, pour ce critère, dans l'ordre affiché (decroissant())."""
-    r = ordre(a, b, tri)
-    return -r if decroissant(tri, inverse) else r
+    d = decroissant(tri, inverse)
+    r = ordre(a, b, tri, d)
+    return -r if d else r
 
 
 MOIS = ("janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc.")

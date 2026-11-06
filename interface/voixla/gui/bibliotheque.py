@@ -590,8 +590,14 @@ class PageBibliotheque(commun.Page):
         self.colonnes_tri = {"titre": self.col_titre, "voix": self.col_voix, "mode": self.col_mode,
                              "duree": self.col_duree, "date": self.col_date}
         def comparateur(critere):
-            # PyGObject passe en plus les données utilisateur (None) : *_
-            return lambda a, b, *_: bib.ordre(a.entree, b.entree, critere)
+            # PyGObject passe en plus les données utilisateur (None) : *_ ; le sens de la colonne, pour garder les
+            # durées et modes inconnus à la fin
+            def comparer(a, b, *_):
+                t = self.colonnes.get_sorter()
+                d = t.get_primary_sort_column() is self.colonnes_tri[critere] and \
+                    t.get_primary_sort_order() == Gtk.SortType.DESCENDING
+                return bib.ordre(a.entree, b.entree, critere, d)
+            return comparer
         for cle, col in self.colonnes_tri.items():
             col.set_sorter(Gtk.CustomSorter.new(comparateur(cle)))
             col.set_id(cle)

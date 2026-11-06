@@ -144,7 +144,7 @@ def doublage(donnees, titre, voix, mode, duree, options, maintenant, videos=True
         if options.get("autotune"):
             (dossier / f"{base} (auto-tune).mp3").write_bytes(b"")
         for f in dossier.iterdir():
-            if f.is_file():
+            if f.is_file() and f.name.startswith(base):     # les fichiers de cette voix seulement
                 os.utime(f, (date, date))
         os.utime(travail / voix / "rapport.json", (date, date))
     os.utime(dossier, (date, date))

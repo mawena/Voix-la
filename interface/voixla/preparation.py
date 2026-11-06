@@ -1,5 +1,6 @@
 """Préparation à l'avance des pistes séparées (sans GTK, testable) : beat seul, ma voix seule (combinée puis copiée sur
-l'image), voix d'origine seule et miniature, pour que la première lecture d'une piste soit immédiate.
+l'image), voix d'origine seule et miniature, pour que la première lecture d'une piste soit immédiate. Un doublage dont
+la vidéo a déjà ces pistes (doubler ≥ 0.6.0) n'a besoin que de sa miniature : ses pistes se lisent sur place.
 
 Ces préparations sont légères (une copie vidéo : l'image copiée telle quelle et un son AAC, quelques secondes ; la voix
 combinée : un mixage de deux sons). Elles ne passent donc pas par file-attente, la file des travaux lourds du poste,
@@ -190,14 +191,16 @@ class Tache:
 
 def taches(res):
     """Ce qui manque à ce doublage, dans l'ordre : beat seul, ma voix seule (combinée puis copiée sur l'image), voix
-    d'origine seule, miniature. Sans vidéo doublée (MP3 seul) : seulement ma voix seule combinée."""
+    d'origine seule, miniature. Sans vidéo doublée (MP3 seul) : seulement ma voix seule combinée. Une piste que la
+    vidéo doublée a déjà (doubler ≥ 0.6.0 : cinq pistes audio) se lit sur place : rien à préparer pour elle, ni copie
+    ni voix combinée ; il ne reste que la miniature."""
     from . import pistes
-    p = pistes.choisir_pistes(res, "video")
+    p = pistes.choisir_pistes(res, "video", sonder=True)
     t = []
     # ma_voix_at : la voix seule de la version auto-tune (la vidéo auto-tune, elle, existe déjà)
     for cle in pistes.SANS_IMAGE_TOUTES:
         q = p.get(cle)
-        if q is None:
+        if q is None or q.dans_la_video:
             continue
         voix = cle in ("ma_voix", "ma_voix_at")
         at = ["--autotune"] if cle == "ma_voix_at" else []

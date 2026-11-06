@@ -142,11 +142,12 @@ class Analyses:
                            prioritaire=prioritaire, avancement=avancement)
         commun.en_fil(lire, lu, lambda e: rappel(None, f"copie vidéo impossible : {e}"))
 
-    def exporter(self, source, sortie, rappel, duree_s=None, voix=False, autotune=False):
+    def exporter(self, source, sortie, rappel, duree_s=None, voix=False, autotune=False, piste_audio=None):
         """Enregistre source (un fichier, ou le dossier d'une voix si voix=True, sa version auto-tune si autotune) dans
-        sortie ; rappel(ok, message)."""
+        sortie ; piste_audio : la piste a:N de source, une vidéo doublée à plusieurs pistes. rappel(ok, message)."""
         argv = ["exporter", *(["--voix"] if voix else []), str(source), str(sortie),
-                *(["--autotune"] if voix and autotune else [])]
+                *(["--autotune"] if voix and autotune else []),
+                *(["--piste-audio", str(int(piste_audio))] if piste_audio is not None and not voix else [])]
         self._demander(("exporter", str(sortie)), argv, duree_s,
                        lambda ok, s: rappel(ok, "" if ok else (s.strip()[-300:] or "sans message")),
                        module="voixla.pistes")

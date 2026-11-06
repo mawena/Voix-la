@@ -588,6 +588,9 @@ class ChaineUneVoixAuBitPres(unittest.TestCase):
                                     sans_durees(json.loads(rapport))))
             with self.subTest(moteur=moteur):
                 (y1, c1, r1), (y0, c0, r0) = sorties
+                # précision des Roformer du nettoyage : notée dans le rapport depuis le banc vitesse du 06/11/2026
+                # (ici celle du faux nettoyage, qui n'en dit rien : fp32)
+                self.assertEqual((r1.get('nettoyage') or {}).pop('precision', None), 'fp32')
                 self.assertTrue(np.array_equal(y1, y0), 'voix convertie')
                 self.assertEqual(c1, c0, 'courbes.json')
                 self.assertEqual(json.dumps(r1, sort_keys=True), json.dumps(r0, sort_keys=True), 'rapport.json')

@@ -967,7 +967,9 @@ class PageDetail(Adw.NavigationPage):
         pos = self.duree_lecture() if m.get_ended() else self.lecteur.position_ref()
         avant = self.fenetre.prefs.get("positions") or {}
         apres = regles.memoriser_position(avant, self._cle_reprise(), pos, self.duree_lecture(), time.time())
-        if apres.get(self._cle_reprise()) != avant.get(self._cle_reprise()):
+        entree = avant.get(self._cle_reprise()) if isinstance(avant, dict) else None
+        lue = entree.get("position") if isinstance(entree, dict) else None
+        if (apres.get(self._cle_reprise()) or {}).get("position") != lue:     # pas d'écriture pour rien
             self.fenetre.prefs = chemins.modifier_preference("positions", apres)
 
     def _depuis_le_debut(self):

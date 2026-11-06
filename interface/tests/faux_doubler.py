@@ -31,7 +31,9 @@ temps_local.gpus (cartes utilisées).
 Une voix par chanteur (--voix homme:a,femme:b ou chanteur1:a,chanteur2:b) : voix combinée « a+b », sorties « voix A et
 B », rapport inventé d'un duo (voix_cibles, chanteurs, affectation, passages) et courbes.json avec voix_par_trame.
 Auto-tune (--autotune [N], --sans-autotune, --autotune-gamme, clé « autotune ») : fichiers « (auto-tune) » vides et
-section « autotune » du rapport, comme doubler.
+section « autotune » du rapport, comme doubler. Avec --remix : --autotune N crée ou refait la version (gamme
+--autotune-gamme, sinon auto) ; sans option, une version déjà là est refaite à la même intensité et la même gamme ;
+--sans-autotune la retire (fichiers effacés, jamais envoyés à la vraie corbeille ; « retires » dans le rapport).
 config.json n'est jamais lu ni écrit ailleurs ; il refuse d'écrire dans ~/Music, ~/.config, ~/.local et dans les
 dossiers voix/ et sorties/ du dépôt.
 """
@@ -681,6 +683,16 @@ def ecrire_paroles(tv, a):
 
 
 FICHIERS_AUTOTUNE_TRAVAIL = ("mix_autotune.wav", "seche_voix_autotune.wav", "reverb_voix_autotune.wav")
+TONIQUES_FAUX = ("do", "do#", "re", "mib", "mi", "fa", "fa#", "sol", "lab", "la", "sib", "si")
+
+
+def lire_gamme_faux(gamme):
+    """« la-mineur » → (9, « mineur ») ; « sib » → (10, « majeur ») ; auto, chromatique ou une autre écriture (« Am ») :
+    (None, None). Le vrai doubler lit toutes les écritures (lire_gamme) ; le faux, celles de l'interface."""
+    tonique, _, mode = str(gamme or "").strip().lower().partition("-")
+    if tonique not in TONIQUES_FAUX:
+        return None, None
+    return TONIQUES_FAUX.index(tonique), "mineur" if mode in ("mineur", "min", "m") else "majeur"
 
 
 def autotune(a, rapport, tv, dossier, base, sortie, mode):
@@ -691,15 +703,23 @@ def autotune(a, rapport, tv, dossier, base, sortie, mode):
         return None
     b = f"{base} (auto-tune)"
     if a.sans_autotune:
-        for f in [dossier / f"{b}{e}" for e in (*CONTENEURS, ".mp3", ".lrc")] + [tv / n for n in FICHIERS_AUTOTUNE_TRAVAIL]:
-            if f.exists():
-                f.unlink()
+        sorties = [f for f in (dossier / f"{b}{e}" for e in (*CONTENEURS, ".mp3", ".lrc")) if f.exists()]
+        travail = [f for f in (tv / n for n in FICHIERS_AUTOTUNE_TRAVAIL) if f.exists()]
+        for f in sorties + travail:
+            f.unlink()      # jamais la vraie corbeille du bureau pendant les essais
+        dire("version auto-tune retirée : " + ", ".join([f"{f.name} (effacé, faux doubler)" for f in sorties]
+                                                       + [f"travail/{tv.name}/{f.name} (effacé)" for f in travail])
+             if sorties or travail else "--sans-autotune : pas de version auto-tune à retirer")
         rapport["autotune"] = {"applique": False, "intensite": 0, "source": "option --sans-autotune",
-                               "raison": "version auto-tune retirée (--sans-autotune)"}
+                               "raison": "version auto-tune retirée (--sans-autotune)",
+                               "retires": {"corbeille": [], "effaces": [f.name for f in sorties],
+                                           "travail": [f.name for f in travail]}}
         return None
     prec = rapport.get("autotune") if isinstance(rapport.get("autotune"), dict) else {}
-    n = a.autotune if a.autotune is not None else autotune_config(lire_config()) or (
-        prec.get("intensite") if prec.get("applique") else 0)
+    # comme doubler.reglage_pour : --autotune N l'emporte ; sans option, une version déjà là est gardée à jour (même
+    # intensité, même gamme demandée sauf --autotune-gamme) ; sinon la clé « autotune » de la configuration
+    gardee = a.autotune is None and bool(prec.get("applique") and prec.get("intensite"))
+    n = a.autotune if a.autotune is not None else prec["intensite"] if gardee else autotune_config(lire_config())
     if not n:
         return None
     if mode == "parole" and a.autotune is None:
@@ -715,12 +735,18 @@ def autotune(a, rapport, tv, dossier, base, sortie, mode):
     mp3, video, lrc = dossier / f"{b}.mp3", dossier / f"{b}{sortie.suffix}", dossier / f"{b}.lrc"
     for f in (mp3, video, lrc):
         f.write_bytes(b"")
-    gamme = (a.autotune_gamme or prec.get("gamme", {}).get("demandee") or "auto")
+    gamme = a.autotune_gamme or ((prec.get("gamme") or {}).get("demandee") if gardee else None) or "auto"
+    tonique, mode_g = lire_gamme_faux(gamme)
+    chromatique = gamme == "chromatique"
     rapport["autotune"] = {
-        "applique": True, "intensite": int(n), "source": "option --autotune" if a.autotune is not None else "configuration",
-        "gamme": {"demandee": gamme, "type": "chromatique" if gamme == "chromatique" else "tonalite",
-                  "tonalite": None if gamme == "chromatique" else "fa majeur", "masque": [1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0],
-                  "accord_hz": 440.0, "detection": {"correlation": 0.81}},
+        "applique": True, "intensite": int(n), "explicite": a.autotune is not None,
+        "source": ("option --autotune" if a.autotune is not None else
+                   "doublage précédent (version auto-tune gardée à jour)" if gardee else "configuration"),
+        "gamme": {"demandee": gamme, "type": "chromatique" if chromatique else "tonalite",
+                  "tonalite": None if chromatique else f"{TONIQUES_FAUX[tonique]} {mode_g}" if mode_g else "fa majeur",
+                  "tonique": None if chromatique else 5 if tonique is None else tonique,
+                  "mode": None if chromatique else mode_g or "majeur",
+                  "masque": [1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0], "accord_hz": 440.0, "detection": {"correlation": 0.81}},
         "mesures": {"avant": {"ecart_median_cents": 32.0, "part_a_10_cents": 0.21},
                     "apres": {"ecart_median_cents": 4.0, "part_a_10_cents": 0.86}},
         "gains_db": {"seche": 6.5, **({"reverb": 1.2} if mode == "chant" else {})}, "temps_s": 2.0,

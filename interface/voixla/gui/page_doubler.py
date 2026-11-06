@@ -47,6 +47,30 @@ EXPLICATIONS_CHAINES = {
 }
 
 
+def reglages_autotune(titre="Auto-tune", sous_titre=TEXTE_AUTOTUNE):
+    """Les réglages d'auto-tune de la page Doubler et du remix rapide des Résultats : (interrupteur, intensité, gamme).
+    L'interrupteur est une Adw.ExpanderRow éteinte, qui déplie l'intensité (Gtk.Scale de 1 à 100, AUTOTUNE_DEFAUT
+    marqué) et la gamme (Adw.ComboRow sur moteur.GAMMES : Auto, Chromatique, les 24 tonalités)."""
+    rangee = Adw.ExpanderRow(title=titre, subtitle=sous_titre, show_enable_switch=True, enable_expansion=False)
+    r_intensite = Adw.ActionRow(title="Intensité",
+                                subtitle="Bas : notes juste rendues plus justes ; haut : effet robotique")
+    echelle = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 1, 100, 1)
+    echelle.set_value(moteur.AUTOTUNE_DEFAUT)
+    echelle.set_size_request(220, -1)
+    echelle.set_valign(Gtk.Align.CENTER)
+    echelle.set_draw_value(True)
+    echelle.set_value_pos(Gtk.PositionType.LEFT)
+    echelle.set_digits(0)
+    echelle.add_mark(moteur.AUTOTUNE_DEFAUT, Gtk.PositionType.BOTTOM, None)
+    echelle.update_property([Gtk.AccessibleProperty.LABEL], ["Intensité de l’auto-tune, de 1 à 100"])
+    r_intensite.add_suffix(echelle)
+    rangee.add_row(r_intensite)
+    gamme = Adw.ComboRow(title="Gamme", model=Gtk.StringList.new([x[1] for x in moteur.GAMMES]),
+                         subtitle="Auto : la tonalité détectée sur la musique seule (chromatique si elle est peu sûre)")
+    rangee.add_row(gamme)
+    return rangee, echelle, gamme
+
+
 def sonder_duree(chemin):
     """Durée d'une vidéo par ffprobe (lecture seule ; les vidéos téléchargées ne sont jamais exécutées)."""
     try:
@@ -281,25 +305,8 @@ class PageDoubler(commun.Page):
         g.add(self.r_paroles)
         # auto-tune : visible si doubler annonce --autotune ; par défaut, la clé « autotune » de sa configuration ;
         # grisé si doubler ne trouve pas x42-autotune
-        self.r_autotune = Adw.ExpanderRow(title="Auto-tune", subtitle=TEXTE_AUTOTUNE, show_enable_switch=True,
-                                          enable_expansion=False, visible=False)
-        self.r_at_intensite = Adw.ActionRow(title="Intensité",
-                                            subtitle="Bas : notes juste rendues plus justes ; haut : effet robotique")
-        self.at_echelle = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 1, 100, 1)
-        self.at_echelle.set_value(moteur.AUTOTUNE_DEFAUT)
-        self.at_echelle.set_size_request(220, -1)
-        self.at_echelle.set_valign(Gtk.Align.CENTER)
-        self.at_echelle.set_draw_value(True)
-        self.at_echelle.set_value_pos(Gtk.PositionType.LEFT)
-        self.at_echelle.set_digits(0)
-        self.at_echelle.add_mark(moteur.AUTOTUNE_DEFAUT, Gtk.PositionType.BOTTOM, None)
-        self.at_echelle.update_property([Gtk.AccessibleProperty.LABEL], ["Intensité de l’auto-tune, de 1 à 100"])
-        self.r_at_intensite.add_suffix(self.at_echelle)
-        self.r_autotune.add_row(self.r_at_intensite)
-        self.r_at_gamme = Adw.ComboRow(title="Gamme", model=Gtk.StringList.new([x[1] for x in moteur.GAMMES]),
-                                       subtitle="Auto : la tonalité détectée sur la musique seule (chromatique si elle "
-                                                "est peu sûre)")
-        self.r_autotune.add_row(self.r_at_gamme)
+        self.r_autotune, self.at_echelle, self.r_at_gamme = reglages_autotune()
+        self.r_autotune.set_visible(False)
         self._autotune_touche = False
         self._autotune_auto = False
         self._autotune_conf = 0

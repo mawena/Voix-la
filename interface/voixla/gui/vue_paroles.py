@@ -680,14 +680,14 @@ class VueParoles(Gtk.Box):
         premier = None
         for valeur, libelle in CHOIX:
             t = Gtk.ToggleButton(label=libelle, group=premier, active=valeur == self.langue,
-                                 css_classes=["caption"])
+                                 css_classes=["caption"], focus_on_click=False)
             premier = premier or t
             t.connect("toggled", lambda b, v=valeur: b.get_active() and self._choisir(v))
             self.boite_choix.append(t)
             self.t_choix[valeur] = t
         tete.append(self.boite_choix)
         self.b_panneau = Gtk.ToggleButton(icon_name="view-list-symbolic", action_name="win.paroles-panneau",
-                                          css_classes=["flat"], valign=Gtk.Align.CENTER,
+                                          css_classes=["flat"], valign=Gtk.Align.CENTER, focus_on_click=False,
                                           tooltip_text="Toutes les paroles (P)")
         self.b_panneau.update_property([Gtk.AccessibleProperty.LABEL], ["Toutes les paroles"])
         tete.append(self.b_panneau)

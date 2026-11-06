@@ -172,7 +172,12 @@ class PageDetail(Adw.NavigationPage):
             self.lecteur.volume = max(0.0, min(1.0, float(volume)))
         self.commandes = Commandes(self)
         self.lecteur.append(self.commandes)
-        # double-clic sur l'image : plein écran
+        # l'image prend le focus à l'ouverture (sinon le bouton retour l'aurait, et Espace ramènerait à la liste) ;
+        # double-clic : plein écran
+        self.lecteur.ecran.set_focusable(True)
+        self.lecteur.ecran.update_property([Gtk.AccessibleProperty.LABEL],
+                                           [f"{res.titre_court} : Espace pour lire ou mettre en pause, F pour le plein "
+                                            "écran"])
         clic = Gtk.GestureClick()
         clic.connect("pressed", lambda _g, n, _x, _y: n == 2 and self.basculer_plein_ecran())
         self.lecteur.superpose.add_controller(clic)
@@ -251,9 +256,13 @@ class PageDetail(Adw.NavigationPage):
         cadre.add_breakpoint(tres_etroit)
         self.set_child(cadre)
         self.add_controller(self.raccourcis())
+        self.add_controller(self.fleches())
+        # un clic sur une bascule ne lui laisse pas le focus : Espace reste lecture / pause (Tab y mène toujours)
+        for b in (self.t_video, self.t_mp3, self.t_autotune, *self.t_pistes.values()):
+            b.set_focus_on_click(False)
         # quitter la page n'arrête pas la lecture ; une page quittée qui ne lit pas est oubliée
         self.connect("hidden", lambda *_: self._cachee())
-        self.connect("shown", lambda *_: self.page.proteger_caches())
+        self.connect("shown", lambda *_: (self.page.proteger_caches(), self._focus_lecteur()))
         self.changer_forme(self.forme)
         self.fenetre.ecouter("visualisations", self._maj_visualisations)
         self._maj_visualisations()
@@ -745,11 +754,8 @@ class PageDetail(Adw.NavigationPage):
         ajouter("space", self.lecture_pause)
         ajouter("b", self.bascule_ab)
         ajouter("t", self.bascule_autotune)
-        ajouter("Left", lambda: self.sauter(-regles.SAUT_S))
-        ajouter("Right", lambda: self.sauter(regles.SAUT_S))
         ajouter("comma", lambda: self.pas_image(-1))
         ajouter("period", lambda: self.pas_image(1))
-        ajouter("Home", lambda: self.aller_a(0.0))
         for i, cle in enumerate(regles.TOUCHES_PISTES):
             ajouter(f"{i + 1} KP_{i + 1}", lambda c=cle: self.touche_piste(c))
         ajouter("l", self.basculer_boucle)
@@ -763,6 +769,35 @@ class PageDetail(Adw.NavigationPage):
         else:
             ajouter("v", lambda: self.basculer_cinema(not self.cinema))
             ajouter("p", lambda: self.fenetre.lookup_action("paroles-panneau").activate(None))
+        return c
+
+    def fleches(self, plein_ecran=False):
+        """Espace, flèches gauche et droite, et Origine : prises avant la fenêtre, qui ferait d'Espace « activer le
+        focus » (et l'avalerait sur l'image) et des flèches un déplacement du focus d'un bouton à l'autre. Elles
+        restent à ce qui s'en sert déjà : Espace à un bouton, une case ou une ligne qui a le focus (clavier), les
+        flèches et Origine à une barre (position, volume), un texte ou une liste ; et tout reste à un menu ouvert."""
+        c = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
+        actions = {Gdk.KEY_Left: lambda: self.sauter(-regles.SAUT_S), Gdk.KEY_Right: lambda: self.sauter(regles.SAUT_S),
+                   Gdk.KEY_Home: lambda: self.aller_a(0.0), Gdk.KEY_space: self.lecture_pause}
+        a_eux = {Gdk.KEY_space: (Gtk.Button, Gtk.CheckButton, Gtk.Switch, Gtk.Editable, Gtk.ListBox, Gtk.ListView,
+                                 Gtk.DropDown, Gtk.Popover)}
+        autres = (Gtk.Range, Gtk.Editable, Gtk.ListBox, Gtk.ListView, Gtk.Popover)
+
+        def presse(_c, touche, _code, etat):
+            rappel = actions.get(touche)
+            if rappel is None or etat & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK |
+                                         Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.SUPER_MASK):
+                return False
+            focus = self.fenetre.get_focus()
+            if focus is not None and focus.get_native() is not self.fenetre:
+                return False
+            w = focus
+            while w is not None:
+                if isinstance(w, a_eux.get(touche, autres)):
+                    return False
+                w = w.get_parent()
+            return self._touche(rappel, plein_ecran)
+        c.connect("key-pressed", presse)
         return c
 
     def _touche(self, rappel, plein_ecran):
@@ -954,7 +989,12 @@ class PageDetail(Adw.NavigationPage):
             self.fenetre.sortir_plein_ecran()
         if not self._oubliee:
             self._position(self.lecteur.position_ref(), self.lecteur.en_lecture())
-            self.commandes.b_plein.grab_focus()
+            self._focus_lecteur()
+
+    def _focus_lecteur(self):
+        """Le focus sur l'image (ou, en MP3, sur le bouton de lecture) : les touches du lecteur y répondent."""
+        cible = self.lecteur.ecran if self.forme == "video" else self.commandes.b_lecture
+        GLib.idle_add(lambda: (not self._oubliee and cible.get_mapped() and cible.grab_focus(), False)[1])
 
     def paroles_en_surimpression(self):
         """En plein écran, les paroles sur l'image suivent l'interrupteur « Paroles »."""
@@ -1868,6 +1908,34 @@ class PageDetail(Adw.NavigationPage):
         if action.startswith("vitesse-"):
             v = float(action.split("-", 1)[1])
             GLib.timeout_add(2400, lambda: (self.regler_vitesse(v), False)[1])
+        if action == "clavier":
+            GLib.timeout_add(2600, lambda: (self._essai_clavier(), False)[1])
+
+    def _essai_clavier(self):
+        """Essai (scénario « clavier », sous Xvfb) : de vraies touches envoyées par xdotool, et l'état relevé après
+        chacune, une ligne JSON par touche sur la sortie."""
+        import json
+        import subprocess
+        touches = ["Right", "Right", "Left", "l", "Right", "l", "bracketright", "bracketright", "bracketleft", "m",
+                   "m", "3", "1", "b", "v", "v", "p", "p", "space", "period", "comma", "f", "space", "Right", "l",
+                   "space", "Escape", "Home", "s"]
+
+        def etat():
+            return {"position": round(self.lecteur.position_ref(), 2), "boucle": list(self.lecteur.boucle),
+                    "vitesse": self.lecteur.vitesse, "coupe": self.lecteur.coupe, "piste": self.voulue or self.piste,
+                    "cinema": self.cinema, "panneau": bool(self.fenetre.prefs.get("paroles_panneau")),
+                    "plein": self.plein is not None, "lecture": self.lecteur.en_lecture(),
+                    "focus": type(self.fenetre.get_focus()).__name__}
+
+        def suivante(i=0):
+            if i >= len(touches):
+                return False
+            subprocess.run(["xdotool", "key", "--clearmodifiers", touches[i]], timeout=5, check=False)
+            GLib.timeout_add(450, lambda: (print(json.dumps({"touche": touches[i], **etat()}), flush=True),
+                                           suivante(i + 1), False)[2])
+            return False
+        print(json.dumps({"touche": None, **etat()}), flush=True)
+        suivante()
         if action.startswith("puis-"):
             # après « lire » : on quitte le résultat pendant la lecture (barre « en cours de lecture ») ; « liste » :
             # retour à la liste des résultats, sinon une autre section

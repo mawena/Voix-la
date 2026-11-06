@@ -124,7 +124,7 @@ class Fenetre(Adw.ApplicationWindow):
                                      reveal_bottom_bars=False)
         self.cadre.add_bottom_bar(self.barre)
         # plein écran d'un lecteur (gui/plein_ecran.py) : la vue remplace tout le contenu, qui ne se dessine plus
-        self.racine = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=150)
+        self.racine = Gtk.Stack()
         self.racine.add_named(self.cadre, "normal")
         self.set_content(self.racine)
         self.plein_ecran = None

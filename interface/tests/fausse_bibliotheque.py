@@ -208,9 +208,8 @@ def doublage(donnees, titre, voix, mode, duree, options, maintenant, videos=True
     return dossier
 
 
-def creer(donnees, n=None, videos=True, graine=7):
-    """Les doublages des captures (n None), ou n doublages inventés (versions de chansons, extraits, duos, parole,
-    MP3 seuls). Rend le nombre de doublages."""
+def creer_voix(donnees):
+    """Les voix inventées (voix/<id>/voix.json) et le dossier des sorties."""
     donnees = Path(donnees)
     (donnees / "sorties").mkdir(parents=True, exist_ok=True)
     (donnees / "voix").mkdir(parents=True, exist_ok=True)
@@ -219,6 +218,13 @@ def creer(donnees, n=None, videos=True, graine=7):
         d.mkdir(exist_ok=True)
         (d / "voix.json").write_text(json.dumps({"nom": nom, "reference": "reference.wav", "duree_s": 20.0},
                                                 ensure_ascii=False), encoding="utf-8")
+
+
+def creer(donnees, n=None, videos=True, graine=7):
+    """Les doublages des captures (n None), ou n doublages inventés (versions de chansons, extraits, duos, parole,
+    MP3 seuls). Rend le nombre de doublages."""
+    donnees = Path(donnees)
+    creer_voix(donnees)
     maintenant = time.time()
     if n is None:
         for titre, voix, mode, duree, options in CAPTURES:

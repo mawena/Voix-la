@@ -26,7 +26,7 @@ MARGE_PAROLES = 12           # paroles au-dessus du bord bas (commandes masquée
 
 class PleinEcran(Adw.Bin):
     def __init__(self, page):
-        super().__init__(css_classes=["plein-ecran"], focusable=True)
+        super().__init__(css_classes=["plein-ecran"])
         self.update_property([Gtk.AccessibleProperty.LABEL], [f"{page.res.titre_court}, plein écran"])
         self.page = page
         self._minuteur = None
@@ -42,8 +42,10 @@ class PleinEcran(Adw.Bin):
         # pile non homogène : seule la vue affichée compte pour la taille (la vue du MP3 ne déborde pas sur la vidéo)
         self.pile = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, hexpand=True, vexpand=True,
                               hhomogeneous=False, vhomogeneous=False)
-        self.image = Gtk.Picture(content_fit=Gtk.ContentFit.CONTAIN, can_shrink=True, hexpand=True, vexpand=True)
-        self.image.update_property([Gtk.AccessibleProperty.LABEL], ["Vidéo"])
+        self.image = Gtk.Picture(content_fit=Gtk.ContentFit.CONTAIN, can_shrink=True, hexpand=True, vexpand=True,
+                                 focusable=True)
+        self.image.update_property([Gtk.AccessibleProperty.LABEL],
+                                   ["Vidéo en plein écran : Espace pour lire ou mettre en pause, Échap pour sortir"])
         self._liaisons = [page.lecteur.ecran.bind_property("paintable", self.image, "paintable",
                                                            GObject.BindingFlags.SYNC_CREATE)]
         self.pile.add_named(self.image, "video")
@@ -78,7 +80,7 @@ class PleinEcran(Adw.Bin):
         textes.append(self.l_detail)
         tete.append(textes)
         sortir = Gtk.Button(icon_name="view-restore-symbolic", valign=Gtk.Align.CENTER, css_classes=["circular"],
-                            tooltip_text="Quitter le plein écran (Échap ou F)")
+                            tooltip_text="Quitter le plein écran (Échap ou F)", focus_on_click=False)
         sortir.update_property([Gtk.AccessibleProperty.LABEL], ["Quitter le plein écran"])
         sortir.connect("clicked", lambda *_: page.basculer_plein_ecran())
         tete.append(sortir)
@@ -110,6 +112,7 @@ class PleinEcran(Adw.Bin):
         touches.connect("key-pressed", lambda *_: (self.montrer_commandes(), False)[1])
         self.add_controller(touches)
         self.add_controller(page.raccourcis(plein_ecran=True))
+        self.add_controller(page.fleches(plein_ecran=True))
         self.insert_action_group("detail", page.actions)
         self.connect("map", lambda *_: self._apparition())
         self.connect("unmap", lambda *_: self._arreter_minuteur())
@@ -151,10 +154,16 @@ class PleinEcran(Adw.Bin):
     # --- commandes masquées sans mouvement ---------------------------------------------------------------------------
 
     def _apparition(self):
-        self.grab_focus()
+        self._prendre_focus()
+        # le focus de la page cachée part avec elle : on le reprend une fois la vue en place
+        GLib.idle_add(lambda: (self.get_mapped() and self._prendre_focus(), False)[1])
         self._placer_paroles(animer=False)
         self.montrer_commandes()
         self.lecture_changee()
+
+    def _prendre_focus(self):
+        """Le focus sur l'image (en MP3, sur le bouton de lecture) : Espace y est lecture / pause."""
+        (self.image if self.page.forme == "video" else self.commandes.b_lecture).grab_focus()
 
     def _mouvement(self, _c, x, y):
         if self._dernier is not None and abs(x - self._dernier[0]) < 2 and abs(y - self._dernier[1]) < 2:
@@ -197,7 +206,7 @@ class PleinEcran(Adw.Bin):
         self.haut.set_reveal_child(False)
         self.bas.set_reveal_child(False)
         self.set_cursor_from_name("none")
-        self.grab_focus()             # le focus ne reste pas sur un bouton caché (Espace : lecture, pas ce bouton)
+        self._prendre_focus()         # le focus ne reste pas sur un bouton caché (Espace : lecture, pas ce bouton)
         self._placer_paroles()
 
     @property

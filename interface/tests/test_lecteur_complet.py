@@ -277,3 +277,80 @@ class EssaiLecteurGst(unittest.TestCase):
         self.assertFalse(m["en_lecture"], "en pause")
         v = self.mesure(volume=0.4)
         self.assertTrue(v["muet"], "les essais restent muets")
+
+
+# --- Le détail d'un résultat au clavier (l'application entière sous Xvfb, vraies touches par xdotool) -----------------
+
+@unittest.skipUnless(FFMPEG and GI and shutil.which("xvfb-run") and shutil.which("dbus-run-session")
+                     and shutil.which("flock") and shutil.which("xdotool"),
+                     "ffmpeg, GStreamer, xvfb-run, dbus-run-session, flock ou xdotool absent")
+class EssaiClavier(unittest.TestCase):
+    """Scénario « clavier » de la page d'un résultat (PageDetail._essai_clavier) : chaque touche est envoyée par
+    xdotool, l'état relevé ensuite. Son coupé (fakeaudiosink, lecture muette), bus privé, dossiers d'essai."""
+
+    @classmethod
+    def setUpClass(cls):
+        import subprocess
+        import sys
+        import time
+        from . import fausse_bibliotheque as F
+        cls._dossier = tempfile.TemporaryDirectory(prefix="voixla-clavier-")
+        d = Path(cls._dossier.name)
+        F.creer_voix(d / "donnees")
+        F.doublage(d / "donnees", "Lumière d’été", "jules", "chant", 30.0, {"langue": "es", "image": 0},
+                   time.time(), duree_media=30.0)
+        for sous in ("config", "etat", "cache", "ecoute", "images"):
+            (d / sous).mkdir()
+        env = env_gst(d / "cache")
+        env.update({"VOIXLA_DONNEES": str(d / "donnees"), "VOIXLA_CONFIG": str(d / "config"),
+                    "VOIXLA_ETAT": str(d / "etat"), "VOIXLA_ECOUTE": str(d / "ecoute"),
+                    "VOIXLA_IMAGES": str(d / "images"), "VOIXLA_SANS_PREPARATION": "1",
+                    "VOIXLA_DOUBLER": f"{sys.executable} {ICI / 'faux_doubler.py'}", "VOIXLA_KAGGLE": "/bin/false"})
+        cmd = [str(INTERFACE / "outils" / "capturer.sh"), str(d / "clavier.png"), "clair",
+               "resultats:detail-lumière:lire+clavier", "1180x800", "20"]
+        p = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=150, stdin=subprocess.DEVNULL)
+        cls.sortie = p.stdout + p.stderr
+        cls.etats = []
+        for ligne in p.stdout.splitlines():
+            try:
+                x = json.loads(ligne)
+            except ValueError:
+                continue
+            if isinstance(x, dict) and "touche" in x:
+                cls.etats.append(x)
+        cls.images = list((d / "images").glob("*.png"))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._dossier.cleanup()
+
+    def apres(self, touche, rang=0):
+        """L'état relevé avant et après la rang-ième touche de ce nom."""
+        vus = [i for i, e in enumerate(self.etats) if e["touche"] == touche]
+        self.assertGreater(len(vus), rang, f"touche {touche} absente : {self.etats}\n{self.sortie[-2000:]}")
+        i = vus[rang]
+        return self.etats[i - 1], self.etats[i]
+
+    def test_toutes_les_touches(self):
+        self.assertGreaterEqual(len(self.etats), 30, self.sortie[-3000:])
+        a, b = self.apres("Right")
+        self.assertGreater(b["position"] - a["position"], 4.0, "flèche droite : +5 s (pas un déplacement du focus)")
+        self.assertIsNotNone(self.apres("l", 1)[1]["boucle"][1], "L deux fois : boucle A-B")
+        self.assertEqual([self.apres("bracketright", k)[1]["vitesse"] for k in (0, 1)], [1.1, 1.25])
+        self.assertEqual(self.apres("bracketleft")[1]["vitesse"], 1.1)
+        self.assertEqual([self.apres("m", k)[1]["coupe"] for k in (0, 1)], [True, False])
+        self.assertEqual([self.apres("v", k)[1]["cinema"] for k in (0, 1)], [True, False])
+        self.assertEqual([self.apres("p", k)[1]["panneau"] for k in (0, 1)], [True, False])
+        a, b = self.apres("space")
+        self.assertTrue(a["lecture"])
+        self.assertFalse(b["lecture"], "Espace : pause (la fenêtre ne l'avale pas)")
+        a, b = self.apres("period")
+        self.assertAlmostEqual(b["position"] - a["position"], 0.2, delta=0.06, msg="une image (5 i/s)")
+        self.assertAlmostEqual(self.apres("comma")[1]["position"], a["position"], delta=0.06)
+        self.assertTrue(self.apres("f")[1]["plein"])
+        self.assertEqual(self.apres("f")[1]["focus"], "Picture", "en plein écran, le focus est sur l'image")
+        self.assertTrue(self.apres("space", 1)[1]["lecture"], "Espace en plein écran : lecture")
+        self.assertFalse(self.apres("space", 2)[1]["lecture"])
+        self.assertFalse(self.apres("Escape")[1]["plein"])
+        self.assertLess(self.apres("Home")[1]["position"], 0.3)
+        self.assertEqual(len(self.images), 1, "S : une image PNG enregistrée")

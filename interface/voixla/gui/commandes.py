@@ -127,6 +127,15 @@ class Commandes(Gtk.Box):
         self.b_plein.connect("clicked", lambda *_: page.basculer_plein_ecran())
         bas.append(self.b_plein)
         self.append(bas)
+        # un clic ne laisse pas le focus sur un bouton : Espace reste lecture / pause, les flèches restent ±5 s (Tab
+        # mène toujours à chaque bouton, et Espace ou Entrée l'active alors)
+        enfant = bas.get_first_child()
+        while enfant is not None:
+            enfant.set_focus_on_click(False)
+            if isinstance(enfant, Gtk.MenuButton) and enfant.get_first_child() is not None:
+                enfant.get_first_child().set_focus_on_click(False)
+            enfant = enfant.get_next_sibling()
+        self.volume.set_focus_on_click(True)      # le volume garde le focus : les flèches le règlent
         # fenêtre étroite (Adw.Breakpoint de la page) : ces commandes-là disparaissent d'abord (la capture et la boucle
         # écrite en clair suivent le volume : voir _etroit)
         self.secondaires = (self.volume, self.b_recul, self.b_avance)

@@ -79,7 +79,8 @@ LIBELLES = {
     'masque_hf_aufr33': 'masque harmonique, hauteurs du Roformer aufr33',
     'masque_hf_sucial': 'masque harmonique, hauteurs du Roformer Sucial',
 }
-CONDITIONS = ['alternance', 'superposition', 'meme_air', 'unisson', 'octave', 'tierce']
+CONDITIONS = ['alternance', 'superposition', 'meme_air', 'unisson', 'octave', 'tierce', 'unisson_conv', 'octave_conv',
+              'tierce_conv']
 
 
 def dire(*a):
@@ -194,8 +195,9 @@ def preparer(a):
         return s
 
     def conversion(source, vers, decalage, ident):
-        plan['conversions'].append({'id': ident, 'source': f'{source}-caro.wav', 'ref': f'{vers}-dona.wav',
-                                    'decalage': decalage})
+        if not any(c['id'] == ident for c in plan['conversions']):
+            plan['conversions'].append({'id': ident, 'source': f'{source}-caro.wav', 'ref': f'{vers}-dona.wav',
+                                        'decalage': decalage})
         return ident
 
     for A, B in PAIRES:
@@ -215,6 +217,22 @@ def preparer(a):
                       'sources': [src(B, 'caro'), src(A, conv=conversion(B, A, -12, f'{paire}-octave'))]})
         m.append({'id': f'{paire}-tierce', 'paire': paire, 'condition': 'tierce',
                   'sources': [src(A, 'caro'), src(B, conv=conversion(A, B, 4, f'{paire}-tierce'))]})
+        # Les mêmes, voix 1 passée elle aussi par YingMusic-SVC (vers son propre timbre) : les deux voix ont alors la
+        # même acoustique (sèches, même vocodeur), et seul le timbre et la hauteur les distinguent. Sans cela, une voix
+        # réelle (prise dans une pièce) et une voix convertie (sèche) se séparent sur cet indice-là.
+        soi_a = conversion(A, A, 0, f'{A}-soi')
+        m.append({'id': f'{paire}-unisson_conv', 'paire': paire, 'condition': 'unisson_conv',
+                  'sources': [src(A, conv=soi_a), src(B, conv=f'{paire}-unisson')]})
+        if mixte:
+            m.append({'id': f'{paire}-octave_conv', 'paire': paire, 'condition': 'octave_conv',
+                      'sources': [src(B, conv=conversion(B, B, 0, f'{B}-soi')), src(A, conv=f'{paire}-octave')]})
+        m.append({'id': f'{paire}-tierce_conv', 'paire': paire, 'condition': 'tierce_conv',
+                  'sources': [src(A, conv=soi_a), src(B, conv=f'{paire}-tierce')]})
+    if a.reel_extrait:   # extrait d'écoute d'une session précédente (voix principale sèche), pour les modèles de parole
+        r = RESULTATS / a.reel_extrait / 'reel'
+        d = json.loads((r / 'reel.json').read_text())
+        shutil.copy2(r / 'lead_sec.flac', JEU / 'reel-lead_sec.flac')
+        plan['reel_extrait'] = {'fichier': 'reel-lead_sec.flac', 'gain': d['gains_flac']['lead_sec']}
     if a.video:
         video = Path(a.video).expanduser()
         duree_video = float(subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0',
@@ -254,14 +272,23 @@ def quota_restant_h():
 
 
 def phases(plan, avec_reel):
-    reel = [{'etape': 'separer_reel', 'candidats': CANDIDATS_HF, 'duree_extrait': 45}] if avec_reel else []
+    """Session 1 (avec_reel) : duos synthétiques, vrai duo et extrait doublé. Sans le vrai duo (session 2) : les duos
+    synthétiques seuls, les modèles de parole sur une carte pendant le masque harmonique sur l'autre."""
+    if not avec_reel:
+        return [[[{'etape': 'generer'}]],
+                [[{'etape': 'melanger'}]],
+                [[{'etape': 'separer_synth', 'nom': 'a', 'candidats': ['karaoke_becruily', 'hf_aufr33']}],
+                 [{'etape': 'separer_synth', 'nom': 'b', 'candidats': ['hf_sucial', 'karaoke_bs_frazer']}]],
+                [[{'etape': 'parole', 'candidats': CANDIDATS_PAROLE}], [{'etape': 'masque', 'depuis': ['hf_sucial']}]],
+                [[{'etape': 'mesurer'}]]]
+    reel = [{'etape': 'separer_reel', 'candidats': CANDIDATS_HF, 'duree_extrait': 45}]
     p = [[[{'etape': 'generer'}], reel],
          [[{'etape': 'melanger'}]],
          [[{'etape': 'separer_synth', 'nom': 'a', 'candidats': ['karaoke_becruily', 'hf_aufr33']}],
           [{'etape': 'separer_synth', 'nom': 'b', 'candidats': ['hf_sucial', 'karaoke_bs_frazer']},
            {'etape': 'parole', 'candidats': CANDIDATS_PAROLE}]],
          [[{'etape': 'masque', 'depuis': CANDIDATS_HF}], [{'etape': 'mesurer', 'exclure': ['masque_']}]]]
-    p.append([[{'etape': 'demo', 'candidats': CANDIDATS_HF}] if avec_reel else [], [{'etape': 'mesurer'}]])
+    p.append([[{'etape': 'demo', 'candidats': CANDIDATS_HF}], [{'etape': 'mesurer'}]])
     return p
 
 
@@ -290,8 +317,8 @@ def lancer(a):
     reglages = {'cfg': 0.7, 'fp16': True, 'pad_s': 0.25, 'fondu_s': 0.06, 'graine': 1234, 'recouvrement': 2,
                 'recouvrement_voix': 2, 'pas_synth': 20, 'pas_demo': 30, 'limite_totale_s': limite_s - 90,
                 'paquets_parole': PAQUETS_PAROLE, 'plan': plan,
-                'phases': json.loads(a.phases) if a.phases else phases(plan, 'reel' in plan)}
-    if 'reel' in plan:
+                'phases': json.loads(a.phases) if a.phases else phases(plan, 'reel' in plan and not a.sans_reel)}
+    if 'reel' in plan and not a.sans_reel:
         reglages['reel'] = plan['reel']
     envoi = DONNEES / '.kaggle' / 'envoi-noyau'
     shutil.rmtree(envoi, ignore_errors=True)
@@ -482,10 +509,12 @@ def ecoute(a):
     sf.write(str(t / 'original.wav'), lire_piste(r / 'reel' / 'original.flac', gains['original']), SR, subtype='FLOAT')
     sf.write(str(t / 'instrumental.wav'), lire_piste(r / 'reel' / 'musique.flac', gains['musique']), SR, subtype='FLOAT')
     sf.write(str(t / 'voix_source.wav'), lire_piste(r / 'reel' / 'voix.flac', gains['voix']), SR, subtype='FLOAT')
-    resume = json.loads((r / 'synth' / 'resume.json').read_text()) if (r / 'synth' / 'resume.json').exists() else {}
+    rp = RESULTATS / (a.parole or a.session)   # modèles de parole : d'une autre session, au besoin
+    resume = json.loads((rp / 'synth' / 'resume.json').read_text()) if (rp / 'synth' / 'resume.json').exists() else {}
 
     def note(c):
-        v = [resume.get(c, {}).get(k + '_mixte', {}).get('si_sdr') for k in ('unisson', 'octave', 'tierce', 'meme_air')]
+        """Moyenne sur les duos mixtes chantés ensemble, deux voix converties (sans l'indice d'acoustique)."""
+        v = [resume.get(c, {}).get(k + '_mixte', {}).get('si_sdr') for k in ('unisson_conv', 'octave_conv', 'tierce_conv', 'meme_air')]
         v = [x for x in v if x is not None]
         return sum(v) / len(v) if v else -99
     versions = {'voix principale sèche, non séparée (chaîne actuelle)': (r / 'reel' / 'lead_sec.flac', gains['lead_sec'])}
@@ -494,13 +523,13 @@ def ecoute(a):
             f = r / 'reel' / f'{c}_lead_sec_{k}.flac'
             if f.exists():
                 versions[f'{LIBELLES[c]} : {g}'] = (f, gains[f'{c}_lead_sec_{k}'])
-    parole = json.loads((r / 'synth' / 'separer_parole.json').read_text()) if (r / 'synth' / 'separer_parole.json').exists() else {}
-    meilleure_parole = max((c for c in CANDIDATS_PAROLE if c in resume and (r / 'reel' / f'{c}_o1.flac').exists()),
+    parole = json.loads((rp / 'synth' / 'separer_parole.json').read_text()) if (rp / 'synth' / 'separer_parole.json').exists() else {}
+    meilleure_parole = max((c for c in CANDIDATS_PAROLE if c in resume and (rp / 'reel' / f'{c}_o1.flac').exists()),
                            key=note, default=None)
     if meilleure_parole:
         for k in (1, 2):
             versions[f'{LIBELLES[meilleure_parole]} : voix {k}'] = (
-                r / 'reel' / f'{meilleure_parole}_o{k}.flac', parole[meilleure_parole]['gains_flac_reel'][f'{meilleure_parole}_o{k}'])
+                rp / 'reel' / f'{meilleure_parole}_o{k}.flac', parole[meilleure_parole]['gains_flac_reel'][f'{meilleure_parole}_o{k}'])
     extraits = {'unisson': versions}
     demo = r / 'demo' / 'demo.json'
     if demo.exists():
@@ -555,6 +584,7 @@ def main():
     q.add_argument('--video', help='vrai duo (vidéo locale, lue par ffmpeg seulement)')
     q.add_argument('--debut', type=float, default=None, help='début de la partie analysée (s) ; défaut : la fin')
     q.add_argument('--duree', type=float, default=110.0, help='durée de la partie analysée (s)')
+    q.add_argument('--reel-extrait', help='session dont la voix principale sèche de l\'extrait d\'écoute part dans le jeu')
     q = sp.add_parser('envoyer')
     q.add_argument('--message')
     q = sp.add_parser('lancer')
@@ -562,6 +592,8 @@ def main():
     q.add_argument('--limite', type=float, default=28.0, help='limite de la session (min) ; défaut 28')
     q.add_argument('--phases', help='phases (JSON) à la place du plan par défaut')
     q.add_argument('--essai', action='store_true', help='construit le noyau sans rien envoyer')
+    q.add_argument('--sans-reel', action='store_true',
+                   help='duos synthétiques seuls (le vrai duo et l\'extrait doublé viennent d\'une session précédente)')
     for nom in ('rapatrier', 'tableau'):
         q = sp.add_parser(nom)
         q.add_argument('session')
@@ -569,6 +601,7 @@ def main():
     q.add_argument('session')
     q.add_argument('--ecoute', help='dossier de l\'écoute à l\'aveugle (défaut : banc/ecoute du dépôt)')
     q.add_argument('--graine', type=int, default=20261106)
+    q.add_argument('--parole', help='session des modèles de parole (défaut : la même)')
     a = p.parse_args()
     {'preparer': preparer, 'envoyer': envoyer, 'lancer': lancer, 'rapatrier': rapatrier, 'tableau': tableau,
      'ecoute': ecoute}[a.cmd](a)

@@ -253,6 +253,16 @@ def installer_parole():
                 except PackageNotFoundError:
                     pass
         r = subprocess.run([sys.executable, '-m', 'venv', '--system-site-packages', VENV_PAROLE], capture_output=True, text=True)
+        if r.returncode:   # pas d'ensurepip (session 1) : venv sans pip, le pip du système installe dans le venv
+            etat['venv_sans_pip'] = (r.stderr or r.stdout)[-300:]
+            shutil.rmtree(VENV_PAROLE, ignore_errors=True)
+            r = subprocess.run([sys.executable, '-m', 'venv', '--system-site-packages', '--without-pip', VENV_PAROLE],
+                               capture_output=True, text=True)
+            if r.returncode == 0:
+                v = subprocess.run([os.path.join(VENV_PAROLE, 'bin', 'python'), '-c',
+                                    'import sys, pip; print(sys.prefix, pip.__version__)'], capture_output=True, text=True)
+                etat['pip_du_systeme'] = (v.stdout or v.stderr).strip()[-200:]
+                r = v
         etat['mode'] = 'venv' if r.returncode == 0 else 'target'
         for args in commandes:
             if etat['mode'] == 'venv':
@@ -295,8 +305,8 @@ def lancer_etape_u(etape, env=None, prefixe=''):
     t = time.time()
     exe = sys.executable
     if etape['etape'] == 'parole':
-        exe, env_p = python_parole()
-        env = {**env_p, **(env or {})}
+        exe, env_p = python_parole()   # PYTHONPATH du repli sans venv : il doit l'emporter sur l'environnement de la carte
+        env = {**(env or os.environ), **{k: v for k, v in env_p.items() if os.environ.get(k) != v}}
     env = {**(env or os.environ), 'DOUBLER_DEBUT': str(DEBUT)}
     try:
         r = subprocess.run([exe, COMPLET_U, etape['etape'], json.dumps(etape)], timeout=min(reste, etape.get('limite_s', reste)),
@@ -480,6 +490,10 @@ def etape_parole(a):
     res = {}
     entrees = [(e['id'], os.path.join(SYNTH_TMP, e['id'], 'mix.wav'), os.path.join(SYNTH_TMP, e['id'])) for e in index]
     reel = os.path.join(REEL_TMP, 'extrait_lead_sec.wav')
+    if not os.path.exists(reel) and U['plan'].get('reel_extrait') and entree_u(U['plan']['reel_extrait']['fichier']):
+        # extrait d'écoute d'une session précédente (FLAC du jeu, gain de l'écriture retiré)
+        e = U['plan']['reel_extrait']
+        ecrire_wav_u(reel, lire_mono_u(entree_u(e['fichier'])) / np.float32(e['gain']))
     if os.path.exists(reel):
         entrees.append(('reel', reel, REEL))
     for nom in a['candidats']:
@@ -530,14 +544,17 @@ def charger_parole(nom):
             return [est[0, :, k].float().cpu().numpy() for k in range(est.shape[-1])]
         return sep, source[1]
     if nom == 'mossformer2_ss16k':
-        os.makedirs('/tmp/clearvoice', exist_ok=True)
-        os.chdir('/tmp/clearvoice')   # ClearVoice range ses poids dans ./checkpoints : jamais dans /kaggle/working
+        # ClearVoice range ses poids dans ./checkpoints : jamais dans /kaggle/working. Pas de dossier « clearvoice » à
+        # côté du script (/tmp) : Python le prendrait pour le paquet (session 1).
+        os.makedirs('/tmp/cv_travail', exist_ok=True)
+        os.chdir('/tmp/cv_travail')
+        sys.path = [p for p in sys.path if os.path.abspath(p or '.') not in ('/tmp', os.path.abspath('.'))]
         from clearvoice import ClearVoice
         cv = ClearVoice(task='speech_separation', model_names=['MossFormer2_SS_16K'])
         import soundfile as sf
 
         def sep(x):
-            chemin = '/tmp/clearvoice/entree.wav'
+            chemin = '/tmp/cv_travail/entree.wav'
             sf.write(chemin, x, 16000, subtype='FLOAT')
             out = cv(input_path=chemin, online_write=False)
             if isinstance(out, dict):

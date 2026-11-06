@@ -710,7 +710,9 @@ interface/installer.sh --retirer     # tout enlever (le code et les données res
 ```
 
 Il faut PyGObject avec GTK 4, libadwaita 1.5, GStreamer (lecture, enregistrement au micro) et `pactl`.
-`installer.sh` n'écrit que dans `~/.local`.
+`installer.sh` n'écrit que dans `~/.local`. Pour enregistrer au micro d'un téléphone Android, il faut aussi
+[scrcpy](https://github.com/Genymobile/scrcpy) (avec son `adb`) et le débogage USB du téléphone : branché en USB, ou
+sans fil après `adb connect <adresse IP>:5555`.
 
 Pages écrites, encore en essai :
 
@@ -719,7 +721,7 @@ Pages écrites, encore en essai :
 | Doubler | une ou plusieurs vidéos (sélecteur ou glisser-déposer), un extrait facultatif par vidéo réglé dans un petit lecteur, les réglages du doublage, dont « Une voix pour tous / Une voix par chanteur » (Voix d'homme et Voix de femme, ou Chanteur 1 et Chanteur 2, si doubler les connaît), l'auto-tune (interrupteur, intensité, gamme ; grisé sans x42-plugins) et l'interrupteur « Paroles » (si doubler connaît `--sans-paroles`), une estimation de la durée |
 | Travaux | la file, les étapes en direct avec le temps écoulé et le temps restant estimé, le journal, l'annulation |
 | Résultats | les doublages, la lecture avec le choix de ce qu'on écoute à la même position (doublage, original, beat seul, ma voix seule — « voix converties seules » avec une voix par chanteur —, voix d'origine seule ; touche B : doublage ⇄ original ; touche T : avec ou sans auto-tune), les paroles synchronisées (`paroles.json` de doubler, sinon les sous-titres de la vidéo), la frise d'octave et celle des voix de chaque passage, les durées par étape, le remix rapide, l'enregistrement du beat ou de la voix seule ; la lecture continue quand on quitte la page ou qu'on ferme la fenêtre (barre « en cours de lecture », MPRIS pour le menu du haut de GNOME et les touches multimédia) ; mise à la corbeille depuis la liste, une ligne ou plusieurs |
-| Voix | écouter la référence, choisir la voix par défaut, ajouter une voix depuis un fichier ou au micro, renommer, mettre à la corbeille, prises de chant |
+| Voix | écouter la référence, choisir la voix par défaut, ajouter une voix depuis un fichier ou au micro (celui du PC, ou celui d'un téléphone Android par scrcpy, en son sans perte), renommer, mettre à la corbeille, prises de chant |
 | Écoute à l'aveugle | les versions du banc d'essai, notées de 1 à 5 sans savoir laquelle est laquelle ; interrupteur « voix seule » (touche V) |
 | État | Kaggle (présence du jeton, compte, noyaux), verrou de `doubler`, mémoire et charge du poste |
 

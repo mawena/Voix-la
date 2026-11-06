@@ -1,2 +1,3 @@
-# « dont » est un mot français (relatif), pas une faute pour « don't »
-voix-la: spelling-error-in-changelog dont don't [usr/share/doc/voix-la/changelog.gz]
+# Le journal debian/changelog est en français : le correcteur anglais de lintian y voit des fautes
+# (« dont », « complet »…) qui n'en sont pas.
+voix-la: spelling-error-in-changelog

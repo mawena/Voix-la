@@ -1,7 +1,8 @@
 """Détail d'un résultat (la liste des doublages est la bibliothèque, gui/bibliotheque.py) : un lecteur (vidéo ou MP3)
 où l'on choisit ce qu'on écoute à la même position (doublage, original, beat seul, ma voix seule, voix d'origine
 seule ; touches 1 à 5, B : doublage ⇄ original), les paroles synchronisées, la frise d'octave, les durées par étape,
-un remix rapide, l'enregistrement du beat ou de la voix seule, ouvrir le dossier, supprimer vers la corbeille.
+un remix rapide, l'enregistrement du beat ou de la voix seule, ouvrir le dossier, supprimer vers la corbeille, et
+« Partager… » : une courte vidéo pour les réseaux (gui/partage.py), dont l'extrait reprend la boucle A-B du lecteur.
 
 Lecteur complet (gui/commandes.py) : temps écoulé et restant, volume et muet (M), vitesse de 0,5× à 2× en gardant la
 hauteur ([ et ]), boucle A-B qui vaut pour toutes les pistes (L), ±5 s (flèches), une image en pause (« , » et « . »),
@@ -118,6 +119,11 @@ class PageDetail(Adw.NavigationPage):
         b_suppr = commun.bouton(icone="user-trash-symbolic", infobulle="Mettre à la corbeille…",
                                 clic=self.supprimer)
         entete.pack_end(b_suppr)
+        # export pour les réseaux : une vidéo courte (extrait de la boucle A-B, paroles karaoké, mention)
+        self.b_partager = commun.bouton(icone="send-to-symbolic", clic=self.partager,
+                                        infobulle="Partager… : une vidéo courte pour les réseaux (l’extrait de la "
+                                                  "boucle A-B, paroles karaoké)", sensitive=res.complet)
+        entete.pack_end(self.b_partager)
         self.b_oeil = Gtk.MenuButton(icon_name="view-reveal-symbolic", menu_model=self._menu_oeil(),
                                      tooltip_text="Panneaux, visualisations et paroles")
         self.b_oeil.update_property([Gtk.AccessibleProperty.LABEL], ["Panneaux, visualisations et paroles"])
@@ -1938,6 +1944,17 @@ class PageDetail(Adw.NavigationPage):
             GLib.timeout_add(2400, lambda: (self.regler_vitesse(v), False)[1])
         if action == "clavier":
             GLib.timeout_add(2600, lambda: (self._essai_clavier(), False)[1])
+        if action.startswith("partager"):
+            # le dialogue « Partager un extrait » (après « boucle-a-b » s'il y en a une) ; « partager-carre » : format
+            # carré, « partager-traduction » : traduction sous la ligne
+            def partager():
+                d = self.partager()
+                if action == "partager-carre":
+                    d.r_format.set_selected(1)
+                if action == "partager-traduction":
+                    d.r_traduction.set_active(True)
+                return False
+            GLib.timeout_add(2200, partager)
         if action == "frises":
             def vers_frises():
                 from gi.repository import Graphene    # chargé par gui/essais.py (captures d'essai)
@@ -1946,6 +1963,27 @@ class PageDetail(Adw.NavigationPage):
                     self.defilement.get_vadjustment().set_value(max(0.0, point.y - 12))
                 return False
             GLib.timeout_add(3000, vers_frises)
+
+    # --- partager : export pour les réseaux (gui/partage.py) ---------------------------------------------------------
+
+    def partager(self):
+        """« Partager… » : le dialogue d'export pour les réseaux, l'extrait pris sur la boucle A-B du lecteur."""
+        from .partage import ouvrir
+        return ouvrir(self.fenetre, self.res, detail=self)
+
+    def ecouter_extrait(self, debut, fin, piste=None):
+        """« Écouter » du dialogue de partage : la piste choisie (doublage, sa version auto-tune, beat seul, ma voix
+        seule), la boucle A-B posée sur l'extrait, lecture depuis son début."""
+        if piste in ("doublage", "autotune", "beat", "ma_voix"):
+            base = "doublage" if piste == "autotune" else piste
+            if self.res.autotune and (piste == "autotune") != self.autotune and base in ("doublage", "ma_voix"):
+                self.t_autotune.set_active(piste == "autotune")
+            if pistes.cle_de_base(self.voulue or self.piste) != base:
+                self.touche_piste(base)
+        self.lecteur.definir_boucle((float(debut), float(fin)))
+        self.aller_a(float(debut))
+        self.lire()
+        self._lecteur_change()
 
     def _essai_clavier(self):
         """Essai (scénario « clavier », sous Xvfb) : de vraies touches envoyées par xdotool, et l'état relevé après

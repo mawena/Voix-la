@@ -81,6 +81,10 @@ PREFERENCES_DEFAUT = {
     "sources_choisies": {},
     # taille du cache des copies vidéo des pistes séparées, en Mo ; None : 2 Go (voixla.pistes.CACHE_VIDEO_MO)
     "cache_pistes_mo": None,
+    # Export pour les réseaux (gui/partage.py) : format, cadrage, fondu, traduction et texte de la mention ; la mention
+    # elle-même est allumée à chaque ouverture, la piste revient au doublage
+    "partage": {"format": "vertical", "cadrage": "flou", "fondu": True, "traduction": False,
+                "texte_mention": "Voix générée par IA"},
     # Bibliothèque des résultats (voixla.bibliotheque) : vue (grille ou liste), tri, ordre inversé, versions regroupées
     "bibliotheque": {"vue": "grille", "tri": "date", "inverse": False, "regrouper": True},
     # Quota GPU de Kaggle (voixla/quota.py). Le total et la remise à zéro viennent de « kaggle quota » quand il

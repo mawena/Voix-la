@@ -999,6 +999,17 @@ def envoyer_jeu(travaux, voix, dossier):
 # la moitié (la carte 0 convertit seule pendant ce temps ; mesuré le 06/11/2026 : 0,4 à 0,45), jamais moins que ce qui
 # dépasse la conversion (paroles plus longues que toute la conversion à deux cartes)
 FACTEURS_DEUX_CARTES = {'nettoyage': 0.70, 'conversion': 0.55, 'paroles': 0.5}
+# Une carte (cartes=1) : le temps de GPU du nettoyage et de YingMusic-SVC que notent les sessions à deux cartes (deux
+# cartes additionnées, tâches et morceaux seuls) ramené à celui d'une carte seule, qui lit, assemble et écrit chaque
+# piste dans ce temps-là (mesuré le 06/11/2026 sur la même chanson de 2 min 49, à une puis à deux cartes : nettoyage
+# 376 s contre 346, conversion 504 s contre 482). Toujours à une carte, ce que ces deux étapes prennent en plus de leur
+# temps de GPU et de leur chargement, quelle que soit la durée du son (démarrage de leur processus, préparation de la
+# voix de référence…), sans session passée à une carte pour le mesurer (04 au 06/11/2026 : 3 à 4 s et 13 à 15 s)
+FACTEURS_UNE_CARTE = {'nettoyage': 1.09, 'conversion': 1.04}
+SURCOUTS_UNE_CARTE_S = {'nettoyage': 3.5, 'conversion': 13.5}
+# Même chanson, déjà doublée : son de même durée, à MEME_CHANSON_S près, plus long que MEME_CHANSON_MIN_S (un extrait
+# court peut tomber sur la durée d'un autre)
+MEME_CHANSON_S, MEME_CHANSON_MIN_S = 0.05, 60.0
 
 
 def rapports_passes(sorties, n=30):
@@ -1021,9 +1032,14 @@ def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=
     passés (rapports_passes : sous <sorties>/*/travail/*/, sorties pouvant être une liste de dossiers) : démarrage (file
     Kaggle comprise) + installation + chargement des modèles, le reste de la session (chargement de la séparation, fin
     des vidéos, fin du noyau), puis par seconde d'audio la séparation et l'analyse, le nettoyage (chant) et la conversion
-    (proportionnelle aux pas de diffusion ; voix nettoyée : voix principale, chœurs et passages repris par la piste de
-    secours convertis à part, environ 1,5 fois plus), enfin les paroles (une part fixe : démarrage, chargement de Whisper
-    large-v3 et du traducteur depuis leur copie locale ; puis transcription et traduction, par seconde d'audio).
+    (par pas de diffusion ; voix nettoyée : voix principale, chœurs et passages repris par la piste de secours convertis
+    à part, environ 1,5 fois plus), enfin les paroles (une part fixe : démarrage, chargement de Whisper large-v3 et du
+    traducteur depuis leur copie locale ; puis transcription et traduction, par seconde d'audio).
+    La conversion se mesure sur les sessions passées au même nombre de pas s'il y en a (elle n'est pas proportionnelle
+    aux pas : 50 pas prennent 1,3 fois 30 pas sur la même chanson), et sur la même chanson si elle a déjà été doublée
+    (même durée de son, MEME_CHANSON_S) : elle dépend surtout de la place des chœurs, que la durée seule ne dit pas (du
+    04 au 06/11/2026, de 0,042 à 0,099 s par pas et par seconde de son ; une chanson aux chœurs partout en fait deux
+    pistes entières).
     Le mode n'est connu qu'après la séparation : en mode auto, l'estimation suppose du chant (la plus longue). Défauts
     prudents sans historique (nettoyage : banc d'essai du 04/11/2026 ; paroles : essais du 06/11/2026).
     Deux cartes (cartes=2, machine GPU T4 x2) : les temps par seconde d'audio restent des temps de GPU (somme des
@@ -1031,10 +1047,16 @@ def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=
     réel (FACTEURS_DEUX_CARTES, ou ce qu'ont pris les sessions passées à deux cartes), et la séparation d'un lot environ
     la moitié (jamais moins que la plus longue vidéo). Avec YingMusic-SVC, les paroles (P, leur durée sur la carte 1,
     attente du chargement de la carte 0 comprise) passent pendant la conversion (Y, sa durée à deux cartes) : elles
-    coûtent max(0,5 × P, P − Y). Une carte, la parole ou Seed-VC : les paroles après la conversion, P en entier."""
+    coûtent max(0,5 × P, P − Y). Une carte, la parole ou Seed-VC : les paroles après la conversion, P en entier.
+    Une carte (cartes=1) : le temps de GPU du nettoyage et de YingMusic-SVC noté par une session à deux cartes compte
+    pour ce qu'il aurait pris sur une carte seule (FACTEURS_UNE_CARTE), et ces deux étapes coûtent en plus ce qu'elles
+    prennent hors de leur temps de GPU et de leur chargement (SURCOUTS_UNE_CARTE_S, ou ce qu'elles ont pris aux
+    sessions passées à une carte)."""
     import statistics
-    fixes, autres, extras, sep, net, conv, conv_net, par, par_fixes, par_fixes_carte = [], [], [], [], [], [], [], [], [], []
+    une = cartes <= 1
+    fixes, autres, extras, sep, net, convs, par, par_fixes, par_fixes_carte = [], [], [], [], [], [], [], [], []
     f_net, f_conv = [], []
+    surcouts = {'nettoyage': [], 'conversion': []}
     f_par = FACTEURS_DEUX_CARTES['paroles']
     for p in rapports_passes(sorties):
         try:
@@ -1045,6 +1067,8 @@ def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=
             v = r.get('variantes', {}).get('voix_convertie.flac', {})
             nettoyee = bool((r.get('nettoyage') or {}).get('applique'))
             seule = tl.get('videos_dans_la_session') == 1
+            deux = (tl.get('gpus') or 1) >= 2
+            ying_v = (v.get('moteur') or 'yingmusic') == 'yingmusic'
             # paroles faites sur la carte 1 pendant la conversion (leur durée, comprise dans yingmusic_total_s)
             pendant = sk.get('paroles_pendant_conversion_s')
             if sk.get('installation_s') is not None:
@@ -1065,10 +1089,25 @@ def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=
                         autres.append(reste)
             if d > 5 and tps.get('separation_s'):
                 sep.append((tps['separation_s'] + tps.get('analyse_s', 0)) / d)
+            # estimation à une carte d'après une session à deux cartes : son temps de GPU ramené à une carte seule
+            # (la conversion seulement si YingMusic-SVC l'a partagée entre les cartes)
             if d > 5 and nettoyee and tps.get('nettoyage_s'):
-                net.append(tps['nettoyage_s'] / d)
+                net.append(tps['nettoyage_s'] / d * (FACTEURS_UNE_CARTE['nettoyage'] if une and deux else 1.0))
             if d > 5 and v.get('conversion_s') and v.get('pas_diffusion'):
-                (conv_net if nettoyee else conv).append(v['conversion_s'] / d / v['pas_diffusion'])
+                e = FACTEURS_UNE_CARTE['conversion'] if une and deux and sk.get('yingmusic_gpu_s') and ying_v else 1.0
+                # (par pas et par seconde de son, pas, voix nettoyée, durée du son : même pas, même chanson)
+                convs.append((v['conversion_s'] / d / v['pas_diffusion'] * e, v['pas_diffusion'], nettoyee, d))
+            if not deux and seule:
+                # une carte : ce que le nettoyage et YingMusic-SVC prennent hors de leur temps de GPU et de leur chargement
+                if nettoyee and tps.get('nettoyage_s') and sk.get('nettoyage_totale_s') is not None:
+                    x = sk['nettoyage_totale_s'] - (sk.get('chargement_nettoyage_s') or 0) - tps['nettoyage_s']
+                    if 0 <= x < 120:
+                        surcouts['nettoyage'].append(x)
+                if (ying_v and v.get('conversion_s') and sk.get('yingmusic_total_s') is not None
+                        and len(r.get('variantes') or {}) == 1):
+                    x = sk['yingmusic_total_s'] - (sk.get('chargement_yingmusic_s') or 0) - v['conversion_s']
+                    if 0 <= x < 120:
+                        surcouts['conversion'].append(x)
             if 'paroles_copie_s' in sk and sk.get('paroles_total_s') is not None and seule:
                 # tout ce qui n'est pas transcription (démarrage du processus, chargements, traduction) compte comme fixe ;
                 # seulement les noyaux qui copient les modèles sur le disque local (avant : 5 min de chargement). Sur la
@@ -1077,7 +1116,7 @@ def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=
                     max(float(sk['paroles_total_s']) - float(tps.get('paroles_s') or 0), 0.0))
             if d > 5 and tps.get('paroles_s'):
                 par.append(tps['paroles_s'] / d)
-            if tl.get('gpus') == 2 and seule:
+            if deux and seule:
                 # part du temps de GPU (somme des cartes) que le nettoyage et YingMusic-SVC ont pris en temps réel ;
                 # paroles pendant la conversion : leur part (f_par) retirée, si la carte 1 a rejoint la conversion
                 if sk.get('nettoyage_gpu_s'):
@@ -1088,36 +1127,56 @@ def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=
                         f_conv.append((x - f_par * (pendant or 0)) / sk['yingmusic_gpu_s'])
         except (OSError, ValueError, KeyError, TypeError):
             continue
+
+    def debit_conversion(duree, nettoyee):
+        """Conversion par pas et par seconde de son d'une vidéo de cette durée : sessions passées au même nombre de pas
+        s'il y en a, celles de la même chanson parmi elles s'il y en a ; None sans historique."""
+        genre = [c for c in convs if c[2] == nettoyee]
+        memes_pas = [c for c in genre if c[1] == pas] or genre
+        meme = [c[0] for c in memes_pas if duree > MEME_CHANSON_MIN_S and abs(c[3] - duree) <= MEME_CHANSON_S]
+        return statistics.median(meme or [c[0] for c in memes_pas]) if memes_pas else None
+
     fixe = statistics.median(fixes) if fixes else 120.0
     autre = statistics.median(autres) if autres else 80.0
     t_sep = statistics.median(sep) if sep else 0.8
-    t_conv = statistics.median(conv) if conv else 0.045
     t_net = 0.0
     chant = mode != 'parole'
-    if nettoyage and chant:
+    nettoie = nettoyage and chant
+    if nettoie:
         fixe += statistics.median(extras) if extras else 90.0   # chargement des deux Roformer et de YingMusic-SVC
         t_net = statistics.median(net) if net else 2.3           # banc : ~9 min de plus pour 4 min de chant
-        t_conv = statistics.median(conv_net) if conv_net else 1.5 * t_conv
     elif chant and moteur == 'yingmusic':
         fixe += 30.0   # chargement de YingMusic-SVC
+
+    def t_conv(duree):
+        t = debit_conversion(duree, False)
+        t = 0.045 if t is None else t
+        if nettoie:   # sans voix nettoyée passée : 1,5 fois la voix complète
+            t_n = debit_conversion(duree, True)
+            t = 1.5 * t if t_n is None else t_n
+        return t
     if voix_cibles > 1 and chant:   # une voix par chanteur : chaque référence préparée par moteur, pistes reconnues
         fixe += 20.0 * (voix_cibles - 1)
         t_sep += 0.05
     total, plus_longue = float(sum(durees_s)), float(max(durees_s, default=0.0))
+    conversion = pas * sum(float(x) * t_conv(float(x)) for x in durees_s)
     # paroles : part fixe (copie locale des modèles) et transcription, traduction comprise, par seconde d'audio
     t_par = statistics.median(par) if par else 0.45
     p_fixe = statistics.median(par_fixes) if par_fixes else 25.0
     t_paroles = (p_fixe + total * t_par) if paroles else 0.0
-    if cartes <= 1:
-        return round(autre + fixe + t_paroles + total * (t_sep + t_net + t_conv * pas))
+    ying = chant and moteur == 'yingmusic'
+    if une:
+        # le nettoyage et YingMusic-SVC prennent un peu plus que leur temps de GPU et leur chargement
+        surcout = sum((statistics.median(surcouts[k]) if surcouts[k] else SURCOUTS_UNE_CARTE_S[k])
+                      for k, oui in (('nettoyage', nettoie), ('conversion', ying)) if oui)
+        return round(autre + fixe + t_paroles + surcout + total * (t_sep + t_net) + conversion)
     # Deux cartes : seuls le nettoyage, la conversion YingMusic-SVC et la séparation d'un lot se partagent entre les
     # cartes ; les paroles passent sur la carte 1 pendant la conversion YingMusic-SVC
     f_sep = max(0.5, plus_longue / total) if len(durees_s) > 1 and total > 0 else 1.0
     borne = lambda f: min(1.0, max(0.4, f))
     fn = borne(statistics.median(f_net)) if f_net else FACTEURS_DEUX_CARTES['nettoyage']
     fc = borne(statistics.median(f_conv)) if f_conv else FACTEURS_DEUX_CARTES['conversion']
-    ying = chant and moteur == 'yingmusic'
-    conversion = total * t_conv * pas * (fc if ying else 1.0)
+    conversion *= fc if ying else 1.0
     if paroles and ying:
         # sans session passée de ce genre : la part fixe d'avant, plus l'attente du chargement de YingMusic-SVC sur la
         # carte 0 (les modèles se chargent l'un après l'autre)

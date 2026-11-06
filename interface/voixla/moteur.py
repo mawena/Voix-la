@@ -23,6 +23,7 @@ import sys
 import threading
 import time
 import types
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 
@@ -229,6 +230,75 @@ def args_autotune(reglages, caps):
     return []
 
 
+def _intensite(v):
+    """Une intensité d'auto-tune de 1 à 100, sinon None (absente, 0 : désactivé, illisible)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    n = int(round(v))
+    return n if 1 <= n <= 100 else None
+
+
+def gamme_du_rapport(rapport):
+    """La gamme imposée au doublage précédent (rapport.json, autotune.gamme), en valeur de GAMMES : « chromatique »,
+    « la-mineur »… ; « auto » si elle avait été détectée, ou si le rapport n'en dit rien de lisible."""
+    at = (rapport or {}).get("autotune") if isinstance(rapport, dict) else None
+    g = at.get("gamme") if isinstance(at, dict) else None
+    if not isinstance(g, dict):
+        return "auto"
+    s = unicodedata.normalize("NFD", str(g.get("demandee") or "auto").strip().lower())
+    s = "".join(c for c in s if not unicodedata.combining(c)).replace("♯", "#").replace("♭", "b")
+    s = re.sub(r"[\s_]+", "-", s).strip("-")
+    if s in ("", "auto", "automatique", "detectee"):
+        return "auto"
+    valeurs = [v for v, _l in GAMMES]
+    if s in valeurs:
+        return s
+    if g.get("type") == "chromatique":
+        return "chromatique"
+    # demandée autrement (« Am », « sib », « C#m ») : la tonique (0 à 11, do = 0) et le mode lus par doubler
+    t, m = g.get("tonique"), g.get("mode")
+    if isinstance(t, int) and not isinstance(t, bool) and 0 <= t < 12 and m in ("majeur", "mineur"):
+        return f"{TONIQUES[t][0]}-{m}"
+    return "auto"
+
+
+def autotune_du_resultat(rapport, conf=None):
+    """Réglages d'auto-tune présentés au remix d'un doublage : (version, intensité, gamme). version : le doublage a
+    déjà sa version auto-tune (autotune.applique) ; intensité : celle du rapport, sinon la clé « autotune » de la
+    configuration de doubler, sinon AUTOTUNE_DEFAUT ; gamme : celle du rapport si elle avait été imposée, sinon
+    « auto »."""
+    at = (rapport or {}).get("autotune") if isinstance(rapport, dict) else None
+    at = at if isinstance(at, dict) else {}
+    n = _intensite(at.get("intensite")) or _intensite(autotune_par_defaut(conf)) or AUTOTUNE_DEFAUT
+    return bool(at.get("applique")), n, gamme_du_rapport(rapport)
+
+
+def autotune_remix_possible(caps, conf=None):
+    """(vrai, '') si le remix peut faire ou retirer une version auto-tune, sinon (faux, cause) : « doubler » (doubler
+    sans --autotune ni --sans-autotune) ou « x42 » (greffon absent : x42_autotune null dans « doubler --config
+    --json »)."""
+    if "--autotune" not in caps or "--sans-autotune" not in caps:
+        return False, "doubler"
+    connu, dossier = x42_autotune(conf)
+    if connu and dossier is None:
+        return False, "x42"
+    return True, ""
+
+
+def reglages_remix_autotune(allume, intensite, gamme, version, possible=True):
+    """Réglages d'auto-tune d'un remix, pour args_autotune : interrupteur allumé, --autotune N (et sa gamme si elle
+    n'est pas « auto ») ; éteint alors que le doublage a sa version auto-tune, --sans-autotune (elle va à la
+    corbeille) ; éteint sans version, ou auto-tune impossible : rien, comme un remix d'avant l'auto-tune."""
+    if not possible:
+        return {}
+    if allume:
+        r = {"autotune": max(1, min(100, int(round(intensite or AUTOTUNE_DEFAUT))))}
+        if gamme and gamme != "auto":
+            r["autotune_gamme"] = gamme
+        return r
+    return {"sans_autotune": True} if version else {}
+
+
 def args_doublage(videos, reglages, donnees, extrait=None, evenements=None, caps=None):
     """argv d'un doublage : toutes les vidéos dans un seul appel, donc une seule session Kaggle. videos : chemins, ou
     dicts {chemin, extrait} (extrait propre à chaque vidéo si doubler accepte « vidéo@début+durée »)."""
@@ -302,10 +372,12 @@ def extrait_du_nom(nom):
     return debut, duree
 
 
-def args_remix(video_source, voix, dossier_resultat, donnees, voix_db=None, reverb_db=None, mix_v1=False, caps=None):
+def args_remix(video_source, voix, dossier_resultat, donnees, voix_db=None, reverb_db=None, mix_v1=False, caps=None,
+               autotune=None):
     """argv d'un remix (mixage et remise sur la vidéo depuis travail/, sans Kaggle, quelques secondes).
     doubler retrouve le dossier par le nom de la vidéo et l'extrait : on lui redonne les mêmes, et le dossier parent
-    du résultat comme --sortie (un résultat peut être rangé dans un sous-dossier de sorties/)."""
+    du résultat comme --sortie (un résultat peut être rangé dans un sous-dossier de sorties/). autotune : réglages de
+    reglages_remix_autotune (--autotune N [--autotune-gamme G], --sans-autotune, ou rien)."""
     caps = capacites() if caps is None else caps
     dossier_resultat = Path(dossier_resultat)
     a = [*commande(), str(video_source), "--remix", f"--voix={voix}", f"--sortie={dossier_resultat.parent}"]
@@ -320,6 +392,7 @@ def args_remix(video_source, voix, dossier_resultat, donnees, voix_db=None, reve
         a.append(f"--reverb-db={_nombre(reverb_db)}")
     if mix_v1 and "--mix-v1" in caps:
         a.append("--mix-v1")
+    a += args_autotune(autotune or {}, caps)
     a += _donnees(donnees, caps)
     return a
 
@@ -374,9 +447,10 @@ def ajouter_voix(nom, fichier, donnees):
     return True, message, alertes
 
 
-def remixer(video_source, voix, dossier_resultat, donnees, voix_db=None, reverb_db=None, mix_v1=False):
-    """Remix : rend (ok, sortie complète)."""
-    code, sortie = lancer(args_remix(video_source, voix, dossier_resultat, donnees, voix_db, reverb_db, mix_v1),
+def remixer(video_source, voix, dossier_resultat, donnees, voix_db=None, reverb_db=None, mix_v1=False, autotune=None):
+    """Remix : rend (ok, sortie complète). autotune : voir args_remix."""
+    code, sortie = lancer(args_remix(video_source, voix, dossier_resultat, donnees, voix_db, reverb_db, mix_v1,
+                                     autotune=autotune),
                           environnement(donnees), timeout=900)
     return code == 0 and "ÉCHEC" not in sortie, sortie
 

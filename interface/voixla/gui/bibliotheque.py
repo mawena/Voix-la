@@ -466,6 +466,7 @@ class PageBibliotheque(commun.Page):
 
         simple("dossier", self._ouvrir_dossier)
         simple("corbeille", self._corbeille_entree)
+        simple("partager", self._partager_entree)
         simple("ouvrir", self._ouvrir_cle)
         simple("lire", lambda cle: cle in self.entrees and self.lire_rapide(self.entrees[cle]))
         simple("dossier-sorties", lambda _v: commun.ouvrir_dossier(
@@ -1146,6 +1147,12 @@ class PageBibliotheque(commun.Page):
                 versions.append_item(item)
             menu.append_section(None, versions)
         actions = Gio.Menu()
+        if entree.principale.res.complet:
+            libelle = next((l for v, l in bib.libelles_versions(entree) if v is entree.principale), "")
+            item = Gio.MenuItem.new("Partager…" if entree.n == 1 or not libelle else
+                                    f"Partager la version {libelle}…", None)
+            item.set_action_and_target_value("bibliotheque.partager", cible)
+            actions.append_item(item)
         for libelle, action in (("Ouvrir le dossier", "bibliotheque.dossier"),
                                 (f"Mettre les {entree.n} versions à la corbeille…" if entree.n > 1 else
                                  "Mettre à la corbeille…", "bibliotheque.corbeille")):
@@ -1159,6 +1166,18 @@ class PageBibliotheque(commun.Page):
         e = self.entrees.get(cle)
         if e is not None:
             commun.ouvrir_dossier(self.fenetre, e.principale.res.dossier)
+
+    def _partager_entree(self, cle):
+        """« Partager… » (menu « ⋮ ») : l'export pour les réseaux de la version montrée par la carte ; avec la boucle
+        A-B de son lecteur s'il joue (ou est en pause) en arrière-plan."""
+        e = self.entrees.get(cle)
+        if e is None:
+            return
+        res = e.principale.res
+        s = lectures().session
+        detail = s if isinstance(s, PageDetail) and not s._oubliee and s.meme_resultat(res) else None
+        from .partage import ouvrir
+        ouvrir(self.fenetre, res, detail)
 
     def _corbeille_entree(self, cle):
         e = self.entrees.get(cle)

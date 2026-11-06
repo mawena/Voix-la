@@ -636,5 +636,55 @@ class EssaiDeBoutEnBout(EssaiIsole):
         self.assertEqual(list((self.tmp / "cache" / "partage").glob("export-*")), [])
 
 
+GUI = None
+try:
+    import gi
+    gi.require_version("Gtk", "4.0")
+    gi.require_version("Adw", "1")
+    GUI = True
+except (ImportError, ValueError):
+    GUI = False
+
+
+@unittest.skipUnless(FFMPEG and GUI and shutil.which("xvfb-run") and shutil.which("dbus-run-session")
+                     and shutil.which("flock"), "ffmpeg, GTK, xvfb-run, dbus-run-session ou flock absent")
+class EssaiDialogue(EssaiIsole):
+    """Le dialogue « Partager un extrait » sous Xvfb, sur un bus privé, son coupé (tests/essai_partage_gui.py) : boucle
+    A-B, mention, pistes, proposition, aperçu, « Écouter », export imité et annulation, préférences, menu « ⋮ »."""
+
+    def test_dialogue(self):
+        import contextlib
+        os.environ["VOIXLA_CACHE"] = str(self.tmp / "cache")
+        fp.creer(self.donnees, duree=75.0, taille=(160, 90))
+        env = dict(os.environ)
+        env.update({"GTK_A11Y": "none", "NO_AT_BRIDGE": "1", "GIO_USE_VFS": "local", "GSK_RENDERER": "cairo",
+                    "ADW_DISABLE_PORTAL": "1", "VOIXLA_APP_ID": f"io.mawena.VoixLa.Essai{os.getpid()}",
+                    "GST_PLUGIN_FEATURE_RANK": "fakeaudiosink:MAX", "VOIXLA_PAGE": "resultats",
+                    "XDG_STATE_HOME": str(self.tmp / "xdg-etat"),
+                    "PYTHONPATH": os.pathsep.join([str(INTERFACE)] + ([os.environ["PYTHONPATH"]]
+                                                                        if os.environ.get("PYTHONPATH") else []))})
+        verrou = Path(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()) / "voix-la-xvfb.verrou"
+        cmd = ["flock", str(verrou), "dbus-run-session", f"--config-file={INTERFACE / 'outils' / 'bus-essai.conf'}",
+               "--", "xvfb-run", "-a", "-s", "-screen 0 1400x1000x24", "nice", "-n", "10", sys.executable, "-m",
+               "tests.essai_partage_gui"]
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+                             cwd=str(INTERFACE), stdin=subprocess.DEVNULL, start_new_session=True)
+        try:
+            sortie, erreur = p.communicate(timeout=180)
+        except subprocess.TimeoutExpired:
+            os.killpg(p.pid, signal.SIGKILL)
+            sortie, erreur = p.communicate()
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(p.pid, signal.SIGKILL)
+        mesures = {}
+        for l in sortie.splitlines():
+            with contextlib.suppress(ValueError):
+                mesures.update(json.loads(l))
+        trace = sortie[-3000:] + erreur[-3000:]
+        self.assertEqual(p.returncode, 0, trace)
+        self.assertEqual(mesures.get("erreurs"), [], trace)
+        self.assertTrue(mesures.get("fini"), trace)
+
+
 if __name__ == "__main__":
     unittest.main()

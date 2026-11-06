@@ -9,6 +9,17 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ### Ajouté
 
+- Interface : la page Résultats devient une bibliothèque, en grille de cartes ou en liste triable par colonne (choix
+  gardé). Chaque carte a une image de la vidéo doublée (16:9, préparée en tâche de fond sous `nice -n 19` et
+  `ionice -c3`, deux à la fois, celles de l'écran d'abord, dans le cache des miniatures ; la pochette d'un MP3 ; sinon
+  une pochette générée d'après le titre), le titre, les voix, la durée, la date et des badges (auto-tune, duo, extrait,
+  langue des paroles, parole). Un bouton lit le doublage sans ouvrir le détail (son seul tant qu'on ne le regarde pas,
+  puis la vidéo au même instant). Les versions d'une même chanson forment une carte « 2 versions », avec une pastille
+  par voix. Tri (date, titre, voix, durée, mode), filtres (voix, chant ou parole, entier ou extrait, auto-tune, duo)
+  avec des puces, recherche sans accents ; menu « ⋮ » et mode sélection dans les deux vues ; Ctrl+F, Espace, Suppr,
+  Ctrl+A ; état vide avec « Doubler une vidéo » ; fenêtre étroite de 360 px. Avec 200 doublages : 77 ms au plus sans
+  rendre la main au chargement, défilement sous 16 ms par image.
+- `python3 -m voixla.pistes miniature FICHIER --large` : la miniature 16:9, ou la pochette intégrée d'un MP3.
 - Interface : auto-tune dans le remix rapide des Résultats. Interrupteur « Version auto-tune », allumé si le
   doublage en a une, avec l'intensité (celle de `rapport.json`, sinon le défaut de la configuration, sinon 70) et la
   gamme (celle du rapport si elle avait été imposée, sinon Auto) de la page Doubler. Allumé : `--remix --autotune N`
@@ -23,6 +34,10 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
   écoulé, puis le contrôle de qualité habituel. Sans téléphone, la raison (aucun, non autorisé, hors ligne, scrcpy ou
   adb absent) et « Réessayer », avec `adb connect` sur l'adresse sans fil indiquée. La source de la dernière prise est
   gardée (`source_enregistrement`). `VOIXLA_TELEPHONE_ESSAI=1` imite un téléphone pour les essais.
+
+### Modifié
+
+- Interface : le cache des miniatures passe de 20 à 60 Mo (images 16:9 de la bibliothèque en plus de celles de MPRIS).
 
 ### Corrigé
 

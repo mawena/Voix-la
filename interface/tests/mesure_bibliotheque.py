@@ -53,6 +53,12 @@ def main():
     def dire(**k):
         print(json.dumps(k, ensure_ascii=False), flush=True)
 
+    def memoire_mo():
+        for ligne in Path("/proc/self/status").read_text().splitlines():
+            if ligne.startswith("VmRSS:"):
+                return round(int(ligne.split()[1]) / 1024)
+        return None
+
     def cartes(w):
         sortie, e = [], w.get_first_child()
         while e is not None:
@@ -92,7 +98,7 @@ def main():
                         "paquets": len(page.mesures["paquets_s"]),
                         "paquet_max_s": round(page.mesures["paquet_max_s"], 3),
                         "chargement_s": round(page.mesures["chargement_s"], 3),
-                        "depuis_la_page_s": round(t_charge - t_debut, 3),
+                        "depuis_la_page_s": round(t_charge - t_debut, 3), "memoire_processus_mo": memoire_mo(),
                         "premiere_image_s": round(fin["t"] - t0, 3)})
         # miniatures du premier écran, à froid
         debut = time.monotonic()
@@ -144,6 +150,7 @@ def main():
         duree = time.monotonic() - debut
         faites = m.mesures["preparees"] - avant["preparees"]
         dire(toutes_les_miniatures={"demandees": len(attente), "recues": len(recues), "preparees": faites,
+                                    "memoire_processus_mo": memoire_mo(), "images_en_memoire": len(m._textures),
                                     "s": round(duree, 1), "par_miniature_s": round(duree / max(1, faites), 3),
                                     "ffmpeg_par_miniature_s": round((m.mesures["duree_preparation_s"] -
                                                                      avant["duree_preparation_s"]) / max(1, faites),

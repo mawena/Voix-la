@@ -8,6 +8,7 @@ import io
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -233,6 +234,11 @@ class EssaiTri(EssaiDonnees):
         entrees = bib.regrouper(self.versions)
         self.assertEqual(bib.compte(entrees, entrees, 14), "14 doublages · 12 chansons")
         self.assertEqual(bib.compte(entrees[:2], entrees, 14), f"{entrees[0].n + entrees[1].n} sur 14 doublages")
+        f = bib.Filtre(voix="marie", autotune=True)
+        gardees = [e for e in entrees if f.garde(e)]
+        self.assertEqual(bib.compte(gardees, entrees, 14, f), "2 sur 14 doublages",
+                         "la version de Jules, montrée par la carte, ne passe pas le filtre")
+        self.assertEqual(bib.compte(entrees, entrees, 14, bib.Filtre()), "14 doublages · 12 chansons")
         deplie = bib.regrouper(self.versions, False)
         self.assertEqual(bib.compte(deplie, deplie, 14), "14 doublages")
         self.assertEqual(bib.compte([], [], 0), "Aucun doublage")
@@ -406,8 +412,21 @@ class EssaiPage(EssaiAvecCache):
         cmd = ["flock", str(verrou), "dbus-run-session", f"--config-file={INTERFACE / 'outils' / 'bus-essai.conf'}",
                "--", "xvfb-run", "-a", "-s", "-screen 0 1400x1000x24", "nice", "-n", "10", sys.executable, "-m",
                "tests.essai_bibliotheque_gui"]
-        r = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=str(INTERFACE), timeout=180,
-                           stdin=subprocess.DEVNULL)
+        # un groupe de processus à lui : à la fin, ce qui reste (ffmpeg d'une miniature, préparation lancée par le
+        # détail) est arrêté, et n'écrit plus dans le dossier de l'essai
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+                             cwd=str(INTERFACE), stdin=subprocess.DEVNULL, start_new_session=True)
+        try:
+            sortie, erreur = p.communicate(timeout=180)
+        except subprocess.TimeoutExpired:
+            os.killpg(p.pid, signal.SIGKILL)
+            sortie, erreur = p.communicate()
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(p.pid, signal.SIGTERM)
+        time.sleep(0.5)
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(p.pid, signal.SIGKILL)
+        r = subprocess.CompletedProcess(cmd, p.returncode, sortie, erreur)
         mesures = {}
         for ligne in r.stdout.splitlines():
             with contextlib.suppress(ValueError):

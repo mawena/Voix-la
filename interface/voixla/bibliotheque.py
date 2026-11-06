@@ -466,13 +466,16 @@ def voix_presentes(versions, noms_voix=None):
     return sorted(vus.items(), key=lambda x: (normaliser(x[1]), x[0]))
 
 
-def compte(visibles, entrees, n_versions):
-    """Le sous-titre de l'en-tête : « 18 doublages · 12 chansons », ou « 5 sur 18 doublages » quand on filtre.
-    visibles : les entrées affichées ; entrees : toutes ; n_versions : le nombre de doublages."""
+def compte(visibles, entrees, n_versions, filtre=None):
+    """Le sous-titre de l'en-tête : « 18 doublages · 12 chansons », ou « 5 sur 18 doublages » quand on filtre (les
+    versions qui passent le filtre, pas celles qu'une carte montre en plus). visibles : les entrées affichées ;
+    entrees : toutes ; n_versions : le nombre de doublages."""
     if not n_versions:
         return "Aucun doublage"
-    vus = sum(e.n for e in visibles)
-    if len(visibles) < len(entrees):
+    mots = filtre.mots() if filtre is not None else None
+    vus = sum(sum(1 for v in e.versions if filtre.garde_version(v, mots)) if filtre is not None else e.n
+              for e in visibles)
+    if (filtre is not None and filtre.quelque_chose) or len(visibles) < len(entrees):
         return f"{vus} sur {formats.pluriel(n_versions, 'doublage')}"
     texte = formats.pluriel(n_versions, "doublage")
     if len(entrees) < n_versions:

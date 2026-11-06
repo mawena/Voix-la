@@ -883,7 +883,8 @@ class PageBibliotheque(commun.Page):
             self.pile.set_visible_child_name("attente")
             return
         visibles = self._visibles()
-        self.titre_fenetre.set_subtitle(bib.compte(visibles, list(self.entrees.values()), len(self.versions)))
+        self.titre_fenetre.set_subtitle(bib.compte(visibles, list(self.entrees.values()), len(self.versions),
+                                                   self.filtre))
         if not self.versions:
             nom = "vide"
         elif not visibles:

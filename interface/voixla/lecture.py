@@ -239,7 +239,7 @@ def cle_reprise(dossier, voix):
 def position_a_garder(position_s, duree_s=None):
     """La position à retenir pour la reprise, ou None : au tout début, ou à la fin (le doublage est fini), on
     reprendra au début."""
-    if isinstance(position_s, bool):
+    if isinstance(position_s, (bool, str)):
         return None
     try:
         p = float(position_s)

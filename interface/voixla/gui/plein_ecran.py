@@ -21,7 +21,7 @@ from .. import lecture as regles
 from .commandes import Commandes
 
 MASQUE_MS = 3000             # commandes et pointeur masqués après 3 s sans mouvement
-MARGE_PAROLES = 40           # paroles au-dessus du bord bas (commandes masquées)
+MARGE_PAROLES = 12           # paroles au-dessus du bord bas (commandes masquées)
 
 
 class PleinEcran(Adw.Bin):
@@ -207,7 +207,8 @@ class PleinEcran(Adw.Bin):
     def _placer_paroles(self, animer=True):
         """Les paroles remontent au-dessus des commandes quand elles apparaissent, et redescendent ensuite."""
         commandes = self.commandes.measure(Gtk.Orientation.VERTICAL, -1)[1]     # hauteur naturelle
-        haut = MARGE_PAROLES // 2 + (commandes + 24 if self._visibles else MARGE_PAROLES // 2)
+        # le karaoké garde sous le texte la place d'une ligne repliée : une petite marge suffit sans les commandes
+        haut = commandes + 24 if self._visibles else MARGE_PAROLES
         if self.paroles.get_margin_bottom() == haut:
             return
         if self._anim_paroles is not None:

@@ -152,6 +152,10 @@ def rapport(mode, duree, voix, options, morceaux=40):
     if "+" in voix:
         a, b = voix.split("+")
         r["voix_cibles"] = {"voix": [{"cle": "homme", "nom": a}, {"cle": "femme", "nom": b}]}
+        # qui chante chaque passage (frise « Voix de chaque passage ») : en alternance, et ensemble au refrain
+        r["affectation"] = {"passages": [{"debut_s": i * 12.0, "fin_s": i * 12.0 + 12.0,
+                                          "voix": [a, b] if i % 4 == 3 else [(a, b)[i % 2]]}
+                                         for i in range(int((duree or 0) // 12))]}
     return r
 
 

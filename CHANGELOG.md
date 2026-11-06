@@ -28,6 +28,12 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ### Modifié
 
+- Interface : l'estimation de la session Kaggle est celle de `doubler` lui-même (`estimer_noyau_s`, chargée depuis le
+  `doubler.py` livré avec l'interface, sans le lancer) : paroles comptées comme lui, une voix par chanteur comprise. À
+  deux cartes, l'interface annonçait environ 45 % de trop ; elle annonce maintenant la même durée que `doubler`. Sans
+  `doubler.py` utilisable, son propre modèle compte les paroles de la même façon.
+- Interface, page Travaux : une fois le noyau lancé, la durée prévue par `doubler` (`estimation_s`) s'affiche (« durée
+  prévue par doubler ≈ 17 min », ou « au-delà de la durée prévue ») et le temps restant la suit.
 - Estimation de la durée d'une session : à deux cartes avec YingMusic-SVC, les paroles comptent pour
   max(0,5 × P, P − Y) (P : leur durée sur la carte 1, attente du chargement de la carte 0 comprise ; Y : la conversion
   à deux cartes) au lieu de P en entier ; à une carte, en parole ou avec Seed-VC, P comme avant. Part de la conversion

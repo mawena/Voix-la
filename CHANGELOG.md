@@ -23,6 +23,12 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ### Corrigé
 
+- Interface : des sous-titres semblaient incrustés sur la vidéo, et s'affichaient en double avec les paroles de
+  l'interface (plein écran, « Sous-titres sur la vidéo »). Rien n'était incrusté dans le fichier : GStreamer dessinait
+  de lui-même la première piste de sous-titres de la vidéo (les paroles ajoutées par `doubler`, en mp4 comme en mkv, ou
+  les sous-titres d'une vidéo d'origine), le drapeau `text` de playbin étant actif par défaut. Le lecteur ouvre
+  désormais chaque flux sans ce drapeau : les seules paroles sur l'image sont celles de l'interface, même après une
+  bascule de piste, un déplacement, la vidéo d'origine ou une réouverture.
 - Estimation de la durée d'une session à une carte (`--gpu 1`) : 18,5 min annoncées pour 22,8 sur une chanson de
   2 min 49 doublée le 06/11 (−19 %), contre −8 % à deux cartes sur la même chanson. La conversion en manquait 3 min :
   le débit médian des sessions passées (0,067 s par pas et par seconde de son) pour une chanson aux chœurs partout,

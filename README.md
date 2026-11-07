@@ -2,7 +2,7 @@
 
 Voix-là : votre vidéo, avec une autre voix. Et voilà.
 
-> **Version 0.9.0** : paquet Debian `.deb` joint à chaque [release](https://github.com/mawena/Voix-la/releases). Voir le
+> **Version 0.10.0** : paquet Debian `.deb` joint à chaque [release](https://github.com/mawena/Voix-la/releases). Voir le
 > [journal des modifications](CHANGELOG.md).
 
 `doubler` prend une vidéo (chanson d'une chanteuse ou d'un chanteur, duo, rap, ou vidéo parlée) et rend la même vidéo,
@@ -555,6 +555,7 @@ Tout va dans `<données>/sorties/<titre>/` (ou le dossier de `--sortie`). Un ext
 | `<titre> - voix <Nom> (auto-tune).<ext>`, `.mp3`, `.lrc` | avec l'auto-tune : la même chose avec la voix auto-tunée (mêmes pistes de paroles et sous-titres d'origine) ; la version normale ne change pas |
 | `<titre> - voix A et B.<ext>`, `.mp3` | avec une voix par chanteur : le doublage où chaque chanteur a sa voix |
 | `comparaison_<pas>pas.mp3`, `comparaison_<N>pas.mp3` | avec `--comparer-pas` : le même passage dans les deux réglages |
+| `partage/` | les vidéos courtes faites par « Partager… » de l'interface (voir `interface/README.md`) |
 | `travail/` | `original.wav` (son extrait), `voix_source.wav` (voix isolée), `instrumental.wav` (musique seule, recalculée à chaque mixage), `source.json` |
 | `travail/<voix>/` | `voix_convertie.flac`, `mix.wav`, `rapport.json`, `courbes.json`, `paroles.json`, journal Kaggle, fichiers intermédiaires du mixage ; avec l'auto-tune : `seche_voix_autotune.wav`, `reverb_voix_autotune.wav`, `mix_autotune.wav` |
 | `travail/a+b/` | avec une voix par chanteur : comme `travail/<voix>/` |
@@ -1032,10 +1033,17 @@ profite aussi. Nettoyage et chœurs compris ; en mode `auto`, il suppose du chan
   la conversion ; à une carte, en parole ou avec Seed-VC, en entier. Leur part fixe est d'environ 15 à 25 s après la
   conversion, 40 s sur la carte 1 (attente du chargement de YingMusic-SVC comprise) ; la transcription prend 0,3 à
   0,5 s par seconde de son, traduction comprise.
+- La conversion se mesure sur les sessions au même nombre de pas (50 pas en prennent environ 1,3 fois 30, et non 1,7),
+  et sur la même chanson si elle a déjà été doublée (même durée de son, à 0,05 s près) : elle dépend surtout de la
+  place des chœurs, convertis à part, que la durée ne dit pas.
+- À une carte (`--gpu 1`), le temps de GPU noté par une session à deux cartes compte pour ce qu'une carte seule aurait
+  pris (1,09 fois pour le nettoyage, 1,04 pour YingMusic-SVC), plus quelques secondes par étape hors calcul (démarrage
+  de leur processus). Une chanson de 2 min 49 doublée le 06/11 à une puis à deux cartes : 21,5 min annoncées pour
+  22,8 (18,5 avant), et 15,2 pour 15,2 (13,9 avant).
 - Sur les onze doublages du 04 au 06/11, l'écart médian est d'environ −4 %. Les grands écarts ne se prévoient pas avant
   l'envoi : l'attente d'une place GPU (jusqu'à 3,5 min), une machine Kaggle lente, une chanson chargée en chœurs
-  (conversion jusqu'à 40 % plus longue), ou des paroles qui manquaient de mémoire GPU (4 min au lieu d'une, sur une
-  chanson du 05/11 ; corrigé depuis).
+  doublée pour la première fois (conversion jusqu'à 40 % plus longue), ou des paroles qui manquaient de mémoire GPU
+  (4 min au lieu d'une, sur une chanson du 05/11 ; corrigé depuis).
 `--preparer-outils` prend environ 11 min de GPU, une fois (10,6 mesurées, Whisper et NLLB compris).
 
 - Paroles : 15 s de transcription pour 21 s chantées. Les modèles (5,6 Go) sont copiés sur le disque local pendant la

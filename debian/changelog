@@ -1,3 +1,14 @@
+voix-la (0.10.0) unstable; urgency=medium
+
+  * Interface : « Partager… » fait une vidéo courte pour les réseaux
+    (9:16, carré ou d'origine), paroles karaoké incrustées, extrait repris
+    de la boucle A-B ou refrain proposé, mention « Voix générée par IA ».
+  * Interface : les sous-titres de la vidéo ne sont plus dessinés par
+    GStreamer en plus des paroles de l'interface (plus de double).
+  * Estimation juste de la durée d'une session à une carte.
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Sat, 07 Nov 2026 09:00:00 +0000
+
 voix-la (0.9.0) unstable; urgency=medium
 
   * Noyau : Roformer de séparation, karaoké et dereverb en demi-précision

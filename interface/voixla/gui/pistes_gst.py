@@ -1,4 +1,5 @@
-"""Pistes audio d'un flux vidéo (Gtk.MediaFile) : changer de piste dans la même vidéo, sans changer de fichier.
+"""Pistes audio d'un flux vidéo (Gtk.MediaFile) : changer de piste dans la même vidéo, sans changer de fichier. Aussi :
+les sous-titres intégrés, que GStreamer ne dessine jamais (couper_texte), la vitesse et la cadence d'images.
 
 Une vidéo doublée par doubler ≥ 0.6.0 a plusieurs pistes audio, calées à l'échantillon près (voixla.pistes). Le
 lecteur passe de l'une à l'autre par current-audio du playbin de GStreamer qui lit la vidéo : même position, image qui
@@ -41,8 +42,8 @@ _nouvel_objet = None         # pygobject_new (API C de PyGObject) : un objet Pyt
 _gobject = None
 
 
-def _dire(texte):
-    print(f"voix-la : pistes audio : {texte}", file=sys.stderr, flush=True)
+def _dire(texte, sujet="pistes audio"):
+    print(f"voix-la : {sujet} : {texte}", file=sys.stderr, flush=True)
 
 
 def _api():
@@ -124,6 +125,60 @@ def _lecteur_et_playbin(m):
     except Exception as e:  # noqa: BLE001
         _dire(f"playbin introuvable ({type(e).__name__} : {e})")
     return None, None
+
+
+# --- Sous-titres intégrés : jamais dessinés par GStreamer ---------------------------------------------------------------
+#
+# playbin a le drapeau « text » par défaut (GstPlay et le lecteur de GTK ne l'enlèvent pas) : la première piste de
+# sous-titres en texte d'une vidéo (les paroles ajoutées par doubler, en mp4 comme en mkv, ou les sous-titres d'une
+# vidéo d'origine) était dessinée sur l'image par subtitleoverlay/textoverlay, quelles que soient sa disposition et son
+# drapeau « enabled ». On aurait dit des sous-titres incrustés, et ils s'ajoutaient aux paroles de l'interface (plein
+# écran, « Sous-titres sur la vidéo ») : en double. Les seules paroles affichées sont celles de l'interface.
+#
+# Le drapeau est retiré à l'ouverture de chaque flux (lecteur.media), avant que playbin ne relie ses pistes : playsink
+# ne crée alors aucun élément d'incrustation ; retiré plus tard, playsink rend ses incrustations muettes (« silent »).
+# current-text à -1 ne coupe rien (c'est « automatique » : playbin garde la piste 0), et l'API de GstPlay
+# (subtitle-track-enabled) n'est pas accessible : le lecteur de GTK 4.14 en est une copie privée (GtkGstPlayer).
+# Le drapeau tient après une bascule de piste audio (current-audio), un déplacement, en pause et en lecture ; un flux
+# rouvert (autre piste, vidéo d'origine, retour de la fenêtre fermée) est un nouveau playbin, coupé à son ouverture.
+# Vérifié avec GTK 4.14 et GStreamer 1.24 (tests/test_sous_titres_gst.py).
+#
+# Playbin introuvable (voir l'en-tête) : rien à couper, un message le dit une fois. GStreamer dessine alors la
+# première piste de sous-titres comme avant, en plus des paroles de l'interface sur l'image ; la lecture, elle, ne
+# change pas.
+
+DRAPEAU_TEXTE = 1 << 2       # GST_PLAY_FLAG_TEXT de playbin et playbin3 : sous-titres dessinés sur l'image
+_texte_signale = False       # « playbin introuvable : sous-titres non coupés » déjà dit
+
+
+def couper_texte(m):
+    """Le playbin de m (un Gtk.MediaFile, prêt ou non) ne dessine plus aucun sous-titre : drapeau « text » retiré (voir
+    plus haut). Vrai si c'est fait (ou l'était déjà), faux si le playbin est introuvable."""
+    global _texte_signale
+    pb = playbin(m)
+    try:
+        if pb is not None and pb.find_property("flags") is not None:
+            drapeaux = int(pb.get_property("flags"))
+            if drapeaux & DRAPEAU_TEXTE:
+                pb.set_property("flags", drapeaux & ~DRAPEAU_TEXTE)
+            return True
+    except Exception as e:  # noqa: BLE001
+        _dire(f"rendu de GStreamer impossible à couper ({type(e).__name__} : {e})", "sous-titres")
+        return False
+    if m is not None and not _texte_signale:
+        _texte_signale = True
+        _dire("playbin introuvable : GStreamer peut dessiner sur l'image la piste de sous-titres d'une vidéo, en plus "
+              "des paroles de l'interface", "sous-titres")
+    return False
+
+
+def texte_coupe(m):
+    """Vrai si le playbin de m ne dessine aucun sous-titre (drapeau « text » absent) ; None si le playbin est
+    introuvable."""
+    pb = playbin(m)
+    if pb is None or pb.find_property("flags") is None:
+        return None
+    return not int(pb.get_property("flags")) & DRAPEAU_TEXTE
 
 
 # --- Vitesse de lecture, image par image ------------------------------------------------------------------------------

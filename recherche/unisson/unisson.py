@@ -538,6 +538,121 @@ def tableau(a):
             print('  ', ' ; '.join(f"{e['etape']} (carte {e.get('carte')}) {e.get('code')} {e.get('duree_s')} s" for e in ph))
 
 
+# --- Analyse de l'extrait du vrai duo sur le PC (CPU) -------------------------------------------------------------------
+
+def ecrire_flac(chemin, x):
+    """FLAC 24 bits, crête à -1 dBFS ; rend le gain appliqué (comme ecrire_flac_u du noyau)."""
+    import numpy as np
+    import soundfile as sf
+    chemin.parent.mkdir(parents=True, exist_ok=True)
+    g = 10 ** (-1 / 20) / (float(np.abs(x).max()) or 1.0)
+    sf.write(str(chemin), np.clip(x * g, -1, 1), SR, subtype='PCM_24', format='FLAC')
+    return g
+
+
+def frazer_cpu(x, tmp, threads):
+    """BS-Roformer karaoké frazer-becruily (audio-separator, CPU) : (voix principale, reste = entrée - voix principale),
+    entrée ramenée à un pic de 0,9 puis remise à l'échelle, comme la classe Roformer du noyau ; durée de la séparation."""
+    import numpy as np
+    import soundfile as sf
+    import torch
+    from audio_separator.separator import Separator
+    torch.set_num_threads(threads)
+    tmp.mkdir(parents=True, exist_ok=True)
+    s = Separator(model_file_dir=str(DONNEES / 'modeles'), output_dir=str(tmp), output_format='WAV', use_soundfile=True,
+                  normalization_threshold=1.0, sample_rate=SR,
+                  mdxc_params={'segment_size': 256, 'override_model_segment_size': False, 'batch_size': 1, 'overlap': 2,
+                               'pitch_shift': 0})
+    t0 = time.time()
+    s.load_model(model_filename='bs_roformer_karaoke_frazer_becruily.ckpt')
+    chargement = time.time() - t0
+    x2 = np.ascontiguousarray(np.repeat(x[:, None], 2, 1) if x.ndim == 1 else x[:, :2], dtype=np.float32)
+    g = 0.9 / (float(np.abs(x2).max()) or 1.0)
+    entree = tmp / 'entree.wav'
+    sf.write(str(entree), x2 * g, SR, subtype='FLOAT')
+    t0 = time.time()
+    sorties = [Path(p) if os.path.isabs(p) else tmp / p for p in s.separate(str(entree))]
+    duree = time.time() - t0
+    voix = [p for p in sorties if re.search(r'\((vocals|lead|karaoke)\)', p.name, re.I)]
+    assert len(voix) == 1, [p.name for p in sorties]
+    y = sf.read(str(voix[0]), dtype='float32', always_2d=True)[0][:len(x2), :2] / g
+    y = np.pad(y, ((0, len(x2) - len(y)), (0, 0)))
+    for p in sorties:
+        p.unlink(missing_ok=True)
+    entree.unlink(missing_ok=True)
+    return y.mean(1), (x2 - y).mean(1), round(duree, 1), round(chargement, 1), [p.name for p in sorties]
+
+
+def hauteur_pyin(x):
+    """Hauteur (Hz, 0 = non voisé) toutes les 10 ms, pYIN à 16 kHz (le PC n'a pas RMVPE)."""
+    import numpy as np
+    import librosa
+    from scipy.signal import resample_poly
+    y = resample_poly(np.asarray(x, np.float64), 160, 441).astype(np.float32)
+    f, v, _ = librosa.pyin(y, fmin=65, fmax=1000, sr=16000, frame_length=1024, hop_length=160, center=True)
+    return np.where(v & np.isfinite(f), f, 0.0)
+
+
+def analyser(a):
+    """Sur le PC, sans GPU : le BS-Roformer karaoké frazer-becruily (le meilleur des duos synthétiques en octave et en
+    tierce, absent des sessions GPU sur le vrai duo) sur l'extrait d'écoute, voix isolée et voix principale sèche ;
+    puis, pour chaque séparation de l'extrait (sessions données et celle-ci) : secondes à deux (deux pistes à moins de
+    15 dB), et sur ces secondes l'écart de hauteur entre les deux pistes (pYIN) : unisson (moins d'un demi-ton), octave
+    ou autre intervalle ; hauteur médiane de chaque piste. Écrit resultats/<sortie>/reel/ au format de reel_bis."""
+    import numpy as np
+    r1 = RESULTATS / a.sessions[0]
+    g1 = json.loads((r1 / 'reel' / 'reel.json').read_text())['gains_flac']
+    lead = lire_piste(r1 / 'reel' / 'lead_sec.flac', g1['lead_sec']).mean(1)
+    voix = lire_piste(r1 / 'reel' / 'voix.flac', g1['voix'])
+    pistes = {f.stem: lire_piste(f, g1[f.stem]).mean(1) for f in sorted((r1 / 'reel').glob('*_lead_sec_[hf].flac'))}
+    for s in a.sessions[1:]:
+        p = RESULTATS / s / 'synth' / 'separer_parole.json'
+        for nom, v in (json.loads(p.read_text()) if p.exists() else {}).items():
+            for cle, gain in (v.get('gains_flac_reel') or {}).items():
+                pistes[cle] = lire_piste(RESULTATS / s / 'reel' / f'{cle}.flac', gain).mean(1)
+    sortie = RESULTATS / a.sortie / 'reel'
+    duree = len(lead) / SR
+    res = {'duree_s': round(duree, 1), 'machine': f'PC, CPU, {a.threads} fils', 'passes': {}, 'a_deux': {},
+           'attribution': {}, 'gains_flac': {}, 'hauteur': 'pYIN (librosa), 16 kHz, 10 ms'}
+    for src, x in (('voix', voix), ('lead_sec', lead)):
+        cle = f'karaoke_bs_frazer_{src}'
+        o1, o2, d, ch, noms = frazer_cpu(x, TRAVAIL / 'frazer', a.threads)
+        res['passes'][cle] = {'modele': 'bs_roformer_karaoke_frazer_becruily.ckpt', 'separation_s': d, 'rtf': round(d / duree, 3),
+                              'chargement_s': ch, 'pistes': noms}
+        dire(f'{cle} : {d:.0f} s pour {duree:.0f} s (CPU)')
+        for k, y in (('o1', o1), ('o2', o2)):
+            pistes[f'{cle}_{k}'] = y
+            res['gains_flac'][f'{cle}_{k}'] = ecrire_flac(sortie / f'{cle}_{k}.flac', y)
+    for s1, s2 in (('_h', '_f'), ('_o1', '_o2')):
+        for k1 in sorted(k for k in pistes if k.endswith(s1)):
+            nom, k2 = k1[:-len(s1)], k1[:-len(s1)] + s2
+            if k2 not in pistes:
+                continue
+            x1, x2 = pistes[k1], pistes[k2]
+            l1, l2 = niveaux_db(x1), niveaux_db(x2)
+            a1, a2 = actif(l1, 25.0), actif(l2, 25.0)
+            deux = a1 & a2 & (np.abs(l1 - l2) < 15.0)
+            f1, f2 = hauteur_pyin(x1), hauteur_pyin(x2)
+            n = min(len(deux), len(f1), len(f2))
+            deux, a1, a2, f1, f2 = deux[:n], a1[:n], a2[:n], f1[:n], f2[:n]
+            v = deux & (f1 > 40) & (f2 > 40)
+            ecart = np.abs(12 * np.log2(np.maximum(f1[v], 1) / np.maximum(f2[v], 1)))
+            med = [float(np.median(f[a & (f > 40)])) if (a & (f > 40)).any() else 0.0 for f, a in ((f1, a1), (f2, a2))]
+            res['a_deux'][nom] = {'secondes_a_deux': round(float(deux.sum()) / 100, 1),
+                                  'secondes_1': round(float(a1.sum()) / 100, 1), 'secondes_2': round(float(a2.sum()) / 100, 1),
+                                  'a_deux_voise_s': round(float(v.sum()) / 100, 1),
+                                  'unisson_s': round(float((ecart < 0.5).sum()) / 100, 1),
+                                  'octave_s': round(float((np.abs(ecart - 12) < 0.5).sum()) / 100, 1),
+                                  'autre_s': round(float(((ecart >= 0.5) & (np.abs(ecart - 12) >= 0.5)).sum()) / 100, 1),
+                                  'hauteur_mediane_hz': [round(m, 1) for m in med]}
+            res['attribution'][nom] = {k1: 'femme' if med[0] > med[1] else 'homme', k2: 'homme' if med[0] > med[1] else 'femme'}
+            dire(f"{nom} : {res['a_deux'][nom]}")
+    sortie.mkdir(parents=True, exist_ok=True)
+    (sortie / 'reel_bis.json').write_text(json.dumps(res, ensure_ascii=False, indent=1))
+    shutil.rmtree(TRAVAIL / 'frazer', ignore_errors=True)
+    dire(f'analyse : {sortie}')
+
+
 # --- Écoute à l'aveugle -----------------------------------------------------------------------------------------------
 
 def lire_piste(chemin, gain):
@@ -688,6 +803,14 @@ def ecoute(a):
         d1 = json.loads((r1 / 'demo' / 'demo.json').read_text())
         extraits['unisson-double'], infos = versions_doublees(r1, r3, gains1, d1, d3)
         dire(f"chaîne actuelle : {len(infos['passages'])} passages ; double conversion sur {infos['a_deux_s']} s")
+    elif (r1 / 'demo' / 'demo.json').exists():   # sans conversions de plus : la démo de la première session
+        d1 = json.loads((r1 / 'demo' / 'demo.json').read_text())
+        g = d1['gains_flac']
+        extraits['unisson-double'] = {
+            "voix principale d'un bloc dans la voix de femme (ce que fait doubler quand le karaoké garde les deux "
+            'chanteurs et que le passage revient à la chanteuse)': lire_piste(r1 / 'demo' / 'bloc.flac', g['bloc']).mean(1),
+            f"chaque chanteur séparé ({LIBELLES[d1['meilleur']]}) dans sa voix":
+                lire_piste(r1 / 'demo' / 'separe.flac', g['separe']).mean(1)}
     titres = {'unisson': 'Unisson : duo réel', 'unisson-double': 'Unisson : duo réel, doublé'}
     correspondance = banc.lire_json_local(dossier / 'correspondance.json')
     alea = random.Random(a.graine)
@@ -755,8 +878,12 @@ def main():
     q = sp.add_parser('tableau')
     q.add_argument('session')
     q.add_argument('--plus', action='append', default=[], help='session dont les candidats absents s\'ajoutent au tableau')
+    q = sp.add_parser('analyser')
+    q.add_argument('sessions', nargs='+', help='sessions, la première avec le vrai duo (s1 s2)')
+    q.add_argument('--sortie', default='pc', help='session où écrire l\'analyse (défaut : pc)')
+    q.add_argument('--threads', type=int, default=4, help='fils de calcul du CPU (défaut : 4)')
     q = sp.add_parser('ecoute')
-    q.add_argument('sessions', nargs='+', help='sessions, la première avec le vrai duo (s1 s2 s3)')
+    q.add_argument('sessions', nargs='+', help='sessions, la première avec le vrai duo (s1 s2 pc)')
     q.add_argument('--ecoute', help='dossier de l\'écoute à l\'aveugle (défaut : banc/ecoute du dépôt)')
     q.add_argument('--graine', type=int, default=20261106)
     q.add_argument('--parole', action='append', default=None,
@@ -765,7 +892,7 @@ def main():
     if a.cmd == 'ecoute' and not a.parole:
         a.parole = ['medleyvox_238']
     {'preparer': preparer, 'envoyer': envoyer, 'lancer': lancer, 'rapatrier': rapatrier, 'tableau': tableau,
-     'ecoute': ecoute}[a.cmd](a)
+     'ecoute': ecoute, 'analyser': analyser}[a.cmd](a)
 
 
 if __name__ == '__main__':

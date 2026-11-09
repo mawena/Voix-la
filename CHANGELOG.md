@@ -9,6 +9,12 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ### Ajouté
 
+- Interface : section « Sur Kaggle » en tête de la page Travaux, avec la file du compte Kaggle : les notebooks en
+  attente d'un GPU ou en cours (même ceux d'un autre projet), leur état en clair, depuis quand ils sont lancés, un
+  badge « Voix-là » sur celui de doubler, un bouton qui ouvre la page du notebook, les terminés récents en repli et
+  « Actualiser » avec l'heure de la dernière lecture. Kaggle ne donne pas la place dans sa file : la section le dit.
+  Lecture par `kaggle kernels list --mine` puis `kernels status` (au plus 6 appels par minute, hors du fil de
+  l'interface, avec délai maxi), module `voixla/kaggle_file.py` ; résumé d'une ligne dans la page État.
 - Comparer plusieurs voix en une session : `doubler <vidéo> --comparer voixA,voixB,voixC --debut 60 --duree 40` double
   le même extrait dans deux à six voix en une seule session Kaggle. L'envoi, le démarrage, la séparation, le nettoyage
   et les paroles ne sont payés qu'une fois ; seule la conversion est refaite pour chaque voix (les morceaux de toutes

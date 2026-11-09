@@ -11,7 +11,7 @@ import time
 
 from gi.repository import Adw, Gdk, GLib, Gtk, Pango
 
-from .. import chemins, formats, moteur, quota, systeme
+from .. import chemins, formats, kaggle_file, moteur, quota, systeme
 from . import commun
 
 LOCAL_S = 10
@@ -202,7 +202,9 @@ class PageEtat(commun.Page):
         self.r_compte.add_suffix(self.b_reglages)
         self.r_jeu = commun.ligne("Jeu de données")
         self.v_jeu = Valeur(self.r_jeu)
-        for r in (self.r_jeton, self.r_cmd_kaggle, self.r_compte, self.r_jeu):
+        self.r_file_kaggle = commun.ligne("File du compte", "pas encore lu")
+        self._file_en_cours = False
+        for r in (self.r_jeton, self.r_cmd_kaggle, self.r_compte, self.r_jeu, self.r_file_kaggle):
             g.add(r)
         return g
 
@@ -270,6 +272,7 @@ class PageEtat(commun.Page):
         super().montrer()
         self._lire_local()
         self._lire_quota()
+        self._lire_file_kaggle()
         if time.time() - self._derniere_verif >= KAGGLE_S:
             self.verifier_kaggle()   # relit aussi la configuration
         else:
@@ -316,7 +319,23 @@ class PageEtat(commun.Page):
         if not self._verif and time.time() - self._derniere_verif >= KAGGLE_S - 1:
             self.verifier_kaggle()
         self._lire_quota()
+        self._lire_file_kaggle()
         return True
+
+    def _lire_file_kaggle(self):
+        """Résumé d'une ligne des notebooks du compte (cache partagé avec la page Travaux : au plus un tour par minute)."""
+        if self._file_en_cours:
+            return
+        self._file_en_cours = True
+
+        def fini(r):
+            self._file_en_cours = False
+            if not self._ferme:
+                self.r_file_kaggle.set_subtitle(commun.echapper(kaggle_file.resume(r[0]) + " · détail dans Travaux"))
+
+        def echec(_e):
+            self._file_en_cours = False
+        commun.en_fil(lambda: kaggle_file.SUIVI.lire_si_besoin(visible=True), fini, echec)
 
     def _donnees_changees(self):
         if self.visible_:

@@ -6,6 +6,11 @@ Variables :
 - FAUX_KAGGLE_ANCIEN=1 : une CLI d'avant « kaggle quota » (choix invalide, code 2) ;
 - FAUX_KAGGLE_PANNE=1 : Kaggle injoignable (code 1) ;
 - FAUX_KAGGLE_AVERTISSEMENT=1 : un avertissement de version avant le JSON, comme la vraie CLI ;
+- FAUX_KAGGLE_NOYAUX=fichier.json : les notebooks du compte pour « kernels list » et « kernels status » ; une liste
+  de {"ref", "title", "lastRunTime" ("AAAA-MM-JJ HH:MM:SS.ffffff", UTC), "status" ("queued", "running"…)} ; un champ
+  "panne": true fait échouer « status » de ce notebook ; sans la variable, « status » rend COMPLETE ;
+- FAUX_KAGGLE_LENT=secondes : « kernels list » et « kernels status » dorment ce temps (essais du délai maxi) ;
+- FAUX_KAGGLE_LISTE_BRUTE=texte : la sortie de « kernels list » telle quelle (essais de sortie illisible) ;
 - FAUX_KAGGLE_TRACE=fichier : une ligne par appel (les arguments).
 """
 
@@ -13,6 +18,8 @@ import datetime
 import json
 import os
 import sys
+import time
+from pathlib import Path
 
 
 def samedi_suivant():
@@ -47,8 +54,31 @@ def main(args):
                   "upgrading to the latest version (2.2.5)")
         print(json.dumps(lignes, indent=2))
         return 0
+    if args[:2] in (["kernels", "list"], ["kernels", "status"]) and os.environ.get("FAUX_KAGGLE_LENT"):
+        time.sleep(float(os.environ["FAUX_KAGGLE_LENT"]))
+    noyaux = []
+    if os.environ.get("FAUX_KAGGLE_NOYAUX"):
+        noyaux = json.loads(Path(os.environ["FAUX_KAGGLE_NOYAUX"]).read_text(encoding="utf-8"))
+    if args[:2] == ["kernels", "list"]:
+        if os.environ.get("FAUX_KAGGLE_LISTE_BRUTE") is not None:
+            print(os.environ["FAUX_KAGGLE_LISTE_BRUTE"])
+            return 0
+        if os.environ.get("FAUX_KAGGLE_AVERTISSEMENT"):
+            print("Warning: Looks like you're using an outdated `kaggle` version (installed: 2.2.4)")
+        taille = int(args[args.index("--page-size") + 1]) if "--page-size" in args else 20
+        print("ref,title,author,lastRunTime,totalVotes")
+        for n in noyaux[:taille]:
+            print(f'{n["ref"]},{n["title"]},Auteur Exemple,{n["lastRunTime"]},0')
+        return 0
     if args[:2] == ["kernels", "status"] and len(args) > 2:
-        print(f'{args[2]} has status "KernelWorkerStatus.COMPLETE"')
+        statut = "COMPLETE"
+        for n in noyaux:
+            if n["ref"] == args[2]:
+                if n.get("panne"):
+                    print("Connection error: Kaggle injoignable", file=sys.stderr)
+                    return 1
+                statut = n["status"].upper()
+        print(f'{args[2]} has status "KernelWorkerStatus.{statut}"')
         return 0
     print(f"faux kaggle : commande non imitée : {' '.join(args)}", file=sys.stderr)
     return 1

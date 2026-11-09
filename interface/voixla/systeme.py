@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 from . import chemins
@@ -122,3 +123,73 @@ def session_a_reprendre():
         return None
     d = chemins.lire_json(f, {}) or {}
     return d if isinstance(d, dict) else {"fichier": str(f)}
+
+
+def session_existante():
+    """Le contenu de session-en-cours.json (dict, éventuellement vide), qu'un doubler la suive ou non ; None si elle
+    n'existe pas. Contrairement à session_a_reprendre, la session suivie par un doubler vivant est rendue aussi."""
+    f = ETAT_DOUBLER / "session-en-cours.json"
+    if not f.exists():
+        return None
+    d = chemins.lire_json(f, {}) or {}
+    return d if isinstance(d, dict) else {}
+
+
+NOYAU_SYNTAXE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+
+def url_noyau(session):
+    """Adresse de la page du notebook de la session sur Kaggle (https://www.kaggle.com/code/<compte>/<noyau>), d'après
+    le champ « noyau » du fichier de session ; None s'il manque ou s'il n'a pas la forme <compte>/<noyau>."""
+    noyau = (session or {}).get("noyau")
+    if not isinstance(noyau, str) or not NOYAU_SYNTAXE.match(noyau.strip()):
+        return None
+    return "https://www.kaggle.com/code/" + noyau.strip()
+
+
+def _session_suivie(session):
+    """Vrai si un doubler vivant tient encore un des verrous de la session : le verrou commun, et l'ancien verrou du
+    dossier de sorties de la session (doubler prend les deux, voir sa classe Verrou)."""
+    verrous = [ETAT_DOUBLER / "verrou-kaggle"]
+    sortie = (session or {}).get("sortie")
+    if isinstance(sortie, str) and sortie:
+        verrous.append(Path(sortie) / ".kaggle" / "verrou")
+    return any(verrou_tenu(v) for v in verrous)
+
+
+def abandonner_session(file=None, attente_s=20.0, maintenant=None):
+    """Abandonne la session Kaggle en cours : session-en-cours.json est RENOMMÉ (jamais effacé) en
+    session-abandonnee-<AAAAMMJJ-HHMM>.json dans le même dossier, et doubler ne la reprend plus ni ne la refuse.
+    Si « file » (FileTravaux) est donnée, les travaux de reprise encore actifs sont d'abord annulés par le mécanisme
+    habituel (marque « annuler »), puis on attend jusqu'à « attente_s » secondes que doubler lâche le verrou.
+    Rend (état, détail) :
+    - ("fait", chemin du fichier renommé) ;
+    - ("absente", None) : pas de session ;
+    - ("suivie", None) : un doubler vivant suit encore la session, rien n'est renommé ;
+    - ("erreur", message). La page du notebook (url_noyau) reste à fermer à la main sur Kaggle : l'outil kaggle ne sait
+    pas annuler une version en attente."""
+    f = ETAT_DOUBLER / "session-en-cours.json"
+    if file is not None:
+        file.annuler_reprises()
+    limite = time.monotonic() + (attente_s if file is not None else 0)
+    while True:
+        if not f.exists():
+            return "absente", None
+        session = chemins.lire_json(f, {}) or {}
+        if not _session_suivie(session):
+            break
+        if time.monotonic() >= limite:
+            return "suivie", None
+        time.sleep(0.25)
+    t = time.localtime(maintenant) if maintenant is not None else time.localtime()
+    base = "session-abandonnee-" + time.strftime("%Y%m%d-%H%M", t)
+    dest = f.with_name(base + ".json")
+    n = 1
+    while dest.exists():   # deux abandons dans la même minute : on ne remplace jamais un fichier gardé
+        n += 1
+        dest = f.with_name(f"{base}-{n}.json")
+    try:
+        os.rename(f, dest)
+    except OSError as e:
+        return "erreur", str(e)
+    return "fait", dest

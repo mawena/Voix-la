@@ -17,6 +17,7 @@ fermée comprise, et les travaux qui tiennent dans le quota passent devant.
 import fcntl
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -28,6 +29,9 @@ from pathlib import Path
 from . import chemins, moteur, suivi
 
 TERMINES = ("fini", "echec", "annule", "interrompu")
+REFUS_SESSION = re.compile(r"session Kaggle pr[ée]c[ée]dente n.est pas finie")   # message de doubler.py
+SEUIL_ATTENTE_MINI_S = 10 * 60    # en dessous, une attente « queued » n'a rien d'anormal
+SEUIL_ATTENTE_MAXI_S = 30 * 60    # au-delà, elle l'est toujours, quelle que soit l'estimation
 LANCER = "lancer"   # marque : lancer maintenant un travail en attente du quota
 
 
@@ -265,6 +269,34 @@ class Travail:
     def videos(self):
         return self.demande.get("videos") or []
 
+    @property
+    def est_reprise(self):
+        return bool(self.demande.get("reprise"))
+
+    @property
+    def refus_session(self):
+        """Vrai si ce travail a échoué parce que doubler refuse de lancer un doublage tant qu'une session Kaggle
+        précédente n'est pas finie. Repéré par l'échec (code non nul) ET le message de doubler dans le journal (le
+        même texte au refus rapide et au refus sous le verrou) ; un travail réussi ou annulé n'en est jamais un."""
+        return self.statut == "echec" and not self.est_reprise and bool(REFUS_SESSION.search(self.journal))
+
+
+def attente_anormale(avancement, maintenant=None):
+    """Durée (s) de l'attente d'un GPU par Kaggle si elle est anormale, sinon None. Anormale : le noyau est encore
+    « queued » depuis plus de 2 fois l'estimation de doubler, avec au moins 10 min et au plus 30 min (sans estimation :
+    30 min). Un autre projet du même compte peut occuper les GPU et laisser la session en file."""
+    k = getattr(avancement, "kaggle", None) or {}
+    if (k.get("statut") or "").lower() != "queued":
+        return None
+    maintenant = time.time() if maintenant is None else maintenant
+    try:
+        depuis = float(k.get("depuis_s") or 0) + max(0.0, maintenant - float(k.get("t") or maintenant))
+        est = float(k.get("estimation_s") or 0)
+    except (TypeError, ValueError):
+        return None
+    seuil = SEUIL_ATTENTE_MAXI_S if est <= 0 else min(SEUIL_ATTENTE_MAXI_S, max(SEUIL_ATTENTE_MINI_S, 2 * est))
+    return depuis if depuis > seuil else None
+
 
 class FileTravaux:
     """La file : ajout, liste, annulation, retrait ; démarre l'exécuteur détaché quand il le faut."""
@@ -336,6 +368,17 @@ class FileTravaux:
             chemins.ecrire_json(travail.dossier / "etat.json", {**travail.etat, "statut": "annule", "fin": time.time(),
                                                                "par": "interface"})
             travail.actualiser()
+
+    def annuler_reprises(self):
+        """Annule les travaux de reprise (« doubler --reprendre ») encore actifs, par le mécanisme d'annulation habituel.
+        Rend ceux qu'on vient d'annuler."""
+        annules = []
+        for t in self.travaux():
+            t.actualiser()
+            if t.est_reprise and t.actif and not t.annulation_demandee:
+                self.annuler(t)
+                annules.append(t)
+        return annules
 
     def lancer_maintenant(self, travail):
         """Un travail en attente du quota part dès que la file le permet (marque « lancer », lue par l'exécuteur)."""

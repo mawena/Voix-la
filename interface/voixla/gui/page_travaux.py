@@ -4,9 +4,7 @@ le journal complet dépliable, l'annulation, et le lien vers le résultat."""
 import time
 from pathlib import Path
 
-from gi.repository import Gtk
-
-from gi.repository import Adw
+from gi.repository import Adw, Gdk, Gtk
 
 from .. import formats, quota, suivi, systeme, travaux
 from . import commun
@@ -15,6 +13,29 @@ STATUTS = {
     "en_attente": ("En attente", "neutre"), "en_cours": ("En cours", "accent"), "fini": ("Fini", "succes"),
     "echec": ("Échec", "erreur"), "annule": ("Annulé", "neutre"), "interrompu": ("Interrompu", "alerte"),
 }
+CSS = b"""
+.banniere-reprise { background: @accent_bg_color; color: @accent_fg_color; padding: 8px 12px; }
+.banniere-reprise button { min-height: 0; }
+"""
+_css_installe = False
+
+
+def installer_css():
+    global _css_installe
+    if _css_installe:
+        return
+    fournisseur = Gtk.CssProvider()
+    fournisseur.load_from_data(CSS, -1)
+    Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), fournisseur,
+                                              Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    _css_installe = True
+
+
+TEXTE_ABANDON = ("La session notée sur ce PC est mise de côté : son fichier est renommé (session-abandonnee-…json, rien "
+                 "n’est effacé), doubler ne la reprend plus et un nouveau doublage peut partir.\n\n"
+                 "Attention : la version du notebook envoyée à Kaggle est peut-être encore en attente là-bas. Si elle "
+                 "démarre, elle consommera du quota GPU. L’outil Kaggle en ligne de commande ne sait pas l’annuler : "
+                 "ouvrez la page du notebook pour l’arrêter à la main.")
 ICONES_ETAPE = {
     "fait": "object-select-symbolic", "saute": "content-loading-symbolic", "a_venir": "content-loading-symbolic",
     "partiel": "view-more-horizontal-symbolic", "erreur": "dialog-error-symbolic", "annule": "process-stop-symbolic",
@@ -144,6 +165,18 @@ class CarteTravail(Gtk.Box):
         self.append(self.barre)
         self.kaggle = Gtk.Label(xalign=0, wrap=True, css_classes=["caption"])
         self.append(self.kaggle)
+        # refus pour session en cours, ou attente anormale d'un GPU : explication claire et issues proposées
+        self.alerte = commun.boite(espace=8)
+        self.alerte_texte = Gtk.Label(xalign=0, wrap=True, css_classes=["warning"])
+        self.alerte.append(self.alerte_texte)
+        actions = Gtk.Box(spacing=6)
+        self.b_reprendre = commun.bouton("Reprendre", styles=("suggested-action",), clic=self.page.reprendre)
+        self.b_abandonner = commun.bouton("Abandonner la session", styles=("destructive-action",),
+                                          clic=lambda: self.page.abandonner(self.t))
+        actions.append(self.b_reprendre)
+        actions.append(self.b_abandonner)
+        self.alerte.append(actions)
+        self.append(self.alerte)
         self.etapes = commun.boite(espace=6)
         self.lignes = {}
         for nom in t.avancement.ordre:
@@ -228,6 +261,7 @@ class CarteTravail(Gtk.Box):
         texte = av.texte_kaggle(maintenant) if statut == "en_cours" else None
         self.kaggle.set_label(texte or "")
         self.kaggle.set_visible(bool(texte))
+        self._maj_alerte(statut, maintenant)
         for nom, le in self.lignes.items():
             le.maj(av.etapes[nom], av, maintenant)
         # étapes : pendant le travail, et après un échec (pour voir où) ; un travail fini se résume en une ligne
@@ -244,6 +278,33 @@ class CarteTravail(Gtk.Box):
         self.b_annuler.set_label("Retirer de la file" if statut == "en_attente" else "Annuler")
         self.b_resultat.set_visible(statut == "fini" and bool(self._sortie()))
         self.b_retirer.set_visible(statut in travaux.TERMINES)
+
+    def _maj_alerte(self, statut, maintenant):
+        """Refus pour session en cours (doublage échoué), attente anormale d'un GPU, reprise en cours ou annulée :
+        le texte clair et les boutons « Reprendre » / « Abandonner la session » (tant que la session existe)."""
+        t, page = self.t, self.page
+        session = page.session is not None
+        texte, reprendre = "", False
+        attente = travaux.attente_anormale(t.avancement, maintenant) if statut == "en_cours" else None
+        if t.refus_session:
+            reprendre = session
+            texte = ("Doublage refusé : une session Kaggle précédente n’est pas finie, et doubler n’en lance pas une "
+                     "nouvelle tant qu’elle existe (le nouveau noyau effacerait son résultat). "
+                     + ("Reprenez-la pour la finir sans GPU, ou abandonnez-la."
+                        if session else "Elle n’existe plus : relancez le doublage."))
+        elif attente:
+            texte = (f"Kaggle n’a pas encore donné de GPU : le noyau est en file d’attente depuis "
+                     f"{formats.duree(attente)}. Une autre session du compte (un autre projet ?) occupe peut-être les "
+                     "GPU. Vous pouvez patienter, ou abandonner cette session.")
+        elif t.est_reprise and statut == "annule" and session:
+            texte = "Reprise annulée : la session Kaggle reste à finir ou à abandonner."
+            reprendre = True
+        peut_abandonner = session and statut != "fini" and (t.est_reprise or t.refus_session or bool(attente))
+        self.alerte_texte.set_label(texte)
+        self.alerte_texte.set_visible(bool(texte))
+        self.b_reprendre.set_visible(reprendre)
+        self.b_abandonner.set_visible(peut_abandonner)
+        self.alerte.set_visible(bool(texte) or peut_abandonner)
 
     def _sortie(self):
         for d in self.t.demande.get("sorties") or []:
@@ -299,16 +360,34 @@ class CarteTravail(Gtk.Box):
         commun.confirmer(self.page.fenetre, "Annuler ce doublage ?", corps, libelle, faire, libelle_annuler="Continuer")
 
 
+class BanniereReprise(Gtk.Revealer):
+    """Bannière « session Kaggle interrompue » avec ses deux issues : Reprendre, ou Abandonner la session
+    (Adw.Banner n'a qu'un bouton)."""
+
+    def __init__(self, reprendre, abandonner):
+        super().__init__(transition_type=Gtk.RevealerTransitionType.SLIDE_DOWN)
+        boite = Gtk.Box(spacing=8, css_classes=["banniere-reprise"])
+        self.titre = Gtk.Label(
+            label="Une session Kaggle a été interrompue (coupure ?) : doubler peut la finir sans GPU (rapatriement, "
+                  "mixage, vidéo), ou vous pouvez l’abandonner.", wrap=True, xalign=0, hexpand=True)
+        boite.append(self.titre)
+        boite.append(commun.bouton("Abandonner la session", clic=abandonner, valign=Gtk.Align.CENTER))
+        boite.append(commun.bouton("Reprendre", clic=reprendre, valign=Gtk.Align.CENTER))
+        self.set_child(boite)
+
+    def set_revealed(self, v):
+        self.set_reveal_child(bool(v))
+
+
 class PageTravaux(commun.Page):
     def __init__(self, fenetre):
         super().__init__(fenetre, "Travaux", "travaux")
+        installer_css()
         self.cartes = {}
+        self.session = None   # contenu de session-en-cours.json si elle existe (relu par verifier_reprise)
         self.entete.pack_end(commun.bouton(icone="edit-clear-all-symbolic", infobulle="Retirer les travaux terminés",
                                            clic=self.retirer_termines))
-        self.banniere = Adw.Banner(button_label="Reprendre",
-                                   title="Une session Kaggle a été interrompue (coupure ?) : doubler peut la finir sans "
-                                         "GPU (rapatriement, mixage, vidéo)")
-        self.banniere.connect("button-clicked", lambda *_: self.reprendre())
+        self.banniere = BanniereReprise(self.reprendre, lambda: self.abandonner(None))
         self.vue.add_top_bar(self.banniere)
         self.pile = Gtk.Stack()
         self.vide = commun.page_vide("view-list-ordered-symbolic", "Aucun travail",
@@ -331,16 +410,79 @@ class PageTravaux(commun.Page):
         self.verifier_reprise()
 
     def verifier_reprise(self):
-        """Montre « Reprendre » si doubler a laissé une session Kaggle interrompue et qu'aucun travail ne tourne."""
-        if "--reprendre" not in self.fenetre.caps or any(t.actif for t in self.fenetre.file.travaux()):
-            self.banniere.set_revealed(False)
-            return
-        commun.en_fil(systeme.session_a_reprendre, lambda s: self.banniere.set_revealed(bool(s)))
+        """Montre « Reprendre » et « Abandonner la session » si doubler a laissé une session Kaggle interrompue et
+        qu'aucun travail ne tourne. Relit aussi la session pour les cartes (abandon d'un travail de reprise ou refusé)."""
+        def lire():
+            return systeme.session_existante(), systeme.session_a_reprendre()
+
+        def appliquer(r):
+            self.session, a_reprendre = r
+            actif = any(t.actif for t in self.fenetre.file.travaux())
+            self.banniere.set_revealed(bool(a_reprendre) and "--reprendre" in self.fenetre.caps and not actif)
+            for c in self.cartes.values():
+                c.maj()
+        commun.en_fil(lire, appliquer)
 
     def reprendre(self):
         self.banniere.set_revealed(False)
         self.fenetre.ajouter_travaux([travaux.demande_reprise(self.fenetre.donnees)])
         self.fenetre.toast("Reprise de la session Kaggle ajoutée à la file")
+
+    def abandonner(self, t=None):
+        """« Abandonner cette session » : confirmation (Adw.AlertDialog), puis annulation d'un éventuel travail de reprise
+        encore actif, et renommage du fichier de session (voir systeme.abandonner_session). t : le travail d'où l'on
+        vient (bannière : None)."""
+        f = self.fenetre
+        session = self.session or systeme.session_existante() or {}
+        url = systeme.url_noyau(session)
+        reprises = [x for x in f.file.travaux() if x.est_reprise and x.actif]
+        if t is not None and t.actif and t not in reprises:
+            reprises.append(t)
+        corps = TEXTE_ABANDON
+        if reprises:
+            corps = "Le travail en cours qui suit cette session est d’abord annulé.\n\n" + corps
+        d = Adw.AlertDialog(heading="Abandonner cette session Kaggle ?", body=corps)
+        d.add_response("annuler", "Garder la session")
+        d.add_response("ok", "Abandonner la session")
+        d.set_response_appearance("ok", Adw.ResponseAppearance.DESTRUCTIVE)
+        d.set_default_response("annuler")
+        d.set_close_response("annuler")
+        if url:
+            ouvrir = commun.bouton("Ouvrir la page du notebook sur Kaggle", icone="web-browser-symbolic",
+                                   infobulle=url, clic=lambda: self.ouvrir_notebook(url), halign=Gtk.Align.CENTER)
+            d.set_extra_child(ouvrir)
+        d.connect("response", lambda _d, r: r == "ok" and self._faire_abandon(reprises))
+        d.present(f)
+        return d
+
+    def ouvrir_notebook(self, url):
+        Gtk.UriLauncher.new(url).launch(self.fenetre, None, None, None)
+
+    def _faire_abandon(self, reprises):
+        f = self.fenetre
+        for x in reprises:   # le mécanisme d'annulation habituel, dans le fil de l'interface
+            if not x.annulation_demandee:
+                f.file.annuler(x)
+        f.suivre_travaux()
+        if reprises:
+            f.toast("Annulation du travail en cours, puis abandon de la session…")
+        commun.en_fil(lambda: systeme.abandonner_session(attente_s=20.0 if reprises else 0), self._abandon_fait)
+
+    def _abandon_fait(self, r):
+        etat, detail = r
+        f = self.fenetre
+        if etat == "fait":
+            self.session = None
+            f.toast(f"Session abandonnée : fichier gardé sous le nom {Path(detail).name}", duree=8)
+        elif etat == "suivie":
+            f.toast("Un doubler suit encore cette session : rien n’a été renommé", duree=8)
+        elif etat == "absente":
+            self.session = None
+            f.toast("Il n’y a plus de session à abandonner")
+        else:
+            f.toast(f"Abandon impossible : {detail}", duree=8)
+        self.verifier_reprise()
+        self.rendre()
 
     def cacher(self):
         super().cacher()
@@ -409,3 +551,5 @@ class PageTravaux(commun.Page):
             for c in self.cartes.values():
                 c.depliant.set_expanded(True)
                 break
+        elif action == "abandon":   # le dialogue « Abandonner cette session » (rien n'est renommé sans confirmation)
+            self.abandonner(None)

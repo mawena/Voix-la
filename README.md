@@ -452,8 +452,24 @@ La voix et les dossiers sont ceux de la session. `--voix-db`, `--reverb-db` et `
 `--reprendre`.
 
 Tant qu'une session n'est pas finie, `doubler` refuse d'en lancer une nouvelle : le nouveau noyau effacerait les
-résultats de l'ancien sur Kaggle. Pour abandonner la session, effacez
-`~/.local/state/voix-la/session-en-cours.json`. Un noyau refusé, ou terminé sans résultat, ferme la session : il n'y
+résultats de l'ancien sur Kaggle.
+
+#### Abandonner une session
+
+Pour abandonner la session, par exemple parce que le noyau reste en file d'attente chez Kaggle (un autre projet du
+même compte occupe les GPU), renommez `~/.local/state/voix-la/session-en-cours.json` plutôt que de l'effacer :
+
+```sh
+mv ~/.local/state/voix-la/session-en-cours.json ~/.local/state/voix-la/session-abandonnee-$(date +%Y%m%d-%H%M).json
+```
+
+L'interface fait la même chose avec « Abandonner la session » (page Travaux, voir `interface/README.md`), après avoir
+annulé le travail de reprise en cours, et seulement si aucun `doubler` vivant ne suit la session. Abandonner ne
+touche pas à Kaggle : la version du notebook déjà envoyée peut rester en attente là-bas et consommer du quota si
+elle démarre. L'outil `kaggle` ne sait pas l'annuler (sa commande `delete` supprime tout le notebook : ne
+l'utilisez pas) ; ouvrez la page `https://www.kaggle.com/code/<compte>/<noyau>` et arrêtez la version à la main.
+
+Un noyau refusé, ou terminé sans résultat, ferme la session : il n'y
 a rien à reprendre, relancez le doublage.
 
 ### Suivre l'avancement (pour les scripts et l'interface)
@@ -752,8 +768,7 @@ Pour l'instant :
 
 - des vidéos aux extraits différents partent dans un appel `doubler` par extrait, donc une session Kaggle chacune :
   l'interface n'utilise pas encore `vidéo@DÉBUT+DURÉE` ;
-- annuler un doublage déjà parti sur Kaggle laisse sa session ouverte : `doubler --reprendre` la finit, sinon effacez
-  `~/.local/state/voix-la/session-en-cours.json` avant le doublage suivant.
+- annuler un doublage déjà parti sur Kaggle laisse sa session ouverte : `doubler --reprendre` la finit, sinon « Abandonner la session » (page Travaux) la met de côté avant le doublage suivant.
 
 À venir : la fin des essais de chaque page, puis la première version, avec `doubler`.
 

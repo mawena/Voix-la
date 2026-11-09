@@ -11,6 +11,10 @@ Pistes audio d'une même vidéo (pistes_audio, doubler ≥ 0.6.0 : le doublage, 
 doublée) : un seul flux pour toutes, et la bascule change de piste audio dans ce flux (gui/pistes_gst.py, current-audio
 de playbin) au lieu d'ouvrir un autre fichier. Même position, l'image continue, pas de seconde ouverture.
 
+Sous-titres intégrés à une vidéo (les pistes de paroles de doubler, ceux d'une vidéo d'origine) : chaque flux est ouvert
+sans le rendu du texte de playbin (gui/pistes_gst.couper_texte). Seule l'interface dessine des paroles : karaoké sous
+la vidéo, surimpression en plein écran, « Sous-titres sur la vidéo ».
+
 Quitter la page n'arrête pas la lecture : seul le suivi de la position (et les visualisations qu'il anime) s'arrête
 tant que le lecteur est caché, et reprend au retour. Une seule lecture dans toute l'application : chaque flux est ouvert
 par media(), qui le confie au coordinateur (gui/lecture.py) avec son propriétaire ; lancer une lecture ailleurs coupe
@@ -37,9 +41,11 @@ BOUCLE_MS = 40               # surveillance de la boucle A-B pendant la lecture 
 
 def media(chemin, proprietaire):
     """Un flux (Gtk.MediaFile) suivi par le coordinateur : quand il joue, la lecture d'un autre propriétaire est
-    coupée."""
+    coupée. GStreamer n'y dessine aucun sous-titre (gui/pistes_gst.couper_texte) : les seules paroles sur l'image sont
+    celles de l'interface."""
     m = Gtk.MediaFile.new_for_filename(str(chemin))
     m.set_loop(False)
+    pistes_gst.couper_texte(m)    # avant que playbin ne relie les pistes de la vidéo
     return lectures().suivre(m, proprietaire)
 
 

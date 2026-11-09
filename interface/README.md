@@ -280,6 +280,10 @@ langues ; il est gardé dans `interface.json` (`paroles_langue`). L'interrupteur
   ```
 
   Les segments ou les mots abîmés sont ignorés un par un. Le fichier n'est jamais modifié.
+- **Sous-titres de la vidéo** : le lecteur ne laisse jamais GStreamer dessiner les pistes de sous-titres d'une vidéo
+  (paroles de `doubler`, sous-titres d'une vidéo d'origine). Chaque flux s'ouvre sans le drapeau `text` de son playbin
+  (`gui/pistes_gst.couper_texte`) : les seules paroles sur l'image sont celles de l'interface. Si le playbin est
+  introuvable (autre version de GTK), un message le dit et GStreamer peut dessiner la première piste en plus.
 - **Temps du lecteur, temps des paroles.** Le lecteur d'un résultat compte en temps du son doublé : celui du MP3, de
   `travail/original.wav`, du beat, des voix seules, de la frise et de `courbes.json`. Une piste qui a une image (la
   vidéo doublée, sa version auto-tune, les copies des pistes séparées, la vidéo d'origine) compte en temps de la vidéo
@@ -616,6 +620,12 @@ l'ouverture, les miniatures et le défilement avec N doublages.
 `python3 -m tests.faux_partage DONNEES` : un doublage inventé à cinq pistes (sons purs de fréquences connues), paroles
 avec refrain et traduction. `test_export_social` vérifie l'export (de bout en bout avec x264 « veryfast ») et, sous
 Xvfb, le dialogue (`tests/essai_partage_gui.py`).
+
+`test_sous_titres_gst` fait doubler deux vidéos à image unie (un mp4 dont la vidéo d'origine a ses sous-titres, et un
+mkv) avec leurs pistes de paroles. Sous Xvfb, un `Gtk.MediaFile` brut dessine le texte (témoin) et un flux du lecteur
+n'en dessine aucun ; le lecteur de la page Résultats n'a aucun pixel de texte à l'écran après une bascule de piste
+audio, des déplacements, le passage par la vidéo d'origine, la fenêtre fermée puis rouverte, la fermeture et la
+réouverture. `VOIXLA_ESSAI_CAPTURES=DOSSIER` garde les captures.
 
 ## Limites
 

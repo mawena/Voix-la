@@ -1,7 +1,8 @@
 """Plein écran du lecteur d'un résultat : l'image seule sur fond noir, les commandes et le titre en surimpression, qui
 se masquent après MASQUE_MS sans mouvement (le pointeur aussi) et reviennent au moindre mouvement ou à une touche ; les
 paroles en surimpression en bas, lisibles sur toute image (texte blanc cerné de sombre, gui/vue_paroles.Karaoke). Pour
-un MP3, la pochette (ou la miniature de la vidéo, ou la pochette générée) et les paroles en grand.
+un MP3, la pochette (ou la miniature de la vidéo, ou la pochette générée) et les paroles en grand. Ce sont les seules
+paroles sur l'image : GStreamer ne dessine pas les pistes de sous-titres de la vidéo (gui/pistes_gst.couper_texte).
 
 La vue remplace le contenu de la fenêtre (Fenetre.entrer_plein_ecran : une pile, le reste de la fenêtre est caché et
 ne se dessine plus) ; le lecteur reste celui de la page, et son image est reprise telle quelle (liaison de la propriété

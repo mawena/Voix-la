@@ -1,3 +1,17 @@
+voix-la (0.11.0) unstable; urgency=medium
+
+  * Duo : chaque passage est converti dans les deux voix ; on corrige à la
+    main qui chante quoi (--remix --passage, frise de l'interface) sans
+    repasser sur le GPU, et on revient à l'automatique (--affectation auto).
+  * Interface : page Karaoké, chanter sur le beat seul d'un doublage avec
+    une note de justesse ligne par ligne.
+  * Remise sur la vidéo en parallèle (62 s → 23 s pour 4 min, cinq pistes),
+    son envoyé à Kaggle en FLAC 16 bits.
+  * Paroles : .srt rangés dans paroles/, piste de paroles des mp4 non
+    activée d'office.
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Mon, 09 Nov 2026 16:30:00 +0000
+
 voix-la (0.10.0) unstable; urgency=medium
 
   * Interface : « Partager… » fait une vidéo courte pour les réseaux

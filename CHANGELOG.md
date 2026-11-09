@@ -7,6 +7,8 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+## [0.11.0] - 2026-11-09
+
 ### Ajouté
 
 - Corriger à la main qui chante quoi dans un duo (une voix par chanteur). Le noyau convertit chaque passage dans les
@@ -526,7 +528,8 @@ Première version publique.
     `VOIXLA_DECODAGE_MATERIEL=1` remet le décodage matériel ;
   - les essais automatiques laissaient le son de l'application coupé.
 
-[Non publié]: https://github.com/mawena/Voix-la/compare/v0.10.0...HEAD
+[Non publié]: https://github.com/mawena/Voix-la/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/mawena/Voix-la/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/mawena/Voix-la/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/mawena/Voix-la/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/mawena/Voix-la/compare/v0.7.0...v0.8.0

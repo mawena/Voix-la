@@ -502,7 +502,8 @@ class PageTravaux(commun.Page):
         self._kaggle_en_cours = False
         self._tics = 0
         corps = commun.boite(espace=0)
-        corps.append(self.kaggle)
+        # même largeur et même alignement que les cartes des travaux (commun.defile(self.boite, 820))
+        corps.append(Adw.Clamp(maximum_size=820, tightening_threshold=int(820 * 0.8), child=self.kaggle))
         corps.append(self.pile)
         self.contenu(corps)
         self.kaggle.peindre(self.kaggle_lecture)

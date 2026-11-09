@@ -281,6 +281,14 @@ class Travail:
         return self.statut == "echec" and not self.est_reprise and bool(REFUS_SESSION.search(self.journal))
 
 
+def texte_attente_anormale(duree):
+    """Le message d'une attente « queued » anormale : les causes possibles, dont un incident chez Kaggle."""
+    return (f"Kaggle n’a pas encore donné de GPU : le noyau est en file d’attente depuis {duree}. Une autre session du "
+            "compte (un autre projet ?) occupe peut-être les GPU, ou Kaggle a une panne : une bannière d’incident "
+            "(« notebooks impossibles à démarrer ») s’affiche alors sur la page du notebook, que « Ouvrir la page sur "
+            "Kaggle » ouvre. Vous pouvez patienter, ou abandonner cette session.")
+
+
 def attente_anormale(avancement, maintenant=None):
     """Durée (s) de l'attente d'un GPU par Kaggle si elle est anormale, sinon None. Anormale : le noyau est encore
     « queued » depuis plus de 2 fois l'estimation de doubler, avec au moins 10 min et au plus 30 min (sans estimation :

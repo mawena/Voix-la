@@ -303,7 +303,8 @@ def depuis(n, maintenant=None):
 def aide(lecture):
     """Phrase d'aide sous la liste : ce que Kaggle ne dit pas, et, si plusieurs sessions attendent, pourquoi."""
     texte = ("Kaggle ne donne ni la place dans sa file, ni l’heure de démarrage prévue : on ne voit que l’état de "
-             "chaque notebook du compte, lu par la ligne de commande.")
+             "chaque notebook du compte, lu par la ligne de commande. Si rien ne démarre, la cause peut aussi être un "
+             "incident chez Kaggle : la page du notebook affiche alors une bannière d’incident.")
     if lecture is not None and lecture.actifs:
         texte += (" Pour arrêter une session, ouvrez la page de son notebook : la ligne de commande ne sait pas "
                   "l’annuler.")

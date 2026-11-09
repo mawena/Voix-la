@@ -29,7 +29,13 @@ Deux GPU (--gpu auto|1|2, clé « gpu », clé « kaggle.machine ») : comme dou
 NvidiaTeslaT4 (défaut), une sur une autre ; --config --json donne « gpu » et « kaggle.machine », et les rapports
 temps_local.gpus (cartes utilisées).
 Une voix par chanteur (--voix homme:a,femme:b ou chanteur1:a,chanteur2:b) : voix combinée « a+b », sorties « voix A et
-B », rapport inventé d'un duo (voix_cibles, chanteurs, affectation, passages) et courbes.json avec voix_par_trame.
+B », rapport inventé d'un duo (voix_cibles, chanteurs, affectation, passages) et courbes.json avec voix_par_trame ; les
+deux versions de chaque passage chanté (versions/versions.json et rapport.versions, sauf FAUX_DOUBLER_SANS_VERSIONS=1 :
+comme un ancien doublage). Correction à la main (--remix --affectation FICHIER|auto, --passage N=VOIX), comme doubler :
+travail/<a+b>/affectation.json écrit ou effacé, rapport (affectation.passages recalculés à partir des morceaux,
+secondes_par_voix, morceaux_en_duo, manuelle ; morceaux corrige, voix_pistes, voix_pistes_auto) et courbes.json
+(voix_par_trame) refaits, l'automatique gardé dans versions/auto.json ; sans les deux versions : « ÉCHEC », comme doubler.
+FAUX_DOUBLER_SANS_AFFECTATION=1 : doubler trop ancien, sans --affectation ni --passage.
 Auto-tune (--autotune [N], --sans-autotune, --autotune-gamme, clé « autotune ») : fichiers « (auto-tune) » vides et
 section « autotune » du rapport, comme doubler. Avec --remix : --autotune N crée ou refait la version (gamme
 --autotune-gamme, sinon auto) ; sans option, une version déjà là est refaite à la même intensité et la même gamme ;
@@ -52,6 +58,8 @@ from pathlib import Path
 
 ANCIEN = os.environ.get("FAUX_DOUBLER_ANCIEN") == "1"
 SANS_GPU = ANCIEN or os.environ.get("FAUX_DOUBLER_SANS_GPU") == "1"
+SANS_AFFECTATION = ANCIEN or SANS_GPU or os.environ.get("FAUX_DOUBLER_SANS_AFFECTATION") == "1"
+SANS_VERSIONS = os.environ.get("FAUX_DOUBLER_SANS_VERSIONS") == "1"
 ECHEC = (os.environ.get("FAUX_DOUBLER_ECHEC") or "").strip().lower()
 DEPOT = Path(__file__).resolve().parents[2]
 DONNEES_DEFAUT = Path.home() / "Music" / "Voix-là"
@@ -648,6 +656,12 @@ def rapport_kaggle(tr, a, voix):
                                   {"nom": "femme", "classe": "femme", "voix": m2, "decalage": 0}],
                     "f0_mediane_globale_hz": 230.0}
         morceaux[2]["decalage"] = 0
+        # les deux versions de chaque passage chanté (doubler --versions-duo toutes, défaut d'une voix par chanteur)
+        if not SANS_VERSIONS:
+            plus["versions"] = ({"mode": "non"} if os.environ.get("FAUX_DOUBLER_VERSIONS") == "non" else
+                                {"mode": "toutes", "dossier": "versions", "voix_cibles": [m1, m2],
+                                 "decalages": {m1: dec_homme, m2: 0}, "morceaux": [1, 2], "secondes": round(d * 0.9, 1),
+                                 "conversion_s": conv, "conversion_auto_s": conv, "surcout": 1.0})
     return {
         **plus,
         "id": tr["id"], "reglages": {"pas": a.pas}, "voix_cible": voix["id"],
@@ -758,6 +772,170 @@ def autotune(a, rapport, tv, dossier, base, sortie, mode):
             "gamme": g["type"]}
 
 
+# --- Une voix par chanteur : correction à la main (--remix --affectation FICHIER|auto, --passage N=VOIX) -------------
+
+SANS_LES_DEUX = ("ce doublage n'a pas les deux versions de chaque passage (doublé avant leur arrivée, ou avec "
+                 "--versions-duo non) : refaites-le sans --remix pour pouvoir corriger qui chante quoi")
+PISTES_ALIAS = {"principale": "lead_sec", "lead": "lead_sec", "lead_sec": "lead_sec", "choeurs": "choeurs_sec",
+                "chœurs": "choeurs_sec", "choeurs_sec": "choeurs_sec", "secours": "secours", "voix": "voix"}
+
+
+def voix_choisie(texte, voix):
+    """Une valeur de --passage ou d'affectation.json : nom de voix, clé (homme, chanteur1…), « deux » ou « auto »."""
+    t = str(texte).strip().lower()
+    if t in ("deux", "les-deux", "les deux", "ensemble"):
+        return "deux"
+    if t == "auto":
+        return "auto"
+    for m in voix["membres"]:
+        if t in (m["id"], m.get("cle")):
+            return m["id"]
+    raise RuntimeError(f"voix inconnue « {texte} » (voix : {', '.join(m['id'] for m in voix['membres'])}, deux ou auto)")
+
+
+def appliquer_passage(spec, passages, pistes, voix):
+    """« N=VOIX », « N-M=VOIX » ou « N/piste=VOIX » ajouté à l'affectation (auto : retiré)."""
+    cible, sep, valeur = str(spec).partition("=")
+    if not sep:
+        raise RuntimeError(f"--passage {spec} : N=VOIX attendu")
+    numeros, _, piste = cible.strip().partition("/")
+    a, _, b = numeros.partition("-")
+    try:
+        bornes = range(int(a), int(b or a) + 1)
+    except ValueError:
+        raise RuntimeError(f"--passage {spec} : numéro de passage attendu") from None
+    choix = voix_choisie(valeur, voix)
+    for i in bornes:
+        k = str(i)
+        if piste:
+            p = PISTES_ALIAS.get(piste.strip().lower())
+            if p is None:
+                raise RuntimeError(f"--passage {spec} : piste inconnue « {piste} »")
+            d = pistes.setdefault(k, {})
+            d.pop(p, None) if choix == "auto" else d.update({p: choix})
+            if not d:
+                pistes.pop(k)
+        elif choix == "auto":
+            passages.pop(k, None)
+            pistes.pop(k, None)
+        else:
+            passages[k] = choix
+
+
+def _lire_json(chemin):
+    try:
+        d = json.loads(Path(chemin).read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def corriger_affectation(a, tv, rapport, voix):
+    """Comme doubler : l'affectation gardée (affectation.json), remplacée par --affectation FICHIER (auto : vidée),
+    complétée par --passage ; appliquée au rapport et à courbes.json depuis l'automatique (versions/auto.json, gardé à
+    la première correction). Rend le nombre de passages corrigés (0 : l'automatique)."""
+    demande = getattr(a, "affectation", None) or getattr(a, "passage", None)
+    fichier, versions, auto = tv / "affectation.json", tv / "versions" / "versions.json", tv / "versions" / "auto.json"
+    if not voix.get("membres") or rapport.get("mode") != "chant":
+        if demande:
+            raise RuntimeError("--affectation et --passage : seulement avec une voix par chanteur, en chant")
+        return 0
+    gardee = _lire_json(fichier) or {}
+    if a.affectation == "auto":
+        gardee = {}
+    elif a.affectation:
+        gardee = _lire_json(Path(a.affectation).expanduser())
+        if gardee is None:
+            raise RuntimeError(f"--affectation {a.affectation} : fichier JSON illisible")
+    passages = {str(k): voix_choisie(v, voix) for k, v in (gardee.get("passages") or {}).items()}
+    pistes = {str(k): {PISTES_ALIAS.get(p, p): voix_choisie(x, voix) for p, x in d.items()}
+              for k, d in (gardee.get("pistes") or {}).items() if isinstance(d, dict)}
+    passages = {k: v for k, v in passages.items() if v != "auto"}
+    for spec in getattr(a, "passage", None) or []:
+        appliquer_passage(spec, passages, pistes, voix)
+    if (passages or pistes) and not versions.is_file():
+        raise RuntimeError(SANS_LES_DEUX)
+    dispo = {int(i) for i in (_lire_json(versions) or {}).get("morceaux") or []}
+    for k in list(passages) + list(pistes):
+        if int(k) not in dispo:
+            raise RuntimeError(f"passage {k} : pas de version dans les deux voix (pas un passage chanté)")
+    courbes = tv / "courbes.json"
+    if (passages or pistes) and not auto.exists():
+        auto.write_text(json.dumps({"affectation": {k: v for k, v in (rapport.get("affectation") or {}).items()
+                                                    if k != "manuelle"},
+                                    "morceaux": rapport.get("morceaux"), "frise": rapport.get("frise"),
+                                    "courbes": _lire_json(courbes)}, ensure_ascii=False), encoding="utf-8")
+    snap = _lire_json(auto)
+    if not passages and not pistes:
+        fichier.unlink(missing_ok=True)
+        (tv / "voix_corrigee.flac").unlink(missing_ok=True)
+        if snap:
+            rapport.update({"affectation": snap["affectation"], "morceaux": snap["morceaux"], "frise": snap["frise"]})
+            if snap.get("courbes"):
+                courbes.write_text(json.dumps(snap["courbes"]), encoding="utf-8")
+        if demande:
+            dire("affectation automatique (corrections à la main retirées)")
+        return 0
+    noms = [m["id"] for m in voix["membres"]]
+    fichier.write_text(json.dumps({"format": 1, "voix_cibles": noms, "passages": passages,
+                                   **({"pistes": pistes} if pistes else {})}, ensure_ascii=False, indent=1),
+                       encoding="utf-8")
+    chanteurs = {c.get("voix"): c for c in (rapport.get("decision_hauteur") or {}).get("chanteurs") or []}
+    morceaux = json.loads(json.dumps(snap["morceaux"]))
+    corriges = sorted({int(k) for k in list(passages) + list(pistes)})
+    for m in morceaux:
+        vpa = m.get("voix_pistes") or ({"lead_sec": m["voix_cible"]} if m.get("voix_cible") and not m.get("muet") else {})
+        if m.get("muet") or not vpa:
+            continue
+        k = str(m["i"])
+        nouveau = {}
+        for piste, v in vpa.items():
+            choix = (pistes.get(k) or {}).get(piste) or passages.get(k)
+            nouveau[piste] = (list(noms) if choix == "deux" else choix) if choix else v
+        m["voix_pistes_auto"], m["voix_pistes"] = vpa, nouveau
+        if int(k) in corriges:
+            m["corrige"] = True
+            choix = passages.get(k)
+            if choix == "deux":
+                m["base"] = "corrigé à la main : les deux"
+            elif choix:
+                c = chanteurs.get(choix) or {}
+                m.update({"voix_cible": choix, "voix": c.get("classe") or m.get("voix"),
+                          "decalage": c.get("decalage", m.get("decalage")), "base": f"corrigé à la main : {choix}"})
+            else:
+                m["base"] = "corrigé à la main, piste par piste"
+    # passages de la frise recalculés simplement à partir des morceaux (le vrai doubler les refait trame par trame)
+    par = []
+    for m in morceaux:
+        if m.get("muet") or not m.get("voix_pistes"):
+            continue
+        v = sorted({n for x in m["voix_pistes"].values() for n in (x if isinstance(x, list) else [x])}, key=noms.index)
+        if par and par[-1]["voix"] == v and abs(par[-1]["fin_s"] - m["debut_s"]) < 0.05:
+            par[-1]["fin_s"] = m["fin_s"]
+        else:
+            par.append({"debut_s": m["debut_s"], "fin_s": m["fin_s"], "voix": v})
+    sec = {n: round(sum(p["fin_s"] - p["debut_s"] for p in par if p["voix"] == [n]), 1) for n in noms}
+    sec["ensemble"] = round(sum(p["fin_s"] - p["debut_s"] for p in par if len(p["voix"]) > 1), 1)
+    duo = sum(1 for m in morceaux if len({n for x in (m.get("voix_pistes") or {}).values()
+                                         for n in (x if isinstance(x, list) else [x])}) >= 2)
+    rapport["affectation"] = {**snap["affectation"], "passages": par, "secondes_par_voix": sec, "morceaux_en_duo": duo,
+                              "manuelle": {"fichier": "affectation.json", "passages": passages, "pistes": pistes,
+                                           "corriges": corriges, "voix_convertie": "voix_corrigee.flac"}}
+    rapport["morceaux"] = morceaux
+    (tv / "voix_corrigee.flac").write_bytes(b"")
+    c = snap.get("courbes")
+    if c and c.get("voix_par_trame") is not None:
+        vt = []
+        for k in range(len(c["voix_par_trame"])):
+            t = k * float(c.get("pas_s") or 0.02)
+            p = next((p for p in par if p["debut_s"] <= t < p["fin_s"]), None)
+            vt.append(-1 if p is None else len(noms) if len(p["voix"]) > 1 else noms.index(p["voix"][0]))
+        courbes.write_text(json.dumps({**c, "voix_par_trame": vt}), encoding="utf-8")
+    dire(f"affectation corrigée à la main : {len(corriges)} passage(s) ({', '.join(map(str, corriges))}) ; "
+         "voix_corrigee.flac refaite depuis les deux versions")
+    return len(corriges)
+
+
 def finir(tr, a, voix, temps_local=None):
     """Mixage, MP3, remise sur la vidéo depuis travail/ (fichiers vides), comme doubler.finir."""
     global _mix_rate
@@ -772,6 +950,8 @@ def finir(tr, a, voix, temps_local=None):
     titre = tr["nom"]
     debut = debut0 = time.time()
     cible = -20.0
+    if getattr(a, "remix", False) or (tv / "affectation.json").exists():
+        corriger_affectation(a, tv, rapport, voix)   # une erreur : « ÉCHEC », rien n'est mixé (comme doubler)
     with Etape("mix", titre, f"mixage v{version} ({mode})"):
         pause()
         if ECHEC == "mix" and not _mix_rate:
@@ -918,8 +1098,18 @@ def lancer_noyau(travaux, titres, a, voix, estimation):
     for tr in travaux:   # sorties du « noyau » rangées dans travail/ et travail/<voix>/
         (tr["travail"] / "voix_source.wav").write_bytes(b"")
         (tr["tv"] / "voix_convertie.flac").write_bytes(b"")
+        # nouveau doublage : la correction à la main d'avant ne vaut plus (comme doubler au rapatriement)
+        for f in ("affectation.json", "voix_corrigee.flac"):
+            (tr["tv"] / f).unlink(missing_ok=True)
+        shutil.rmtree(tr["tv"] / "versions", ignore_errors=True)
         rapport = rapport_kaggle(tr, a, voix)
         (tr["tv"] / "rapport.json").write_text(json.dumps(rapport, ensure_ascii=False, indent=1), encoding="utf-8")
+        v = rapport.get("versions")
+        if isinstance(v, dict) and v.get("mode") not in (None, "non"):
+            (tr["tv"] / "versions").mkdir()
+            (tr["tv"] / "versions" / "versions.json").write_text(json.dumps(
+                {"format": 1, "mode": v["mode"], "voix_cibles": v["voix_cibles"], "morceaux": v["morceaux"],
+                 "faux": True}), encoding="utf-8")
         if rapport.get("voix_cibles"):
             k = int(float(tr["duree_audio_s"]) / 0.02)
             vt = [-1 if i < 0.1 * k else 0 if i < 0.6 * k else 1 if i < 0.8 * k else 2 for i in range(k)]
@@ -1025,6 +1215,12 @@ def analyseur():
     p.add_argument("--debut", type=float, default=None, help="début de l'extrait (s), pour un essai")
     p.add_argument("--duree", type=float, default=None, help="durée de l'extrait (s)")
     p.add_argument("--remix", action="store_true", help="refaire seulement le mixage et la vidéo depuis travail/ (sans Kaggle)")
+    if not SANS_AFFECTATION:
+        p.add_argument("--affectation", default=None, metavar="FICHIER|auto",
+                       help="avec --remix, une voix par chanteur : affectation corrigée à la main (JSON), ou auto pour "
+                            "revenir à l'automatique ; gardée dans travail/<a+b>/affectation.json")
+        p.add_argument("--passage", action="append", default=None, metavar="N=VOIX",
+                       help="avec --remix : passage N (N-M, N/piste) chanté par VOIX (nom, homme, femme, deux, auto)")
     if not ANCIEN:
         p.add_argument("--reprendre", action="store_true", help="finir la dernière session Kaggle interrompue")
         p.add_argument("--donnees", default=None, metavar="DIR", help="dossier des données voix/ et sorties/")
@@ -1065,6 +1261,8 @@ def main():
     if ANCIEN:
         a.evenements = a.donnees = a.config = a.autotune = a.autotune_gamme = None
         a.json = a.mix_v1 = a.reprendre = a.preparer_outils = a.sans_autotune = False
+    if SANS_AFFECTATION:
+        a.affectation = a.passage = None
     EV.ouvrir(a.evenements)
     code = 1
     enfant = None

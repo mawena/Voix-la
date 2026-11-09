@@ -87,6 +87,9 @@ PREFERENCES_DEFAUT = {
                 "texte_mention": "Voix générée par IA"},
     # Bibliothèque des résultats (voixla.bibliotheque) : vue (grille ou liste), tri, ordre inversé, versions regroupées
     "bibliotheque": {"vue": "grille", "tri": "date", "inverse": False, "regrouper": True},
+    # Karaoké (gui/page_karaoke.py) : latence du matériel en ms (réglée à la main ou mesurée par les bips), micro
+    # (None : celui des Réglages), tours d'une boucle, dernier doublage chanté
+    "karaoke": {"latence_ms": 0, "micro": None, "repetitions": 3, "derniere": ""},
     # Quota GPU de Kaggle (voixla/quota.py). Le total et la remise à zéro viennent de « kaggle quota » quand il
     # répond ; sinon ceux-ci : heures par semaine, jour (lundi = 0) et heure UTC de la remise à zéro (samedi 00:00 UTC,
     # vérifié auprès de Kaggle le 06/11/2026)

@@ -57,9 +57,11 @@
 
 doubler.py remplace __REGLAGES__ (JSON en base64) et SOURCE (sa propre source en base64 : le noyau tourne en carnet,
 sans fichier, et en a besoin pour ses étapes à part), puis pousse ce noyau privé (GPU T4 + internet).
-Entrée de chaque vidéo (jeu de données) : WAV flottant (doubler.py jusqu'au 04/11/2026) ou FLAC 24 bits, plus léger à
-envoyer ; le FLAC est en entiers, doubler.py ramène donc la crête à -1 dBFS avant l'encodage et inscrit ce gain dans les
-réglages (gain_entree) : le noyau le retire à la lecture, tout le reste travaille au niveau d'origine.
+Entrée de chaque vidéo (jeu de données) : WAV flottant (doubler.py jusqu'au 04/11/2026), FLAC 24 bits (jusqu'au
+06/11/2026) ou FLAC 16 bits (deux fois plus léger à envoyer ; clé envoi_flac de doubler.py pour revenir à 24 bits) ; le
+FLAC est en entiers, doubler.py ramène donc la crête à -1 dBFS avant l'encodage et inscrit ce gain dans les réglages
+(gain_entree) : le noyau le retire à la lecture, tout le reste travaille au niveau d'origine. soundfile lit les deux
+FLAC en flottant : rien ne change dans le noyau.
 Sorties dans /kaggle/working/<id>/ pour chaque vidéo :
   voix_source.wav            voix isolée (44,1 kHz stéréo flottant, même longueur que l'entrée) ; si les réglages
                              demandent retour_flac : voix_source.flac (24 bits, crête à -1 dBFS) et
@@ -145,8 +147,8 @@ import soundfile as sf
 
 
 def lire_entree(chemin, gain_entree=1.0):
-    """Son d'entrée en flottant 32 bits, au niveau d'origine. Un FLAC (entiers 24 bits) a été ramené par doubler.py à
-    une crête de -1 dBFS avant l'encodage : on divise par ce même gain (réglage gain_entree). Un WAV flottant (ancien
+    """Son d'entrée en flottant 32 bits, au niveau d'origine. Un FLAC (entiers 16 ou 24 bits) a été ramené par doubler.py
+    à une crête de -1 dBFS avant l'encodage : on divise par ce même gain (réglage gain_entree). Un WAV flottant (ancien
     doubler.py) arrive tel quel, avec un gain de 1."""
     x, sr = sf.read(chemin, dtype='float32', always_2d=True)
     if gain_entree != 1.0:
@@ -1645,6 +1647,113 @@ def passages_voix(code, noms, pas_s=0.01, duree_min_s=0.0):
     return out
 
 
+# --- Deux versions de chaque passage (une voix par chanteur, réglage versions_duo) ------------------------------------
+# L'attribution d'un passage à un chanteur se trompe parfois (une chanteuse grave prise pour le chanteur, un refrain à
+# deux). Pour la corriger à la main sur le PC, sans repasser sur le GPU (doubler --remix --passage N=voix), chaque
+# morceau de chaque piste (voix principale, chœurs, secours, ou voix complète) est converti en plus dans l'autre voix
+# cible, avec le décalage du couple de cette voix ; la conversion automatique, elle, ne change pas (mêmes morceaux, même
+# graine par morceau, même assemblage). Les deux versions reviennent par piste et par voix, en couches de parité
+# (poser_morceaux), avec ce qu'il faut au PC pour refaire exactement ce que fait le noyau : porte, mise au niveau de
+# chaque piste, voix entendue à chaque trame, mélodie de chaque voix (versions/versions.json).
+# versions_duo : « toutes » (défaut de doubler.py en duo), « utiles » (passages incertains, voisins d'un changement de
+# voix, chantés ensemble, de hauteur ambiguë ; tous si une seule voix a été trouvée), « non » (rien, comme avant).
+VERSIONS_DUO = ('toutes', 'utiles', 'non')
+
+
+def nouvelles_couches(p, n):
+    """Couches de parité d'une piste à convertir qui les demande (p['couches'] : où les écrire ; p['voix'] : nombre de
+    voix cibles), sinon None."""
+    import numpy as np
+    return np.zeros((2 * int(p.get('voix') or 1), n), np.float32) if p.get('couches') else None
+
+
+def ecrire_couches(p, couches):
+    if couches is not None:
+        import numpy as np
+        np.save(p['couches'], couches)
+
+
+def charger_couches(info):
+    """Couches d'une piste convertie par l'étape YingMusic (résultat de la piste : 'couches'), relues puis effacées ;
+    None si elles manquent."""
+    import numpy as np
+    chemin = (info or {}).get('couches')
+    if not chemin or not os.path.exists(chemin):
+        return None
+    c = np.load(chemin)
+    os.remove(chemin)
+    return c
+
+
+def decalages_par_voix(info, cibles, octave_imposee=None):
+    """Décalage de chaque voix cible, pour la version d'un passage dans cette voix : celui du chanteur qui va à cette voix
+    (decision_hauteur.chanteurs) ; une seule voix trouvée, pour l'autre voix : celui de la classe de sa clé (homme,
+    femme), sinon de la classe de la voix trouvée (decalage_par_voix_et_classe) ; octave imposée : elle partout."""
+    V = cibles['voix']
+    if octave_imposee in (-12, 0, 12):
+        return [octave_imposee] * len(V)
+    dpvc = info.get('decalage_par_voix_et_classe') or {}
+    chanteurs = [c for c in info.get('chanteurs') or [] if isinstance(c, dict)]
+    classe_trouvee = (chanteurs[0].get('classe') if chanteurs else None) or (info.get('voix_principale') or {}).get('classe')
+    out = []
+    for j, v in enumerate(V):
+        c = next((c for c in chanteurs if c.get('cible') == j and c.get('decalage') is not None), None)
+        if c is not None:
+            out.append(c['decalage'])
+            continue
+        classe = v.get('cle') if v.get('cle') in ('homme', 'femme') else classe_trouvee
+        d = (dpvc.get(v['nom']) or {}).get(classe) if classe else None
+        out.append(d if d is not None else 0)
+    return out
+
+
+def morceaux_utiles(segs, aff, plans, voix_trouvees=2, reglages=None):
+    """Passages dont l'autre version compte le plus (versions_duo « utiles ») : {i: [raisons]}. Raisons : incertain (une
+    piste mal reconnue, ou le chanteur du morceau choisi d'après ses voisins), hauteur ambiguë (240-330 Hz, où chanteur
+    et chanteuse se croisent), ensemble (pistes dans des voix différentes), changement (voisin d'un changement de voix) ;
+    une seule voix trouvée : tous les passages chantés (c'est la décision entière qui peut être fausse)."""
+    R = {**OCTAVE_DEFAUT, **(reglages or {})}
+    actifs = [s for s in segs if not s.get('muet')]
+    voix_de = {}
+    for s in actifs:
+        voix_de[s['i']] = {par_i[s['i']]['cible'] for nom, par_i in (aff or {}).items()
+                          if s['i'] in par_i and s['i'] in (plans or {}).get(nom, ())} or {s.get('cible')}
+    out = {}
+    for k, s in enumerate(actifs):
+        i, r = s['i'], []
+        if voix_trouvees < 2:
+            r.append('une seule voix trouvée')
+        etats = {par_i[i]['etat'] for nom, par_i in (aff or {}).items() if i in par_i and i in (plans or {}).get(nom, ())}
+        if etats & {'incertaine', 'sans_indice'} or 'voisins' in str(s.get('base') or ''):
+            r.append('incertain')
+        if s.get('f0_med') and R['zone_basse_hz'] <= s['f0_med'] <= R['zone_haute_hz']:
+            r.append('hauteur ambiguë')
+        if len(voix_de[i]) > 1:
+            r.append('ensemble')
+        voisins = [actifs[x]['i'] for x in (k - 1, k + 1) if 0 <= x < len(actifs)]
+        if any(voix_de[v] != voix_de[i] for v in voisins):
+            r.append('changement')
+        if r:
+            out[i] = r
+    return out
+
+
+def versions_autres(morceaux, decalages, garder=None):
+    """Morceaux de chaque autre voix d'une piste : [(rang, [(i, début, fin, décalage de la voix, fa, fb, voix)])], rang
+    1 à nv - 1 (voix = voix du morceau + rang, modulo nv) ; garder : numéros des passages à convertir (None : tous)."""
+    nv = len(decalages)
+    out = []
+    for r in range(1, nv):
+        ms = []
+        for m in morceaux:
+            if garder is not None and m[0] not in garder:
+                continue
+            v = ((m[6] if len(m) > 6 else 0) + r) % nv
+            ms.append((m[0], m[1], m[2], decalages[v], m[4], m[5], v))
+        out.append((r, ms))
+    return out
+
+
 def decider_parole(segs, f0_cible, R):
     """Décalage libre (demi-tons, au demi-ton près) par voix : la médiane de chaque voix rejoint la hauteur de parole
     de la voix cible."""
@@ -1732,16 +1841,16 @@ def porte(lisse, seuil, n):
     return gain, gain_trames
 
 
-def assembler(x, morceaux, pad, convertir_morceau, graine, torch):
+def assembler(x, morceaux, pad, convertir_morceau, graine, torch, couches=None):
     """Piste convertie, calée à l'échantillon près sur x : chaque morceau (i, début, fin, décalage, fondu au début,
     fondu à la fin ; en échantillons) est converti avec 0,25 s de marge de chaque côté, puis fondu aux coupes.
     convertir_morceau(xs, décalage) rend autant d'échantillons que xs. La porte des silences reste à l'appelant.
     Plusieurs voix cibles : un 7e élément, l'indice de la voix cible du morceau, passé en 3e argument
-    (convertir_morceau(xs, décalage, voix))."""
+    (convertir_morceau(xs, décalage, voix)). couches : voir poser_morceaux."""
     def convertir(k, m, lo, hi):
         torch.manual_seed(graine + m[0])
         return convertir_morceau(x[lo:hi], m[3]) if len(m) < 7 else convertir_morceau(x[lo:hi], m[3], m[6])
-    return poser_morceaux(len(x), morceaux, pad, convertir)
+    return poser_morceaux(len(x), morceaux, pad, convertir, couches)
 
 
 def bornes_morceau(m, pad, n):
@@ -1749,10 +1858,15 @@ def bornes_morceau(m, pad, n):
     return max(0, m[1] - pad), min(n, m[2] + pad)
 
 
-def poser_morceaux(n, morceaux, pad, morceau_converti):
+def poser_morceaux(n, morceaux, pad, morceau_converti, couches=None):
     """Assemblage d'assembler(), dans l'ordre des morceaux : morceau_converti(k, m, lo, hi) rend les hi - lo
     échantillons convertis du k-ième morceau (convertis ici, ou relus d'une étape qui les a convertis sur une autre carte :
-    les mêmes poids, la même somme, dans le même ordre, donc la même piste au bit près)."""
+    les mêmes poids, la même somme, dans le même ordre, donc la même piste au bit près).
+    couches (deux versions de chaque passage, une voix par chanteur) : tableau (2 x voix, n) qui reçoit en plus la part de
+    chaque morceau, fondus compris, dans la couche 2 x sa voix (7e élément) + la parité de son numéro. Deux morceaux de
+    même parité ne se touchent jamais (un morceau d'au moins 2 s les sépare, plus long que les deux marges) : chaque
+    couche garde chaque morceau à part, et le PC peut recomposer la piste avec une autre voix sur un passage, au bit près
+    de ce qu'aurait rendu le noyau (couches_par_voix). La piste rendue ne change pas."""
     import numpy as np
     sortie = np.zeros(n, np.float32)
     for k, m in enumerate(morceaux):
@@ -1765,7 +1879,10 @@ def poser_morceaux(n, morceaux, pad, morceau_converti):
             w *= rampe(tt - a, fa)
         if b < n:
             w *= 1 - rampe(tt - b, fb)
-        sortie[lo:hi] += (y * w).astype(np.float32)
+        part = (y * w).astype(np.float32)
+        sortie[lo:hi] += part
+        if couches is not None:
+            couches[2 * (m[6] if len(m) > 6 else 0) + i % 2, lo:hi] += part
     return sortie
 
 
@@ -3210,10 +3327,13 @@ def etape_ying(travail):
         t0 = time.time()
         try:
             x = lire_mono(p['entree'])
+            couches = nouvelles_couches(p, len(x))
             y = assembler(x, p['morceaux'], travail['pad'], lambda xs, d, v=0: m.convertir_morceau(xs, refs[v], d, p['pas']),
-                          REGLAGES['graine'], m.torch)
+                          REGLAGES['graine'], m.torch, couches)
             sf.write(p['sortie'], y, SR, subtype='FLOAT')
-            res['pistes'][p['cle']] = {'sortie': p['sortie'], 'conversion_s': round(time.time() - t0, 1), 'morceaux': len(p['morceaux'])}
+            ecrire_couches(p, couches)
+            res['pistes'][p['cle']] = {'sortie': p['sortie'], 'conversion_s': round(time.time() - t0, 1), 'morceaux': len(p['morceaux']),
+                                       **({'couches': p['couches']} if couches is not None else {})}
             log(f"YINGMUSIC {p['cle']} : {len(p['morceaux'])} morceaux en {time.time() - t0:.0f} s")
         except Exception as e:  # noqa: BLE001 — cette piste se repliera sur Seed-VC
             import traceback
@@ -3342,11 +3462,13 @@ def ying_sur_cartes(travail, cartes, invite_s=25.0, avant=None):
             continue
         try:
             n = len(lire_mono(p['entree']))
+            couches = nouvelles_couches(p, n)
             y = poser_morceaux(n, p['morceaux'], travail['pad'],
-                               lambda k, mo, lo, hi: np.load(os.path.join(dossier, f'{pi}_{k}.npy')))
+                               lambda k, mo, lo, hi: np.load(os.path.join(dossier, f'{pi}_{k}.npy')), couches)
             sf.write(p['sortie'], y, SR, subtype='FLOAT')
+            ecrire_couches(p, couches)
             res['pistes'][p['cle']] = {'sortie': p['sortie'], 'conversion_s': round(sum(faits[c] for c in cles), 1),
-                                       'morceaux': len(cles)}
+                                       'morceaux': len(cles), **({'couches': p['couches']} if couches is not None else {})}
         except Exception as e:  # noqa: BLE001 — cette piste se repliera sur Seed-VC
             import traceback
             traceback.print_exc()
@@ -3924,6 +4046,8 @@ def main():
 
     moteur_chant = R.get('moteur_chant') or 'yingmusic'
     nettoyage_demande = bool(R.get('nettoyage', True))
+    # deux versions de chaque passage (une voix par chanteur) : absent (ancien doubler.py) ou non : rien ne change
+    versions_mode = R.get('versions_duo') if R.get('versions_duo') in VERSIONS_DUO else 'non'
     pad, fondu = int(R['pad_s'] * SR), int(R['fondu_s'] * SR)
 
     def analyser(tr):
@@ -4171,6 +4295,7 @@ def main():
         aff = affecter_pistes(segs, [p['nom'] for p in e['pistes']], mesures, modele, cibles, octave, R)
         for p in e['pistes']:
             p['affectation'] = {i: (a['cible'], a['decalage']) for i, a in aff[p['nom']].items()}
+        e['aff'], e['plans'] = aff, plans
         e['rapport']['affectation'] = rapport_affectation(segs, aff, plans, cibles, e['rapport']['decision_hauteur'])
         e['rapport']['affectation']['duree_s'] = round(time.time() - t, 2)
         e['rapport']['temps']['affectation_s'] = round(time.time() - t, 2)
@@ -4181,6 +4306,22 @@ def main():
         """Morceaux d'une piste : ceux de la voix complète (mêmes coupes, même décalage), sauf les muets et ceux où cette
         piste se tait (secours : ceux qui touchent ses zones). [(i, début, fin, décalage, fondu au début, à la fin)]."""
         return morceaux_piste(liste, p, e['fondus'])
+
+    def preparer_versions(e):
+        """Une voix par chanteur, versions_duo toutes ou utiles : décalage de chaque voix cible, passages dont on veut
+        aussi la version dans l'autre voix (tous, ou les utiles)."""
+        info = e['rapport']['decision_hauteur']
+        octave = e['tr']['octave'] if e['tr']['octave'] in (-12, 0, 12) else None
+        decs = decalages_par_voix(info, cibles, octave)
+        utiles = (morceaux_utiles(e['segs'], e.get('aff'), e.get('plans'), info.get('voix') or 1, R)
+                  if versions_mode == 'utiles' else None)
+        e['versions'] = {'mode': versions_mode, 'decalages': decs, 'nv': len(cibles['voix']),
+                         'garder': None if utiles is None else set(utiles), 'raisons': utiles}
+
+    def plan_versions(e, p, liste):
+        """[(rang, morceaux)] d'une piste dans chaque autre voix cible (versions_autres)."""
+        v = e['versions']
+        return versions_autres(plan(e, p, liste), v['decalages'], v['garder'])
 
     def variantes_de(e):
         tr, segs = e['tr'], e['segs']
@@ -4212,9 +4353,18 @@ def main():
         for e in etats_v:
             for k, (nom, pas, liste, fichier) in enumerate(e['variantes']):
                 if nom == 'yingmusic':
+                    vers = e.get('versions') if fichier == 'voix_convertie.flac' else None
                     for p in e['pistes']:
+                        base = f"/tmp/ying/{e['tr']['id']}_{k}_{p['nom']}"
                         pistes.append({'cle': cle_ying(e, fichier, p), 'entree': p['chemin'], 'pas': pas,
-                                       'sortie': f"/tmp/ying/{e['tr']['id']}_{k}_{p['nom']}.wav", 'morceaux': plan(e, p, liste)})
+                                       'sortie': f'{base}.wav', 'morceaux': plan(e, p, liste),
+                                       **({'couches': f'{base}_couches.npy', 'voix': vers['nv']} if vers else {})})
+                        # deux versions : chaque morceau aussi dans l'autre voix (pistes de plus, même graine par
+                        # morceau : la piste automatique ci-dessus n'en dépend pas)
+                        for r, ms in (plan_versions(e, p, liste) if vers else ()):
+                            pistes.append({'cle': f'{cle_ying(e, fichier, p)}|autre{r}', 'entree': p['chemin'], 'pas': pas,
+                                           'sortie': f'{base}_autre{r}.wav', 'morceaux': ms,
+                                           'couches': f'{base}_autre{r}_couches.npy', 'voix': vers['nv']})
         if not pistes:
             return {}
         t = time.time()
@@ -4242,6 +4392,116 @@ def main():
         ecrire_session()
         return res
 
+    def ecrire_versions(e, nom, pas, liste, fichier, plans_v, couches_v, gains_v, garde, ying, mes):
+        """Deux versions de chaque passage (une voix par chanteur) : l'autre voix de chaque morceau (relue de l'étape
+        YingMusic, ou convertie ici par Seed-VC), puis dans versions/ :
+          <piste>_<j>.flac   la piste dans la voix j : deux canaux, morceaux pairs et impairs (poser_morceaux), fondus
+                             et porte des silences compris, avant la mise au niveau ; crête ramenée à -1 dBFS (gain noté)
+          versions.json      la recette : pour chaque piste, dans l'ordre du noyau, ses morceaux (numéro, bornes,
+                             fondus, voix et décalage automatiques, voix disponibles), sa mise au niveau (rms de la
+                             source et trames actives, ou porte et rms de la voix complète pour le secours), ses trames
+                             ouvertes pour la voix entendue (voix_par_trames) ; le décalage de chaque voix, la mélodie de
+                             chaque voix (toute la chanson dans cette voix, 20 ms), le garde-crête de l'automatique.
+        doubler.py en refait, sur le PC, la voix convertie de n'importe quelle affectation (même assemblage, même porte,
+        même mise au niveau, même garde-crête) : l'automatique redonne voix_convertie.flac. Rend la section « versions »
+        du rapport."""
+        vers, tr, n = e['versions'], e['tr'], e['n']
+        nv = vers['nv']
+        conv_s, secondes = 0.0, 0.0
+        for p, _ in plans_v:
+            if couches_v.get(p['nom']) is None:
+                raise RuntimeError(f"couches de la piste {p['nom']} absentes")
+            for r, ms in plan_versions(e, p, liste):
+                if not ms:
+                    continue
+                secondes += sum(b - a for _, a, b, *_ in ms) / SR
+                if nom == 'yingmusic':
+                    i = (ying.get('pistes') or {}).get(f'{cle_ying(e, fichier, p)}|autre{r}') or {}
+                    c = charger_couches(i)
+                    if i.get('sortie') and os.path.exists(i['sortie']):
+                        os.remove(i['sortie'])
+                    if c is None:
+                        raise RuntimeError(f"autre voix de la piste {p['nom']} absente : "
+                                           f"{i.get('erreur') or ying.get('erreur') or 'étape YingMusic'}")
+                    couches_v[p['nom']] += c
+                    conv_s += float(i.get('conversion_s') or 0)
+                else:
+                    md = modeles[nom]
+                    refs_v = refs_cibles[nom] if nom in refs_cibles else [refs[nom]]
+                    t = time.time()
+                    assembler(p['x'], ms, pad, lambda xs, d, v=0: convertir(xs, md, refs_v[v], d if md['f0'] else 0, pas),
+                              R['graine'], torch, couches_v[p['nom']])
+                    conv_s += time.time() - t
+        t0 = time.time()
+        d = os.path.join(tr['dossier'], 'versions')
+        shutil.rmtree(d, ignore_errors=True)
+        os.makedirs(d)
+        k10 = len(e['f0_tout'])
+        lisse_voix = a_longueur(e['lisse'], k10, -120.0)
+        totaux = np.zeros((nv, n), np.float32)
+        garder, pistes_r, dispo = vers['garder'], [], {}
+        for p, morceaux in plans_v:
+            c = couches_v[p['nom']]
+            c *= np.asarray(p['gain'], np.float32)[None, :c.shape[1]]
+            fichiers, gains_f = [], []
+            for j in range(nv):
+                paire = c[2 * j:2 * j + 2]
+                pic = float(np.abs(paire).max())
+                g = 10 ** (-1 / 20) / pic if pic > 0 else 1.0
+                f = f"{p['nom']}_{j}.flac"
+                sf.write(os.path.join(d, f), np.ascontiguousarray((paire * np.float32(g)).T), SR, subtype='PCM_24')
+                fichiers.append(f)
+                gains_f.append(g)
+                totaux[j, :c.shape[1]] += (paire[0] + paire[1]) * np.float32(gains_v[p['nom']])
+            ouvert = a_longueur(p.get('gain_trames', e['gain_trames']), k10) > 0.5
+            if p['nom'] != 'secours':
+                ouvert &= a_longueur(p['lisse'], k10, -120.0) >= lisse_voix + CHANTEURS_DEFAUT['piste_min_db']
+            if p['nom'] == 'secours':
+                porte_o = np.asarray(p['gain']) > 0.5
+                sx = float(np.sqrt(np.mean(np.asarray(p['x'], np.float64)[porte_o] ** 2))) if porte_o.any() else 0.0
+                niveau = {'type': 'secours', 'rms_source': sx, 'porte': [[int(a), int(b)] for a, b in suites(porte_o)],
+                          'borne_db': 20.0}
+            elif p['nom'] == 'voix':
+                niveau = {'type': 'aucun'}
+            else:
+                env = enveloppe_db(p['x'])
+                actif = lisser_db(env) > seuil_silence(env)
+                niveau = {'type': 'source', 'rms_source': rms_actif(p['x']),
+                          'actif': [[int(a), int(b)] for a, b in suites(actif)]}
+            ms = []
+            for m in morceaux:
+                v = int(m[6]) if len(m) > 6 else 0
+                voix_m = list(range(nv)) if garder is None or m[0] in garder else [v]
+                ms.append([int(m[0]), int(m[1]), int(m[2]), int(m[4]), int(m[5]), v, m[3], voix_m])
+                dispo[int(m[0])] = dispo.get(int(m[0]), True) and len(voix_m) == nv
+            pistes_r.append({'nom': p['nom'], 'fichiers': fichiers, 'gains_fichiers': gains_f,
+                             'gain_auto': float(gains_v[p['nom']]), 'niveau': niveau,
+                             'ouvert': [[int(a), int(b)] for a, b in suites(ouvert)], 'morceaux': ms})
+        hz = lambda f: [round(float(v), 1) if v > 1 else 0 for v in f]
+        f0_voix = [hz(f0_piste(totaux[j])[::2]) for j in range(nv)]
+        noms_v = [v['nom'] for v in cibles['voix']]
+        raisons = {str(i): r for i, r in sorted((vers['raisons'] or {}).items())} if vers['raisons'] is not None else None
+        recette = {'format': 1, 'sr': SR, 'echantillons': int(n), 'trames': int(k10), 'pad': int(pad),
+                   'trame_echantillons': PAS, 'voix_cibles': noms_v, 'decalages': list(vers['decalages']),
+                   'mode': vers['mode'], 'garde_auto': float(garde), 'pistes': pistes_r, 'f0_voix_hz': f0_voix,
+                   'raisons': raisons}
+        with open(os.path.join(d, 'versions.json'), 'w') as fj:
+            json.dump(recette, fj, ensure_ascii=False, separators=(',', ':'), default=float)
+        conv_auto = float(mes.get('conversion_s') or 0)
+        taille = sum(os.path.getsize(os.path.join(d, f)) for f in os.listdir(d))
+        resume = {'mode': vers['mode'], 'dossier': 'versions', 'morceaux': sorted(i for i, ok in dispo.items() if ok),
+                  'voix_cibles': noms_v, 'decalages': dict(zip(noms_v, vers['decalages'])), 'secondes': round(secondes, 1),
+                  'conversion_s': round(conv_s, 1), 'conversion_auto_s': round(conv_auto, 1),
+                  'surcout': round(conv_s / conv_auto, 3) if conv_auto > 0 else None,
+                  'taille_mo': round(taille / 1e6, 1), 'ecriture_s': round(time.time() - t0, 1)}
+        if raisons is not None:
+            resume['raisons'] = raisons
+        session['temps']['versions_gpu_s'] = round((session['temps'].get('versions_gpu_s') or 0) + conv_s, 1)
+        log(f"[{tr['id']}] DEUX VERSIONS ({vers['mode']}) : {len(resume['morceaux'])} passage(s) dans chaque voix, "
+            f"{secondes:.0f} s converties en plus en {conv_s:.0f} s de GPU (automatique : {conv_auto:.0f} s), "
+            f"{resume['taille_mo']} Mo")
+        return resume
+
     def finir_video(e, ying):
         """Conversion de chaque variante (Seed-VC ici, YingMusic déjà fait à part), porte, mise au niveau de chaque piste
         nettoyée, somme, mesures, rapport."""
@@ -4267,6 +4527,9 @@ def main():
             f0 = nom != 'parole22k'
             total, details, duree = np.zeros(n, np.float32), {}, 0.0
             plans_v = []   # (piste, morceaux) de cette variante : voix entendue à chaque trame (plusieurs voix cibles)
+            # deux versions (voix principale seulement) : couches de parité de chaque piste, gain de mise au niveau
+            vers = e.get('versions') if fichier == 'voix_convertie.flac' else None
+            couches_v, gains_v = {}, {}
             for p in e['pistes']:
                 morceaux = plan(e, p, liste)
                 plans_v.append((p, morceaux))
@@ -4274,17 +4537,25 @@ def main():
                     y, conv = lire_mono(infos[p['nom']]['sortie']), float(infos[p['nom']]['conversion_s'])
                     os.remove(infos[p['nom']]['sortie'])
                     ying_s += conv
+                    if vers:
+                        couches_v[p['nom']] = charger_couches(infos[p['nom']])
                 elif morceaux:
                     md = modeles[nom]
                     # une référence par voix cible (préparée une fois), choisie par le 7e élément de chaque morceau
                     refs_v = refs_cibles[nom] if e.get('plusieurs') and nom in refs_cibles else [refs[nom]]
+                    couches = np.zeros((2 * vers['nv'], len(p['x'])), np.float32) if vers else None
                     t = time.time()
                     y = assembler(p['x'], morceaux, pad,
                                   lambda xs, d, v=0: convertir(xs, md, refs_v[v], d if md['f0'] else 0, pas),
-                                  R['graine'], torch)
+                                  R['graine'], torch, couches)
                     conv = time.time() - t
+                    if vers:
+                        couches_v[p['nom']] = couches
                 else:
                     y, conv = np.zeros(n, np.float32), 0.0
+                    if vers:
+                        couches_v[p['nom']] = np.zeros((2 * vers['nv'], n), np.float32)
+                gains_v[p['nom']] = 1.0
                 y = y[:n] if len(y) >= n else np.pad(y, (0, n - len(y)))
                 y = (y * p['gain']).astype(np.float32)
                 secondes_p = sum(b - a for _, a, b, *_ in morceaux) / SR
@@ -4294,12 +4565,14 @@ def main():
                     # la piste de secours reprend le niveau de la voix complète dans ses zones
                     g = gain_secours(p['x'], y, p['gain'])
                     y = (y * g).astype(np.float32)
+                    gains_v[p['nom']] = g
                     d.update({'gain_niveau_db': round(20 * math.log10(g), 2), 'zones': len(p['zones']),
                               'secondes_zones': round(sum(z['duree_s'] for z in p['zones']), 2)})
                 elif p['nom'] != 'voix' and morceaux:
                     # chaque piste nettoyée reprend le niveau de sa source : l'équilibre voix principale / chœurs d'origine
                     g = rms_actif(p['x']) / max(rms_actif(y, p['x']), 1e-9)
                     y = (y * g).astype(np.float32)
+                    gains_v[p['nom']] = g
                     d['gain_niveau_db'] = round(20 * math.log10(g), 2)
                 details[p['nom']] = d
                 total += y
@@ -4374,6 +4647,17 @@ def main():
                     ecrire_courbes(e, total, f0)
                 except Exception as ex:  # noqa: BLE001 — les courbes ne servent qu'à l'affichage
                     log(f"[{tr['id']}] courbes.json impossible : {ex!r}")
+                if vers:
+                    try:
+                        rapport['versions'] = ecrire_versions(e, nom, pas, liste, fichier, plans_v, couches_v, gains_v,
+                                                              garde, ying, mes)
+                    except Exception as ex:  # noqa: BLE001 — sans deux versions : le doublage automatique reste
+                        import traceback
+                        traceback.print_exc()
+                        shutil.rmtree(os.path.join(tr['dossier'], 'versions'), ignore_errors=True)
+                        rapport['versions'] = {'mode': vers['mode'], 'erreur': repr(ex)[:300]}
+                        log(f"[{tr['id']}] DEUX VERSIONS impossibles ({ex!r}) : le doublage automatique reste")
+                    couches_v.clear()
             sf.write(os.path.join(tr['dossier'], fichier), np.clip(total, -1, 1), SR, subtype='PCM_24')
             log(f"[{tr['id']}] conversion {nom}, {pas} pas → {fichier} : {json.dumps(mes, ensure_ascii=False)}")
             torch.cuda.empty_cache()
@@ -4560,6 +4844,14 @@ def main():
                 for p in e['pistes']:
                     p['affectation'] = {s['i']: (s['cible'], s['decalage']) for s in e['segs'] if not s['muet']}
                 e['rapport']['affectation'] = {'erreur': repr(ex)[:300], 'message': 'chaque piste prend la voix du morceau'}
+        if e.get('plusieurs') and versions_mode != 'non':
+            try:
+                preparer_versions(e)
+            except Exception as ex:  # noqa: BLE001 — sans deux versions : le doublage automatique, comme avant
+                import traceback
+                traceback.print_exc()
+                e['versions'] = None
+                e['rapport']['versions'] = {'mode': versions_mode, 'erreur': repr(ex)[:300]}
         e['variantes'] = variantes_de(e)
     # 6. Paroles (avant la fin de chaque vidéo : la voix principale sèche est effacée avec ses fichiers de travail). Leur
     # piste est prête dès le nettoyage : sur plusieurs cartes, la dernière les fait pendant que les autres convertissent,

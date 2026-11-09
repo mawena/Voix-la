@@ -158,8 +158,8 @@ class CalageParoles(unittest.TestCase):
                          d['decalage_s'])
         for nom, t in (('paroles.json', d['segments'][0]['debut']), ('mot', d['segments'][0]['mots'][0]['debut']),
                        ('traduction', d['traductions']['fr']['segments'][0]['debut']),
-                       ('.es.srt', temps(r'^(\d+):(\d+):(\d+),(\d+) -->', (self.dossier / f'{BASE}.es.srt').read_text())),
-                       ('.fr.srt', temps(r'^(\d+):(\d+):(\d+),(\d+) -->', (self.dossier / f'{BASE}.fr.srt').read_text())),
+                       ('.es.srt', temps(r'^(\d+):(\d+):(\d+),(\d+) -->', (self.dossier / 'paroles' / f'{BASE}.es.srt').read_text())),
+                       ('.fr.srt', temps(r'^(\d+):(\d+):(\d+),(\d+) -->', (self.dossier / 'paroles' / f'{BASE}.fr.srt').read_text())),
                        ('piste de la vidéo', premiere_replique(sortie) - image),
                        ('traduction de la vidéo', premiere_replique(sortie, 'Paroles (français, traduction)') - image)):
             if isinstance(t, list):

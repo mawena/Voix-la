@@ -103,7 +103,7 @@ class Doublage(Base):
             recu['historique'] = sorties
             return 600
 
-        def envoyer(travaux, voix, kdir):
+        def envoyer(travaux, voix, kdir, bits=16):
             for tr in travaux:
                 tr['gain_entree'], tr['taille_envoi'] = 1.0, 1
         a = argparse.Namespace(sortie=str(self.neuve), debut=None, duree=None, pas=30, paroles=True, moteur='yingmusic',

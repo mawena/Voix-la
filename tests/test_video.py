@@ -112,7 +112,7 @@ class Video(unittest.TestCase):
                 self.assertEqual(d['decalage_s'], 0.0)
                 self.assertEqual(d['segments'][0]['debut'], 1.0)
                 self.assertAlmostEqual(self.pts_paroles(sortie), 1.0, delta=0.002)
-                srt = (self.tmp / 'Essai - voix Test.es.srt').read_text()
+                srt = (self.tmp / 'paroles' / 'Essai - voix Test.es.srt').read_text()
                 self.assertTrue(srt.startswith('1\n00:00:01,000 --> '), srt)
                 for f in (self.tmp / 'travail').iterdir():
                     if f.is_file():
@@ -142,14 +142,14 @@ class Video(unittest.TestCase):
             sortie = self.D.finir(tr, a, voix)
         self.assertIn('passages perdus au nettoyage repris', texte.getvalue())
         self.assertIn('paroles (espagnol, 1 lignes, traduction française)', texte.getvalue())
-        for nom in ('clip - voix Test.mp4', 'clip - voix Test.mp3', 'clip - voix Test.es.srt', 'clip - voix Test.fr.srt',
+        for nom in ('clip - voix Test.mp4', 'clip - voix Test.mp3', 'paroles/clip - voix Test.es.srt', 'paroles/clip - voix Test.fr.srt',
                     'clip - voix Test.lrc'):
             self.assertTrue((dossier / nom).exists(), nom)
         self.assertEqual(len(sous_titres(sortie)), 3)
         ev = [json.loads(l) for l in evenements.read_text().splitlines()]
         s = next(e for e in ev if e['type'] == 'sortie')
         self.assertEqual(s['paroles'], str(tv / 'paroles.json'))
-        self.assertEqual(sorted(s['srt']), sorted(str(dossier / f'clip - voix Test.{x}.srt') for x in ('es', 'fr')))
+        self.assertEqual(sorted(s['srt']), sorted(str(dossier / 'paroles' / f'clip - voix Test.{x}.srt') for x in ('es', 'fr')))
         self.assertEqual(s['lrc'], str(dossier / 'clip - voix Test.lrc'))
         rapport = json.loads((tv / 'rapport.json').read_text())
         self.assertEqual(rapport['paroles_sorties']['pistes_video'], ['Paroles (espagnol)', 'Paroles (français, traduction)'])

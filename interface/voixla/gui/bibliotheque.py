@@ -11,7 +11,8 @@
   est créée sans être montrée, et lit le son seul tant qu'on ne la regarde pas (comme fenêtre fermée). Un clic sur la
   carte ouvre le détail (gui/page_resultats.PageDetail). Les versions d'une même chanson : une seule carte « 2 versions »,
   avec une pastille par voix qui ouvre sa version ; « Regrouper les versions » (menu de tri) les déplie.
-- **Rien de l'ancienne liste ne se perd** : menu « ⋮ » (ouvrir le dossier, mettre à la corbeille), mode sélection
+- **Rien de l'ancienne liste ne se perd** : menu « ⋮ » (partager, chanter en karaoké sur le beat seul, ouvrir le
+  dossier, mettre à la corbeille), mode sélection
   (corbeille de plusieurs doublages, Échap pour sortir), F5, liste relue quand un doublage finit, « Voir le résultat »
   depuis les Travaux, scénarios des captures.
 - Le choix de la vue, du tri et du regroupement est gardé dans interface.json (clé « bibliotheque »).
@@ -467,6 +468,7 @@ class PageBibliotheque(commun.Page):
         simple("dossier", self._ouvrir_dossier)
         simple("corbeille", self._corbeille_entree)
         simple("partager", self._partager_entree)
+        simple("chanter", self._chanter_entree)
         simple("ouvrir", self._ouvrir_cle)
         simple("lire", lambda cle: cle in self.entrees and self.lire_rapide(self.entrees[cle]))
         simple("dossier-sorties", lambda _v: commun.ouvrir_dossier(
@@ -1153,6 +1155,11 @@ class PageBibliotheque(commun.Page):
                                     f"Partager la version {libelle}…", None)
             item.set_action_and_target_value("bibliotheque.partager", cible)
             actions.append_item(item)
+        if (entree.principale.res.travail / "instrumental.wav").is_file():
+            # le karaoké chante sur le beat seul, commun à toutes les versions de la chanson
+            item = Gio.MenuItem.new("Chanter…", None)
+            item.set_action_and_target_value("bibliotheque.chanter", cible)
+            actions.append_item(item)
         for libelle, action in (("Ouvrir le dossier", "bibliotheque.dossier"),
                                 (f"Mettre les {entree.n} versions à la corbeille…" if entree.n > 1 else
                                  "Mettre à la corbeille…", "bibliotheque.corbeille")):
@@ -1178,6 +1185,12 @@ class PageBibliotheque(commun.Page):
         detail = s if isinstance(s, PageDetail) and not s._oubliee and s.meme_resultat(res) else None
         from .partage import ouvrir
         ouvrir(self.fenetre, res, detail)
+
+    def _chanter_entree(self, cle):
+        """« Chanter… » (menu « ⋮ ») : le karaoké sur le beat seul de cette chanson."""
+        e = self.entrees.get(cle)
+        if e is not None and hasattr(self.fenetre, "chanter"):
+            self.fenetre.chanter(e.principale.res)
 
     def _corbeille_entree(self, cle):
         e = self.entrees.get(cle)

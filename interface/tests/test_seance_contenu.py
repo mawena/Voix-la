@@ -65,9 +65,11 @@ class TestTextes(unittest.TestCase):
         self.assertIn("Imite le son avec ta voix : monte doucement du plus grave au plus aigu, puis redescends. "
                       "Ne force jamais : arrête-toi avant que ça coince.", TX.CONSIGNES_TESSITURE)
 
-    def test_pas_de_prenom(self):
+    def test_textes_sans_prenom(self):
+        # les textes s'adressent à la personne qui enregistre : on la tutoie, sans l'appeler par son nom
         tout = " ".join(TX.COMMENT_CA_MARCHE + TX.CONSIGNES_TESSITURE + TX.CONSIGNES_CHANSON_PUBLIQUE)
-        self.assertNotRegex(tout, r"\b(?:Charles|Anick)\b")
+        self.assertRegex(tout, r"\btu\b|\bta\b|\bton\b")
+        self.assertNotRegex(tout, r"\bBonjour [A-Z]")
 
 
 class TestChansons(unittest.TestCase):

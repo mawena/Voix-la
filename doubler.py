@@ -3,7 +3,7 @@
 
   doubler <vidéo> [<vidéo>…] [--voix NOM | --voix homme:NOM,femme:NOM | --voix chanteur1:NOM,chanteur2:NOM]
           [--comparer NOM,NOM[,NOM…]]
-          [--mode auto|chant|parole] [--octave auto|0|-12|+12] [--pas 30]
+          [--mode auto|chant|parole] [--octave auto|0|-12|+12] [--transposer auto|non|N] [--pas 30]
           [--moteur yingmusic|seedvc] [--sans-nettoyage] [--sans-paroles] [--gpu auto|1|2] [--voix-db 4] [--reverb-db -13]
           [--mix-v1] [--pistes-audio toutes|doublage]
           [--autotune [N]] [--autotune-gamme auto|chromatique|la-mineur…] [--sans-autotune]
@@ -40,6 +40,18 @@ qu'elle sonne dans le mix) et Voix d'origine seule ; --pistes-audio doublage (cl
 Leur étiquette de langue est celle des paroles reconnues (la plus chantée, si la chanson en mêle deux), sinon celle du
 son d'origine. --remix refait seulement le mixage et la remise sur la vidéo, paroles et pistes audio comprises. Seuls
 le son des vidéos et la référence de la voix choisie partent sur Kaggle.
+Transposition de la chanson (chant ; --transposer auto|non|N, clé « transposer » de la configuration) : ses proches ne
+reconnaissent la voix cible que lorsqu'elle chante près de sa zone naturelle. Une chanson hors de cette zone est donc
+transposée EN ENTIER, musique comprise, comme un changement de tonalité au karaoké. Le noyau choisit un seul nombre entier
+de demi-tons pour toute la chanson (le plus petit possible, au plus ±5), qui range au mieux la voix convertie dans la zone
+de la voix cible (tessiture.json de son dossier, sinon 2 x sa hauteur de parole ±4 demi-tons) ; chaque voix reçoit ce
+décalage plus son octave (-12, 0 ou +12, comme avant ; --octave la force). Un duo (une voix par chanteur) : un seul
+décalage, qui minimise l'écart total des deux voix à leur zone. Parole : jamais. Sur le PC, la musique seule est transposée
+par Rubber Band R3 (paquet librubberband2) avant le mixage, à durée exacte, gardée dans travail/instrumental_transpose_<N>.wav
+(--remix la réutilise) ; le doublage et « Beat seul » sont sur la musique transposée, « Original » et « Voix d'origine
+seule » ne le sont jamais. Sans Rubber Band : avertissement, pas de transposition, octave seule. La décision (décalage,
+octave par chanteur, médianes avant et après, zone, raison) est dans rapport.json (« transposition ») et affichée à la fin.
+--remix suit la décision déjà prise : --transposer non ne peut pas changer la voix sans reconvertir (message, sans erreur).
 Une voix par chanteur (--voix homme:A,femme:B pour un duo mixte, chanteur1:A,chanteur2:B pour un duo de même genre) :
 chaque piste de chaque passage (voix principale, chœurs, secours) prend la voix du chanteur qu'on y reconnaît, l'octave
 se décide pour chaque couple chanteur -> voix ; sorties <titre> - voix A et B.<ext>, travail/A+B/.

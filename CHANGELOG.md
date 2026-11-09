@@ -9,6 +9,20 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ### Ajouté
 
+- Corriger à la main qui chante quoi dans un duo (une voix par chanteur). Le noyau convertit chaque passage dans les
+  deux voix cibles, voix principale, chœurs et secours compris (`--versions-duo toutes|utiles|non`, clé `versions_duo`,
+  `toutes` par défaut), et rapatrie les deux versions dans `travail/<a+b>/versions/` ; le doublage automatique reste
+  identique au bit près. `doubler --remix --passage N=VOIX` (`N-M`, `N,M`, `N/piste=VOIX` ; `deux`, `auto`) et
+  `--affectation FICHIER|auto` recomposent la voix convertie sur le PC, sans Kaggle, en quelques secondes ;
+  l'affectation est gardée dans `travail/<a+b>/affectation.json`, un remix sans option la garde, `--affectation auto`
+  rend le résultat du noyau au bit près. `rapport.json`, `courbes.json` (`voix_par_trame`) et la vidéo à cinq pistes la
+  suivent. Mesuré sur un extrait de 55 s : +107 % de conversion (environ 3 min de GPU), session de 8,2 min.
+- Interface : la frise « Voix de chaque passage » se corrige. Un clic sur un passage ouvre un menu (Chanté par A, par B,
+  Les deux, Automatique, Aller à ce passage) ; « Appliquer » refait le doublage par un remix en tâche de fond ;
+  « Revenir à l'automatique » ; les passages corrigés à la main sont marqués. Grisé, avec la raison, si le doublage n'a
+  pas les deux versions ou si `doubler` ne connaît pas `--affectation`.
+- Clés de configuration `envoi_flac` (16 ou 24) et `versions_duo`.
+
 - Interface : page « Karaoké » (Alt+7 ; « Chanter… » dans le menu « ⋮ » de la bibliothèque). On chante sur le beat
   seul d'un doublage, les paroles défilent en karaoké après un décompte ; chanson entière, extrait ou extrait en
   boucle. Prise au micro du PC, beat et micro dans un même pipeline GStreamer ; latence du matériel réglable en ms ou
@@ -17,6 +31,23 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
   la prise, mix en MP3 dans `<dossier du doublage>/karaoke/`. Calculs sous `nice`, par `file-attente` au-delà d'une
   minute de son.
 - `python3 -m voixla.karaoke analyser|mp3` : la note et le mix en ligne de commande.
+
+### Modifié
+
+- Remise sur la vidéo : chaque son est encodé à part, en parallèle, puis multiplexé sans réencoder (4 min, cinq pistes :
+  23 s au lieu de 62 s ; son décodé identique au bit près, calage inchangé ; en mkv, toute la vidéo peut glisser d'un
+  bloc de 23 ms au plus).
+- Le son part à Kaggle en FLAC 16 bits (6 Mo au lieu de 20 Mo en WAV sur un extrait de 55 s ; erreur à 88 dB sous le
+  signal) ; `envoi_flac 24` revient à l'ancien envoi.
+- Les `.srt` des paroles vont dans un sous-dossier `paroles/` de la sortie, pour que VLC et mpv ne les chargent plus
+  d'office ; le `.lrc` reste à côté du mp3. `--remix` range ceux d'un ancien doublage ; la corbeille de l'interface les
+  emporte avec la voix.
+- L'estimation de durée compte les deux versions de chaque passage en duo.
+
+### Corrigé
+
+- mp4, m4v et mov : la piste de paroles n'est plus activée d'office (mpv l'affichait) : le drapeau « enabled » posé par
+  ffmpeg sur la première piste de sous-titres est effacé quand aucune piste d'origine n'est « par défaut ».
 
 ## [0.10.0] - 2026-11-07
 

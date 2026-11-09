@@ -62,8 +62,9 @@ flowchart TD
 
 - **Extraction (PC).** Le son de chaque vidéo est extrait en 44,1 kHz stéréo flottant (les sources dépassent souvent
   0 dBFS).
-- **Envoi (PC vers Kaggle).** Le son part en FLAC 24 bits, une compression sans perte, environ deux fois plus léger
-  que le WAV flottant. Il part avec la référence de la voix cible. Le FLAC est en entiers et écrêterait au-dessus de
+- **Envoi (PC vers Kaggle).** Le son part en FLAC 16 bits (environ trois fois plus léger que le WAV flottant : 6 Mo
+  au lieu de 20 Mo sur un extrait de 55 s ; 16,4 Mo au lieu de 30,9 pour le FLAC 24 bits d'une chanson, erreur à 88 dB
+  sous le signal ; `doubler --config envoi_flac 24` revient à l'ancien envoi). Il part avec la référence de la voix cible. Le FLAC est en entiers et écrêterait au-dessus de
   0 dBFS : la crête est donc ramenée à −1 dBFS par un gain connu, que le noyau retire à la lecture. La voix isolée
   revient de la même façon, et `doubler` retire le gain à son tour.
 - **Séparation (Kaggle).** MelBand-Roformer (via audio-separator) isole la voix. Comme les Roformer du nettoyage, il
@@ -106,7 +107,9 @@ flowchart TD
   moyen de la voix d'origine, avec une reverb synthétique en chant. Un limiteur tient la crête vraie à −1 dBTP. En
   chant, la voix convertie est sèche : cette reverb est la seule (ni la reverb ni les chœurs d'origine ne restent dans
   la musique seule).
-- **Remise sur la vidéo (PC).** L'image et les sous-titres sont copiés sans réencodage ; seul le son est réencodé.
+- **Remise sur la vidéo (PC).** L'image et les sous-titres sont copiés sans réencodage ; seul le son est réencodé,
+  chaque piste à part et en parallèle, puis multiplexée sans réencoder (4 min de son, cinq pistes : 23 s au lieu de
+  62 s, son décodé identique au bit près).
 
 Toutes les vidéos d'une même commande partent dans **une seule session Kaggle** : l'installation n'est payée qu'une
 fois.
@@ -253,6 +256,8 @@ doubler --config voix marie                     # choisir la voix par défaut
 | `voix` | voix cible par défaut, un dossier de `<données>/voix/` (`--voix` l'emporte) | la seule voix présente |
 | `paroles` | paroles à chaque doublage : oui ou non (`--sans-paroles` l'emporte) | oui |
 | `autotune` | intensité de l'auto-tune, de 0 (désactivé) à 100 : `doubler --config autotune 70` (`--autotune` et `--sans-autotune` l'emportent) | 0 |
+| `envoi_flac` | son envoyé à Kaggle en FLAC `16` bits ou `24` bits (comme avant le 09/11/2026) | `16` |
+| `versions_duo` | avec une voix par chanteur : chaque passage converti dans les deux voix (`toutes`), seulement les passages qui comptent (`utiles`) ou pas (`non`) ; `--versions-duo` l'emporte | `toutes` |
 | `pistes_audio` | pistes audio de la vidéo doublée : `toutes` (doublage, original, beat seul, voix convertie seule, voix d'origine seule) ou `doublage` (lui seul) (`--pistes-audio` l'emporte) | `toutes` |
 | `gpu` | cartes GPU du noyau : `auto` (les deux T4 de la machine, une seule si elle n'en a qu'une), `1` (une carte, comme avant) ou `2` (`--gpu` l'emporte) | `auto` |
 
@@ -525,7 +530,10 @@ Une étape en `erreur` est suivie d'un événement `erreur`. Les étapes commune
 | `--pistes-audio toutes\|doublage` | pistes audio de la vidéo doublée : les cinq (voir [Sorties](#sorties)) ou le doublage seul ; avec `--remix`, la vidéo refaite ainsi | clé `pistes_audio` de la configuration, sinon `toutes` |
 | `--debut S` | début de l'extrait (s), calé sur l'image clé qui précède | début de la vidéo |
 | `--duree S` | durée de l'extrait (s) | jusqu'à la fin |
-| `--remix` | refaire seulement le mixage et la vidéo depuis `travail/`, sans Kaggle | |
+| `--versions-duo toutes\|utiles\|non` | avec une voix par chanteur : convertir chaque passage chanté dans les deux voix cibles, pour pouvoir corriger ensuite qui chante quoi (voir [Corriger à la main qui chante quoi](#corriger-à-la-main-qui-chante-quoi)) | clé `versions_duo`, sinon `toutes` |
+| `--passage N=VOIX` | avec `--remix` et une voix par chanteur : la voix du passage `N` (`N-M`, `N,M`, `N/choeurs=VOIX` pour une seule piste ; `VOIX` : une voix du doublage, sa clé `homme`/`femme`/`chanteur1`…, `deux` ou `auto`) ; répétable | |
+| `--affectation FICHIER\|auto` | avec `--remix` et une voix par chanteur : l'affectation corrigée en entier (JSON), ou `auto` pour revenir à l'automatique | |
+| `--remix` | refaire seulement le mixage et la vidéo depuis `travail/`, sans Kaggle (avec une voix par chanteur : l'affectation corrigée à la main) | |
 | `--reprendre` | finir la dernière session Kaggle interrompue : suivi, rapatriement, mixage et vidéo, sans repasser sur le GPU | |
 | `--donnees DIR` | dossier des données (`voix/`, `sorties/`) | `$VOIXLA_DONNEES`, sinon la clé `donnees`, sinon `~/Music/Voix-là` |
 | `--sortie DIR` | dossier des sorties | `<données>/sorties` |
@@ -549,8 +557,8 @@ Tout va dans `<données>/sorties/<titre>/` (ou le dossier de `--sortie`). Un ext
 |---|---|
 | `<titre> - voix <Nom>.<ext>` | la vidéo doublée, dans le conteneur d'origine (mkv si l'extension n'est pas connue), avec cinq pistes audio calées entre elles et sur l'image : **Doublage** (la première, seule jouée par défaut), Original, Beat seul, Voix convertie seule (« Voix converties seules » avec une voix par chanteur ; telle qu'elle sonne dans le mix, sans la musique) et Voix d'origine seule, toutes étiquetées de la langue des paroles reconnues (voir plus bas) ; `--pistes-audio doublage` : le doublage seul |
 | `<titre> - voix <Nom>.mp3` | le son doublé, MP3 320 kb/s |
-| `<titre> - voix <Nom>.<langue>.srt` | les paroles dans la langue chantée, sur le temps de la vidéo doublée |
-| `<titre> - voix <Nom>.fr.srt` | leur traduction française, quand elles ne sont pas en français (`.traduction.fr.srt` si elles le sont déjà en partie) |
+| `paroles/<titre> - voix <Nom>.<langue>.srt` | les paroles dans la langue chantée, sur le temps de la vidéo doublée. Les `.srt` sont rangés dans `paroles/` : à côté de la vidéo, VLC et mpv les chargeraient d'office. `--remix` y range ceux d'un ancien doublage |
+| `paroles/<titre> - voix <Nom>.fr.srt` | leur traduction française, quand elles ne sont pas en français (`.traduction.fr.srt` si elles le sont déjà en partie) |
 | `<titre> - voix <Nom>.lrc` | les paroles synchronisées ligne à ligne, à côté du mp3, pour les lecteurs de musique |
 | `<titre> - voix <Nom> (auto-tune).<ext>`, `.mp3`, `.lrc` | avec l'auto-tune : la même chose avec la voix auto-tunée (mêmes pistes de paroles et sous-titres d'origine) ; la version normale ne change pas |
 | `<titre> - voix A et B.<ext>`, `.mp3` | avec une voix par chanteur : le doublage où chaque chanteur a sa voix |
@@ -558,7 +566,7 @@ Tout va dans `<données>/sorties/<titre>/` (ou le dossier de `--sortie`). Un ext
 | `partage/` | les vidéos courtes faites par « Partager… » de l'interface (voir `interface/README.md`) |
 | `travail/` | `original.wav` (son extrait), `voix_source.wav` (voix isolée), `instrumental.wav` (musique seule, recalculée à chaque mixage), `source.json` |
 | `travail/<voix>/` | `voix_convertie.flac`, `mix.wav`, `rapport.json`, `courbes.json`, `paroles.json`, journal Kaggle, fichiers intermédiaires du mixage ; avec l'auto-tune : `seche_voix_autotune.wav`, `reverb_voix_autotune.wav`, `mix_autotune.wav` |
-| `travail/a+b/` | avec une voix par chanteur : comme `travail/<voix>/` |
+| `travail/a+b/` | avec une voix par chanteur : comme `travail/<voix>/`, plus `versions/` (chaque passage de chaque piste dans chaque voix, pour corriger à la main), `affectation.json` (l'affectation corrigée, s'il y en a une) et `voix_convertie_auto.flac` (la voix du noyau, gardée à la première correction) |
 
 À la racine du dossier des sorties, `.kaggle/` garde `outils.json` (`--preparer-outils`), le journal du dernier noyau
 et les fichiers d'envoi.
@@ -566,6 +574,8 @@ et les fichiers d'envoi.
 Dans la vidéo doublée :
 
 - l'image est copiée telle quelle, sans réencodage ;
+- en mp4, m4v et mov, la piste de paroles n'est pas activée d'office : mpv ne l'affiche pas (ffmpeg active toujours la
+  première piste de sous-titres ; `doubler` efface ce drapeau quand aucune piste d'origine n'est « par défaut ») ;
 - le son est en AAC 256 kb/s (Opus 192 kb/s en webm), en stéréo ;
 - les cinq pistes audio portent la même étiquette de langue (ISO 639-2/B, comme les pistes de paroles) : la langue
   principale des paroles reconnues, c'est-à-dire, si la chanson en mêle plusieurs, celle chantée le plus longtemps
@@ -891,6 +901,37 @@ doubler "Duo.mp4" --voix chanteur1:jules,chanteur2:marie    # duo de même genre
 - Sans ancres de genre, `homme:`/`femme:` ne trouve aucun duo (tout dans la voix de la classe d'après la hauteur) ;
   `chanteur1:`/`chanteur2:` peut encore départager par les empreintes de la chanson.
 
+### Corriger à la main qui chante quoi
+
+L'attribution d'un passage à un chanteur se trompe parfois (un refrain de la chanteuse mis dans la voix de l'homme).
+Avec une voix par chanteur, le noyau convertit donc chaque passage chanté, voix principale, chœurs et piste de secours
+compris, **dans les deux voix cibles** (`--versions-duo`, `toutes` par défaut) et rapatrie les deux versions dans
+`travail/<voixA>+<voixB>/versions/`. Le doublage automatique ne change pas d'un bit. Le remix recompose ensuite la voix
+convertie sur le PC, en quelques secondes et sans Kaggle :
+
+```sh
+doubler "Duo.mp4" --remix --voix homme:voixA,femme:voixB --passage 1=voixB --passage 9=deux
+doubler "Duo.mp4" --remix --voix homme:voixA,femme:voixB --passage 12-15=femme --passage 20/choeurs=voixA
+doubler "Duo.mp4" --remix --voix homme:voixA,femme:voixB                 # garde la correction (même résultat)
+doubler "Duo.mp4" --remix --voix homme:voixA,femme:voixB --affectation auto   # revient à l'automatique
+```
+
+- Les numéros de passage sont ceux de la frise « Voix de chaque passage » de l'interface et de `rapport.json`
+  (`morceaux[].i`). `deux` met les deux voix ensemble, à puissance égale ; `auto` rend un passage à l'automatique.
+- L'affectation corrigée est gardée dans `travail/<voixA>+<voixB>/affectation.json`, et un remix sans option la garde :
+  `{"format": 1, "passages": {"1": "voixB", "9": "deux"}, "pistes": {"14": {"choeurs_sec": "voixA"}}}` (« pistes », une
+  piste d'un passage, l'emporte sur « passages »). `--affectation FICHIER` donne l'affectation entière.
+- `rapport.json` (`affectation.manuelle`, `morceaux[].corrige`, `voix_pistes_auto`), `courbes.json` (`voix_par_trame`,
+  `decalage_dt`, `convertie_hz`) et la vidéo à cinq pistes suivent l'affectation. `--affectation auto` rend
+  `voix_convertie.flac`, les courbes et le rapport du noyau, au bit près. La mise au niveau de chaque piste est refaite
+  comme le fait le noyau : le niveau global bouge d'un quart de dB au plus.
+- Un doublage fait avant le 09/11/2026, ou avec `--versions-duo non`, n'a pas les deux versions : `doubler` le dit.
+  Avec `--versions-duo utiles` (passages incertains, de hauteur ambiguë, chantés ensemble ou voisins d'un changement de
+  voix ; tous si une seule voix est trouvée), un autre passage ne peut pas changer de voix.
+- Coût mesuré (extrait de 55 s, deux cartes T4, une seule voix trouvée) : la conversion double (+107 %, 190 s de plus
+  pour 178 s), soit environ 3 min de GPU de plus ; session de 8,2 min, 15 Mo de plus à rapatrier.
+  `toutes` reste le défaut : c'est la seule façon de pouvoir corriger n'importe quel passage ensuite.
+
 ### Rap
 
 Le rap passe en mode `chant` quand il y a une musique tonale dessous : la voix est presque continue, même sans notes
@@ -1052,7 +1093,10 @@ profite aussi. Nettoyage et chœurs compris ; en mode `auto`, il suppose du chan
 - Piste de secours : elle convertit en entier les morceaux qui touchent une zone perdue, soit +40 s sur un extrait de
   25 s et environ +1 min 40 à 30 pas sur une chanson de 3 min 30 (13 morceaux sur 38).
 - Une voix par chanteur : environ 3 s de GPU de plus par session (une référence de plus par moteur, la reconnaissance
-  des pistes), mesuré sur un extrait de 48 s, session de 9,1 min.
+  des pistes), mesuré sur un extrait de 48 s, session de 9,1 min. Avec les deux versions de chaque passage
+  (`--versions-duo toutes`, le défaut), la conversion double : +107 % (190 s de plus pour 178 s), environ 3 min de GPU
+  sur un extrait de 55 s, session de 8,2 min, 15 Mo de plus à rapatrier. `--versions-duo utiles` en coûte environ la
+  moitié (estimation, non mesurée).
 
 ## Limites connues
 

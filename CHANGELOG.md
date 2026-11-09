@@ -7,6 +7,30 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+### Ajouté
+
+- Interface : **séance d'enregistrement de la voix chantée**, dans la page Voix (bouton « Enregistrer ma voix chantée… »,
+  sans onglet de plus). Cinq étapes aux grandes consignes (parole, tessiture, notes à tenir, chanson, chanson libre) et
+  le rappel des consignes (téléphone à 20 cm, casque fermé, tape dans tes mains au 4e bip, pas de WhatsApp). Les pistes
+  se préparent par ffmpeg hors du fil de l'interface, avec une progression, dans `~/.cache/voix-la/seance/` : les notes
+  (6 notes, deux tours) et, pour n'importe quel doublage de la bibliothèque, le guide avec la voix d'origine à −6 dB et
+  la musique seule derrière 4 bips à 880 Hz, dans la tonalité d'origine ou de −1 à −7 demi-tons (limiteur à 0,89). Elles
+  se jouent avec le lecteur de l'application, avec les paroles synchronisées du doublage (décalées des 5 s de bips,
+  « transcription automatique »). « Chansons conseillées pour ta voix » : les doublages classés selon l'écart entre la
+  tessiture du chanteur d'origine (`rapport.json`) et la zone de chant de la voix (deux fois la hauteur de parole, ou
+  `tessiture.json`), avec l'écart en demi-tons et la tonalité conseillée, dans les langues que parle la voix
+  (`voix.json`, clé `langues`, `["fr"]` par défaut ; langue lue dans `rapport.json`, sinon le `.lrc` ou le suffixe des
+  `.srt`), les autres étant derrière « Montrer toutes les langues ». « Importer mes enregistrements… » copie tels
+  quels des fichiers de téléphone (m4a, aac, mp3, wav, ogg, opus, 3gp, amr) dans `voix/<nom>/chant/` ou `parole/` sous un
+  nom horodaté, et les contrôle (durée, saturation, bruit de fond, musique du casque entendue dans la prise) ; la durée
+  totale de chant et de parole est comptée face à 10 et 5 min. Module `voixla/seance.py`, vue `gui/seance.py`.
+
+### Modifié
+
+- Interface : l'« Écoute à l'aveugle » n'a plus d'onglet dans la barre latérale (elle servait peu). La page reste dans
+  l'application : « Comparer les voix » d'un résultat l'ouvre toujours, ainsi que l'entrée « Écoute à l'aveugle (banc
+  d'essai)… » du menu principal ☰ et le raccourci Alt+5.
+
 ## [0.12.0] - 2026-11-09
 
 ### Ajouté

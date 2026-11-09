@@ -57,6 +57,11 @@ class PageVoix(commun.Page):
             title="Chant pour l’affinage",
             description="Prises de chant (48 kHz) pour affiner plus tard le modèle sur votre timbre : 5 à 10 min au "
                         "total.")
+        # séance guidée de prises chantées (gui/seance.py), empilée par-dessus cette page : pas d'onglet de plus
+        b_seance = commun.bouton("Enregistrer ma voix chantée…", "media-record-symbolic", styles=("suggested-action",),
+                                 infobulle="Séance guidée : notes, chansons, import des fichiers du téléphone",
+                                 clic=self.ouvrir_seance, valign=Gtk.Align.CENTER)
+        self.g_chant.set_header_suffix(b_seance)
         self.r_voix_chant = Adw.ComboRow(title="Voix")
         self.r_voix_chant.connect("notify::selected", lambda *_: self._voix_chant_changee())
         self.g_chant.add(self.r_voix_chant)
@@ -443,6 +448,17 @@ class PageVoix(commun.Page):
                                                self.charger_prises()))
         commun.confirmer(self.fenetre, "Mettre cette prise à la corbeille ?", f.name, "Mettre à la corbeille", faire)
 
+    def ouvrir_seance(self):
+        """La séance d'enregistrement de la voix chantée, pour la voix choisie dans « Chant pour l'affinage »."""
+        if not self.voix_chant:
+            self.fenetre.toast("Choisissez d’abord une voix")
+            return None
+        self.arreter_lecture()
+        from .seance import PageSeance
+        page = PageSeance(self.fenetre, self.voix_chant, self.fenetre.nom_voix(self.voix_chant))
+        self.fenetre.pousser(page)
+        return page
+
     def enregistrer_chant(self):
         if not self.voix_chant:
             self.fenetre.toast("Choisissez d’abord une voix")
@@ -460,6 +476,13 @@ class PageVoix(commun.Page):
             etapes = [e for e in action.split("-")[1:] if e in ("telephone", "enregistrement", "controle")]
             if etapes:
                 GLib.timeout_add(500, lambda: ([d.scenario(e) for e in etapes], False)[1])
+        elif action.startswith("seance"):
+            # « seance » ou « seance-chanson » : la séance (étape 4 avec ses paroles pour le second)
+            if not self.voix_chant and self.fenetre.voix:
+                self.r_voix_chant.set_selected(0)
+            page = self.ouvrir_seance()
+            if page is not None and action.endswith("chanson"):
+                GLib.timeout_add(300, lambda: (page.scenario("chanson"), False)[1])
         elif action == "deplier":
             def deplier():
                 for r in self._lignes_voix:

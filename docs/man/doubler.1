@@ -133,6 +133,14 @@ En chant, auto choisit un seul décalage par chanteur d'après la hauteur ; les
 ancres de genre, facultatives, départagent les cas ambigus et repèrent les
 duos. 0, \-12 ou +12 imposent le décalage partout.
 .TP
+.BI \-\-comparer " voix,voix[,voix...]"
+Compare des voix : le même extrait (\fB\-\-debut\fR, \fB\-\-duree\fR) est doublé dans chaque voix (deux à six, de
+\fI<données>/voix\fR) en une seule session Kaggle. L'envoi, le démarrage, la séparation, le nettoyage et les paroles
+ne sont payés qu'une fois ; seule la conversion est refaite pour chaque voix, sur les deux GPU. Une sortie complète par
+voix dans le dossier de la vidéo (\fI<titre> \- voix A.<ext>\fR et \fB.mp3\fR, \fItravail/A/\fR,
+\fItravail/B/\fR...) et \fIcomparaison.json\fR, qui les réunit. \fB\-\-remix\fR les refait toutes. Remplace
+\fB\-\-voix\fR ; refuse une voix par chanteur (chaque voix chante toute la chanson).
+.TP
 .BI \-\-pas " n"
 Pas de diffusion de la conversion (défaut : 30).
 .TP

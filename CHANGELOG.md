@@ -7,6 +7,23 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+### Ajouté
+
+- Comparer plusieurs voix en une session : `doubler <vidéo> --comparer voixA,voixB,voixC --debut 60 --duree 40` double
+  le même extrait dans deux à six voix en une seule session Kaggle. L'envoi, le démarrage, la séparation, le nettoyage
+  et les paroles ne sont payés qu'une fois ; seule la conversion est refaite pour chaque voix (les morceaux de toutes
+  les voix se partagent les deux GPU), avec une analyse de la hauteur par voix (l'octave dépend de la voix). Chaque
+  sortie est, au bit près, celle d'un doublage à cette voix seule. Une sortie complète par voix dans le dossier de la
+  vidéo (`<titre> - voix A.<ext>`, `.mp3`, `travail/A/`…), `comparaison.json` qui les réunit ; `--remix` refait chacune
+  (`--comparer … --remix`, ou `--voix B --remix` pour une seule). Remplace `--voix` ; refuse une voix par chanteur.
+  L'estimation de durée compte les conversions en plus (`estimer_noyau_s(…, voix_comparees=N)`). Estimation sans
+  historique, extrait de 55 s sur deux cartes : 11 min pour trois voix en une session, contre 26 min pour trois
+  doublages séparés ; essai réel sur Kaggle à faire.
+- Interface : page Doubler, « Comparer plusieurs voix » (cases à cocher, deux à six voix, gardées d'une session à
+  l'autre) ; détail d'un résultat, « Comparer les voix » : écoute à l'aveugle des voix du même extrait dans la page
+  Écoute (lettres tirées au hasard, passage d'une version à l'autre au même instant, voix seule, vote qui dévoile les
+  voix, banc de la comparaison à part dans le cache). Le faux doubler des essais imite `--comparer`.
+
 ## [0.11.0] - 2026-11-09
 
 ### Ajouté

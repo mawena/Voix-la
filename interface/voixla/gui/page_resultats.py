@@ -25,7 +25,7 @@ from . import commun, pistes_gst
 from . import visualisations as vis
 from .analyses import analyses
 from .commandes import Commandes
-from .frise import Frise, FriseVoix, legende as legende_frise, legende_voix
+from .frise import Frise, FriseVoix, legende as legende_frise, legende_corrections, legende_voix
 from .lecteur import Lecteur
 from .lecture import lectures
 from .vue_paroles import TAILLES, Karaoke, PanneauParoles, VueParoles
@@ -223,17 +223,26 @@ class PageDetail(Adw.NavigationPage):
             self.frise = None
             self.g_octave.append(commun.legende("Pas de frise dans ce rapport."))
         corps.append(self.g_octave)
-        # une voix par chanteur : quelle voix cible chante chaque passage (voix principale et chœurs compris)
+        # une voix par chanteur : quelle voix cible chante chaque passage (voix principale et chœurs compris) ; un clic
+        # sur un passage pour corriger à la main qui le chante (doubler --remix --affectation), si le doublage a les deux
+        # versions de chaque passage
         self.frise_voix = None
+        self.choix_attente = {}       # numéro de passage → choix en attente (nom, « deux », « auto »)
+        self.pop_passage = None       # menu du passage cliqué
+        self.correction_en_cours = False
         self.g_voix = commun.boite(espace=6, visible=False)
         if self.passages:
-            noms = [v.get("nom") for v in res.voix_cibles if v.get("nom")] or res.voix_membres
+            noms = self._noms_voix_cibles()
             affichages = {n: self.fenetre.nom_voix(n) for n in noms}
             self.g_voix.append(Gtk.Label(label="Voix de chaque passage", xalign=0, css_classes=["heading"]))
-            self.frise_voix = FriseVoix(sur_clic=self._clic_frise)
+            self.frise_voix = FriseVoix(sur_clic=self._clic_frise, sur_passage=self._menu_passage)
             self.frise_voix.definir(self.passages, noms, rapports.duree_frise(res.rapport, self.segs), affichages)
             self.g_voix.append(self.frise_voix)
             self.g_voix.append(legende_voix(noms, affichages))
+            self.legende_corrections = legende_corrections()
+            self.g_voix.append(self.legende_corrections)
+            self.g_voix.append(self._barre_correction())
+            self._maj_correction()
         corps.append(self.g_voix)
         corps.append(self.boite_onde)
 
@@ -1278,6 +1287,247 @@ class PageDetail(Adw.NavigationPage):
         self.lecteur.aller_a(t)
         self._position(t, False)
 
+    # --- une voix par chanteur : corriger à la main qui chante chaque passage -----------------------------------------
+    # Un clic sur un passage de la frise « Voix de chaque passage » ouvre son menu (chanté par l'une, par l'autre, les
+    # deux, automatique) ; les choix restent en attente (hachurés) jusqu'à « Appliquer », qui refait le doublage par un
+    # remix en tâche de fond (doubler --remix --affectation FICHIER : l'affectation complète voulue), comme le remix
+    # rapide. « Revenir à l'automatique » : doubler --remix --affectation auto. doubler garde l'affectation corrigée
+    # (travail/<a+b>/affectation.json) ; il faut les deux versions de chaque passage (rapport.versions).
+
+    def _noms_voix_cibles(self):
+        r = self.res
+        return [v.get("nom") for v in r.voix_cibles if v.get("nom")] or r.voix_membres
+
+    def _barre_correction(self):
+        """Sous la frise des voix : ce que fait un clic (ou pourquoi on ne peut pas corriger), les boutons Annuler les
+        choix, Revenir à l'automatique et Appliquer."""
+        barre = Gtk.Box(spacing=8)
+        self.l_correction = commun.legende("")
+        self.l_correction.set_hexpand(True)
+        self.l_correction.set_valign(Gtk.Align.CENTER)
+        barre.append(self.l_correction)
+        self.roue_correction = Gtk.Spinner(valign=Gtk.Align.CENTER, visible=False)
+        barre.append(self.roue_correction)
+        self.b_annuler_choix = commun.bouton("Annuler les choix", styles=("flat",), valign=Gtk.Align.CENTER,
+                                             clic=self.annuler_choix, infobulle="Oublier les choix en attente")
+        self.b_auto = commun.bouton("Revenir à l’automatique", valign=Gtk.Align.CENTER,
+                                    clic=self.revenir_a_l_automatique,
+                                    infobulle="Retirer toutes les corrections à la main : chaque passage reprend la voix "
+                                              "choisie par doubler (remix, quelques secondes, sans Kaggle)")
+        self.b_appliquer = commun.bouton("Appliquer", styles=("suggested-action",), valign=Gtk.Align.CENTER,
+                                         clic=self.appliquer_correction,
+                                         infobulle="Refaire le doublage avec ces choix (remix, quelques secondes, sans "
+                                                   "Kaggle)")
+        for b in (self.b_annuler_choix, self.b_auto, self.b_appliquer):
+            barre.append(b)
+        return barre
+
+    def _maj_correction(self):
+        """Frise corrigeable, légende et boutons d'après le résultat (relu après un remix) et les choix en attente."""
+        if self.frise_voix is None:
+            return
+        r = self.res
+        possible, raison = rapports.etat_correction(r, self.fenetre.caps)
+        self._correction_possible = possible
+        self.frise_voix.definir_morceaux(rapports.morceaux_duo(r.rapport, r.versions_duo),
+                                         possible and not self.correction_en_cours)
+        self.frise_voix.definir_attente(self.choix_attente)
+        corriges = rapports.passages_corriges(r.rapport)
+        n = len(self.choix_attente)
+        occupe = self.correction_en_cours or self.page.remix_actif
+        if self.correction_en_cours:
+            texte = "Doublage refait avec ces choix…"
+        elif not possible:
+            texte = f"Correction à la main impossible : {raison}."
+        elif n:
+            texte = (f"{formats.pluriel(n, 'choix', 'choix')} en attente : « Appliquer » refait le doublage (quelques "
+                     "secondes, sans Kaggle).")
+        elif corriges:
+            texte = (f"Corrigé à la main : {formats.pluriel(len(corriges), 'passage')}. Un clic sur un passage pour "
+                     "changer qui le chante.")
+        else:
+            texte = "Un clic sur un passage : choisir qui le chante, puis « Appliquer »."
+        self.l_correction.set_label(texte)
+        self.legende_corrections.set_visible(possible or bool(corriges))
+        self.b_appliquer.set_visible(possible)
+        self.b_appliquer.set_sensitive(bool(n) and not occupe)
+        self.b_annuler_choix.set_visible(bool(n) and not self.correction_en_cours)
+        self.b_auto.set_visible(possible and bool(corriges or r.affectation_gardee))
+        self.b_auto.set_sensitive(not occupe)
+        self.roue_correction.set_visible(self.correction_en_cours)
+        self.roue_correction.set_spinning(self.correction_en_cours)
+
+    def _choix_actuel(self, i):
+        """Le choix du passage i : en attente, sinon celui que doubler garde (nom, « deux », « pistes », « auto »)."""
+        if i in self.choix_attente:
+            return self.choix_attente[i]
+        return rapports.choix_garde(self.res.affectation_gardee, i)
+
+    def _menu_passage(self, m, x=None):
+        """Le menu d'un passage de la frise des voix : chanté par l'une ou l'autre voix, les deux, automatique, et
+        « Écouter ce passage ». Le choix reste en attente jusqu'à « Appliquer »."""
+        if not getattr(self, "_correction_possible", False):
+            self._maj_correction()      # capacités de doubler lues depuis l'ouverture du détail
+            if not self._correction_possible:
+                return None
+        if self.pop_passage is not None:
+            self.pop_passage.popdown()
+        noms = self._noms_voix_cibles()
+        nom = self.fenetre.nom_voix
+        i = m["i"]
+        pop = Gtk.Popover(autohide=True)
+        pop.set_parent(self.frise_voix)
+        rect = Gdk.Rectangle()
+        rect.x = int(self.frise_voix.x_de((m["debut"] + m["fin"]) / 2) if x is None else x)
+        rect.y, rect.width, rect.height = 0, 1, max(1, self.frise_voix.get_height())
+        pop.set_pointing_to(rect)
+        boite = commun.boite(espace=4, marges=6)
+        boite.append(Gtk.Label(label=f"Passage {i} · {formats.chrono_precis(m['debut'])} – "
+                                     f"{formats.chrono_precis(m['fin'])}", xalign=0, css_classes=["heading"]))
+        auto = " et ".join(nom(v) for v in m["voix_auto"]) or "—"
+        boite.append(commun.legende(f"automatique : {auto}" + (" · corrigé à la main" if m["corrige"] else "")))
+        actuel = self._choix_actuel(i)
+        choix = [(n, f"Chanté par {nom(n)}") for n in noms] + [(rapports.CHOIX_DEUX, "Les deux"),
+                                                                (rapports.CHOIX_AUTO, f"Automatique ({auto})")]
+        premier = None
+        for valeur, libelle in choix:
+            b = Gtk.CheckButton(label=libelle, group=premier, active=valeur == actuel, sensitive=m["corrigeable"])
+            premier = premier or b
+            b.connect("toggled", lambda b, v=valeur: b.get_active() and self._choisir(i, v))
+            boite.append(b)
+        if actuel == "pistes":
+            boite.append(commun.legende("corrigé piste par piste (en ligne de commande) : un choix ici le remplace"))
+        if not m["corrigeable"]:
+            boite.append(commun.legende("pas de seconde version pour ce passage (doublé avec --versions-duo utiles)"))
+        boite.append(Gtk.Separator())
+        boite.append(commun.bouton("Écouter ce passage", "media-playback-start-symbolic", styles=("flat",),
+                                   clic=lambda: (pop.popdown(), self._ecouter_passage(m))))
+        pop.set_child(boite)
+
+        def ferme(p):
+            if self.pop_passage is p:
+                self.pop_passage = None
+                if self.frise_voix is not None:
+                    self.frise_voix.selectionner(None)
+            GLib.idle_add(lambda: (p.unparent(), False)[1])
+        pop.connect("closed", ferme)
+        self.pop_passage = pop
+        self.frise_voix.selectionner(i)
+        pop.popup()
+        return pop
+
+    def _ecouter_passage(self, m):
+        self.aller_a(m["debut"])
+        self.lire()
+
+    def _choisir(self, i, choix):
+        """Choix en attente pour le passage i (un choix égal à celui que doubler garde n'est plus en attente)."""
+        if choix == rapports.choix_garde(self.res.affectation_gardee, i):
+            self.choix_attente.pop(i, None)
+        else:
+            self.choix_attente[i] = choix
+        pop, self.pop_passage = self.pop_passage, None
+        if pop is not None:
+            if pop.get_visible():
+                pop.popdown()            # « closed » le détache
+            else:
+                GLib.idle_add(lambda: (pop.get_parent() is not None and pop.unparent(), False)[1])
+        if self.frise_voix is not None:
+            self.frise_voix.selectionner(None)
+        self._maj_correction()
+
+    def annuler_choix(self):
+        self.choix_attente.clear()
+        self._maj_correction()
+
+    def appliquer_correction(self):
+        """« Appliquer » : le doublage refait avec l'affectation gardée plus les choix en attente."""
+        if not self.choix_attente:
+            return
+        voulue = rapports.affectation_voulue(self.res.affectation_gardee, self.choix_attente, self._noms_voix_cibles())
+        n = len(self.choix_attente)
+        self._remix_correction(voulue or "auto", f"Doublage refait : {formats.pluriel(n, 'passage')} corrigé"
+                                                 f"{'s' if n > 1 else ''} à la main")
+
+    def revenir_a_l_automatique(self):
+        """« Revenir à l'automatique » : confirmation, puis doubler --remix --affectation auto."""
+        n = len(rapports.passages_corriges(self.res.rapport))
+        corps = (("Le passage corrigé à la main reprend" if n == 1 else f"Les {n} passages corrigés à la main reprennent")
+                 + " la voix choisie par doubler, et le doublage est refait (quelques secondes, sans Kaggle).")
+        return commun.confirmer(self.fenetre, "Revenir à l’automatique ?", corps, "Revenir à l’automatique",
+                                lambda: self._remix_correction("auto", "Doublage refait : chaque passage a repris la "
+                                                                       "voix choisie par doubler"))
+
+    def _remix_correction(self, affectation, message_ok):
+        """Remix en tâche de fond avec cette affectation (dict, « auto »), comme le remix rapide : mêmes réglages de
+        mixage que le doublage (rapport.mix), auto-tune gardé tel quel ; le lecteur est libéré puis rechargé à la même
+        position, le rapport relu, les frises redessinées."""
+        r = self.res
+        occupe = [t for t in self.fenetre.file.travaux()
+                  if t.actif and str(r.dossier) in (t.demande.get("sorties") or [])]
+        if occupe:
+            self.fenetre.toast("Un doublage en cours écrit dans ce dossier : correction impossible pour l’instant")
+            return False
+        if self.page.remix_actif:
+            self.fenetre.toast("Un remix est déjà en cours")
+            return False
+        mix = (r.rapport or {}).get("mix") or {}
+        voix_db = mix.get("voix_db")
+        reverb = mix.get("reverb_db") if r.mode == "chant" else None
+        v1 = mix.get("version") == 1
+        pos = self.lecteur.position_ref()
+        self.lecteur.liberer()   # les fichiers vont être réécrits
+        self.page.remix_actif = True
+        self.correction_en_cours = True
+        self.b_remix.set_sensitive(False)
+        self._maj_correction()
+        donnees = self.fenetre.donnees
+
+        def fini(res):
+            ok, sortie = res
+            self.page.remix_actif = False
+            self.correction_en_cours = False
+            self.b_remix.set_sensitive(True)
+            if ok:
+                self.choix_attente.clear()
+                frais = rapports.lire_dossier(r.dossier, {v["id"]: v["nom"] for v in self.fenetre.voix},
+                                              r.groupe, self.fenetre.voix_doubler)
+                self.res = next((x for x in frais if x.voix == r.voix), r)
+                self.fenetre.toast(message_ok)
+            else:
+                lignes = [l for l in sortie.strip().splitlines() if l.strip()]
+                commun.informer(self.fenetre, "La correction a échoué", "\n".join(lignes[-12:]) or "sans message")
+            if self._oubliee:
+                return
+            self.changer_forme(self.forme)
+            self.lecteur.aller_a(pos)
+            if ok:
+                self._rafraichir()
+            else:
+                self._maj_correction()
+        spec = moteur.spec_de_rapport(r.voix, r.rapport)
+        commun.en_fil(lambda: moteur.remixer(r.video_source, spec, r.dossier, donnees, voix_db, reverb, v1,
+                                             affectation=affectation), fini)
+        return True
+
+    def _maj_frises(self):
+        """Après un remix : la frise d'octave, celle des voix et la courbe de mélodie suivent le rapport relu (une
+        correction à la main change la voix, le décalage et la mélodie des passages corrigés)."""
+        r = self.res
+        self.segs = rapports.segments_frise(r.rapport)
+        duree = rapports.duree_frise(r.rapport, self.segs)
+        if self.frise is not None and self.segs:
+            self.frise.definir(self.segs, duree)
+        self.passages = rapports.passages_voix(r.rapport)
+        if self.frise_voix is not None:
+            noms = self._noms_voix_cibles()
+            self.frise_voix.definir(self.passages, noms, duree, {n: self.fenetre.nom_voix(n) for n in noms})
+            self._maj_correction()
+        w = self.vis.get("melodie")
+        if w is not None and r.dossier_voix and r.rapport:
+            analyses().courbes(r.dossier_voix, lambda c, _m, w=w: c is not None and w.definir(c, self.segs, r.duree_s),
+                               r.duree_s)
+
     # --- visualisations ------------------------------------------------------------------------------------------
 
     def _fournisseur(self):
@@ -1828,6 +2078,7 @@ class PageDetail(Adw.NavigationPage):
         self._echecs = {k: m for k, m in self._echecs.items() if k in self.pistes_dispo}
         self._maj_remix_autotune()
         self._maj_note()
+        self._maj_frises()
 
     def _groupe_durees(self):
         g = Adw.PreferencesGroup(title="Durées par étape")
@@ -1877,7 +2128,10 @@ class PageDetail(Adw.NavigationPage):
     def scenario(self, action):
         """Essai : « ab » (lecture muette, puis bascule sur l'original à la même position), « aller-<s> »,
         « piste-<clé> » (beat, ma_voix…), « lire » (lecture muette), « remix » (défile jusqu'au remix rapide),
-        « remix-at » ou « remix-sans-at » (interrupteur « Version auto-tune »), « remixer » (lance le remix)."""
+        « remix-at » ou « remix-sans-at » (interrupteur « Version auto-tune »), « remixer » (lance le remix) ; une voix
+        par chanteur : « voix » (défile jusqu'à la frise des voix), « corriger » ou « corriger-<t> » (menu du premier
+        passage corrigeable, ou de celui de l'instant t), « corriger-<t>-<choix> » (choix en attente : nom de voix,
+        deux ou auto), « appliquer », « revenir-auto » (sa confirmation)."""
         if action.startswith("piste-"):
             # après « lire » (1,8 s) : la vidéo a déjà une image à figer
             cle = action.split("-", 1)[1]
@@ -1955,6 +2209,35 @@ class PageDetail(Adw.NavigationPage):
                     d.r_traduction.set_active(True)
                 return False
             GLib.timeout_add(2200, partager)
+        if action == "voix":
+            # la frise « Voix de chaque passage » en haut de la vue
+            def vers_voix():
+                from gi.repository import Graphene    # chargé par gui/essais.py (captures d'essai)
+                ok, point = self.g_voix.compute_point(self.corps, Graphene.Point())
+                if ok:
+                    self.defilement.get_vadjustment().set_value(max(0.0, point.y - 12))
+                return False
+            GLib.timeout_add(3000, vers_voix)
+        if action.startswith("corriger") and self.frise_voix is not None:
+            # « corriger » ou « corriger-<t> » : le menu du passage (le premier corrigeable, ou celui de l'instant t) ;
+            # « corriger-<t>-<choix> » : un choix en attente (nom de voix, deux, auto)
+            morceaux = action.split("-")
+
+            def corriger():
+                ms = self.frise_voix.morceaux
+                m = (self.frise_voix.morceau_a(float(morceaux[1])) if len(morceaux) > 1 else
+                     next((x for x in ms if x["corrigeable"]), ms[0] if ms else None))
+                if m is not None:
+                    if len(morceaux) > 2:
+                        self._choisir(m["i"], morceaux[2])
+                    else:
+                        self._menu_passage(m)
+                return False
+            GLib.timeout_add(3600 if len(morceaux) <= 2 else 3200, corriger)
+        if action == "appliquer":
+            GLib.timeout_add(3400, lambda: (self.appliquer_correction(), False)[1])
+        if action == "revenir-auto":
+            GLib.timeout_add(3400, lambda: (self.revenir_a_l_automatique(), False)[1])
         if action == "frises":
             def vers_frises():
                 from gi.repository import Graphene    # chargé par gui/essais.py (captures d'essai)
@@ -2063,6 +2346,7 @@ class PageDetail(Adw.NavigationPage):
         self.roue.set_spinning(True)
         self.b_remix.set_sensitive(False)
         self.l_remix.set_subtitle("Remix en cours…")
+        self._maj_correction()
         donnees = self.fenetre.donnees
 
         def fini(res):
@@ -2070,6 +2354,7 @@ class PageDetail(Adw.NavigationPage):
             self.page.remix_actif = False
             self.roue.set_spinning(False)
             self.b_remix.set_sensitive(True)
+            self._maj_correction()
             if ok:
                 frais = rapports.lire_dossier(r.dossier, {v["id"]: v["nom"] for v in self.fenetre.voix},
                                               r.groupe, self.fenetre.voix_doubler)

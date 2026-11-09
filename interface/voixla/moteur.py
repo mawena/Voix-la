@@ -32,7 +32,7 @@ from . import chemins
 OPTIONS_SUIVIES = ("--evenements", "--donnees", "--config", "--json", "--voix-liste", "--ajouter-voix", "--remix",
                    "--debut", "--duree", "--pas", "--voix-db", "--reverb-db", "--octave", "--mode", "--sortie",
                    "--mix-v1", "--comparer-pas", "--reprendre", "--moteur", "--sans-nettoyage", "--sans-paroles",
-                   "--autotune", "--sans-autotune", "--autotune-gamme", "--gpu")
+                   "--autotune", "--sans-autotune", "--autotune-gamme", "--gpu", "--passage", "--affectation")
 MOTEURS = (("yingmusic", "YingMusic-SVC"), ("seedvc", "Seed-VC 44 kHz"))
 NOM_VOIX = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")   # même règle que doubler --ajouter-voix
 EXTRAIT_NOM = re.compile(r" \(extrait (\d+)m(\d+(?:,\d+)?)(?:\+(\d+)m(\d+(?:,\d+)?))?\)$")
@@ -374,11 +374,13 @@ def extrait_du_nom(nom):
 
 
 def args_remix(video_source, voix, dossier_resultat, donnees, voix_db=None, reverb_db=None, mix_v1=False, caps=None,
-               autotune=None):
+               autotune=None, affectation=None):
     """argv d'un remix (mixage et remise sur la vidéo depuis travail/, sans Kaggle, quelques secondes).
     doubler retrouve le dossier par le nom de la vidéo et l'extrait : on lui redonne les mêmes, et le dossier parent
     du résultat comme --sortie (un résultat peut être rangé dans un sous-dossier de sorties/). autotune : réglages de
-    reglages_remix_autotune (--autotune N [--autotune-gamme G], --sans-autotune, ou rien)."""
+    reglages_remix_autotune (--autotune N [--autotune-gamme G], --sans-autotune, ou rien). affectation (une voix par
+    chanteur) : chemin d'un fichier d'affectation corrigée, ou « auto » (revenir à l'automatique) ; seulement si doubler
+    connaît --affectation."""
     caps = capacites() if caps is None else caps
     dossier_resultat = Path(dossier_resultat)
     a = [*commande(), str(video_source), "--remix", f"--voix={voix}", f"--sortie={dossier_resultat.parent}"]
@@ -394,8 +396,26 @@ def args_remix(video_source, voix, dossier_resultat, donnees, voix_db=None, reve
     if mix_v1 and "--mix-v1" in caps:
         a.append("--mix-v1")
     a += args_autotune(autotune or {}, caps)
+    if affectation and "--affectation" in caps:
+        a.append(f"--affectation={affectation}")
     a += _donnees(donnees, caps)
     return a
+
+
+def correction_possible(caps=None):
+    """doubler sait-il corriger à la main qui chante chaque passage d'un duo (--affectation) ?"""
+    caps = capacites() if caps is None else caps
+    return "--affectation" in caps
+
+
+def ecrire_affectation(affectation):
+    """L'affectation voulue (dict, format de travail/<a+b>/affectation.json) dans un fichier temporaire, hors du dossier
+    du doublage ; rend son chemin (à effacer après le remix)."""
+    import tempfile
+    fd, chemin = tempfile.mkstemp(prefix="voixla-affectation-", suffix=".json")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(affectation, f, ensure_ascii=False, indent=1)
+    return chemin
 
 
 def remix_possible(video_source, dossier_resultat):
@@ -448,11 +468,18 @@ def ajouter_voix(nom, fichier, donnees):
     return True, message, alertes
 
 
-def remixer(video_source, voix, dossier_resultat, donnees, voix_db=None, reverb_db=None, mix_v1=False, autotune=None):
-    """Remix : rend (ok, sortie complète). autotune : voir args_remix."""
-    code, sortie = lancer(args_remix(video_source, voix, dossier_resultat, donnees, voix_db, reverb_db, mix_v1,
-                                     autotune=autotune),
-                          environnement(donnees), timeout=900)
+def remixer(video_source, voix, dossier_resultat, donnees, voix_db=None, reverb_db=None, mix_v1=False, autotune=None,
+            affectation=None):
+    """Remix : rend (ok, sortie complète). autotune : voir args_remix. affectation : « auto », un chemin, ou un dict
+    (l'affectation corrigée voulue, écrite dans un fichier temporaire effacé après le remix)."""
+    temporaire = ecrire_affectation(affectation) if isinstance(affectation, dict) else None
+    try:
+        code, sortie = lancer(args_remix(video_source, voix, dossier_resultat, donnees, voix_db, reverb_db, mix_v1,
+                                         autotune=autotune, affectation=temporaire or affectation),
+                              environnement(donnees), timeout=900)
+    finally:
+        if temporaire:
+            Path(temporaire).unlink(missing_ok=True)
     return code == 0 and "ÉCHEC" not in sortie, sortie
 
 

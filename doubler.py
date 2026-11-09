@@ -325,13 +325,13 @@ def lire_transposer(valeur):
     v = str(valeur).strip().lower().replace('−', '-')
     if v in ('auto', 'automatique', ''):
         return 'auto'
-    if v in NON or v in ('aucune', 'jamais'):
-        return 'non'
-    if re.fullmatch(r'[+-]?\d+', v):
+    if re.fullmatch(r'[+-]?\d+', v):   # « 0 » est un nombre (0 demi-ton imposé), pas un « non »
         n = int(v)
         if abs(n) > TRANSPOSER_MAX:
             raise ValueError(f'{n} demi-tons : au plus ±{TRANSPOSER_MAX} (au-delà, la musique transposée ne s\'écoute plus)')
         return n
+    if v in NON or v in ('aucune', 'jamais'):
+        return 'non'
     raise ValueError(f'auto, non ou un nombre entier de demi-tons attendu (reçu : {valeur})')
 
 

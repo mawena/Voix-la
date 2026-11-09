@@ -1846,6 +1846,11 @@ class PageDetail(Adw.NavigationPage):
             ligne_h = commun.ligne_valeur("Hauteur", h, raison or None)
             ligne_h.set_subtitle_lines(3)
             g.add(ligne_h)
+        tr = r.resume_transposition()
+        if tr:
+            ligne_t = commun.ligne_valeur("Transposition", tr[0], tr[1] or None)
+            ligne_t.set_subtitle_lines(4)
+            g.add(ligne_t)
         at = r.resume_autotune()
         if at:
             ton, mesures = at

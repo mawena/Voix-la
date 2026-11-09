@@ -17,6 +17,14 @@ EXT_VIDEOS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi"}
 TEXTE_OCTAVE = ("Automatique : en chant, un seul décalage par chanteur, choisi d’après la hauteur (l’empreinte de la "
                 "voix départage les cas ambigus) ; un duo, retenu à quatre conditions, a un décalage par voix. "
                 "Sinon imposée partout")
+TEXTE_TRANSPOSER = ("Allumé : une chanson trop haute ou trop basse pour ta voix est transposée en entier, musique "
+                    "comprise (comme un changement de tonalité au karaoké), de 5 demi-tons au plus. Éteint : la "
+                    "musique reste intacte")
+INFOBULLE_TRANSPOSER = ("Tes proches ne reconnaissent ta voix que lorsqu’elle chante près de sa zone naturelle. "
+                        "Si la chanson est hors de ta tessiture, elle est transposée d’un nombre entier de demi-tons "
+                        "(5 au plus, le même pour toute la chanson), la musique avec la voix. À éteindre pour garder "
+                        "la musique d’origine : la voix est alors seulement décalée d’une octave quand il le faut. "
+                        "Sans effet sur la parole. Demande la bibliothèque Rubber Band (paquet librubberband2)")
 TEXTE_PAS = ("30 par défaut ; 50 : environ 40 % de temps GPU de conversion en plus. Avec YingMusic, 50 ou 100 "
              "n’apportent rien de mesurable")
 TEXTE_PAROLES = ("Transcription des paroles (Whisper) et traduction française si la chanson n’est pas en français, "
@@ -273,6 +281,11 @@ class PageDoubler(commun.Page):
         self.r_octave = Adw.ComboRow(title="Octave", model=Gtk.StringList.new([o[1] for o in OCTAVES]),
                                      subtitle=TEXTE_OCTAVE)
         g.add(self.r_octave)
+        # transposition de la chanson : visible seulement si doubler annonce --transposer ; allumée par défaut
+        self.r_transposer = Adw.SwitchRow(title="Transposer la chanson dans ma tessiture", active=True, visible=False,
+                                          subtitle=TEXTE_TRANSPOSER)
+        self.r_transposer.set_tooltip_text(INFOBULLE_TRANSPOSER)
+        g.add(self.r_transposer)
         self.r_pas = Adw.SpinRow.new_with_range(10, 100, 5)
         self.r_pas.set_title("Pas de diffusion")
         self.r_pas.set_subtitle(TEXTE_PAS)
@@ -550,6 +563,7 @@ class PageDoubler(commun.Page):
             "session Kaggle." if "extrait_par_video" in self.fenetre.caps else
             "Une ou plusieurs vidéos : celles qui ont le même extrait partent ensemble dans une seule session Kaggle.")
         self.r_mix_v1.set_visible("--mix-v1" in self.fenetre.caps)
+        self.r_transposer.set_visible("--transposer" in self.fenetre.caps)
         self.r_paroles.set_visible("--sans-paroles" in self.fenetre.caps)
         self._modele_choix()
         self.r_choix_voix.set_visible("voix_par_chanteur" in self.fenetre.caps or "--comparer" in self.fenetre.caps)
@@ -786,6 +800,8 @@ class PageDoubler(commun.Page):
             r["comparer"] = self.voix_a_comparer()   # doubler --comparer A,B,C (remplace --voix)
         if self.r_mix_v1.get_visible() and self.r_mix_v1.get_active():
             r["mix_v1"] = True
+        if self.r_transposer.get_visible():
+            r["transposer"] = "auto" if self.r_transposer.get_active() else "non"
         moteur_, sans = self._options_chaine()
         if moteur_:
             r["moteur"] = moteur_

@@ -33,7 +33,7 @@ OPTIONS_SUIVIES = ("--evenements", "--donnees", "--config", "--json", "--voix-li
                    "--debut", "--duree", "--pas", "--voix-db", "--reverb-db", "--octave", "--mode", "--sortie",
                    "--mix-v1", "--comparer-pas", "--reprendre", "--moteur", "--sans-nettoyage", "--sans-paroles",
                    "--autotune", "--sans-autotune", "--autotune-gamme", "--gpu", "--passage", "--affectation",
-                   "--comparer")
+                   "--comparer", "--transposer")
 MOTEURS = (("yingmusic", "YingMusic-SVC"), ("seedvc", "Seed-VC 44 kHz"))
 NOM_VOIX = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")   # même règle que doubler --ajouter-voix
 EXTRAIT_NOM = re.compile(r" \(extrait (\d+)m(\d+(?:,\d+)?)(?:\+(\d+)m(\d+(?:,\d+)?))?\)$")
@@ -326,6 +326,10 @@ def args_doublage(videos, reglages, donnees, extrait=None, evenements=None, caps
     if reglages.get("octave") not in (None, "", "auto"):
         o = str(reglages["octave"])
         a.append(f"--octave={'+12' if o in ('12', '+12') else o}")
+    t = reglages.get("transposer")
+    if t not in (None, "") and "--transposer" in caps:   # auto (défaut de doubler), non, ou N demi-tons imposés
+        t = "non" if t is False else "auto" if t is True else str(t)
+        a.append(f"--transposer={t}")
     if reglages.get("pas"):
         a.append(f"--pas={int(reglages['pas'])}")
     if reglages.get("voix_db") is not None:

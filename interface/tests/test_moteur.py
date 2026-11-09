@@ -70,7 +70,7 @@ class EssaiCapacites(EssaiIsole):
                                                                          "--sans-paroles", "--autotune",
                                                                          "--sans-autotune", "--autotune-gamme",
                                                                          "--gpu", "--passage", "--affectation",
-                                                                         "--comparer"})
+                                                                         "--comparer", "--transposer"})
         self.assertTrue(moteur.disponible())
 
     def test_doubler_introuvable(self):
@@ -148,6 +148,39 @@ class EssaiMoteurEtNettoyage(EssaiIsole):
         a = moteur.args_doublage(["/v/A.mp4"], {"voix": "jules", "moteur": ""}, "/d",
                                  caps=frozenset(moteur.OPTIONS_SUIVIES))
         self.assertFalse(any(x.startswith("--moteur") for x in a))
+
+
+class EssaiTransposer(EssaiIsole):
+    """--transposer : passé seulement si doubler l'annonce ; « auto » (défaut de doubler), « non » ou N demi-tons."""
+
+    def args(self, reglages, caps=None):
+        return moteur.args_doublage(["/v/A.mp4"], {"voix": "jules", **reglages}, "/d",
+                                    caps=frozenset(moteur.OPTIONS_SUIVIES) if caps is None else caps)
+
+    def test_interrupteur_allume_ou_eteint(self):
+        self.assertIn("--transposer=auto", self.args({"transposer": "auto"}))
+        self.assertIn("--transposer=auto", self.args({"transposer": True}))
+        self.assertIn("--transposer=non", self.args({"transposer": "non"}))
+        self.assertIn("--transposer=non", self.args({"transposer": False}))
+        self.assertIn("--transposer=-3", self.args({"transposer": -3}))
+
+    def test_sans_reglage_doubler_decide(self):
+        self.assertFalse(any(x.startswith("--transposer") for x in self.args({})))
+        self.assertFalse(any(x.startswith("--transposer") for x in self.args({"transposer": ""})))
+
+    def test_absent_de_l_aide(self):
+        a = self.args({"transposer": "non"}, caps=frozenset(moteur.OPTIONS_SUIVIES) - {"--transposer"})
+        self.assertFalse(any(x.startswith("--transposer") for x in a))
+
+    def test_le_faux_annonce_transposer(self):
+        self.assertIn("--transposer", moteur.capacites())
+        self.ancien_doubler()
+        self.assertNotIn("--transposer", moteur.capacites())
+
+    def test_le_remix_ne_porte_pas_l_option(self):
+        """--remix suit la décision déjà prise (rapport.json) : l'interface ne passe pas --transposer."""
+        a = moteur.args_remix("/v/A.mp4", "jules", "/d/A", "/d", caps=frozenset(moteur.OPTIONS_SUIVIES))
+        self.assertFalse(any(x.startswith("--transposer") for x in a))
 
 
 class EssaiParoles(EssaiIsole):

@@ -15,7 +15,7 @@
 
 Les vidéos données ensemble partent dans UNE seule session Kaggle (installation payée une fois) :
   1. sur le PC, le son de chaque vidéo est extrait (44,1 kHz stéréo flottant ; extrait calé sur une image clé avec
-     --debut/--duree), puis envoyé en FLAC 24 bits (crête ramenée à -1 dBFS par un gain connu, retiré sur Kaggle) ;
+     --debut/--duree), puis envoyé en FLAC 16 bits (crête ramenée à -1 dBFS par un gain connu, retiré sur Kaggle) ;
   2. sur Kaggle (jeu de données et noyau privés), un seul noyau GPU sépare chaque voix, choisit le mode et la hauteur
      (en chant, un décalage d'octave par chanteur), et convertit (kaggle/doubler_kaggle.py) ; la voix isolée revient
      elle aussi en FLAC. En chant, la voix est d'abord nettoyée (voix principale et chœurs séparés, reverb d'origine
@@ -95,6 +95,7 @@ PISTES_AUDIO = ('toutes', 'doublage')
 PISTES_AUDIO_DEFAUT = 'toutes'
 CLES_CONFIG = {'autotune': 'intensité de l\'auto-tune à chaque doublage, de 0 (désactivé, défaut) à 100',
                'donnees': 'dossier des données (voix/, sorties/)',
+               'envoi_flac': 'son envoyé à Kaggle en FLAC 16 bits (défaut) ou 24 bits (comme avant le 06/11/2026)',
                'gpu': 'cartes GPU utilisées par le noyau : auto (défaut : les deux T4 de la machine, une seule si elle '
                       'n\'en a qu\'une), 1 (une carte, comme avant) ou 2',
                'kaggle.compte': 'compte Kaggle (nom d\'utilisateur)',
@@ -198,6 +199,11 @@ def ecrire_config(cle, valeur):
         valeur = str(valeur).strip().lower()
         if valeur not in PISTES_AUDIO:
             raise SystemExit(f'pistes_audio : toutes ou doublage attendu (reçu : {valeur})')
+    if cle == 'envoi_flac':
+        valeur = str(valeur).strip().lower().removesuffix('bits').strip()
+        if valeur not in ENVOI_FLAC:
+            raise SystemExit(f'envoi_flac : 16 ou 24 attendu (reçu : {valeur})')
+        valeur = int(valeur)
     if cle == 'kaggle.machine' and not re.fullmatch(MACHINE_SYNTAXE, valeur):
         raise SystemExit(f'kaggle.machine : nom de machine Kaggle attendu, par exemple {MACHINE_DEFAUT} (reçu : {valeur})')
     if cle == 'voix' and not re.fullmatch(NOM_VOIX, valeur):
@@ -374,10 +380,12 @@ def afficher_config(a, en_json=False):
     autotune = autotune_config(conf)
     gpu = gpu_config(conf)
     pistes_audio = pistes_audio_config(conf)
+    envoi = envoi_flac_config(conf)
     fat1 = trouver_fat1()
     effectif = {'config': str(CONFIG), 'donnees': str(DONNEES), 'source_donnees': a.source_donnees, 'voix': str(VOIX),
                 'sorties': a.sortie, 'voix_defaut': VOIX_DEFAUT, 'source_voix_defaut': VOIX_DEFAUT_SOURCE,
                 'moteur': moteur, 'paroles': paroles, 'autotune': autotune, 'gpu': gpu, 'pistes_audio': pistes_audio,
+                'envoi_flac': envoi,
                 'x42_autotune': str(fat1) if fat1 else None,
                 'kaggle': {'compte': valeur_config(conf, 'kaggle.compte'), **noms, 'machine': MACHINE},
                 'jeton_kaggle': 'présent' if JETON.exists() else 'absent', 'commande_kaggle': str(KAGGLE),
@@ -402,6 +410,7 @@ def afficher_config(a, en_json=False):
     print(f"  pistes audio   {pistes_audio}{'' if valeur_config(conf, 'pistes_audio') is not None else '  (défaut)'} : "
           + ('le doublage seul' if pistes_audio == 'doublage' else
              "doublage (par défaut), original, beat seul, voix convertie seule, voix d'origine seule"))
+    print(f"  envoi FLAC     {envoi} bits{'' if valeur_config(conf, 'envoi_flac') is not None else '  (défaut)'}")
     for n in KAGGLE_DEFAUTS:
         print(f"  kaggle.{n:8s} {noms[n] or '— (kaggle.compte manque : doubler --config kaggle.compte <nom>)'}")
     print(f"  kaggle.machine {MACHINE}{'' if valeur_config(conf, 'kaggle.machine') else '  (défaut : GPU T4 x2)'}")
@@ -511,18 +520,39 @@ def crete_dbfs(fichier):
 
 
 CRETE_FLAC_DBFS = -1.0   # crête des FLAC échangés avec Kaggle
+# Son envoyé à Kaggle : FLAC 16 bits depuis le 06/11/2026 (24 bits avant) : 16,4 Mo au lieu de 30,9 pour une chanson,
+# erreur 88 dB sous le signal (après la séparation, elle reste bien sous ce que la séparation elle-même laisse passer).
+# Clé « envoi_flac » de la configuration : 24 pour revenir à l'envoi d'avant
+ENVOI_FLAC = ('16', '24')
+ENVOI_FLAC_DEFAUT = '16'
 
 
-def encoder_flac(wav, flac):
-    """WAV flottant -> FLAC 24 bits (sans perte au sens utile, environ deux fois plus léger). Le FLAC est en entiers et
-    écrêterait au-delà de 0 dBFS, où l'original monte souvent : la crête est ramenée à -1 dBFS par un gain connu, rendu
-    ici et transmis au noyau (réglage gain_entree), qui le retire à la lecture. Écart après l'aller-retour : environ
-    -140 dBFS (mesuré sur une chanson dont la crête atteint +0,5 dBFS)."""
+def encoder_flac(wav, flac, bits=16):
+    """WAV flottant -> FLAC 16 bits (défaut ; 24 avec bits=24), environ quatre fois plus léger que le WAV flottant (deux
+    fois en 24 bits). Le FLAC est en entiers et écrêterait au-delà de 0 dBFS, où l'original monte souvent : la crête est
+    ramenée à -1 dBFS par un gain connu, rendu ici et transmis au noyau (réglage gain_entree), qui le retire à la lecture
+    (soundfile lit les deux en flottant, sans changement du noyau). Écart après l'aller-retour : environ 88 dB sous le
+    signal en 16 bits, -140 dBFS en 24 bits (mesuré sur une chanson dont la crête atteint +0,5 dBFS)."""
     crete = crete_dbfs(wav)
     gain = 10 ** ((CRETE_FLAC_DBFS - crete) / 20) if math.isfinite(crete) else 1.0
-    ff('-i', wav, '-af', f'volume={gain:.17g}', '-c:a', 'flac', '-sample_fmt', 's32', '-bits_per_raw_sample', '24',
+    format_ = ['-sample_fmt', 's16'] if int(bits) == 16 else ['-sample_fmt', 's32', '-bits_per_raw_sample', '24']
+    ff('-i', wav, '-af', f'volume={gain:.17g}', '-c:a', 'flac', *format_,
        '-compression_level', '8', '-metadata', f'comment=doubler : gain {gain:.17g} appliqué (crête à -1 dBFS), à retirer', flac)
     return gain
+
+
+def envoi_flac_config(conf):
+    """Clé « envoi_flac » de la configuration : 16 (défaut) ou 24 bits ; une valeur illisible compte comme 16, avec un
+    avis."""
+    v = valeur_config(conf, 'envoi_flac')
+    if v is None:
+        return int(ENVOI_FLAC_DEFAUT)
+    v = str(v).strip().lower().removesuffix('bits').strip()
+    if v not in ENVOI_FLAC:
+        dire(f'attention : « envoi_flac » de {CONFIG} illisible ({v!r}) : {ENVOI_FLAC_DEFAUT} bits '
+             '(doubler --config envoi_flac 16|24)')
+        return int(ENVOI_FLAC_DEFAUT)
+    return int(v)
 
 
 def decoder_flac(flac, wav):
@@ -955,10 +985,10 @@ def preparer_source(video, info, debut, duree, travail):
 
 # --- Kaggle ----------------------------------------------------------------------------------------------------------
 
-def envoyer_jeu(travaux, voix, dossier):
+def envoyer_jeu(travaux, voix, dossier, bits=16):
     """Une version du jeu de données privé par session : la référence de la voix choisie (de chaque voix, avec une voix
-    par chanteur) et le son des vidéos seulement, en FLAC 24 bits (gain de chaque vidéo noté dans tr['gain_entree'], à
-    transmettre au noyau)."""
+    par chanteur) et le son des vidéos seulement, en FLAC 16 bits (bits=24 : clé envoi_flac ; gain de chaque vidéo noté
+    dans tr['gain_entree'], à transmettre au noyau)."""
     jeu = dossier / 'jeu'
     shutil.rmtree(jeu, ignore_errors=True)
     jeu.mkdir(parents=True)
@@ -966,7 +996,8 @@ def envoyer_jeu(travaux, voix, dossier):
         shutil.copy2(m['reference'], jeu / f"voix-{m['id']}.wav")
     taille, taille_wav = 0, 0
     for tr in travaux:
-        tr['gain_entree'] = encoder_flac(tr['travail'] / 'original.wav', jeu / tr['entree'])
+        tr['gain_entree'] = encoder_flac(tr['travail'] / 'original.wav', jeu / tr['entree'], bits)
+        tr['bits_envoi'] = int(bits)
         tr['taille_envoi'] = (jeu / tr['entree']).stat().st_size
         taille += tr['taille_envoi']
         taille_wav += (tr['travail'] / 'original.wav').stat().st_size
@@ -974,7 +1005,8 @@ def envoyer_jeu(travaux, voix, dossier):
         json.dump({'title': JEU.split('/')[1], 'id': JEU, 'licenses': [{'name': 'unknown'}]}, f)
     existe = kaggle('datasets', 'status', JEU)[0] == 0
     noms = [m['id'] for m in voix_membres(voix)]
-    dire(f'Kaggle : envoi du son de {len(travaux)} vidéo(s) ({taille / 1e6:.0f} Mo en FLAC au lieu de {taille_wav / 1e6:.0f} Mo '
+    dire(f'Kaggle : envoi du son de {len(travaux)} vidéo(s) ({taille / 1e6:.0f} Mo en FLAC {bits} bits au lieu de '
+         f'{taille_wav / 1e6:.0f} Mo '
          f"en WAV) et de {'la voix ' + noms[0] if len(noms) == 1 else 'les voix ' + ' et '.join(noms)} dans le jeu privé {JEU}")
     code, texte = (kaggle('datasets', 'version', '-p', str(jeu), '-m', f"{len(travaux)} video(s), voix {voix['id']}") if existe
                    else kaggle('datasets', 'create', '-p', str(jeu)))
@@ -2338,7 +2370,57 @@ def echantillons(fichier):
     return int(s.get('duration_ts') or 0), int(s.get('sample_rate') or 0)
 
 
-def remettre_sur_video(t, mix, dossier, base, sous_titres=(), plan=None, pistes=(), titre=None, langue=None):
+# Sons encodés à part avant la remise sur la vidéo, puis copiés tels quels dans la vidéo : un fichier audio seul dont le
+# conteneur garde l'amorce du codec (essais du 06/11/2026) : la liste d'édition du m4a pour l'AAC (aussi pour un mkv :
+# un .mka la perd, et le son y partait 23 ms trop tard), l'Ogg pour l'Opus (un .webm perdait 6,5 ms)
+CONTENEURS_AUDIO_SEUL = {'.mp4': '.m4a', '.m4v': '.m4a', '.mov': '.m4a', '.mkv': '.m4a', '.webm': '.opus'}
+
+
+class PistesEncodees:
+    """Sons de la vidéo doublée encodés à l'avance, chacun dans son processus ffmpeg, en parallèle : même codec
+    (CONTENEURS), mêmes filtres qu'avant (aresample, apad, atrim), donc le même son décodé au bit près, et les mêmes
+    horodatages de paquets (amorce du codec comprise, CONTENEURS_AUDIO_SEUL) ; la remise sur la vidéo ne fait plus que
+    multiplexer (-c:a copy). Seule différence, en mkv : le muxeur recale le fichier sur le premier paquet qu'il reçoit,
+    désormais celui du son (amorce AAC de 23 ms) et non plus l'image : toute la vidéo (image, sons, sous-titres) glisse
+    d'un bloc de 23 ms, sans rien changer à leur calage. Avant le 06/11/2026, les cinq pistes étaient encodées l'une après
+    l'autre dans la commande de la remise (environ 1 min 50 pour une chanson). Les fichiers sont gardés le temps d'un
+    mixage, dans un dossier caché de travail/ effacé à la fin (contexte) : la version auto-tune reprend l'original, le
+    beat seul et la voix d'origine déjà encodés pour la version normale."""
+
+    def __init__(self, dossier):
+        self.dossier = Path(tempfile.mkdtemp(prefix='.pistes-', dir=dossier))
+        self.faits = {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        shutil.rmtree(self.dossier, ignore_errors=True)
+        return False
+
+    def encoder(self, sons, audio, ext):
+        """sons : [(fichier, filtre ou None)] ; rend les fichiers encodés, dans le même ordre. Un même son déjà encodé
+        avec le même filtre et le même codec (et pas modifié depuis) n'est pas réencodé."""
+        from concurrent.futures import ThreadPoolExecutor
+        cles = []
+        for f, filtre in sons:
+            st = Path(f).stat()
+            cles.append((str(Path(f).resolve()), st.st_size, st.st_mtime_ns, filtre or '', tuple(audio)))
+        a_faire = [c for c in dict.fromkeys(cles) if c not in self.faits]
+
+        def encoder(cle):
+            sortie = self.dossier / f'piste{len(self.faits) + a_faire.index(cle)}{CONTENEURS_AUDIO_SEUL.get(ext, ".mka")}'
+            ff('-i', cle[0], *(['-af', cle[3]] if cle[3] else []), '-vn', *audio, sortie)
+            return sortie
+        if a_faire:
+            with ThreadPoolExecutor(max_workers=min(len(a_faire), max(1, (os.cpu_count() or 2) // 2))) as ex:
+                faits = list(ex.map(encoder, a_faire))
+            self.faits.update(zip(a_faire, faits))
+        return [self.faits[c] for c in cles]
+
+
+def remettre_sur_video(t, mix, dossier, base, sous_titres=(), plan=None, pistes=(), titre=None, langue=None,
+                       encodees=None):
     """Le mix remis sur la vidéo : image copiée sans réencodage, sous-titres d'origine gardés (ceux que le conteneur
     accepte tels quels), puis les pistes de sous_titres ajoutées ([{fichier (srt, au temps de la coupe, celui du
     décalage du mix decalage_son : le conteneur les recale avec l'image et le son), langue (ISO 639-2), titre}] :
@@ -2348,7 +2430,12 @@ def remettre_sur_video(t, mix, dossier, base, sous_titres=(), plan=None, pistes=
     titre}], sons de l'extrait comme le mix), calées exactement comme lui (même -itsoffset, même coupe de l'image) et
     ramenées à sa durée, à l'échantillon près. Toutes : codec de CONTENEURS, étiquette de langue langue (ISO 639-2/B ;
     défaut : celle de la source, quand elle est connue), titre aussi dans handler_name en mp4 ; en mp4, ffmpeg les met
-    dans le même alternate_group (une seule jouée)."""
+    dans le même alternate_group (une seule jouée).
+    Chaque son est encodé à part, en parallèle (PistesEncodees ; encodees : celles d'un mixage en cours, sinon un
+    dossier pour cet appel seul), puis la commande finale multiplexe sans réencoder (-c:a copy)."""
+    if encodees is None:
+        with PistesEncodees(t) as e:
+            return remettre_sur_video(t, mix, dossier, base, sous_titres, plan, pistes, titre, langue, e)
     p = plan or plan_video(t)
     src, video, info, ext, fv = p['src'], p['video'], p['info'], p['ext'], p['fv']
     audio, options, acceptes = CONTENEURS[ext]
@@ -2356,9 +2443,14 @@ def remettre_sur_video(t, mix, dossier, base, sous_titres=(), plan=None, pistes=
     langue = langue or src.get('langue')
     decalage = ['-itsoffset', f"{p['decalage_son']:.6f}"] if abs(p['decalage_son']) > 1e-6 else []
     sons = [{'fichier': mix, 'titre': titre or base.split(' - ', 1)[-1]}, *pistes]
+    # même durée que le mix : complétées de silence ou coupées à la fin, jamais décalées
+    n, sr = echantillons(mix) if pistes else (0, 0)
+    filtres = [f'aresample={sr},apad=whole_len={n},atrim=end_sample={n}' if k and n and sr else None
+               for k in range(len(sons))]
+    fichiers = encodees.encoder([(s['fichier'], f) for s, f in zip(sons, filtres)], audio, ext)
     entrees, cartes = [], ['-map', f"0:{fv['index']}"]
-    for i, s in enumerate(sons):
-        entrees += [*decalage, '-i', s['fichier']]
+    for i, f in enumerate(fichiers):
+        entrees += [*decalage, '-i', f]
         cartes += ['-map', f'{1 + i}:a:0']
     gardes, jetes = [], []
     for s in flux(info, 'subtitle'):
@@ -2378,7 +2470,6 @@ def remettre_sur_video(t, mix, dossier, base, sous_titres=(), plan=None, pistes=
         cartes += ['-map', '0:t?']   # polices jointes des sous-titres
         if sous_titres:
             options = [*options, '-default_mode', 'infer_no_subs']   # les paroles ne s'affichent pas d'office
-    n, sr = echantillons(mix) if pistes else (0, 0)
     meta = []
     for k, s in enumerate(sons):
         meta += [f'-metadata:s:a:{k}', f"title={s['titre']}", f'-disposition:a:{k}', 'default' if k == 0 else '0']
@@ -2386,10 +2477,8 @@ def remettre_sur_video(t, mix, dossier, base, sous_titres=(), plan=None, pistes=
             meta += [f'-metadata:s:a:{k}', f'language={langue}']
         if ext in CONTENEURS_MP4:
             meta += [f'-metadata:s:a:{k}', f"handler_name={s['titre']}"]
-        if k and n and sr:   # même durée que le mix : complétée de silence ou coupée à la fin, jamais décalée
-            meta += [f'-filter:a:{k}', f'aresample={sr},apad=whole_len={n},atrim=end_sample={n}']
     ff(*p['coupe'], '-i', video, *entrees, *cartes, '-c:v', 'copy', '-c:s', 'copy', *codecs,
-       '-c:t', 'copy', *audio, *meta, *options, sortie)
+       '-c:t', 'copy', '-c:a', 'copy', *meta, *options, sortie)
     if jetes:
         dire(f"sous-titres non copiés ({', '.join(sorted({s.get('codec_name', '?') for s in jetes}))}) : le conteneur "
              f'{ext} ne les accepte pas tels quels')
@@ -2428,14 +2517,14 @@ def pistes_en_plus(t, tv, voix, gains, autotune=False):
             {'fichier': t / 'voix_source.wav', 'titre': titres['voix_origine']}]
 
 
-def video_avec_repli(t, mix, dossier, base, pistes_st, pistes_a, plan, titre, langue=None):
-    """remettre_sur_video (langue : étiquette des pistes audio) ; refusée par ffmpeg, elle est refaite sans les pistes
-    audio en plus, puis aussi sans les pistes de paroles : la vidéo doublée passe avant elles. Rend (vidéo, pistes de
-    paroles gardées, pistes audio en plus gardées)."""
+def video_avec_repli(t, mix, dossier, base, pistes_st, pistes_a, plan, titre, langue=None, encodees=None):
+    """remettre_sur_video (langue : étiquette des pistes audio ; encodees : PistesEncodees du mixage) ; refusée par
+    ffmpeg, elle est refaite sans les pistes audio en plus, puis aussi sans les pistes de paroles : la vidéo doublée
+    passe avant elles. Rend (vidéo, pistes de paroles gardées, pistes audio en plus gardées)."""
     essais = [(pistes_st, pistes_a)] + [(pistes_st, [])] * bool(pistes_a) + [([], [])] * bool(pistes_st)
     for i, (st, pa) in enumerate(essais):
         try:
-            return remettre_sur_video(t, mix, dossier, base, st, plan, pa, titre, langue), st, pa
+            return remettre_sur_video(t, mix, dossier, base, st, plan, pa, titre, langue, encodees), st, pa
         except Exception as e:  # noqa: BLE001
             if i == len(essais) - 1:
                 raise
@@ -2807,7 +2896,8 @@ def finir(tr, a, voix, temps_local=None):
     debut = time.time()
     paroles_on = getattr(a, 'paroles', True)
     pistes_st, fichiers_paroles, info_paroles, chantee = [], [], {'demande': paroles_on}, None
-    with Etape('video', titre, 'son remis sur la vidéo (image copiée)' + (', paroles en sous-titres' if paroles_on else '')):
+    with Etape('video', titre, 'son remis sur la vidéo (image copiée)' + (', paroles en sous-titres' if paroles_on else '')), \
+            PistesEncodees(t) as encodees:
         plan = plan_video(t)
         if paroles_on:
             try:   # paroles.json, .srt : temps de la vidéo doublée ; pistes de la vidéo : temps de la coupe
@@ -2831,7 +2921,8 @@ def finir(tr, a, voix, temps_local=None):
             pistes_a = pistes_en_plus(t, tv, voix, gains) if toutes else []
             demandees = pistes_st
             sortie, pistes_st, pistes_a = video_avec_repli(t, tv / 'mix.wav', dossier, base, pistes_st, pistes_a, plan,
-                                                           titres_pistes(voix)['doublage'], langue_a['etiquette'])
+                                                           titres_pistes(voix)['doublage'], langue_a['etiquette'],
+                                                           encodees)
             if demandees and not pistes_st:
                 info_paroles['raison'] = 'pistes de sous-titres refusées par ffmpeg (fichiers .srt et .lrc gardés)'
             info_pistes['video'] = [titres_pistes(voix)['doublage'], *(p['titre'] for p in pistes_a)]
@@ -2843,7 +2934,7 @@ def finir(tr, a, voix, temps_local=None):
                     pistes_at = pistes_en_plus(t, tv, voix, gains, autotune=True) if toutes else []
                     sortie_at, _, pistes_at = video_avec_repli(t, tv / 'mix_autotune.wav', dossier, b_at, pistes_st,
                                                                pistes_at, plan, titres_pistes(voix, True)['doublage'],
-                                                               langue_a['etiquette'])
+                                                               langue_a['etiquette'], encodees)
                     info_at['fichiers']['video'] = sortie_at.name
                     info_pistes['video_autotune'] = [titres_pistes(voix, True)['doublage'],
                                                      *(p['titre'] for p in pistes_at)]
@@ -2985,7 +3076,7 @@ class Verrou:
         return False
 
 
-CHAMPS_SESSION = ('id', 'nom', 'video', 'dossier', 'travail', 'tv', 'base', 'entree', 'gain_entree', 'taille_envoi',
+CHAMPS_SESSION = ('id', 'nom', 'video', 'dossier', 'travail', 'tv', 'base', 'entree', 'gain_entree', 'taille_envoi', 'bits_envoi',
                   'duree_audio_s', 'extraction_s', 'debut_epoch', 'debut_demande', 'duree_demande')
 
 
@@ -3089,6 +3180,7 @@ def finir_travaux(travaux, a, voix, session, temps, envoi_s, estimation):
             # la musique seule (original - voix isolée) est calculée et vérifiée par finir(), comme pour --remix
             temps_local = {'extraction_s': tr.get('extraction_s'), 'envoi_jeu_s': envoi_s,
                            'envoi_flac_mo': round(tr['taille_envoi'] / 1e6, 1) if tr.get('taille_envoi') else None,
+                           'envoi_flac_bits': tr.get('bits_envoi'),
                            'gain_entree_db': round(20 * math.log10(tr['gain_entree']), 3) if tr.get('gain_entree') else None,
                            'attente_demarrage_noyau_s': attente, 'version_noyau': temps.get('version_noyau'),
                            'noyau_depuis_envoi_s': temps['noyau_depuis_envoi_s'], 'estimation_noyau_s': estimation,
@@ -3208,7 +3300,7 @@ def traiter_lot(videos, a, voix):
         debut = time.time()
         try:
             with Etape('envoi', titres, f'son de {len(travaux)} vidéo(s) en FLAC vers le jeu privé {JEU}'):
-                envoyer_jeu(travaux, voix, kdir)
+                envoyer_jeu(travaux, voix, kdir, getattr(a, 'envoi_flac', 16))
         except Exception as e:  # noqa: BLE001
             return abandon(f'de l\'envoi sur Kaggle : {e}')
         envoi_s = round(time.time() - debut, 1)
@@ -3513,6 +3605,7 @@ def executer(p, a):
     moteur_donne = a.moteur is not None
     a.moteur = a.moteur or moteur_conf or MOTEUR_DEFAUT
     a.gpu = a.gpu or gpu_config(conf)
+    a.envoi_flac = envoi_flac_config(conf)
     a.paroles = not a.sans_paroles and paroles_config(conf)
     a.autotune_reglage = reglage_autotune(a, conf)
     if a.voix is None:

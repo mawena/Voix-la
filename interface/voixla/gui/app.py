@@ -33,10 +33,14 @@ SECTIONS = [
     ("resultats", "Résultats", "media-playback-start-symbolic", "bibliotheque", "PageBibliotheque"),
     ("karaoke", "Karaoké", "emblem-music-symbolic", "page_karaoke", "PageKaraoke"),
     ("voix", "Voix", "audio-input-microphone-symbolic", "page_voix", "PageVoix"),
-    ("ecoute", "Écoute à l’aveugle", "audio-headphones-symbolic", "page_ecoute", "PageEcoute"),
     ("etat", "État", "preferences-system-details-symbolic", "page_etat", "PageEtat"),
 ]
-# Alt+N de chaque section : ceux d'avant le karaoké restent les mêmes, le karaoké prend Alt+7
+# Pages qui existent sans entrée dans la barre latérale : on y va par le menu ☰ (« Écoute à l'aveugle (banc d'essai)… »),
+# par Alt+5 et par « Comparer les voix » d'un résultat
+PAGES_HORS_BARRE = [
+    ("ecoute", "Écoute à l’aveugle", "audio-headphones-symbolic", "page_ecoute", "PageEcoute"),
+]
+# Alt+N de chaque page : ceux d'avant le karaoké restent les mêmes, le karaoké prend Alt+7
 RACCOURCIS_SECTIONS = {"doubler": 1, "travaux": 2, "resultats": 3, "voix": 4, "ecoute": 5, "etat": 6, "karaoke": 7}
 
 
@@ -98,6 +102,7 @@ class Fenetre(Adw.ApplicationWindow):
             self.lignes[tag], self.badges[tag] = r, badge
         self.liste.connect("row-activated", lambda _l, r: self.aller(r.tag))
         menu = Gio.Menu()
+        menu.append("Écoute à l’aveugle (banc d’essai)…", "win.section-ecoute")
         menu.append("Réglages", "win.reglages")
         menu.append("Raccourcis clavier", "win.show-help-overlay")
         menu.append(f"À propos de {NOM}", "win.a-propos")
@@ -115,7 +120,7 @@ class Fenetre(Adw.ApplicationWindow):
         self.nav = Adw.NavigationView()
         self.nav.connect("notify::visible-page", lambda *_: self._page_changee())
         self.pages = {}
-        for tag, titre, _i, module, classe in SECTIONS:
+        for tag, titre, _i, module, classe in SECTIONS + PAGES_HORS_BARRE:
             self.pages[tag] = charger_page(self, tag, titre, module, classe)
 
         self.split = Adw.NavigationSplitView(
@@ -189,7 +194,7 @@ class Fenetre(Adw.ApplicationWindow):
                                           GLib.Variant.new_string(self.prefs.get("paroles_taille") or "normale"))
         a.connect("change-state", lambda act, v: self.basculer_visualisation(act, v, "paroles_taille"))
         self.add_action(a)
-        for i, (tag, *_r) in enumerate(SECTIONS):
+        for i, (tag, *_r) in enumerate(SECTIONS + PAGES_HORS_BARRE):
             a = Gio.SimpleAction.new(f"section-{tag}", None)
             a.connect("activate", lambda *_a, t=tag: self.aller(t))
             self.add_action(a)
@@ -202,7 +207,7 @@ class Fenetre(Adw.ApplicationWindow):
         section = Gtk.ShortcutsSection(section_name="general", visible=True)
         groupe = Gtk.ShortcutsGroup(title="Général")
         for acc, titre in (("<Alt>1", "Doubler"), ("<Alt>2", "Travaux"), ("<Alt>3", "Résultats"), ("<Alt>4", "Voix"),
-                           ("<Alt>5", "Écoute à l’aveugle"), ("<Alt>6", "État"), ("<Alt>7", "Karaoké"),
+                           ("<Alt>5", "Écoute à l’aveugle (banc d’essai)"), ("<Alt>6", "État"), ("<Alt>7", "Karaoké"),
                            ("F5", "Actualiser la page"),
                            ("<Control>comma", "Réglages"), ("<Control>question", "Raccourcis clavier")):
             groupe.add_shortcut(Gtk.ShortcutsShortcut(accelerator=acc, title=titre))
@@ -312,11 +317,19 @@ class Fenetre(Adw.ApplicationWindow):
 
     # --- navigation ------------------------------------------------------------------------------------------------
 
+    def _selectionner(self, tag):
+        """La ligne de la barre latérale de cette page ; une page hors de la barre (l'écoute à l'aveugle) n'en a pas :
+        aucune ligne n'est alors sélectionnée."""
+        if tag in self.lignes:
+            self.liste.select_row(self.lignes[tag])
+        else:
+            self.liste.unselect_all()
+
     def aller(self, tag, montrer_contenu=True):
         if tag not in self.pages:
             tag = "doubler"
         page = self.pages[tag]
-        self.liste.select_row(self.lignes[tag])
+        self._selectionner(tag)
         if self.nav.get_visible_page() is not page or len(self.nav.get_navigation_stack()) > 1:
             self.nav.replace([page])
         if montrer_contenu:
@@ -357,7 +370,7 @@ class Fenetre(Adw.ApplicationWindow):
     def montrer_pile(self, tag, *suite):
         """La section tag avec ces pages par-dessus (retour à un résultat gardé, depuis la barre de lecture)."""
         page = self.pages[tag]
-        self.liste.select_row(self.lignes[tag])
+        self._selectionner(tag)
         self.nav.replace([page, *suite])
         self.split.set_show_content(True)
 

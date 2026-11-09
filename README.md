@@ -2,7 +2,7 @@
 
 Voix-là : votre vidéo, avec une autre voix. Et voilà.
 
-> **Version 0.12.0** : paquet Debian `.deb` joint à chaque [release](https://github.com/mawena/Voix-la/releases). Voir le
+> **Version 0.13.0** : paquet Debian `.deb` joint à chaque [release](https://github.com/mawena/Voix-la/releases). Voir le
 > [journal des modifications](CHANGELOG.md).
 
 `doubler` prend une vidéo (chanson d'une chanteuse ou d'un chanteur, duo, rap, ou vidéo parlée) et rend la même vidéo,
@@ -744,9 +744,14 @@ Pour la parole (c'est ce que `--ajouter-voix` attend) :
 
 Pour le chant :
 
-- la référence actuelle est de la parole : elle donne le timbre, la mélodie vient de la vidéo ;
-- si vous enregistrez du chant pour une future version, chantez a cappella, sans musique dans le casque qui
-  déborderait dans le micro ;
+- la référence actuelle est de la parole : elle donne le timbre, la mélodie vient de la vidéo ; pour être reconnue
+  dans ses doublages, une voix gagne à avoir aussi sa version chantée (objectif : 10 min de chant et 5 min de
+  parole). La **séance d'enregistrement** de l'interface (page Voix, « Enregistrer ma voix chantée… ») guide la
+  prise : notes à tenir, chansons conseillées pour la voix dans la tonalité qui lui va, paroles à l'écran, puis import
+  des fichiers du téléphone avec leur contrôle (voir [l'interface](interface/README.md#séance-denregistrement)) ;
+- téléphone à 20 cm, en meilleure qualité d'enregistrement et en mode avion ; casque bien fermé et volume modéré pour
+  que la musique ne déborde pas dans le micro ; sur une chanson, taper dans ses mains au 4e bip (il permet de recaler
+  la prise) ; ne pas envoyer les fichiers par WhatsApp, qui recompresse le son ;
 - gardez la même distance au micro sur les notes fortes, et baissez le niveau d'enregistrement plutôt que de saturer ;
 - variez les hauteurs et les voyelles tenues, dans votre tessiture confortable.
 

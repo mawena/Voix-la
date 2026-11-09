@@ -109,14 +109,26 @@ def controle_parole(fichier):
     return {**m, "alertes": alertes, "ok": not alertes}
 
 
+# Prises de chant comptées : les chant-*.wav enregistrés dans l'interface et les fichiers importés par la séance
+# d'enregistrement (copiés tels quels, nommés AAAAMMJJ-HHMMSS-<étape>.<ext>, au format du téléphone).
+EXTENSIONS_PRISES = {".wav", ".flac", ".m4a", ".aac", ".mp3", ".ogg", ".opus", ".3gp", ".amr"}
+NOM_IMPORTE = re.compile(r"^\d{8}-\d{6}-")
+
+
+def est_prise_chant(f):
+    f = Path(f)
+    return (f.is_file() and f.suffix.lower() in EXTENSIONS_PRISES
+            and (f.name.startswith("chant-") or bool(NOM_IMPORTE.match(f.name))))
+
+
 def prises_chant(dossiers):
-    """[(Path, durée)] de tous les chant-*.wav de ces dossiers, triés par nom."""
+    """[(Path, durée)] des prises de chant de ces dossiers (chant-*.wav et fichiers importés), triées par nom."""
     vus, prises = set(), []
     for d in dossiers:
         d = Path(d).expanduser()
         if not d.is_dir():
             continue
-        for f in sorted(d.glob("chant-*.wav")):
+        for f in sorted(x for x in d.iterdir() if est_prise_chant(x)):
             r = f.resolve()
             if r in vus:
                 continue

@@ -1,3 +1,13 @@
+voix-la (0.11.1) unstable; urgency=medium
+
+  * Interface : « Abandonner la session » (bannière de reprise et travaux)
+    met de côté une session Kaggle bloquée sans rien effacer et ouvre la
+    page du notebook pour l'arrêter sur Kaggle.
+  * Interface : un doublage refusé à cause d'une session en cours est
+    expliqué en clair ; une attente anormale de GPU sur Kaggle est signalée.
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Mon, 09 Nov 2026 17:00:00 +0000
+
 voix-la (0.11.0) unstable; urgency=medium
 
   * Duo : chaque passage est converti dans les deux voix ; on corrige à la

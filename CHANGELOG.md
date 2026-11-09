@@ -7,6 +7,20 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+### Ajouté
+
+- Interface : « Abandonner la session » sur la page Travaux. Sur la bannière de reprise, et sur un travail de reprise
+  ou un doublage refusé, un bouton ouvre une confirmation (Adw.AlertDialog) puis annule d'abord le travail de reprise
+  encore actif, et RENOMME `~/.local/state/voix-la/session-en-cours.json` en `session-abandonnee-AAAAMMJJ-HHMM.json`
+  (jamais effacé). Rien n'est renommé tant qu'un `doubler` vivant tient le verrou de la session. Le dialogue prévient
+  que la version du notebook reste peut-être en attente sur Kaggle et consommera du quota si elle démarre (l'outil
+  Kaggle ne sait pas l'annuler), et ouvre la page `https://www.kaggle.com/code/<noyau>` du notebook.
+- Interface : un doublage refusé parce qu'une session Kaggle précédente n'est pas finie le dit en clair (au lieu d'un
+  simple « échec ») et propose « Reprendre » ou « Abandonner la session ».
+- Interface : quand le noyau reste « queued » trop longtemps (plus de 2 fois la durée prévue par `doubler`, au moins
+  10 min et au plus 30 min ; 30 min sans estimation), le travail dit que Kaggle n'a pas encore donné de GPU, qu'une
+  autre session du compte les occupe peut-être, et propose d'abandonner.
+
 ## [0.11.0] - 2026-11-09
 
 ### Ajouté

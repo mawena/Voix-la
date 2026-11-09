@@ -182,7 +182,7 @@ class Fichiers(Base):
                          ['Clip - voix Test.es.srt', 'Clip - voix Test.fr.srt', 'Clip - voix Test.lrc'])
         self.assertEqual([(p['langue'], p['titre']) for p in pistes],
                          [('spa', 'Paroles (espagnol)'), ('fre', 'Paroles (français, traduction)')])
-        self.assertIn('le chat mange du pain', (sortie / 'Clip - voix Test.fr.srt').read_text())
+        self.assertIn('le chat mange du pain', (sortie / 'paroles' / 'Clip - voix Test.fr.srt').read_text())
         self.assertTrue(info['traduction'])
         self.assertEqual(json.loads((tv / 'paroles.json').read_text())['decalage_s'], 0.0)
         self.assertEqual([p['fichier'] for p in pistes], [f for f in fichiers if f.suffix == '.srt'])
@@ -206,7 +206,7 @@ class Fichiers(Base):
         d = json.loads((tv / 'paroles.json').read_text())
         self.assertEqual((d['decalage_s'], info['decalage_s']), (0.0, 0.0))
         self.assertEqual([s['debut'] for s in d['segments']], [0.05, 1.0, 3.0, 8.0])
-        srt = (sortie / 'Serie - voix Test.es.srt').read_text()
+        srt = (sortie / 'paroles' / 'Serie - voix Test.es.srt').read_text()
         self.assertTrue(srt.startswith('1\n00:00:00,050 --> 00:00:00,999\nhola\n\n2\n00:00:01,000 --> '), srt)
         self.assertIn('00:00:08,000 --> 00:00:08,500\nla luna baila', srt)   # coupée à la fin de la vidéo
         self.assertIn('[00:01.00]el gato come pan', (sortie / 'Serie - voix Test.lrc').read_text())

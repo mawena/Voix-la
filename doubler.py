@@ -64,6 +64,7 @@ import math
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -2479,10 +2480,62 @@ def remettre_sur_video(t, mix, dossier, base, sous_titres=(), plan=None, pistes=
             meta += [f'-metadata:s:a:{k}', f"handler_name={s['titre']}"]
     ff(*p['coupe'], '-i', video, *entrees, *cartes, '-c:v', 'copy', '-c:s', 'copy', *codecs,
        '-c:t', 'copy', '-c:a', 'copy', *meta, *options, sortie)
+    if ext in CONTENEURS_MP4 and (sous_titres or gardes):
+        desactiver_sous_titres_mp4(sortie, any((s.get('disposition') or {}).get('default') for s in gardes))
     if jetes:
         dire(f"sous-titres non copiés ({', '.join(sorted({s.get('codec_name', '?') for s in jetes}))}) : le conteneur "
              f'{ext} ne les accepte pas tels quels')
     return sortie
+
+
+def _boites_mp4(data, debut, fin):
+    """(type, début du contenu, fin) des boîtes d'un mp4 entre debut et fin, sans descendre."""
+    i = debut
+    while i + 8 <= fin:
+        taille, typ = struct.unpack('>I4s', data[i:i + 8])
+        entete = 8
+        if taille == 1:
+            taille, entete = struct.unpack('>Q', data[i + 8:i + 16])[0], 16
+        elif taille == 0:
+            taille = fin - i
+        if taille < entete:
+            return
+        yield typ, i + entete, min(i + taille, fin)
+        i += taille
+
+
+def desactiver_sous_titres_mp4(sortie, garde_un_defaut=False):
+    """Efface le drapeau « enabled » (bit 0 des flags du tkhd) des pistes de sous-titres d'un mp4, sur place, sauf si une
+    piste d'origine gardée a la disposition « default » (garde_un_defaut : on ne touche alors à rien). ffmpeg 6.1
+    (movenc, enable_tracks) pose ce drapeau sur la première piste de sous-titres même quand aucune n'est « default », et
+    mpv la sélectionne alors d'office, paroles comprises (essai du 09/11/2026) ; ffprobe lit ce drapeau comme « default »,
+    la disposition du fichier fini ne dit donc rien. Les tailles ne changent pas. Rend le nombre de pistes désactivées."""
+    if garde_un_defaut:
+        return 0
+    data = bytearray(Path(sortie).read_bytes())
+    n = 0
+    for typ, c, f in _boites_mp4(data, 0, len(data)):
+        if typ != b'moov':
+            continue
+        for t2, c2, f2 in _boites_mp4(data, c, f):
+            if t2 != b'trak':
+                continue
+            tkhd = handler = None
+            for t3, c3, f3 in _boites_mp4(data, c2, f2):
+                if t3 == b'tkhd':
+                    tkhd = c3 + 3
+                elif t3 == b'mdia':
+                    for t4, c4, _ in _boites_mp4(data, c3, f3):
+                        if t4 == b'hdlr':
+                            handler = bytes(data[c4 + 8:c4 + 12])
+            if tkhd is not None and handler in (b'sbtl', b'text', b'subt') and data[tkhd] & 1:
+                data[tkhd] &= 0xFE
+                n += 1
+    if n:
+        tmp = Path(sortie).with_name('.' + Path(sortie).name + '.tmp')
+        tmp.write_bytes(bytes(data))
+        os.replace(tmp, sortie)
+    return n
 
 
 def titres_pistes(voix, autotune=False):
@@ -2785,8 +2838,9 @@ def preparer_paroles(tv, dossier, base, decalage, duree_video=None, decalage_ffm
         dv = caler_paroles(json.loads(json.dumps(d)), decalage_ffmpeg)
         fin_v = None if duree_video is None else duree_video - float(decalage) + float(decalage_ffmpeg)
     pistes, fichiers = [], []
+    (dossier / DOSSIER_PAROLES).mkdir(exist_ok=True)
     for n, (nom_f, code_f, titre, segments) in enumerate(a_ecrire):
-        srt = dossier / nom_f
+        srt = dossier / DOSSIER_PAROLES / nom_f
         ecrire_srt(segments(d), srt, duree_video)
         fichiers.append(srt)
         if dv is not None:
@@ -2798,8 +2852,28 @@ def preparer_paroles(tv, dossier, base, decalage, duree_video=None, decalage_ffm
     lrc = dossier / f'{base}.lrc'
     ecrire_lrc(d['segments'], lrc, decalage, base, d['langue'])
     fichiers.append(lrc)
-    info.update({'fichiers': [f.name for f in fichiers], 'nom_langue': nom})
+    deplaces = ranger_anciens_srt(dossier, base)
+    info.update({'fichiers': [f.relative_to(dossier).as_posix() for f in fichiers], 'nom_langue': nom})
+    if deplaces:
+        info['srt_deplaces'] = deplaces
     return pistes, fichiers, info
+
+
+# Les .srt vont dans un sous-dossier de la sortie : à côté de la vidéo, VLC et mpv les chargent d'office comme
+# sous-titres (depuis le 09/11/2026). Le .lrc reste à côté du mp3, pour les lecteurs de musique.
+DOSSIER_PAROLES = 'paroles'
+
+
+def ranger_anciens_srt(dossier, base):
+    """Un doublage d'avant le 09/11/2026 a ses .srt à côté de la vidéo (<base>.<langue>.srt, .fr.srt,
+    .traduction.fr.srt) : ils sont refaits dans paroles/ par preparer_paroles, ceux d'à côté sont retirés. Rend leurs
+    noms."""
+    anciens = sorted(f for f in dossier.iterdir()
+                     if f.is_file() and f.name.startswith(base + '.') and f.suffix == '.srt'
+                     and f.name.count('.') >= base.count('.') + 2)
+    for f in anciens:
+        f.unlink()
+    return [f.name for f in anciens]
 
 
 # --- Une vidéo -------------------------------------------------------------------------------------------------------

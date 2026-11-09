@@ -7,6 +7,17 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+### Ajouté
+
+- Interface : page « Karaoké » (Alt+7 ; « Chanter… » dans le menu « ⋮ » de la bibliothèque). On chante sur le beat
+  seul d'un doublage, les paroles défilent en karaoké après un décompte ; chanson entière, extrait ou extrait en
+  boucle. Prise au micro du PC, beat et micro dans un même pipeline GStreamer ; latence du matériel réglable en ms ou
+  mesurée par quatre bips. Note de justesse sur 100, par ligne et au total (écart ramené dans l'octave, médiane sur
+  100 ms, calage cherché dans ±160 ms), courbe « ta voix contre l'original », lignes fausses. Réécoute, garder ou jeter
+  la prise, mix en MP3 dans `<dossier du doublage>/karaoke/`. Calculs sous `nice`, par `file-attente` au-delà d'une
+  minute de son.
+- `python3 -m voixla.karaoke analyser|mp3` : la note et le mix en ligne de commande.
+
 ## [0.10.0] - 2026-11-07
 
 ### Ajouté

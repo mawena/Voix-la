@@ -27,6 +27,8 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ### Modifié
 
+- Interface : le total « Chant pour l'affinage » de la page Voix compte aussi les fichiers importés par la séance
+  d'enregistrement (formats du téléphone), pas seulement les `chant-*.wav`.
 - Interface : l'« Écoute à l'aveugle » n'a plus d'onglet dans la barre latérale (elle servait peu). La page reste dans
   l'application : « Comparer les voix » d'un résultat l'ouvre toujours, ainsi que l'entrée « Écoute à l'aveugle (banc
   d'essai)… » du menu principal ☰ et le raccourci Alt+5.

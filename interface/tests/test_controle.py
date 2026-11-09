@@ -123,6 +123,18 @@ class EssaiControle(unittest.TestCase):
         self.assertAlmostEqual(prises[1][1], 0.3, delta=0.05)
         self.assertEqual(controle.prises_chant([]), [])
 
+    def test_prises_importees_par_la_seance(self):
+        # les fichiers du téléphone importés par la séance d'enregistrement comptent aussi, quel que soit leur format
+        d = self.dossier / "prises-importees"
+        d.mkdir(exist_ok=True)
+        shutil.copy(self.dossier / "propre.wav", d / "chant-01.wav")
+        shutil.copy(self.dossier / "court.wav", d / "20261109-153012-notes.m4a")
+        shutil.copy(self.dossier / "court.wav", d / "20261109-153500-chanson.MP3")
+        shutil.copy(self.dossier / "court.wav", d / "autre.m4a")
+        (d / "chant-notes.txt").write_text("pas un son")
+        noms = [p.name for p, _ in controle.prises_chant([d])]
+        self.assertEqual(noms, ["20261109-153012-notes.m4a", "20261109-153500-chanson.MP3", "chant-01.wav"])
+
 
 class EssaiAvis(unittest.TestCase):
     def test_avis_total(self):

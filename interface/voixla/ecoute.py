@@ -6,6 +6,8 @@ Les votes vont dans banc/ecoute/votes.json :
   {"format": 1, "votes": [{"extrait", "date", "notes": {"A": 1–5}, "classement": ["B", "A"…], "commentaire",
                            "correspondance": {"A": "<version>"…}}]}
 La correspondance d'un extrait ne s'affiche qu'après un vote sur la même série de lettres (même correspondance).
+Le même format sert à comparer plusieurs voix d'un doublage (voixla.comparaison) : un banc par dossier de sortie,
+dans le cache, avec un seul extrait dont les versions sont les voix.
 """
 
 import re
@@ -16,7 +18,7 @@ from pathlib import Path
 from . import chemins
 
 LETTRE = re.compile(r"^([A-Z])$")
-CLES_HORS_EXTRAITS = {"note", "graine", "gains_db", "titres", "date"}
+CLES_HORS_EXTRAITS = {"note", "graine", "gains_db", "titres", "date", "ids", "voix"}
 
 
 @dataclass

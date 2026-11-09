@@ -1,12 +1,13 @@
 """Page Travaux : la file (un seul doubler à la fois), les étapes en direct avec le temps écoulé et une estimation,
 le journal complet dépliable, l'annulation, et le lien vers le résultat."""
 
+import sys
 import time
 from pathlib import Path
 
 from gi.repository import Adw, Gdk, Gtk
 
-from .. import formats, quota, suivi, systeme, travaux
+from .. import formats, kaggle_file, quota, suivi, systeme, travaux
 from . import commun
 
 STATUTS = {
@@ -379,6 +380,105 @@ class BanniereReprise(Gtk.Revealer):
         self.set_reveal_child(bool(v))
 
 
+class LigneKaggle(Gtk.Box):
+    """Une ligne de la section « Sur Kaggle » : titre, badge « Voix-là », état en clair, depuis quand, et un bouton qui
+    ouvre la page du notebook sur Kaggle (la ligne de commande ne sait pas arrêter une session)."""
+
+    def __init__(self, page, n, maintenant):
+        super().__init__(spacing=10, css_classes=["ligne-kaggle"])
+        texte = commun.boite(espace=2, hexpand=True)
+        haut = Gtk.Box(spacing=8)
+        titre = Gtk.Label(label=n.titre, xalign=0, ellipsize=3, css_classes=["heading"] if n.actif else [])
+        haut.append(titre)
+        if n.voixla:
+            haut.append(commun.badge("Voix-là", "accent"))
+        texte.append(haut)
+        detail = f"{kaggle_file.depuis(n, maintenant)} · {n.ref}"
+        if n.erreur:
+            detail += f" · {n.erreur}"
+        sous = commun.legende(detail)
+        sous.set_ellipsize(3)
+        sous.set_wrap(False)
+        texte.append(sous)
+        self.append(texte)
+        self.append(commun.badge(n.libelle, n.style))
+        url = n.url
+        b = commun.bouton(icone="web-browser-symbolic", valign=Gtk.Align.CENTER, styles=("flat",),
+                          infobulle=f"Ouvrir la page du notebook sur Kaggle ({url})" if url else "Adresse inconnue",
+                          clic=(lambda: page.ouvrir_notebook(url)) if url else None)
+        b.set_sensitive(bool(url))
+        self.append(b)
+
+
+class SectionKaggle(Gtk.Box):
+    """Section « Sur Kaggle » : ce qui attend ou tourne sur le compte (kaggle_file), les terminés récents en repli,
+    une phrase d'aide, et « Actualiser » avec l'heure de la dernière lecture."""
+
+    def __init__(self, page):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_top=14, margin_bottom=4,
+                         margin_start=18, margin_end=18)
+        self.page = page
+        entete = Gtk.Box(spacing=8)
+        entete.append(Gtk.Label(label="Sur Kaggle", xalign=0, css_classes=["heading"]))
+        self.roue = Gtk.Spinner(visible=False)
+        entete.append(self.roue)
+        self.heure = commun.legende("")
+        self.heure.set_hexpand(True)
+        entete.append(self.heure)
+        self.b_actualiser = commun.bouton("Actualiser", icone="view-refresh-symbolic", styles=("flat",),
+                                          infobulle="Relire l’état des notebooks du compte (au plus toutes les "
+                                                    f"{kaggle_file.AGE_MIN_S} s)", clic=page.actualiser_kaggle)
+        entete.append(self.b_actualiser)
+        self.append(entete)
+        self.actifs = commun.boite(espace=6)
+        self.append(self.actifs)
+        self.rien = commun.legende("")
+        self.append(self.rien)
+        self.termines = commun.boite(espace=6, margin_top=6)
+        self.repli = Gtk.Expander(label="Terminés récents", child=self.termines)
+        self.append(self.repli)
+        self.aide = commun.legende("")
+        self.append(self.aide)
+
+    def peindre(self, lecture, en_cours=False, maintenant=None):
+        maintenant = time.time() if maintenant is None else maintenant
+        self.roue.set_visible(en_cours)
+        self.roue.set_spinning(en_cours)
+        commun.vider(self.actifs)
+        commun.vider(self.termines)
+        if lecture is None:
+            self.heure.set_label("lecture en cours…" if en_cours else "")
+            self.rien.set_label("Lecture des notebooks du compte Kaggle…")
+            self.rien.set_visible(True)
+            self.repli.set_visible(False)
+            self.aide.set_label(kaggle_file.aide(None))
+            return
+        self.heure.set_label(f"lu à {kaggle_file.heure_lecture(lecture)}")
+        if not lecture.ok:
+            self.rien.set_label(f"Kaggle indisponible : {lecture.indisponible}")
+            self.rien.add_css_class("error")
+            self.rien.set_visible(True)
+            self.repli.set_visible(False)
+            self.aide.set_label("")
+            return
+        self.rien.remove_css_class("error")
+        actifs, termines = lecture.actifs, lecture.termines
+        for n in actifs:
+            self.actifs.append(LigneKaggle(self.page, n, maintenant))
+        texte = ""
+        if not actifs:
+            texte = "Rien en attente ni en cours sur le compte Kaggle."
+        if lecture.partielle:
+            texte = (texte + " " if texte else "") + "Certains états n’ont pas pu être lus."
+        self.rien.set_label(texte)
+        self.rien.set_visible(bool(texte))
+        self.repli.set_visible(bool(termines))
+        self.repli.set_label(f"Terminés récents ({len(termines)})")
+        for n in termines:
+            self.termines.append(LigneKaggle(self.page, n, maintenant))
+        self.aide.set_label(kaggle_file.aide(lecture))
+
+
 class PageTravaux(commun.Page):
     def __init__(self, fenetre):
         super().__init__(fenetre, "Travaux", "travaux")
@@ -397,7 +497,16 @@ class PageTravaux(commun.Page):
         self.boite = commun.boite(espace=18, marges=18)
         self.pile.add_named(self.vide, "vide")
         self.pile.add_named(commun.defile(self.boite, 820), "liste")
-        self.contenu(self.pile)
+        self.kaggle = SectionKaggle(self)
+        self.kaggle_lecture = kaggle_file.SUIVI.derniere
+        self._kaggle_en_cours = False
+        self._tics = 0
+        corps = commun.boite(espace=0)
+        # même largeur et même alignement que les cartes des travaux (commun.defile(self.boite, 820))
+        corps.append(Adw.Clamp(maximum_size=820, tightening_threshold=int(820 * 0.8), child=self.kaggle))
+        corps.append(self.pile)
+        self.contenu(corps)
+        self.kaggle.peindre(self.kaggle_lecture)
         self._minuteur = None
         fenetre.ecouter("travaux", self._changement)
         self.rendre()
@@ -408,6 +517,40 @@ class PageTravaux(commun.Page):
         self.rendre()
         self._demarrer_minuteur()
         self.verifier_reprise()
+        self.lire_kaggle()
+
+    # --- file de Kaggle (voir kaggle_file : au plus un tour par minute, hors du fil de l'interface) ---------------------
+
+    def lire_kaggle(self, forcer=False):
+        """Relit les notebooks du compte si le cache est trop vieux (page visible ou travail Voix-là en cours)."""
+        if self._kaggle_en_cours:
+            return
+        actif = any(t.actif for t in self.fenetre.file.travaux())
+        visible = self.visible_
+        if not kaggle_file.SUIVI.a_relire(visible, actif, forcer):
+            if forcer:
+                lu = kaggle_file.SUIVI.derniere
+                self.fenetre.toast(f"Déjà lu à {kaggle_file.heure_lecture(lu)} : patientez quelques secondes")
+            return
+        self._kaggle_en_cours = True
+        self.kaggle.peindre(self.kaggle_lecture, en_cours=True)
+
+        def lire():
+            return kaggle_file.SUIVI.lire_si_besoin(visible, actif, forcer)
+
+        def fini(r):
+            self._kaggle_en_cours = False
+            self.kaggle_lecture = r[0] if r[0] is not None else self.kaggle_lecture
+            self.kaggle.peindre(self.kaggle_lecture)
+
+        def echec(e):
+            self._kaggle_en_cours = False
+            print(f"file Kaggle illisible : {e}", file=sys.stderr)
+            self.kaggle.peindre(self.kaggle_lecture)
+        commun.en_fil(lire, fini, echec)
+
+    def actualiser_kaggle(self):
+        self.lire_kaggle(forcer=True)
 
     def verifier_reprise(self):
         """Montre « Reprendre » et « Abandonner la session » si doubler a laissé une session Kaggle interrompue et
@@ -490,6 +633,7 @@ class PageTravaux(commun.Page):
     def actualiser(self):
         self.fenetre.suivre_travaux()
         self.rendre()
+        self.lire_kaggle(forcer=True)
 
     def _demarrer_minuteur(self):
         from gi.repository import GLib
@@ -503,6 +647,10 @@ class PageTravaux(commun.Page):
         for c in self.cartes.values():
             if c.t.actif:
                 c.maj()
+        self._tics += 1
+        if self._tics % 30 == 0 and self.kaggle_lecture is not None and not self._kaggle_en_cours:
+            self.kaggle.peindre(self.kaggle_lecture)   # remet à jour les « lancé il y a… »
+        self.lire_kaggle()
         return True
 
     def _changement(self, t=None, nouveau=None):
@@ -551,5 +699,7 @@ class PageTravaux(commun.Page):
             for c in self.cartes.values():
                 c.depliant.set_expanded(True)
                 break
+        elif action == "kaggle":   # la section « Sur Kaggle » avec les terminés récents dépliés
+            self.kaggle.repli.set_expanded(True)
         elif action == "abandon":   # le dialogue « Abandonner cette session » (rien n'est renommé sans confirmation)
             self.abandonner(None)

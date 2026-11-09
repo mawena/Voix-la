@@ -2,7 +2,7 @@
 
 Voix-là : votre vidéo, avec une autre voix. Et voilà.
 
-> **Version 0.11.1** : paquet Debian `.deb` joint à chaque [release](https://github.com/mawena/Voix-la/releases). Voir le
+> **Version 0.12.0** : paquet Debian `.deb` joint à chaque [release](https://github.com/mawena/Voix-la/releases). Voir le
 > [journal des modifications](CHANGELOG.md).
 
 `doubler` prend une vidéo (chanson d'une chanteuse ou d'un chanteur, duo, rap, ou vidéo parlée) et rend la même vidéo,
@@ -14,6 +14,7 @@ doubler --config kaggle.compte <votre-compte>                    # une fois : vo
 doubler --ajouter-voix marie ~/Téléchargements/vocal-marie.ogg   # une fois : enregistrer la voix cible
 doubler "Clip.mp4" --voix marie                                  # doubler une vidéo entière
 doubler "Clip.mp4" --voix marie --debut 60 --duree 40            # ou un essai de 40 s
+doubler "Clip.mp4" --comparer marie,jules,lea --debut 60 --duree 40   # trois voix sur le même extrait, une session
 ```
 
 Le calcul lourd tourne sur un GPU gratuit de Kaggle (T4), piloté depuis le PC par l'API Kaggle. Le PC ne fait que
@@ -367,6 +368,35 @@ jamais découpé, même si son nom contient un `@`.
 Les autres options (`--voix`, `--mode`, `--octave`, `--pas`…) s'appliquent à toutes les vidéos. Une vidéo en échec
 n'empêche pas les suivantes.
 
+### Comparer plusieurs voix en une session
+
+Pour choisir la meilleure voix d'une chanson, on la double dans plusieurs voix, sur un extrait, puis on écoute les
+résultats côte à côte :
+
+```sh
+doubler "Chanson.mp4" --comparer voixA,voixB,voixC --debut 60 --duree 40
+doubler "Chanson.mp4" --comparer voixA,voixB,voixC --debut 60 --duree 40 --remix --voix-db 6   # refait les trois mix
+```
+
+Le même extrait est doublé dans chaque voix en **une seule** session Kaggle. L'envoi, le démarrage, l'installation, la
+séparation, le nettoyage et les paroles ne sont payés qu'une fois ; seule la conversion est refaite pour chaque voix, et
+les morceaux de toutes les voix se partagent les deux GPU. Le noyau analyse la hauteur pour chaque voix (l'octave
+dépend du centre de chant de la voix), mais sur la même voix isolée.
+
+- De deux à six voix de `<données>/voix/`, séparées par des virgules ; la première sert d'analyse. Les doublons sont
+  ignorés. `--comparer` remplace `--voix`, et refuse une voix par chanteur (`homme:A,femme:B`) : chaque voix chante
+  toute la chanson. Pour un duo, comparez des voix seules, ou faites un doublage par chanteur ensuite.
+- Une sortie complète par voix, dans le dossier de la vidéo : `<titre> - voix A.<ext>` et `.mp3` (cinq pistes audio,
+  paroles, etc., comme d'habitude), `travail/A/`, `travail/B/`… ; la voix isolée, la musique seule et le son d'origine
+  (`travail/`) sont communs. `comparaison.json` à la racine du dossier réunit les voix, dans l'ordre demandé.
+- `--remix` marche sur chacune des sorties : avec `--comparer`, il les refait toutes ; avec `--voix B`, une seule.
+  Les autres options (`--debut`, `--duree`, `--sortie`…) sont celles du doublage.
+- La durée annoncée compte les conversions en plus. Sans historique, pour un extrait de 55 s sur deux cartes :
+  environ 10 min pour une voix, 11 min pour trois voix en une session, contre 26 min pour trois doublages séparés
+  (une session coûte surtout ses frais fixes : démarrage, installation, séparation, nettoyage, paroles).
+- Écoute : l'interface prépare un banc d'écoute à l'aveugle (page Résultats, « Comparer les voix » ; voir
+  `interface/README.md`).
+
 Refaire seulement le mixage, en quelques secondes, sans Kaggle :
 
 ```sh
@@ -530,6 +560,7 @@ Une étape en `erreur` est suivie d'un événement `erreur`. Les étapes commune
 | `videos…` | une ou plusieurs vidéos (mp4, m4v, mov, mkv, webm…) ; `vidéo@DÉBUT+DURÉE` : extrait propre à cette vidéo | |
 | `--voix NOM` | voix cible, un dossier de `<données>/voix/` | clé `voix` de la configuration, sinon la seule voix présente |
 | `--voix homme:A,femme:B`, `--voix chanteur1:A,chanteur2:B` | une voix par chanteur (voir [Une voix par chanteur](#une-voix-par-chanteur)) | |
+| `--comparer A,B[,C…]` | comparer des voix : le même extrait doublé dans chacune (deux à six), en une seule session ; une sortie par voix et `comparaison.json` ; remplace `--voix` ; avec `--remix`, refait chaque sortie (voir [Comparer plusieurs voix en une session](#comparer-plusieurs-voix-en-une-session)) | |
 | `--mode auto\|chant\|parole` | `auto` : chant s'il y a une musique sous la voix et que la voix chante, ou rappe sur un fond tonal ; sinon parole | `auto` |
 | `--octave auto\|0\|-12\|+12` | `auto` : un décalage par chanteur, choisi d'après sa hauteur et son timbre ; sinon décalage imposé partout (`12` vaut `+12`). Sans effet en parole avec le modèle 22 kHz | `auto` |
 | `--pas N` | pas de diffusion de la conversion ; 50 coûte environ 40 % de GPU de conversion en plus (au banc d'essai : aucun écart mesurable, oreille partagée) | `30` |
@@ -578,6 +609,7 @@ Tout va dans `<données>/sorties/<titre>/` (ou le dossier de `--sortie`). Un ext
 | `<titre> - voix <Nom>.lrc` | les paroles synchronisées ligne à ligne, à côté du mp3, pour les lecteurs de musique |
 | `<titre> - voix <Nom> (auto-tune).<ext>`, `.mp3`, `.lrc` | avec l'auto-tune : la même chose avec la voix auto-tunée (mêmes pistes de paroles et sous-titres d'origine) ; la version normale ne change pas |
 | `<titre> - voix A et B.<ext>`, `.mp3` | avec une voix par chanteur : le doublage où chaque chanteur a sa voix |
+| `comparaison.json` | avec `--comparer` : les voix comparées (identifiant, nom, nom des fichiers), dans l'ordre demandé ; les sorties sont `<titre> - voix A.<ext>`, `<titre> - voix B.<ext>`… et `travail/A/`, `travail/B/`… |
 | `comparaison_<pas>pas.mp3`, `comparaison_<N>pas.mp3` | avec `--comparer-pas` : le même passage dans les deux réglages |
 | `partage/` | les vidéos courtes faites par « Partager… » de l'interface (voir `interface/README.md`) |
 | `travail/` | `original.wav` (son extrait), `voix_source.wav` (voix isolée), `instrumental.wav` (musique seule, recalculée à chaque mixage), `source.json` |
@@ -1107,6 +1139,11 @@ profite aussi. Nettoyage et chœurs compris ; en mode `auto`, il suppose du chan
   conversion : lu en direct sur le montage, Whisper mettait 5 min à se charger.
 - Piste de secours : elle convertit en entier les morceaux qui touchent une zone perdue, soit +40 s sur un extrait de
   25 s et environ +1 min 40 à 30 pas sur une chanson de 3 min 30 (13 morceaux sur 38).
+- Comparer des voix (`--comparer`) : une session pour toutes les voix. La conversion est refaite pour chacune (environ
+  +0,45 de la pente de la session par voix de plus, estimation) et le noyau prépare la référence de chaque voix
+  (+20 s) ; le reste n'est payé qu'une fois. Estimation sans historique, extrait de 55 s, deux cartes : 10,1 min pour une
+  voix, 11,4 min pour trois, 12,8 min pour quatre, contre 26 et 35 min pour trois et quatre doublages séparés
+  (essai réel à faire : voir le [journal des modifications](CHANGELOG.md)).
 - Une voix par chanteur : environ 3 s de GPU de plus par session (une référence de plus par moteur, la reconnaissance
   des pistes), mesuré sur un extrait de 48 s, session de 9,1 min. Avec les deux versions de chaque passage
   (`--versions-duo toutes`, le défaut), la conversion double : +107 % (190 s de plus pour 178 s), environ 3 min de GPU

@@ -2,6 +2,7 @@
 """doubler (Voix-là) : remplace la voix d'une vidéo par une voix clonée (YingMusic-SVC, Seed-VC ; GPU gratuit de Kaggle).
 
   doubler <vidéo> [<vidéo>…] [--voix NOM | --voix homme:NOM,femme:NOM | --voix chanteur1:NOM,chanteur2:NOM]
+          [--comparer NOM,NOM[,NOM…]]
           [--mode auto|chant|parole] [--octave auto|0|-12|+12] [--pas 30]
           [--moteur yingmusic|seedvc] [--sans-nettoyage] [--sans-paroles] [--gpu auto|1|2] [--voix-db 4] [--reverb-db -13]
           [--mix-v1] [--pistes-audio toutes|doublage]
@@ -41,6 +42,12 @@ le son des vidéos et la référence de la voix choisie partent sur Kaggle.
 Une voix par chanteur (--voix homme:A,femme:B pour un duo mixte, chanteur1:A,chanteur2:B pour un duo de même genre) :
 chaque piste de chaque passage (voix principale, chœurs, secours) prend la voix du chanteur qu'on y reconnaît, l'octave
 se décide pour chaque couple chanteur -> voix ; sorties <titre> - voix A et B.<ext>, travail/A+B/.
+Comparer des voix (--comparer A,B,C, avec --debut/--duree pour un extrait) : le même extrait est doublé dans chaque voix
+en UNE seule session Kaggle. Envoi, démarrage, séparation, nettoyage et paroles ne sont payés qu'une fois ; seule la
+conversion est refaite pour chaque voix (les morceaux de toutes les voix se partagent les deux GPU). Une sortie complète
+par voix, côte à côte dans le dossier de la vidéo (<titre> - voix A.<ext>, <titre> - voix B.<ext>…, travail/A/,
+travail/B/…) et comparaison.json qui les réunit ; --remix refait chacune. Chaque voix chante toute la chanson : pas de
+--voix ni de voix par chanteur avec --comparer.
 Auto-tune (--autotune [N], de 0 à 100, 70 sans valeur ; clé « autotune » de la configuration, 0 ou absente : désactivé) :
 en plus de la version normale, inchangée, <titre> - voix <Nom> (auto-tune).<conteneur>, .mp3 et .lrc, faits sur le PC
 par x42-autotune (paquet x42-plugins, filtre lv2 de ffmpeg) sur la voix sèche, avant la reverb, dans la gamme détectée
@@ -71,7 +78,7 @@ import tempfile
 import time
 from pathlib import Path
 
-VERSION = '0.11.1'   # même version que le paquet Debian (debian/changelog) et l'interface (voixla.__version__)
+VERSION = '0.12.0'   # même version que le paquet Debian (debian/changelog) et l'interface (voixla.__version__)
 # Dossier du code : le dépôt, ou /usr/lib/voix-la une fois le paquet installé (/usr/bin/doubler lance ce fichier)
 DEPOT = Path(__file__).resolve().parent
 SCRIPT_NOYAU = DEPOT / 'kaggle' / 'doubler_kaggle.py'   # le noyau envoyé à Kaggle
@@ -694,6 +701,59 @@ def charger_voix_spec(texte):
             'membres': membres, 'spec': ','.join(f'{c}:{n}' for c, n in paires)}
 
 
+COMPARER_MAXI = 6   # voix comparées en une session : la conversion de chacune coûte du GPU (quota Kaggle)
+
+
+def charger_voix_comparees(texte):
+    """La voix de --comparer : « A,B,C », des voix entières (une voix par chanteur ne se compare pas), au moins deux
+    différentes et COMPARER_MAXI au plus. Rend la première (voix d'analyse : id, référence et hauteur) avec la liste
+    des voix dans « comparees » et leur liste dans « spec » (à garder pour --reprendre)."""
+    noms = [n.strip() for n in str(texte).split(',') if n.strip()]
+    if any(':' in n for n in noms):
+        raise SystemExit(f'--comparer {texte} : des noms de voix seulement (A,B,C) ; une voix par chanteur '
+                         '(homme:A,femme:B) ne se compare pas')
+    for n in noms:
+        if not re.fullmatch(NOM_VOIX, n):
+            raise SystemExit(f'--comparer : nom de voix invalide « {n} » (minuscules, chiffres, - ou _)')
+    noms = list(dict.fromkeys(noms))
+    if len(noms) < 2:
+        raise SystemExit('--comparer demande au moins deux voix différentes (A,B,C) ; une seule : --voix NOM')
+    if len(noms) > COMPARER_MAXI:
+        raise SystemExit(f'--comparer : {len(noms)} voix, {COMPARER_MAXI} au plus en une session (la conversion de chacune '
+                         'coûte du GPU)')
+    membres = [charger_voix(n) for n in noms]
+    return {**membres[0], 'comparees': membres, 'spec': ','.join(noms)}
+
+
+def voix_a_envoyer(voix):
+    """Les voix dont la référence part sur Kaggle : celles d'une comparaison, d'un duo, ou la voix seule."""
+    return voix.get('comparees') or voix_membres(voix)
+
+
+def sortie_de_voix(tr, voix):
+    """Une comparaison : la sortie de la vidéo pour la voix donnée (son travail/<voix>/ et son nom de fichier), dans le
+    même dossier que les autres. Le son d'origine, la voix isolée et la musique seule (travail/) sont communs."""
+    return {**tr, 'tv': tr['travail'] / voix['id'], 'base': f"{tr['video'].stem} - voix {voix['affichage']}"}
+
+
+COMPARAISON = 'comparaison.json'
+
+
+def ecrire_comparaison(tr, comparees):
+    """<dossier de la vidéo>/comparaison.json : les voix comparées (dans l'ordre demandé), pour que l'interface les
+    réunisse. Refait à chaque doublage ou remix ; la date de la première comparaison est gardée."""
+    f = tr['dossier'] / COMPARAISON
+    cree = None
+    try:
+        cree = json.loads(f.read_text()).get('cree_le')
+    except (OSError, ValueError, AttributeError):
+        pass
+    f.write_text(json.dumps({
+        'format': 1, 'cree_le': cree or datetime.datetime.now().astimezone().isoformat(timespec='seconds'),
+        'voix': [{'id': v['id'], 'nom': v['affichage'], 'fichier': sortie_de_voix(tr, v)['base']} for v in comparees]},
+        ensure_ascii=False, indent=1))
+
+
 def voix_membres(voix):
     """Les voix réelles d'une voix (combinée ou non)."""
     return voix.get('membres') or [voix]
@@ -1020,7 +1080,7 @@ def envoyer_jeu(travaux, voix, dossier, bits=16):
     jeu = dossier / 'jeu'
     shutil.rmtree(jeu, ignore_errors=True)
     jeu.mkdir(parents=True)
-    for m in voix_membres(voix):
+    for m in voix_a_envoyer(voix):
         shutil.copy2(m['reference'], jeu / f"voix-{m['id']}.wav")
     taille, taille_wav = 0, 0
     for tr in travaux:
@@ -1032,7 +1092,7 @@ def envoyer_jeu(travaux, voix, dossier, bits=16):
     with open(jeu / 'dataset-metadata.json', 'w') as f:
         json.dump({'title': JEU.split('/')[1], 'id': JEU, 'licenses': [{'name': 'unknown'}]}, f)
     existe = kaggle('datasets', 'status', JEU)[0] == 0
-    noms = [m['id'] for m in voix_membres(voix)]
+    noms = [m['id'] for m in voix_a_envoyer(voix)]
     dire(f'Kaggle : envoi du son de {len(travaux)} vidéo(s) ({taille / 1e6:.0f} Mo en FLAC {bits} bits au lieu de '
          f'{taille_wav / 1e6:.0f} Mo '
          f"en WAV) et de {'la voix ' + noms[0] if len(noms) == 1 else 'les voix ' + ' et '.join(noms)} dans le jeu privé {JEU}")
@@ -1093,7 +1153,7 @@ SURCOUT_VERSIONS_DUO = {'toutes': 1.0, 'utiles': 0.5, 'non': 0.0}
 
 
 def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=MOTEUR_DEFAUT, paroles=True, voix_cibles=1,
-                    cartes=1, versions_duo='non'):
+                    cartes=1, versions_duo='non', voix_comparees=1):
     """Durée probable d'une session (de l'envoi du noyau à sa fin), d'après la durée audio des vidéos et les rapports
     passés (rapports_passes : sous <sorties>/*/travail/*/, sorties pouvant être une liste de dossiers) : démarrage (file
     Kaggle comprise) + installation + chargement des modèles, le reste de la session (chargement de la séparation, fin
@@ -1118,6 +1178,9 @@ def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=
     pour ce qu'il aurait pris sur une carte seule (FACTEURS_UNE_CARTE), et ces deux étapes coûtent en plus ce qu'elles
     prennent hors de leur temps de GPU et de leur chargement (SURCOUTS_UNE_CARTE_S, ou ce qu'elles ont pris aux
     sessions passées à une carte)."""
+    # Voix à comparer (voix_comparees > 1) : la séparation, le nettoyage et les paroles ne se font qu'une fois ; la
+    # conversion est refaite pour chaque voix (elle seule se multiplie), avec la référence de chaque voix à préparer.
+    # Les sessions passées qui comparaient des voix ne servent pas aux parts fixes (leur durée mêle les voix).
     import statistics
     une = cartes <= 1
     fixes, autres, extras, sep, net, convs, par, par_fixes, par_fixes_carte = [], [], [], [], [], [], [], [], []
@@ -1132,7 +1195,7 @@ def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=
             sk = tl.get('session_kaggle', {})
             v = r.get('variantes', {}).get('voix_convertie.flac', {})
             nettoyee = bool((r.get('nettoyage') or {}).get('applique'))
-            seule = tl.get('videos_dans_la_session') == 1
+            seule = tl.get('videos_dans_la_session') == 1 and not tl.get('voix_comparees')
             deux = (tl.get('gpus') or 1) >= 2
             ying_v = (v.get('moteur') or 'yingmusic') == 'yingmusic'
             # paroles faites sur la carte 1 pendant la conversion (leur durée, comprise dans yingmusic_total_s)
@@ -1224,8 +1287,14 @@ def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=
     if voix_cibles > 1 and chant:   # une voix par chanteur : chaque référence préparée par moteur, pistes reconnues
         fixe += 20.0 * (voix_cibles - 1)
         t_sep += 0.05
+    comparees = max(1, int(voix_comparees or 1))
+    if comparees > 1:   # chaque référence préparée par moteur, une analyse de la hauteur par voix
+        fixe += 20.0 * (comparees - 1)
+        t_sep += 0.02 * (comparees - 1)
     total, plus_longue = float(sum(durees_s)), float(max(durees_s, default=0.0))
     conversion = pas * sum(float(x) * t_conv(float(x)) for x in durees_s)
+    if comparees > 1 and chant:   # la conversion de chaque voix (une voix de plus = une conversion de plus)
+        conversion *= comparees
     if voix_cibles > 1 and chant:   # les deux versions de chaque passage (versions_duo)
         conversion *= 1 + SURCOUT_VERSIONS_DUO.get(versions_duo, 0.0)
     # paroles : part fixe (copie locale des modèles) et transcription, traduction comprise, par seconde d'audio
@@ -3688,20 +3757,25 @@ def preparer_travaux(videos, a, voix):
     return travaux, echecs
 
 
-def ranger_retour(travaux, retour, kdir):
+def ranger_retour(travaux, retour, kdir, voix=None):
     """Sorties du noyau rangées dans travail/ et travail/<voix>/ (voix_convertie.flac, rapport.json, courbes.json…) ;
-    la voix isolée revenue en FLAC (noyau récent) est décodée au niveau d'origine en voix_source.wav."""
+    la voix isolée revenue en FLAC (noyau récent) est décodée au niveau d'origine en voix_source.wav. Voix à comparer
+    (voix['comparees']) : le noyau rend un sous-dossier par voix, rangé dans travail/<voix>/."""
+    comparees = (voix or {}).get('comparees')
     for f in retour.glob('*.log'):
         shutil.copy2(f, kdir / f.name)
     for tr in travaux:
         src = retour / tr['id']
         if not src.is_dir():
             continue
-        tr['tv'].mkdir(parents=True, exist_ok=True)
-        # un nouveau doublage remplace l'ancien : plus d'affectation corrigée, de copie de l'automatique ni de versions
-        for ancien in (AFFECTATION, 'voix_convertie_auto.flac', 'courbes_auto.json'):
-            (tr['tv'] / ancien).unlink(missing_ok=True)
-        shutil.rmtree(tr['tv'] / DOSSIER_VERSIONS, ignore_errors=True)
+        # (dossier du noyau, travail/<voix>/ qui le reçoit) : un seul couple, ou un par voix comparée
+        couples = ([(src / v['id'], sortie_de_voix(tr, v)['tv']) for v in comparees] if comparees else [(src, tr['tv'])])
+        for _, tv in couples:
+            tv.mkdir(parents=True, exist_ok=True)
+            # un nouveau doublage remplace l'ancien : plus d'affectation corrigée, de copie de l'automatique ni de versions
+            for ancien in (AFFECTATION, 'voix_convertie_auto.flac', 'courbes_auto.json'):
+                (tv / ancien).unlink(missing_ok=True)
+            shutil.rmtree(tv / DOSSIER_VERSIONS, ignore_errors=True)
         try:
             flac = src / 'voix_source.flac'
             if flac.exists():
@@ -3714,15 +3788,19 @@ def ranger_retour(travaux, retour, kdir):
                 shutil.move(str(src / 'voix_source.wav'), tr['travail'] / 'voix_source.wav')
         except Exception as e:  # noqa: BLE001 — finir() signalera la voix isolée manquante
             dire(f"ÉCHEC du décodage de la voix isolée ({tr['video'].name}) : {e}")
-        for f in src.iterdir():
-            shutil.move(str(f), tr['tv'] / f.name)
-        for f in kdir.glob('*.log'):
-            shutil.copy2(f, tr['tv'] / f.name)
+        for de, tv in couples:
+            if not de.is_dir():
+                continue
+            for f in de.iterdir():
+                shutil.move(str(f), tv / f.name)
+            for f in kdir.glob('*.log'):
+                shutil.copy2(f, tv / f.name)
     shutil.rmtree(retour, ignore_errors=True)
 
 
 def finir_travaux(travaux, a, voix, session, temps, envoi_s, estimation):
-    """Après la session Kaggle : mixage et remise sur la vidéo de chaque vidéo (rapport.json complété)."""
+    """Après la session Kaggle : mixage et remise sur la vidéo de chaque vidéo (rapport.json complété). Voix à comparer :
+    une sortie complète par voix, l'une après l'autre (la musique seule, calculée une fois, est vérifiée à chaque fois)."""
     echecs = []
     st = session.get('temps', {})
     attente = round(session['debut_epoch'] - temps['pousse_epoch'], 1) if session.get('debut_epoch') else None
@@ -3734,29 +3812,51 @@ def finir_travaux(travaux, a, voix, session, temps, envoi_s, estimation):
          f"{st.get('installation_s', 0):.0f} s, séparation {st.get('separation_totale_s', 0):.0f} s, modèles "
          f"{st.get('chargement_modeles_s', 0):.0f} s, noyau {st.get('total_s', 0) / 60:.1f} min ; estimé "
          f"{(estimation or 0) / 60:.1f} min) ; rapatriement {temps['rapatriement_s']:.0f} s")
-    for tr in travaux:
-        try:
-            rapport = json.loads((tr['tv'] / 'rapport.json').read_text())
-            if rapport.get('erreur'):
-                raise RuntimeError('Kaggle : ' + rapport['erreur'])
-            # la musique seule (original - voix isolée) est calculée et vérifiée par finir(), comme pour --remix
-            temps_local = {'extraction_s': tr.get('extraction_s'), 'envoi_jeu_s': envoi_s,
-                           'envoi_flac_mo': round(tr['taille_envoi'] / 1e6, 1) if tr.get('taille_envoi') else None,
-                           'envoi_flac_bits': tr.get('bits_envoi'),
-                           'gain_entree_db': round(20 * math.log10(tr['gain_entree']), 3) if tr.get('gain_entree') else None,
-                           'attente_demarrage_noyau_s': attente, 'version_noyau': temps.get('version_noyau'),
-                           'noyau_depuis_envoi_s': temps['noyau_depuis_envoi_s'], 'estimation_noyau_s': estimation,
-                           'rapatriement_s': temps['rapatriement_s'], 'decodage_retour_s': tr.get('decodage_retour_s'),
-                           'session_kaggle': st, 'videos_dans_la_session': len(travaux),
-                           'gpus': (session.get('gpus') or {}).get('utilisees', 1)}
-            if temps.get('reprise'):
-                temps_local['reprise'] = temps['reprise']
+    comparees = voix.get('comparees')
+    for tr0 in travaux:
+        if comparees:
+            echecs_voix = []
+            for v in comparees:
+                dire(f"=== {tr0['video'].name}, voix {v['id']} ({comparees.index(v) + 1}/{len(comparees)})")
+                echecs_voix += finir_une(sortie_de_voix(tr0, v), a, v, session, temps, envoi_s, estimation, st, attente,
+                                         len(travaux), len(comparees))
+            ecrire_comparaison(tr0, comparees)
+            if echecs_voix:
+                echecs.append(str(tr0['video']))
+            continue
+        echecs += finir_une(tr0, a, voix, session, temps, envoi_s, estimation, st, attente, len(travaux))
+    return echecs
+
+
+def finir_une(tr, a, voix, session, temps, envoi_s, estimation, st, attente, n_videos, n_voix=0):
+    """finir() d'une sortie après la session Kaggle, avec les temps de la session dans son rapport ; rend [] ou
+    [la vidéo] en échec."""
+    echecs = []
+    try:
+        rapport = json.loads((tr['tv'] / 'rapport.json').read_text())
+        if rapport.get('erreur'):
+            raise RuntimeError('Kaggle : ' + rapport['erreur'])
+        # la musique seule (original - voix isolée) est calculée et vérifiée par finir(), comme pour --remix
+        temps_local = {'extraction_s': tr.get('extraction_s'), 'envoi_jeu_s': envoi_s,
+                       'envoi_flac_mo': round(tr['taille_envoi'] / 1e6, 1) if tr.get('taille_envoi') else None,
+                       'envoi_flac_bits': tr.get('bits_envoi'),
+                       'gain_entree_db': round(20 * math.log10(tr['gain_entree']), 3) if tr.get('gain_entree') else None,
+                       'attente_demarrage_noyau_s': attente, 'version_noyau': temps.get('version_noyau'),
+                       'noyau_depuis_envoi_s': temps['noyau_depuis_envoi_s'], 'estimation_noyau_s': estimation,
+                       'rapatriement_s': temps['rapatriement_s'], 'decodage_retour_s': tr.get('decodage_retour_s'),
+                       'session_kaggle': st, 'videos_dans_la_session': n_videos,
+                       'gpus': (session.get('gpus') or {}).get('utilisees', 1)}
+        if n_voix > 1:
+            temps_local['voix_comparees'] = n_voix   # la session a converti ces voix : l'estimation ne s'en sert pas
+        if temps.get('reprise'):
+            temps_local['reprise'] = temps['reprise']
+        if not n_voix:
             dire(f"=== {tr['video'].name}")
-            finir(tr, a, voix, temps_local)
-        except Exception as e:  # noqa: BLE001
-            dire(f"ÉCHEC {tr['video']} : {e}")
-            EV('erreur', tr['nom'], message=str(e))
-            echecs.append(str(tr['video']))
+        finir(tr, a, voix, temps_local)
+    except Exception as e:  # noqa: BLE001
+        dire(f"ÉCHEC {tr['video']} : {e}")
+        EV('erreur', tr['nom'], message=str(e))
+        echecs.append(str(tr['video']))
     return echecs
 
 
@@ -3811,6 +3911,10 @@ def reglages_noyau(a, voix, ancres, travaux):
         reglages['voix_cibles'] = {'mode': voix['mode'], 'voix': [
             {'cle': m['cle'], 'nom': m['id'], 'fichier': f"voix-{m['id']}.wav", 'f0_parole_hz': m['f0'],
              'facteur_chant': FACTEUR_CHANT, 'affichage': m['affichage']} for m in voix['membres']]}
+    if voix.get('comparees'):   # le même extrait dans chaque voix (la première est « voix » : analyse)
+        reglages['comparer'] = {'voix': [
+            {'nom': m['id'], 'fichier': f"voix-{m['id']}.wav", 'f0_parole_hz': m['f0'], 'facteur_chant': FACTEUR_CHANT,
+             'affichage': m['affichage']} for m in voix['comparees']]}
     if a.modele_parole:
         reglages['modele_parole'] = a.modele_parole
     return reglages
@@ -3876,7 +3980,8 @@ def traiter_lot(videos, a, voix):
         # historique : les rapports de ce dossier de sortie, et ceux du dossier par défaut (un dossier neuf n'en a pas)
         estimation = estimer_noyau_s([tr['duree_audio_s'] for tr in travaux], a.pas, [a.sortie, SORTIES],
                                      not a.sans_nettoyage, a.mode, a.moteur, a.paroles, len(voix_membres(voix)), cartes,
-                                     getattr(a, 'versions_duo', 'non') if voix.get('membres') else 'non')
+                                     getattr(a, 'versions_duo', 'non') if voix.get('membres') else 'non',
+                                     len(voix.get('comparees') or ()) or 1)
         # limite du suivi : au moins le double de l'estimation (le nettoyage allonge beaucoup une longue chanson)
         attente_maxi = max((30 + 20 * len(travaux)) * 60, 2 * estimation + 30 * 60)
         dire(f"chaîne : chant → {'voix nettoyée' if not a.sans_nettoyage else 'voix complète (sans nettoyage)'}, "
@@ -3887,6 +3992,10 @@ def traiter_lot(videos, a, voix):
         if not outils:
             dire('outils non préparés sur Kaggle : la session télécharge paquets et modèles, environ 4 min de plus '
                  '(doubler --preparer-outils, une fois)')
+        if voix.get('comparees'):
+            dire(f"comparaison de {len(voix['comparees'])} voix en une session : "
+                 + ', '.join(m['id'] for m in voix['comparees'])
+                 + ' ; séparation, nettoyage et paroles une fois, conversion pour chaque voix')
         if voix.get('membres'):
             dire(f"une voix par chanteur ({'duo mixte' if voix['mode'] == 'genre' else 'chanteurs dans l’ordre d’apparition'}) : "
                  f"{decrire_voix(voix)} ; en parole, {voix['membres'][0]['id']} seule")
@@ -3896,6 +4005,7 @@ def traiter_lot(videos, a, voix):
             ecrire_session({'noyau': NOYAU, 'jeu': JEU, 'version_noyau': version, 'pousse_epoch': pousse,
                             'poussee_le': datetime.datetime.fromtimestamp(pousse).astimezone().isoformat(timespec='seconds'),
                             'voix': voix.get('spec') or voix['id'], 'sortie': str(Path(a.sortie).expanduser().resolve()),
+                            **({'comparer': [m['id'] for m in voix['comparees']]} if voix.get('comparees') else {}),
                             'envoi_s': envoi_s,
                             'estimation_s': estimation, 'attente_maxi_s': attente_maxi, 'pas': a.pas,
                             'moteur': a.moteur, 'nettoyage': not a.sans_nettoyage, 'paroles': bool(a.paroles),
@@ -3913,7 +4023,7 @@ def traiter_lot(videos, a, voix):
             clore_session('échec')
             return abandon(f'de la session Kaggle : {e}')
         session = json.loads((retour / 'session.json').read_text())
-        ranger_retour(travaux, retour, kdir)
+        ranger_retour(travaux, retour, kdir, voix)
         clore_session('rapatriée')
         if etapes.get('rapatriement'):
             etapes['rapatriement'].finir()
@@ -3935,7 +4045,8 @@ def reprendre(a):
             tr[k] = Path(tr[k])
         travaux.append(tr)
     titres = [tr['nom'] for tr in travaux]
-    voix = charger_voix_spec(s['voix'])   # un nom, ou la spécification homme:a,femme:b
+    # un nom, la spécification homme:a,femme:b, ou les voix comparées
+    voix = charger_voix_comparees(','.join(s['comparer'])) if s.get('comparer') else charger_voix_spec(s['voix'])
     kdir = Path(s['sortie']) / '.kaggle'
     kdir.mkdir(parents=True, exist_ok=True)
     noyau = s['noyau']
@@ -3958,7 +4069,7 @@ def reprendre(a):
         # la sortie est-elle celle de cette session ? (le noyau a pu être renvoyé depuis : sa sortie serait autre)
         autres = []
         for tr in travaux:
-            r = retour / tr['id'] / 'rapport.json'
+            r = retour / tr['id'] / (voix['id'] if voix.get('comparees') else '') / 'rapport.json'
             entree = (json.loads(r.read_text()).get('travail') or {}).get('entree') if r.exists() else None
             if entree and entree != tr['entree']:
                 autres.append(f"{tr['id']} : {entree} au lieu de {tr['entree']}")
@@ -3968,7 +4079,7 @@ def reprendre(a):
             raise SystemExit('la sortie du noyau sur Kaggle n\'est pas celle de cette session (noyau renvoyé depuis ?) : '
                              + ' ; '.join(autres) + f'. Effacer {SESSION} pour abandonner cette session.')
         session = json.loads((retour / 'session.json').read_text())
-        ranger_retour(travaux, retour, kdir)
+        ranger_retour(travaux, retour, kdir, voix)
         clore_session('reprise')
         etapes['rapatriement'].finir()
     temps = {'pousse_epoch': s['pousse_epoch'], 'version_noyau': s.get('version_noyau'),
@@ -4038,6 +4149,13 @@ def main():
                         'chanteur1:NOM,chanteur2:NOM (duo de même genre, dans l\'ordre d\'apparition) : sorties « voix A et '
                         'B », dossier travail/A+B ; une seule voix trouvée dans la chanson : tout dans la voix de sa classe, '
                         'sinon la première')
+    p.add_argument('--comparer', default=None, metavar='A,B[,C…]',
+                   help=f'comparer des voix : le même extrait (--debut/--duree) doublé dans chaque voix, en une seule '
+                        f'session Kaggle (envoi, démarrage, séparation, nettoyage et paroles payés une fois ; seule la '
+                        f'conversion est refaite pour chaque voix, sur les deux GPU). Deux à {COMPARER_MAXI} voix de '
+                        f'<données>/voix. Une sortie complète par voix dans le dossier de la vidéo (<titre> - voix A.<ext>, '
+                        f'travail/A/…) et comparaison.json ; --remix refait chacune. Remplace --voix ; pas de voix par '
+                        f'chanteur')
     p.add_argument('--mode', choices=['auto', 'chant', 'parole'], default='auto')
     p.add_argument('--octave', choices=['auto', '0', '-12', '+12', '12'], default='auto',
                    help="auto : en chant, un seul décalage par chanteur, choisi d'après la hauteur (avec les ancres de "
@@ -4189,9 +4307,16 @@ def executer(p, a):
         p.error('--passage et --affectation corrigent un doublage déjà fait : ils vont avec --remix')
     a.paroles = not a.sans_paroles and paroles_config(conf)
     a.autotune_reglage = reglage_autotune(a, conf)
-    if a.voix is None:
-        a.voix = exiger_voix_defaut()
-    voix = charger_voix_spec(a.voix)   # une voix, ou une par chanteur (homme:a,femme:b, chanteur1:a,chanteur2:b)
+    if a.comparer is not None:
+        if a.voix is not None:
+            p.error('--comparer remplace --voix : les voix à comparer sont toutes dans --comparer A,B,C')
+        if a.passage or a.affectation is not None:
+            p.error('--passage et --affectation corrigent un duo (une voix par chanteur) : ils ne vont pas avec --comparer')
+        voix = charger_voix_comparees(a.comparer)   # voix entières, chacune chante toute la chanson
+    else:
+        if a.voix is None:
+            a.voix = exiger_voix_defaut()
+        voix = charger_voix_spec(a.voix)   # une voix, ou une par chanteur (homme:a,femme:b, chanteur1:a,chanteur2:b)
     if a.remix:
         if moteur_donne or a.sans_nettoyage:
             dire('--moteur et --sans-nettoyage sont sans effet avec --remix (le mixage repart de la voix déjà convertie)')
@@ -4203,6 +4328,21 @@ def executer(p, a):
                 tr = emplacements(chemin, debut_v, duree_v, a, voix)
                 titre = tr['nom']
                 tr['debut_epoch'] = time.time()
+                if voix.get('comparees'):   # chaque sortie de la comparaison, l'une après l'autre
+                    manques = []
+                    for vj in voix['comparees']:
+                        dire(f"=== {tr['video'].name} (remix, voix {vj['id']})")
+                        try:
+                            tr_j = sortie_de_voix(tr, vj)
+                            tr_j['debut_epoch'] = time.time()
+                            finir(tr_j, a, vj)
+                        except Exception as e:  # noqa: BLE001 — une voix sans travail n'empêche pas les autres
+                            dire(f"ÉCHEC {v}, voix {vj['id']} : {e}")
+                            manques.append(vj['id'])
+                    ecrire_comparaison(tr, voix['comparees'])
+                    if manques:
+                        raise RuntimeError('voix sans travail à remixer : ' + ', '.join(manques))
+                    continue
                 dire(f"=== {tr['video'].name} (remix, voix {decrire_voix(voix)})")
                 finir(tr, a, voix)
             except Exception as e:  # noqa: BLE001

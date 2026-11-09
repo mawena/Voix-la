@@ -1193,6 +1193,21 @@ def lire_cibles(R):
     return {'mode': mode, 'voix': voix}
 
 
+def lire_comparees(R):
+    """Les voix à comparer de R['comparer'] ({'voix': [...]}), ou None : un doublage à une voix (cas d'avant). Le même
+    extrait est converti dans chacune, en une seule session (séparation, nettoyage et paroles faits une fois). Deux voix de
+    même nom n'en font qu'une ; moins de deux voix : None. La première est la voix d'analyse (R['voix'])."""
+    c = R.get('comparer') or None
+    if not c:
+        return None
+    voix, noms = [], set()
+    for v in c.get('voix') or []:
+        if v.get('nom') and v.get('fichier') and v['nom'] not in noms:
+            voix.append(dict(v))
+            noms.add(v['nom'])
+    return voix if len(voix) >= 2 else None
+
+
 def mediane_axe(morceaux, cle, R):
     v = [(s[cle], s['voise_s']) for s in morceaux if s.get(cle) is not None and s.get('voise_s', 0) >= R['voise_min_s']]
     return mediane_ponderee([a for a, _ in v], [b for _, b in v]) if v else None
@@ -3898,6 +3913,11 @@ def main():
     if cibles:
         for v in cibles['voix']:
             v['chemin'] = ref_chemin if v['fichier'] == R['voix']['fichier'] else trouver(v['fichier'])
+    # voix à comparer : le même extrait dans chacune, en une session (jamais avec une voix par chanteur)
+    comparees = None if cibles else lire_comparees(R)
+    if comparees:
+        for v in comparees:
+            v['chemin'] = ref_chemin if v['fichier'] == R['voix']['fichier'] else trouver(v['fichier'])
     t = time.time()
     sep_reglage = reglage_separation(R)
     session['separation'] = {k: sep_reglage[k] for k in ('precision', 'recouvrement')}
@@ -3993,6 +4013,30 @@ def main():
             log(f"voix cible {v.get('cle')} : {v['nom']}, référence {rv['duree']:.2f} s, parole {f0_v:.0f} Hz, centre de "
                 f"chant {v['centre_hz']:.0f} Hz")
         session['temps']['references_cibles_s'] = round(time.time() - t, 1)
+    # Voix à comparer : la référence de chaque voix préparée une fois (refs_comp[modèle][indice]) ; chaque voix a son
+    # contexte (centre de chant, hauteur de parole, longueur de la référence), car la décision d'octave et la taille des
+    # morceaux en dépendent. Une seule voix : un contexte, celui d'avant.
+    refs_comp = {}
+    contextes = [{'j': None, 'nom': R['voix']['nom'], 'centre': centre, 'f0_parole': f0_parole,
+                  'mel_len': refs['chant44k']['mel2'].size(2), 'session_voix': session['voix'], 'emb': ref_emb}]
+    if comparees:
+        t = time.time()
+        refs_comp['chant44k'] = [refs['chant44k'] if v['chemin'] == ref_chemin else preparer_ref(chant, v['chemin'])
+                                 for v in comparees]
+        session['comparer'] = {'voix': []}
+        contextes = []
+        for j, (v, rv) in enumerate(zip(comparees, refs_comp['chant44k'])):
+            f0_v = float(v.get('f0_parole_hz') or rv['f0_mediane'])
+            centre_v = float(v.get('facteur_chant') or R['voix']['facteur_chant']) * f0_v
+            fiche_v = {k: v.get(k) for k in ('nom', 'fichier', 'f0_parole_hz', 'facteur_chant', 'affichage')} | {
+                'f0_rmvpe_reference_hz': round(rv['f0_mediane'], 1), 'duree_reference_s': round(rv['duree'], 2),
+                'centre_chant_hz': round(centre_v, 1)}
+            session['comparer']['voix'].append(fiche_v)
+            contextes.append({'j': j, 'nom': v['nom'], 'centre': centre_v, 'f0_parole': f0_v,
+                              'mel_len': rv['mel2'].size(2), 'session_voix': fiche_v, 'emb': rv['emb']})
+            log(f"voix à comparer {j + 1}/{len(comparees)} : {v['nom']}, référence {rv['duree']:.2f} s, parole {f0_v:.0f} Hz, "
+                f"centre de chant {centre_v:.0f} Hz")
+        session['temps']['references_cibles_s'] = round(time.time() - t, 1)
     ecrire_session()
 
     @torch.no_grad()
@@ -4050,21 +4094,23 @@ def main():
     versions_mode = R.get('versions_duo') if R.get('versions_duo') in VERSIONS_DUO else 'non'
     pad, fondu = int(R['pad_s'] * SR), int(R['fondu_s'] * SR)
 
-    def analyser(tr):
-        """Mode, découpage aux silences et décalage de chaque morceau, sur la voix isolée complète : la détection du mode
-        et la règle d'octave ont été calibrées sur elle, le nettoyage ne change donc pas leurs entrées."""
-        debut_tr = time.time()
-        rapport = {'id': tr['id'], 'reglages': {k: v for k, v in R.items() if k != 'travaux'}, 'travail': tr,
-                   'voix_cible': session['voix'], 'temps': {}}
+    memo_analyse = {}   # par vidéo : ce que l'analyse ne tire pas de la voix cible (voix à comparer : faite une fois)
+
+    def analyse_commune(tr):
+        """Voix isolée, hauteur RMVPE, enveloppe, mesures de la musique et mode : rien n'y dépend de la voix cible."""
+        id_video = tr.get('id_video', tr['id'])
+        if id_video in memo_analyse:
+            return memo_analyse[id_video]
+        c = {'temps': {}}
         dur_sep = tr['voix'] + '.duree'
         if os.path.exists(dur_sep):
             with open(dur_sep) as f:
-                rapport['temps']['separation_s'] = float(f.read())
+                c['temps']['separation_s'] = float(f.read())
             os.remove(dur_sep)
-        rapport['transport'] = {'entree': os.path.basename(tr['chemin']), 'gain_entree': float(tr.get('gain_entree') or 1.0)}
+        c['transport'] = {'entree': os.path.basename(tr['chemin']), 'gain_entree': float(tr.get('gain_entree') or 1.0)}
         if tr.get('voix_flac') and os.path.exists(tr['voix_flac'] + '.json'):
             with open(tr['voix_flac'] + '.json') as f:
-                rapport['transport']['voix_source_flac'] = json.load(f)
+                c['transport']['voix_source_flac'] = json.load(f)
         voix2 = sf.read(tr['voix'], dtype='float32', always_2d=True)[0]
         reste2 = sf.read(tr['reste'], dtype='float32', always_2d=True)[0]
         x = voix2.mean(1).astype(np.float32)
@@ -4072,7 +4118,6 @@ def main():
         del voix2, reste2
         n = len(x)
         # Analyse : hauteur RMVPE sur toute la voix, découpage aux silences, empreinte par morceau
-        t = time.time()
         # RMVPE rend une trame de plus par tranche (centrage) : chaque tranche est recoupée à 10 ms près pour rester calée
         f0_tout = np.concatenate([f0_fn(en16(x[d:d + SR * 20])[0], thred=0.03)[:len(x[d:d + SR * 20]) // PAS]
                                   for d in range(0, n, SR * 20)])
@@ -4084,12 +4129,32 @@ def main():
         mode, raisons = decider_mode(m, R)
         if tr['mode'] in ('chant', 'parole'):
             mode = tr['mode']
+        os.remove(tr['reste'])
+        c.update(x=x, n=n, f0_tout=f0_tout, env=env, lisse=lisse, seuil=seuil, m=m, mode=mode, raisons=raisons)
+        memo_analyse[id_video] = c
+        return c
+
+    def analyser(tr, ctx=None):
+        """Mode, découpage aux silences et décalage de chaque morceau, sur la voix isolée complète : la détection du mode
+        et la règle d'octave ont été calibrées sur elle, le nettoyage ne change donc pas leurs entrées. ctx : la voix
+        cible (centre de chant, hauteur de parole, référence) ; voix à comparer : une analyse par voix, sur la même voix
+        isolée."""
+        ctx = ctx or contextes[0]
+        debut_tr = time.time()
+        rapport = {'id': tr['id'], 'reglages': {k: v for k, v in R.items() if k != 'travaux'}, 'travail': tr,
+                   'voix_cible': ctx['session_voix'], 'temps': {}}
+        t = time.time()
+        c = analyse_commune(tr)
+        rapport['temps'].update(c['temps'])
+        rapport['transport'] = c['transport']
+        x, n, f0_tout, env, lisse, seuil, m, mode, raisons = (c[k] for k in (
+            'x', 'n', 'f0_tout', 'env', 'lisse', 'seuil', 'm', 'mode', 'raisons'))
         rapport.update({'mesures_musique': m, 'mode': mode, 'mode_raisons': raisons, 'mode_force': tr['mode'] in ('chant', 'parole')})
         log(f"[{tr['id']}] MODE {mode} ({'imposé' if rapport['mode_force'] else 'détecté'}) : {json.dumps(m, ensure_ascii=False)}")
         plusieurs = bool(cibles) and mode == 'chant'   # plusieurs voix cibles (en parole : la première seule)
         # un morceau doit tenir, avec la référence, dans la fenêtre de 30 s du modèle : la plus longue des références
         place = SR // 512 * 30 - (max(r['mel2'].size(2) for r in refs_cibles['chant44k']) if plusieurs
-                                  else refs['chant44k']['mel2'].size(2))
+                                  else ctx['mel_len'])
         coeur_max = place * 512 - 2 * pad - int(0.1 * SR)
         coupes = decouper(lisse, n, coeur_max, min(int(2 * SR), coeur_max // 2), seuil)
         segs = []
@@ -4110,9 +4175,9 @@ def main():
             rapport['voix_cibles'] = session['voix_cibles']
             log(f"[{tr['id']}] VOIX CIBLES ({cibles['mode']}) : {info['message']}")
         elif mode == 'chant':
-            info = decider_chant(segs, R, centre, [round(c / SR, 3) for c in coupes[1:-1] if lisse[c // PAS] >= seuil])
+            info = decider_chant(segs, R, ctx['centre'], [round(c / SR, 3) for c in coupes[1:-1] if lisse[c // PAS] >= seuil])
         else:
-            info = decider_parole(segs, f0_parole, R)
+            info = decider_parole(segs, ctx['f0_parole'], R)
             if R['modele_parole'] == 'parole22k':
                 info['note'] = ('modèle parole 22 kHz : la hauteur suit la voix cible d\'elle-même ; les décalages par voix '
                                 'ne servent qu\'à la variante f0')
@@ -4132,8 +4197,7 @@ def main():
             log(f"[{tr['id']}] FRISE " + l)
         fondus = {c: fondu if lisse[c // PAS] < seuil else int(0.2 * SR) for c in coupes[1:-1]}
         gain, gain_trames = porte(lisse, seuil, n)
-        os.remove(tr['reste'])
-        return {'tr': tr, 'rapport': rapport, 'x': x, 'n': n, 'mode': mode, 'segs': segs, 'coupes': coupes, 'lisse': lisse,
+        return {'tr': tr, 'voix_j': ctx['j'], 'emb_ref': ctx['emb'], 'rapport': rapport, 'x': x, 'n': n, 'mode': mode, 'segs': segs, 'coupes': coupes, 'lisse': lisse,
                 'seuil': seuil, 'fondus': fondus, 'gain': gain, 'gain_trames': gain_trames, 'coeur_max': coeur_max,
                 'f0_tout': f0_tout, 'duree_s': time.time() - debut_tr, 'plusieurs': plusieurs, 'chanteurs': chanteurs}
 
@@ -4304,8 +4368,11 @@ def main():
 
     def plan(e, p, liste):
         """Morceaux d'une piste : ceux de la voix complète (mêmes coupes, même décalage), sauf les muets et ceux où cette
-        piste se tait (secours : ceux qui touchent ses zones). [(i, début, fin, décalage, fondu au début, à la fin)]."""
-        return morceaux_piste(liste, p, e['fondus'])
+        piste se tait (secours : ceux qui touchent ses zones). [(i, début, fin, décalage, fondu au début, à la fin)] ;
+        voix à comparer : plus l'indice de la voix, en 7e élément."""
+        ms = morceaux_piste(liste, p, e['fondus'])
+        j = e.get('voix_j')
+        return ms if j is None else [m[:6] + (j,) for m in ms]   # voix à comparer : sa référence (7e élément, comme en duo)
 
     def preparer_versions(e):
         """Une voix par chanteur, versions_duo toutes ou utiles : décalage de chaque voix cible, passages dont on veut
@@ -4374,6 +4441,8 @@ def main():
                    'resultat': '/tmp/ying/resultat.json'}
         if any(e.get('plusieurs') for e in etats_v):
             travail['references'] = [v['chemin'] for v in cibles['voix']]   # indice = 7e élément de chaque morceau
+        elif comparees:
+            travail['references'] = [v['chemin'] for v in comparees]        # idem : une référence par voix à comparer
         try:
             # deux cartes : morceaux partagés, piste assemblée ici au bit près (invite : la référence, 25 s au plus)
             res = (ying_sur_cartes(travail, cartes, min(25.0, float(refs['chant44k']['duree'])),
@@ -4502,6 +4571,18 @@ def main():
             f"{resume['taille_mo']} Mo")
         return resume
 
+    def refs_de(e, nom):
+        """Références du modèle nom pour les morceaux de e : une par voix cible (duo), une par voix à comparer, sinon la
+        seule (choisie par le 7e élément du morceau)."""
+        if e.get('plusieurs') and nom in refs_cibles:
+            return refs_cibles[nom]
+        if comparees:
+            if nom not in refs_comp:
+                refs_comp[nom] = [refs[nom] if v['chemin'] == ref_chemin else preparer_ref(modeles[nom], v['chemin'])
+                                  for v in comparees]
+            return refs_comp[nom]
+        return [refs[nom]]
+
     def finir_video(e, ying):
         """Conversion de chaque variante (Seed-VC ici, YingMusic déjà fait à part), porte, mise au niveau de chaque piste
         nettoyée, somme, mesures, rapport."""
@@ -4542,7 +4623,7 @@ def main():
                 elif morceaux:
                     md = modeles[nom]
                     # une référence par voix cible (préparée une fois), choisie par le 7e élément de chaque morceau
-                    refs_v = refs_cibles[nom] if e.get('plusieurs') and nom in refs_cibles else [refs[nom]]
+                    refs_v = refs_de(e, nom)
                     couches = np.zeros((2 * vers['nv'], len(p['x'])), np.float32) if vers else None
                     t = time.time()
                     y = assembler(p['x'], morceaux, pad,
@@ -4605,7 +4686,7 @@ def main():
                     o16 = en16(total[s['debut']:s['fin']])
                     w = s['fin'] - s['debut']
                     j, dec_s = dominante.get(s['i'], (s.get('cible', 0), s['decalage']))
-                    emb_ref = embs_v[j] if embs_v is not None else ref_emb
+                    emb_ref = embs_v[j] if embs_v is not None else e.get('emb_ref', ref_emb)
                     sims.append((float(empreinte(o16) @ emb_ref), w))
                     if embs_v is not None:
                         par_voix.setdefault(cibles['voix'][j]['nom'], []).append(sims[-1])
@@ -4798,15 +4879,44 @@ def main():
         log(f"[{tr['id']}] ÉCHEC : {ex!r}")
         ecrire_rapport(tr, {'id': tr['id'], 'erreur': repr(ex)})
 
-    # 3. Analyse de chaque vidéo (mode, morceaux, décalages), sur la voix isolée complète
+    def tr_voix(tr, ctx):
+        """Travail d'une vidéo pour une voix à comparer : sa sortie dans <vidéo>/<voix>/, son identifiant à lui (la voix
+        isolée, restée dans <vidéo>/, et le nettoyage sont communs). Une seule voix : le travail tel quel."""
+        if ctx['j'] is None:
+            return tr
+        d = os.path.join(tr['dossier'], ctx['nom'])
+        os.makedirs(d, exist_ok=True)
+        return {**tr, 'id': f"{tr['id']}~{ctx['j']}", 'id_video': tr['id'], 'dossier': d}
+
+    # 3. Analyse de chaque vidéo (mode, morceaux, décalages), sur la voix isolée complète ; voix à comparer : une analyse
+    # par voix (octave et taille des morceaux dépendent de la voix), le reste de l'analyse n'est fait qu'une fois
     etats = []
     for tr in travaux:
-        try:
-            etats.append(analyser(tr))
-        except Exception as ex:  # noqa: BLE001 — une vidéo ratée n'empêche pas les suivantes
-            echec(tr, ex)
+        for ctx in contextes:
+            try:
+                etats.append(analyser(tr_voix(tr, ctx), ctx))
+            except Exception as ex:  # noqa: BLE001 — une vidéo ratée n'empêche pas les suivantes
+                echec(tr_voix(tr, ctx), ex)
+    # Nettoyage et paroles : une fois par vidéo, faits sur le premier état de chaque vidéo puis recopiés aux autres voix
+    principal = {}
+    for e in etats:
+        principal.setdefault(e['tr'].get('id_video', e['tr']['id']), e)
+    principaux = list(principal.values())
+
+    def partager(cle_rapport, avec_temps):
+        """Recopie le résultat d'une étape commune (rapport[cle_rapport] et ses temps) du premier état d'une vidéo aux autres."""
+        for e in etats:
+            p = principal[e['tr'].get('id_video', e['tr']['id'])]
+            if p is e:
+                continue
+            if p['rapport'].get(cle_rapport) is not None:
+                e['rapport'][cle_rapport] = json.loads(json.dumps(p['rapport'][cle_rapport], default=float))
+            for k in avec_temps:
+                if k in p['rapport']['temps']:
+                    e['rapport']['temps'][k] = p['rapport']['temps'][k]
     # 4. Nettoyage des vidéos en chant
     en_chant = [e for e in etats if e['mode'] == 'chant']
+    principaux_chant = [e for e in principaux if e['mode'] == 'chant']
     for e in etats:
         if e['mode'] != 'chant':
             e['rapport']['nettoyage'] = {'demande': nettoyage_demande, 'applique': False,
@@ -4815,9 +4925,14 @@ def main():
             e['rapport']['nettoyage'] = {'demande': False, 'applique': False,
                                          'raison': 'nettoyage désactivé (--sans-nettoyage) : voix isolée complète convertie'}
     if nettoyage_demande and en_chant:
-        log(f"NETTOYAGE de {len(en_chant)} vidéo(s) en chant : voix principale et chœurs, reverb d'origine retirée")
+        log(f"NETTOYAGE de {len(principaux_chant)} vidéo(s) en chant : voix principale et chœurs, reverb d'origine retirée")
         try:
-            nettoyer(en_chant)
+            nettoyer(principaux_chant)
+            for e in en_chant:   # voix à comparer : la même voix nettoyée pour toutes
+                p = principal[e['tr'].get('id_video', e['tr']['id'])]
+                if p is not e:
+                    e['net'] = p.get('net')
+            partager('nettoyage', ('nettoyage_s',))
         except Exception as ex:  # noqa: BLE001 — sans nettoyage : la chaîne d'avant
             import traceback
             traceback.print_exc()
@@ -4859,7 +4974,7 @@ def main():
     paroles_avant = None
     if R.get('paroles', True) and cartes > 1:
         try:
-            paroles_avant = preparer_paroles(etats)
+            paroles_avant = preparer_paroles(principaux)
         except Exception as ex:  # noqa: BLE001 — sans paroles : le doublage continue
             import traceback
             traceback.print_exc()
@@ -4874,9 +4989,15 @@ def main():
     if R.get('paroles', True):
         try:
             if paroles_avant is None:
-                transcrire(etats)
+                transcrire(principaux)
             elif paroles_avant[1] is not None:
-                finir_paroles(etats, paroles_avant[1], ying.pop('avant', None))
+                finir_paroles(principaux, paroles_avant[1], ying.pop('avant', None))
+            partager('paroles', ('paroles_s',))
+            for e in etats:   # voix à comparer : les mêmes paroles dans le dossier de chaque voix
+                p = principal[e['tr'].get('id_video', e['tr']['id'])]
+                src = os.path.join(p['tr']['dossier'], 'paroles.json')
+                if p is not e and os.path.exists(src):
+                    shutil.copy2(src, os.path.join(e['tr']['dossier'], 'paroles.json'))
         except Exception as ex:  # noqa: BLE001 — sans paroles : le doublage continue
             import traceback
             traceback.print_exc()

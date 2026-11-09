@@ -36,6 +36,9 @@ travail/<a+b>/affectation.json écrit ou effacé, rapport (affectation.passages 
 secondes_par_voix, morceaux_en_duo, manuelle ; morceaux corrige, voix_pistes, voix_pistes_auto) et courbes.json
 (voix_par_trame) refaits, l'automatique gardé dans versions/auto.json ; sans les deux versions : « ÉCHEC », comme doubler.
 FAUX_DOUBLER_SANS_AFFECTATION=1 : doubler trop ancien, sans --affectation ni --passage.
+Comparer des voix (--comparer A,B,C) : une seule session pour toutes les voix ; une sortie complète par voix dans le
+dossier de la vidéo (« <titre> - voix A.<ext> », travail/A/, rapport inventé de chaque voix), comparaison.json, un événement
+« sortie » par voix ; --remix --comparer les refait toutes. FAUX_DOUBLER_SANS_COMPARER=1 : doubler d'avant --comparer.
 Auto-tune (--autotune [N], --sans-autotune, --autotune-gamme, clé « autotune ») : fichiers « (auto-tune) » vides et
 section « autotune » du rapport, comme doubler. Avec --remix : --autotune N crée ou refait la version (gamme
 --autotune-gamme, sinon auto) ; sans option, une version déjà là est refaite à la même intensité et la même gamme ;
@@ -60,6 +63,7 @@ ANCIEN = os.environ.get("FAUX_DOUBLER_ANCIEN") == "1"
 SANS_GPU = ANCIEN or os.environ.get("FAUX_DOUBLER_SANS_GPU") == "1"
 SANS_AFFECTATION = ANCIEN or SANS_GPU or os.environ.get("FAUX_DOUBLER_SANS_AFFECTATION") == "1"
 SANS_VERSIONS = os.environ.get("FAUX_DOUBLER_SANS_VERSIONS") == "1"
+SANS_COMPARER = SANS_AFFECTATION or os.environ.get("FAUX_DOUBLER_SANS_COMPARER") == "1"
 ECHEC = (os.environ.get("FAUX_DOUBLER_ECHEC") or "").strip().lower()
 DEPOT = Path(__file__).resolve().parents[2]
 DONNEES_DEFAUT = Path.home() / "Music" / "Voix-là"
@@ -90,6 +94,7 @@ AIDE = """doubler (Voix-là) : remplace la voix d'une vidéo par une voix cloné
           [--voix-db 4] [--reverb-db -13] [--mix-v1] [--debut S --duree S] [--remix] [--sortie DIR]
           [--autotune [N]] [--autotune-gamme GAMME] [--sans-autotune]
           [--comparer-pas 50] [--donnees DIR] [--evenements FICHIER]
+          [--comparer NOM,NOM[,NOM…]]
   doubler --ajouter-voix <nom> <enregistrement>      ajoute une voix (copie telle quelle, sans analyse)
   doubler --voix-liste [--json]                      voix disponibles
   doubler --config [CLE VALEUR]                      affiche la configuration, ou écrit une clé
@@ -425,6 +430,30 @@ def charger_voix_spec(texte):
 
 def voix_membres(voix):
     return voix.get("membres") or [voix]
+
+
+def charger_voix_comparees(texte):
+    """Comme doubler : « A,B,C » (deux à six voix entières différentes) ; la première avec la liste « comparees »."""
+    noms = list(dict.fromkeys(n.strip() for n in str(texte).split(",") if n.strip()))
+    if any(":" in n for n in noms):
+        raise SystemExit(f"--comparer {texte} : des noms de voix seulement ; une voix par chanteur ne se compare pas")
+    if len(noms) < 2:
+        raise SystemExit("--comparer demande au moins deux voix différentes (A,B,C) ; une seule : --voix NOM")
+    if len(noms) > 6:
+        raise SystemExit(f"--comparer : {len(noms)} voix, 6 au plus en une session")
+    membres = [charger_voix(n) for n in noms]
+    return {**membres[0], "comparees": membres, "spec": ",".join(noms)}
+
+
+def sortie_de_voix(tr, voix):
+    return {**tr, "tv": tr["travail"] / voix["id"], "base": f"{tr['video'].stem} - voix {voix['affichage']}"}
+
+
+def ecrire_comparaison(tr, comparees):
+    (tr["dossier"] / "comparaison.json").write_text(json.dumps({
+        "format": 1, "cree_le": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "voix": [{"id": v["id"], "nom": v["affichage"], "fichier": sortie_de_voix(tr, v)["base"]} for v in comparees]},
+        ensure_ascii=False, indent=1), encoding="utf-8")
 
 
 def autotune_config(conf):
@@ -1095,7 +1124,11 @@ def lancer_noyau(travaux, titres, a, voix, estimation):
         rapatriement.finir(f"noyau terminé en {etat.lower()} sans résultat")
         raise RuntimeError(f"Kaggle : noyau terminé en {etat.lower()} sans résultat ; fin du journal :\n"
                            "torch.OutOfMemoryError: CUDA out of memory (faux noyau)")
-    for tr in travaux:   # sorties du « noyau » rangées dans travail/ et travail/<voix>/
+    # sorties du « noyau » rangées dans travail/ et travail/<voix>/ (comparer : une par voix, la voix isolée commune)
+    sorties = ([(sortie_de_voix(tr, v), v) for tr in travaux for v in voix["comparees"]] if voix.get("comparees")
+               else [(tr, voix) for tr in travaux])
+    for tr, voix in sorties:
+        tr["tv"].mkdir(parents=True, exist_ok=True)
         (tr["travail"] / "voix_source.wav").write_bytes(b"")
         (tr["tv"] / "voix_convertie.flac").write_bytes(b"")
         # nouveau doublage : la correction à la main d'avant ne vaut plus (comme doubler au rapatriement)
@@ -1123,6 +1156,7 @@ def lancer_noyau(travaux, titres, a, voix, estimation):
 
 
 def traiter_lot(videos, a, voix):
+    lot_comparees = voix.get("comparees")
     travaux, echecs = preparer_travaux(videos, a, voix)
     if not travaux:
         return echecs
@@ -1160,7 +1194,10 @@ def traiter_lot(videos, a, voix):
          f"{st['installation_s']:.0f} s, séparation {st['separation_totale_s']:.0f} s, modèles "
          f"{st['chargement_modeles_s']:.0f} s, noyau {st['total_s'] / 60:.1f} min ; estimé "
          f"{estimation / 60:.1f} min) ; rapatriement {temps['rapatriement_s']:.0f} s")
-    for tr in travaux:
+    cibles = [(tr, voix) for tr in travaux]
+    if voix.get("comparees"):   # une sortie complète par voix, dans l'ordre demandé
+        cibles = [(sortie_de_voix(tr, v), v) for tr in travaux for v in voix["comparees"]]
+    for tr, voix in cibles:
         try:
             temps_local = {"extraction_s": tr.get("extraction_s"), "envoi_jeu_s": envoi_s,
                            "envoi_flac_mo": round(tr["taille_envoi"] / 1e6, 1), "gain_entree_db": -1.0,
@@ -1176,6 +1213,9 @@ def traiter_lot(videos, a, voix):
             dire(f"ÉCHEC {tr['video']} : {e}")
             EV("erreur", tr["nom"], message=str(e))
             echecs.append(str(tr["video"]))
+    for tr in travaux:
+        if lot_comparees:
+            ecrire_comparaison(tr, lot_comparees)
     return echecs
 
 
@@ -1190,6 +1230,10 @@ def analyseur():
                    help="voix cible : un dossier de <données>/voix (défaut : clé « voix » de la configuration, "
                         "sinon la seule voix présente) ; une voix par chanteur : homme:NOM,femme:NOM (duo mixte) ou "
                         "chanteur1:NOM,chanteur2:NOM (duo de même genre)")
+    if not SANS_COMPARER:
+        p.add_argument("--comparer", default=None, metavar="A,B[,C…]",
+                       help="comparer des voix : le même extrait doublé dans chaque voix, en une seule session ; "
+                            "une sortie par voix ; remplace --voix")
     p.add_argument("--mode", choices=["auto", "chant", "parole"], default="auto")
     p.add_argument("--octave", choices=["auto", "0", "-12", "+12", "12"], default="auto",
                    help="auto : décidé passage par passage ; 0, -12 ou +12 : imposé partout")
@@ -1263,6 +1307,8 @@ def main():
         a.json = a.mix_v1 = a.reprendre = a.preparer_outils = a.sans_autotune = False
     if SANS_AFFECTATION:
         a.affectation = a.passage = None
+    if SANS_COMPARER:
+        a.comparer = None
     EV.ouvrir(a.evenements)
     code = 1
     enfant = None
@@ -1318,9 +1364,14 @@ def executer(p, a):
     verifier_ecriture(a.sortie)
     if a.octave == "12":
         a.octave = "+12"
-    if a.voix is None:
-        a.voix = exiger_voix_defaut()
-    voix = charger_voix_spec(a.voix)
+    if a.comparer is not None:
+        if a.voix is not None:
+            p.error("--comparer remplace --voix : les voix à comparer sont toutes dans --comparer A,B,C")
+        voix = charger_voix_comparees(a.comparer)
+    else:
+        if a.voix is None:
+            a.voix = exiger_voix_defaut()
+        voix = charger_voix_spec(a.voix)
     if a.remix:
         echecs = []
         for v in a.videos:
@@ -1330,6 +1381,12 @@ def executer(p, a):
                 tr = emplacements(chemin, debut_v, duree_v, a, voix)
                 titre = tr["nom"]
                 tr["debut_epoch"] = time.time()
+                if voix.get("comparees"):
+                    for vj in voix["comparees"]:
+                        dire(f"=== {tr['video'].name} (remix, voix {vj['id']})")
+                        finir(sortie_de_voix(tr, vj), a, vj)
+                    ecrire_comparaison(tr, voix["comparees"])
+                    continue
                 dire(f"=== {tr['video'].name} (remix, voix {voix['id']})")
                 finir(tr, a, voix)
             except Exception as e:  # noqa: BLE001

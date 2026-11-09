@@ -35,6 +35,7 @@ comme un ancien doublage). Correction à la main (--remix --affectation FICHIER|
 travail/<a+b>/affectation.json écrit ou effacé, rapport (affectation.passages recalculés à partir des morceaux,
 secondes_par_voix, morceaux_en_duo, manuelle ; morceaux corrige, voix_pistes, voix_pistes_auto) et courbes.json
 (voix_par_trame) refaits, l'automatique gardé dans versions/auto.json ; sans les deux versions : « ÉCHEC », comme doubler.
+Fichier audio seul (mp3, wav, flac…) en entrée : sortie mp3 sans vidéo, source.json « audio_seul », comme doubler.
 FAUX_DOUBLER_SANS_AFFECTATION=1 : doubler trop ancien, sans --affectation ni --passage.
 Comparer des voix (--comparer A,B,C) : une seule session pour toutes les voix ; une sortie complète par voix dans le
 dossier de la vidéo (« <titre> - voix A.<ext> », travail/A/, rapport inventé de chaque voix), comparaison.json, un événement
@@ -1232,7 +1233,8 @@ def analyseur():
     p = argparse.ArgumentParser(prog="doubler", description=(AIDE_ANCIENNE if ANCIEN else AIDE).split("\n")[0],
                                 formatter_class=argparse.RawDescriptionHelpFormatter,
                                 epilog=(AIDE_ANCIENNE if ANCIEN else AIDE).split("\n", 1)[1])
-    p.add_argument("videos", nargs="*", help="vidéo(s) mp4, mkv, webm, mov… ; « vidéo@60+40 » : extrait propre à cette vidéo")
+    p.add_argument("videos", nargs="*", help="vidéo(s) mp4, mkv, webm, mov…, ou fichier(s) audio seul mp3, wav, flac, m4a, ogg, opus (sortie : mp3, "
+                        "sans image) ; « vidéo@60+40 » : extrait propre à cette vidéo")
     p.add_argument("--voix", default=None, metavar="NOM",
                    help="voix cible : un dossier de <données>/voix (défaut : clé « voix » de la configuration, "
                         "sinon la seule voix présente) ; une voix par chanteur : homme:NOM,femme:NOM (duo mixte) ou "

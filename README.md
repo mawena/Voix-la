@@ -365,6 +365,22 @@ Les temps s'écrivent en secondes (décimales avec `.` ou `,`) ou en `m:ss`. L'e
 et `--duree` pour elle ; les vidéos sans `@` gardent `--debut` et `--duree`. Un fichier qui existe tel quel n'est
 jamais découpé, même si son nom contient un `@`.
 
+### Un fichier audio seul
+
+`doubler` accepte aussi un fichier sans image (mp3, wav, flac, m4a, ogg, opus ; la pochette jointe à un mp3 n'est pas une
+image) : c'est la même chaîne, sans remise sur la vidéo.
+
+```sh
+doubler "Chanson.mp3" --voix voixA
+doubler "Chanson.flac" --voix voixA --debut 60 --duree 40   # extrait exact : pas d'image clé à chercher
+```
+
+La sortie est `<titre> - voix <Nom>.mp3` avec son `.lrc`, les `.srt` de `paroles/` si les paroles sont demandées et
+`travail/` comme pour une vidéo (son d'origine, beat seul, voix d'origine, voix convertie, `rapport.json`) ; pas de
+vidéo ni de pistes audio en plus. `--remix`, `--reprendre`, `--debut` / `--duree`, `--comparer` et l'auto-tune
+(`.mp3` et `.lrc`) marchent comme pour une vidéo ; la bibliothèque affiche une pochette générée. Le dossier de sortie
+porte le nom du fichier : un mp3 et une vidéo de même nom se partageraient donc le même dossier.
+
 Les autres options (`--voix`, `--mode`, `--octave`, `--pas`…) s'appliquent à toutes les vidéos. Une vidéo en échec
 n'empêche pas les suivantes.
 
@@ -557,7 +573,7 @@ Une étape en `erreur` est suivie d'un événement `erreur`. Les étapes commune
 
 | Option | Rôle | Défaut |
 |---|---|---|
-| `videos…` | une ou plusieurs vidéos (mp4, m4v, mov, mkv, webm…) ; `vidéo@DÉBUT+DURÉE` : extrait propre à cette vidéo | |
+| `videos…` | une ou plusieurs vidéos (mp4, m4v, mov, mkv, webm…) ou fichiers audio seul (mp3, wav, flac, m4a, ogg, opus : sortie mp3, sans image) ; `vidéo@DÉBUT+DURÉE` : extrait propre à cette vidéo | |
 | `--voix NOM` | voix cible, un dossier de `<données>/voix/` | clé `voix` de la configuration, sinon la seule voix présente |
 | `--voix homme:A,femme:B`, `--voix chanteur1:A,chanteur2:B` | une voix par chanteur (voir [Une voix par chanteur](#une-voix-par-chanteur)) | |
 | `--comparer A,B[,C…]` | comparer des voix : le même extrait doublé dans chacune (deux à six), en une seule session ; une sortie par voix et `comparaison.json` ; remplace `--voix` ; avec `--remix`, refait chaque sortie (voir [Comparer plusieurs voix en une session](#comparer-plusieurs-voix-en-une-session)) | |

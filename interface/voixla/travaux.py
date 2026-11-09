@@ -284,9 +284,9 @@ class Travail:
 def texte_attente_anormale(duree):
     """Le message d'une attente « queued » anormale : les causes possibles, dont un incident chez Kaggle."""
     return (f"Kaggle n’a pas encore donné de GPU : le noyau est en file d’attente depuis {duree}. Une autre session du "
-            "compte (un autre projet ?) occupe peut-être les GPU, ou Kaggle a une panne : une bannière d’incident "
-            "(« notebooks impossibles à démarrer ») s’affiche alors sur la page du notebook, que « Ouvrir la page sur "
-            "Kaggle » ouvre. Vous pouvez patienter, ou abandonner cette session.")
+            "compte (un autre projet ?) occupe peut-être les GPU, ou Kaggle a un incident (une bannière « notebooks qui ne "
+            "démarrent pas » s’affiche alors sur la page du notebook : « Ouvrir la page du notebook sur Kaggle » l’ouvre). "
+            "Vous pouvez patienter, ou abandonner cette session.")
 
 
 def attente_anormale(avancement, maintenant=None):
@@ -456,6 +456,34 @@ def demande_doublage(videos, reglages, donnees, titre=None, estimations=None, ex
         "sorties": [str(chemins.dossier_sorties(donnees) / moteur.nom_dossier(
             v["chemin"], extrait or (v.get("extrait") if "extrait_par_video" in caps else None))) for v in videos],
     }
+
+
+def demande_doubler_prise(entree, duree_s, voix, donnees, estimations=None, titre=None):
+    """Demande « Doubler ma prise » : doubler sur le mix prise + beat (FLAC de karaoke/, voir karaoke.preparer_entree_doubler)
+    dans cette voix. Une prise chantée sur un beat est du chant : le mode est imposé (sans lui, une voix très présente sur
+    un beat discret pourrait être prise pour de la parole)."""
+    d = demande_doublage([{"chemin": str(entree), "duree_s": duree_s, "extrait": None}],
+                         {"voix": voix, "mode": "chant", "pas": 30}, donnees, titre=titre or Path(entree).stem,
+                         estimations=estimations)
+    d["prise_karaoke"] = True
+    return d
+
+
+def juger_quota(demande, etat_quota, file_travaux, politique):
+    """(demande marquée, attend) : la demande après le jugement du quota GPU, comme la page Doubler. Quota inconnu : telle
+    quelle. Elle tient : marquée « tient ». Sinon, avec la politique « lancer » elle part quand même (marquée), avec
+    toute autre elle attend la remise à zéro (attend vrai ; pas de dialogue ici : il y a un seul travail, et attendre
+    ne coûte rien)."""
+    from . import quota
+    if etat_quota is None:
+        return demande, False
+    (v,) = quota.juger_demandes(etat_quota, [{"estimations": {"kaggle": quota.besoin_s(demande)}}],
+                                quota.gpu_a_venir(file_travaux))
+    if v.tient:
+        return quota.marquer(demande, "tient", v), False
+    if politique == "lancer":
+        return quota.marquer(demande, "lancer", v), False
+    return quota.mettre_en_attente(demande, v.remise + quota.REPRISE_APRES_S, v), True
 
 
 def demande_reprise(donnees):

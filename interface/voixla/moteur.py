@@ -95,6 +95,8 @@ def analyser_aide(texte):
     caps = {o for o in OPTIONS_SUIVIES if re.search(re.escape(o) + r"(?![\w-])", texte or "")}
     if re.search(r"vid[ée]o@\d", texte or ""):
         caps.add("extrait_par_video")   # « vidéo@60+40 » : un extrait propre à chaque vidéo d'un même lot
+    if re.search(r"audio\s+seul", texte or ""):
+        caps.add("son_seul")   # un fichier audio seul (mp3, wav, flac…) en entrée : sortie mp3, sans image
     if "homme:NOM,femme:NOM" in (texte or "") and "chanteur1:NOM,chanteur2:NOM" in (texte or ""):
         caps.add("voix_par_chanteur")   # --voix homme:a,femme:b ou chanteur1:a,chanteur2:b : une voix par chanteur
     return frozenset(caps)

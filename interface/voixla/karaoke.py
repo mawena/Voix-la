@@ -29,6 +29,8 @@ VOIXLA_AVANCEMENT=1 : avancement en lignes JSON.
 import hashlib
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import time
@@ -399,6 +401,55 @@ def exporter_mp3(mix, sortie, titre="", commentaire=""):
     finally:
         tmp.unlink(missing_ok=True)
     return sortie
+
+
+# --- Doubler ma prise : la prise devient une source audio pour doubler ---------------------------------------------
+
+MARQUE_PRISE = "ma prise"
+
+
+def date_de_la_prise(prise):
+    """(« AAAA-MM-JJ HHhMM ») d'après le nom de la prise (prise-AAAAMMJJ-HHMMSS.wav), sinon sa date de fichier."""
+    m = re.search(r"prise-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})", Path(prise).name)
+    if m:
+        a, mo, j, h, mi = m.groups()
+        return f"{a}-{mo}-{j} {h}h{mi}"
+    try:
+        return time.strftime("%Y-%m-%d %Hh%M", time.localtime(Path(prise).stat().st_mtime))
+    except OSError:
+        return time.strftime("%Y-%m-%d %Hh%M")
+
+
+def nom_entree_doubler(dossier, titre, prise):
+    """<dossier du doublage>/karaoke/<titre> - ma prise AAAA-MM-JJ HHhMM.flac : le fichier que doubler prendra en
+    entrée. Son nom devient celui du doublage dans la bibliothèque ; il reste dans karaoke/ (que la bibliothèque ne lit
+    pas) parce que doubler --remix le relit."""
+    base = f"{titre} - {MARQUE_PRISE} {date_de_la_prise(prise)}"
+    for c in '/\\:*?"<>|\0':
+        base = base.replace(c, "-")
+    return dossier_karaoke(dossier) / f"{base}.flac"
+
+
+def preparer_entree_doubler(prise, titre, dossier):
+    """Le mix de la prise (ta voix + le beat, calés) en FLAC dans karaoke/, prêt pour « doubler » ; le mix en cache est
+    refait au besoin. Rend (chemin, durée en s)."""
+    prise = Path(prise)
+    mix = mix_pret(prise)
+    if mix is None:
+        analyser(prise, mix_seulement=True)
+        mix = mix_pret(prise)
+    if mix is None:
+        raise ErreurKaraoke("mix de la prise impossible")
+    sortie = nom_entree_doubler(dossier, titre, prise)
+    sortie.parent.mkdir(parents=True, exist_ok=True)
+    if not sortie.is_file() or sortie.stat().st_mtime < mix.stat().st_mtime:
+        tmp = _tmp(sortie)
+        try:
+            shutil.copyfile(mix, tmp)
+            os.replace(tmp, sortie)
+        finally:
+            tmp.unlink(missing_ok=True)
+    return sortie, duree_audio(sortie)
 
 
 # --- Calibration de la latence : des bips joués et enregistrés -------------------------------------------------------

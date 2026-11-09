@@ -7,6 +7,33 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+### Ajouté
+
+- `doubler` accepte un fichier audio seul (mp3, wav, flac, m4a, ogg, opus ; la pochette jointe à un mp3 n'est pas une
+  image) : même chaîne, sans image ni remise sur la vidéo. Sortie : `<titre> - voix <Nom>.mp3`, `.lrc`, `paroles/*.srt`
+  si les paroles sont demandées et `travail/` comme pour une vidéo (pas de vidéo, pas de pistes audio en plus ;
+  `source.json` porte `audio_seul`, l'événement `sortie` a `mp4` à `null`). `--debut` / `--duree` coupent exactement où
+  on le demande (pas d'image clé), `--remix`, `--reprendre`, `--comparer` et l'auto-tune (mp3 et `.lrc`) marchent ;
+  la bibliothèque affiche une pochette générée, la corbeille emporte les mêmes fichiers. Page de manuel et
+  `doubler --help` mis à jour ; l'estimation de durée n'a pas changé (la remise sur la vidéo y pèse peu).
+- Interface : « Chanter… » dans l'en-tête du détail d'un doublage, comme dans le menu « ⋮ » de la bibliothèque : il
+  ouvre la page Karaoké sur ce doublage ; grisé, avec la raison, sans beat seul (`travail/instrumental.wav`).
+- Interface : « Doubler ma prise… » dans la page Karaoké, sur le résultat d'une prise : choix de la voix cible, puis
+  un travail `doubler` sur le mix ta voix + beat de la prise (FLAC `<titre> - ma prise AAAA-MM-JJ HHhMM.flac` dans
+  `karaoke/`, `--mode=chant`), jugé sur le quota GPU comme la page Doubler. Le résultat arrive dans la bibliothèque.
+  Choix du mix plutôt que de la voix seule : doubler sépare la voix de la musique, calcule la musique seule pour la
+  remettre sous la voix convertie et décide chant ou parole d'après elle ; avec la voix seule (sèche, sans beat), il
+  rendrait une voix sans rien dessous et pourrait prendre le chant pour de la parole.
+
+### Modifié
+
+- Interface : la carte d'un travail de comparaison (`doubler --comparer`) dans la page Travaux montre toutes les voix
+  (« comparaison de 3 voix : A, B, C »), plus seulement la première.
+- Interface : le message d'une attente anormale d'un GPU et la phrase d'aide de la section « Sur Kaggle » disent que la
+  cause peut aussi être un incident chez Kaggle (« We are aware of an issue preventing notebooks from starting or
+  staying connected »), visible dans la bannière de la page du notebook, que le bouton « Ouvrir la page sur Kaggle »
+  ouvre.
+
 ## [0.12.0] - 2026-11-09
 
 ### Ajouté

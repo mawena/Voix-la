@@ -126,7 +126,8 @@ class EssaiAttenteAnormale(unittest.TestCase):
         t = travaux.texte_attente_anormale("31 min")
         self.assertIn("31 min", t)
         self.assertIn("panne", t)
-        self.assertIn("bannière d’incident", t)
+        self.assertIn("incident", t)
+        self.assertIn("Ouvrir la page du notebook sur Kaggle", t)
         self.assertIsNone(travaux.attente_anormale(self.avancement("queued", 29 * 60, 1020), n))
         self.assertEqual(travaux.attente_anormale(self.avancement("queued", 31 * 60, 1020), n), 31 * 60)
         # estimation courte : 2 x 4 min = 8 min, relevé à 10 min

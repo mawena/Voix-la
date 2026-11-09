@@ -31,10 +31,13 @@ SECTIONS = [
     ("doubler", "Doubler", "video-x-generic-symbolic", "page_doubler", "PageDoubler"),
     ("travaux", "Travaux", "view-list-ordered-symbolic", "page_travaux", "PageTravaux"),
     ("resultats", "Résultats", "media-playback-start-symbolic", "bibliotheque", "PageBibliotheque"),
+    ("karaoke", "Karaoké", "emblem-music-symbolic", "page_karaoke", "PageKaraoke"),
     ("voix", "Voix", "audio-input-microphone-symbolic", "page_voix", "PageVoix"),
     ("ecoute", "Écoute à l’aveugle", "audio-headphones-symbolic", "page_ecoute", "PageEcoute"),
     ("etat", "État", "preferences-system-details-symbolic", "page_etat", "PageEtat"),
 ]
+# Alt+N de chaque section : ceux d'avant le karaoké restent les mêmes, le karaoké prend Alt+7
+RACCOURCIS_SECTIONS = {"doubler": 1, "travaux": 2, "resultats": 3, "voix": 4, "ecoute": 5, "etat": 6, "karaoke": 7}
 
 
 # actions booléennes de la fenêtre (menu « œil » d'un résultat, Réglages) → clé d'interface.json
@@ -190,7 +193,8 @@ class Fenetre(Adw.ApplicationWindow):
             a = Gio.SimpleAction.new(f"section-{tag}", None)
             a.connect("activate", lambda *_a, t=tag: self.aller(t))
             self.add_action(a)
-            self.get_application().set_accels_for_action(f"win.section-{tag}", [f"<Alt>{i + 1}"])
+            self.get_application().set_accels_for_action(f"win.section-{tag}",
+                                                         [f"<Alt>{RACCOURCIS_SECTIONS.get(tag, i + 1)}"])
         self.set_help_overlay(self._aide_clavier())
 
     def _aide_clavier(self):
@@ -198,7 +202,8 @@ class Fenetre(Adw.ApplicationWindow):
         section = Gtk.ShortcutsSection(section_name="general", visible=True)
         groupe = Gtk.ShortcutsGroup(title="Général")
         for acc, titre in (("<Alt>1", "Doubler"), ("<Alt>2", "Travaux"), ("<Alt>3", "Résultats"), ("<Alt>4", "Voix"),
-                           ("<Alt>5", "Écoute à l’aveugle"), ("<Alt>6", "État"), ("F5", "Actualiser la page"),
+                           ("<Alt>5", "Écoute à l’aveugle"), ("<Alt>6", "État"), ("<Alt>7", "Karaoké"),
+                           ("F5", "Actualiser la page"),
                            ("<Control>comma", "Réglages"), ("<Control>question", "Raccourcis clavier")):
             groupe.add_shortcut(Gtk.ShortcutsShortcut(accelerator=acc, title=titre))
         section.add_group(groupe)
@@ -222,6 +227,11 @@ class Fenetre(Adw.ApplicationWindow):
                            ("p", "Panneau « Toutes les paroles »"), ("s", "Enregistrer l’image en PNG")):
             lecture.add_shortcut(Gtk.ShortcutsShortcut(accelerator=acc, title=titre))
         section.add_group(lecture)
+        karaoke = Gtk.ShortcutsGroup(title="Karaoké")
+        for acc, titre in (("space", "Chanter ; pendant la prise : l’arrêter et la noter ; après : réécouter"),
+                           ("Escape", "Annuler la prise ou le décompte")):
+            karaoke.add_shortcut(Gtk.ShortcutsShortcut(accelerator=acc, title=titre))
+        section.add_group(karaoke)
         lecture = Gtk.ShortcutsGroup(title="Écoute à l’aveugle")
         for acc, titre in (("1 2 3 4 5", "Noter la version (0 ou retour arrière : effacer)"),
                            ("v", "Basculer mix ⇄ voix seule de la version en cours")):
@@ -333,6 +343,12 @@ class Fenetre(Adw.ApplicationWindow):
         if hasattr(p, "ouvrir"):
             # une voix par chanteur : la spécification « homme:a,femme:b » devient le dossier « a+b »
             p.ouvrir(dossier, moteur.id_voix(voix) if voix else voix)
+
+    def chanter(self, res):
+        """Karaoké sur ce doublage (« Chanter… » de la bibliothèque)."""
+        p = self.aller("karaoke")
+        if hasattr(p, "choisir"):
+            p.choisir(res)
 
     def pousser(self, page):
         self.nav.push(page)

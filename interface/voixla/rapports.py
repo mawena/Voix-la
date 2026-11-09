@@ -76,6 +76,25 @@ class Resultat:
         return [v for v in voix if isinstance(v, dict)] if isinstance(voix, list) else []
 
     @property
+    def versions_duo(self):
+        """Une voix par chanteur : la section « versions » du rapport si le doublage a les deux versions de chaque
+        passage (rapport.versions, mode autre que « non », et versions/versions.json présent dans travail/<a+b>/),
+        sinon None : un ancien doublage, ou un doublage fait sans elles, ne peut pas être corrigé à la main."""
+        v = (self.rapport or {}).get("versions")
+        if not isinstance(v, dict) or v.get("mode") in (None, "non"):
+            return None
+        d = self.dossier_voix
+        if d is None or not (d / str(v.get("dossier") or "versions") / "versions.json").is_file():
+            return None
+        return v
+
+    @property
+    def affectation_gardee(self):
+        """L'affectation corrigée à la main que doubler garde (travail/<a+b>/affectation.json), ou None."""
+        d = self.dossier_voix
+        return _json(d / "affectation.json") if d else None
+
+    @property
     def autotune(self):
         """La section « autotune » du rapport si la version auto-tune est valide (applique vrai), sinon None."""
         at = (self.rapport or {}).get("autotune")
@@ -276,6 +295,10 @@ class Resultat:
         if aff.get("morceaux_en_duo"):
             lignes.append(f"{formats.pluriel(aff['morceaux_en_duo'], 'passage')} où voix principale et chœurs chantent "
                           "chacun dans sa voix")
+        corriges = passages_corriges(r)
+        if corriges:
+            lignes.append(f"corrigé à la main : {formats.pluriel(len(corriges), 'passage')} (frise « Voix de chaque "
+                          "passage »)")
         if aff.get("erreur"):
             lignes.append(f"reconnaissance des pistes impossible ({aff['erreur']}) : chaque piste a la voix du passage")
         return lignes
@@ -318,6 +341,148 @@ def passages_voix(rapport):
         except (KeyError, TypeError, ValueError):
             continue
     return sortie
+
+
+# --- Une voix par chanteur : corriger à la main qui chante chaque passage (doubler --remix --affectation) -------------
+#
+# doubler garde l'affectation corrigée dans travail/<a+b>/affectation.json : {"format": 1, "voix_cibles": [noms],
+# "passages": {"<numéro>": nom | "deux"}, "pistes": {"<numéro>": {piste: nom | "deux"}}} (« pistes », facultatif,
+# l'emporte sur « passages »). L'interface lui passe l'affectation complète voulue (--affectation FICHIER), ou « auto »
+# pour revenir à l'automatique. Un passage ne se corrige que si le doublage a ses deux versions (rapport.versions).
+
+CHOIX_DEUX = "deux"
+CHOIX_AUTO = "auto"
+RAISON_SANS_VERSIONS = ("ce doublage n’a pas les deux versions de chaque passage : refaites-le pour pouvoir corriger "
+                        "qui chante quoi")
+RAISON_VERSIONS_NON = ("doublé sans les deux versions de chaque passage (--versions-duo non) : refaites-le avec elles "
+                       "pour pouvoir corriger qui chante quoi")
+RAISON_DOUBLER_ANCIEN = "doubler trop ancien : il ne sait pas corriger qui chante quoi (option --affectation)"
+
+
+def voix_cibles_noms(rapport):
+    """Noms des voix cibles d'une voix par chanteur, dans l'ordre du rapport (couleurs de la frise), sinon []."""
+    vc = (rapport or {}).get("voix_cibles") if isinstance(rapport, dict) else None
+    voix = vc.get("voix") if isinstance(vc, dict) else None
+    return [str(v["nom"]) for v in voix or [] if isinstance(v, dict) and v.get("nom")]
+
+
+def _noms(valeur):
+    """Les noms de voix d'une valeur de voix_pistes : un nom, ou une liste (« les deux »)."""
+    if isinstance(valeur, (list, tuple)):
+        return [str(v) for v in valeur if v]
+    return [str(valeur)] if valeur else []
+
+
+def _ordonner(noms, ordre):
+    return sorted(set(noms), key=lambda n: (ordre.index(n) if n in ordre else len(ordre), n))
+
+
+def passages_corriges(rapport):
+    """Numéros des passages corrigés à la main (affectation.manuelle.corriges, ou « corrige » d'un morceau)."""
+    r = rapport if isinstance(rapport, dict) else {}
+    man = (r.get("affectation") or {}).get("manuelle") if isinstance(r.get("affectation"), dict) else None
+    sortie = set()
+    for i in (man or {}).get("corriges") or [] if isinstance(man, dict) else []:
+        try:
+            sortie.add(int(i))
+        except (TypeError, ValueError):
+            continue
+    for m in r.get("morceaux") or []:
+        if isinstance(m, dict) and m.get("corrige"):
+            try:
+                sortie.add(int(m["i"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+    return sortie
+
+
+def morceaux_duo(rapport, versions=None):
+    """Passages chantés d'une voix par chanteur, pour la frise corrigeable : [{i, debut, fin, voix, voix_auto, corrige,
+    corrigeable}] (voix : les noms entendus sur le passage, toutes pistes ; voix_auto : ceux de l'automatique ;
+    corrigeable : le passage a ses deux versions, d'après versions, la section « versions » du rapport)."""
+    r = rapport if isinstance(rapport, dict) else {}
+    ordre = voix_cibles_noms(r)
+    corriges = passages_corriges(r)
+    dispo = set()
+    for i in (versions or {}).get("morceaux") or [] if isinstance(versions, dict) else []:
+        try:
+            dispo.add(int(i))
+        except (TypeError, ValueError):
+            continue
+    sortie = []
+    for m in r.get("morceaux") or []:
+        if not isinstance(m, dict) or m.get("muet"):
+            continue
+        try:
+            i, debut, fin = int(m["i"]), float(m["debut_s"]), float(m["fin_s"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        vp = m.get("voix_pistes") if isinstance(m.get("voix_pistes"), dict) else {}
+        vpa = m.get("voix_pistes_auto") if isinstance(m.get("voix_pistes_auto"), dict) else vp
+        voix = [n for v in vp.values() for n in _noms(v)] or _noms(m.get("voix_cible"))
+        auto = [n for v in vpa.values() for n in _noms(v)] or _noms(m.get("voix_cible"))
+        if not voix:
+            continue
+        sortie.append({"i": i, "debut": debut, "fin": fin, "voix": _ordonner(voix, ordre), "voix_auto": _ordonner(auto, ordre),
+                       "corrige": i in corriges, "corrigeable": i in dispo})
+    return sortie
+
+
+def morceau_duo_a(morceaux, t):
+    """Le passage (morceaux_duo) sous l'instant t, ou None."""
+    return next((m for m in morceaux if m["debut"] <= t < m["fin"]), None)
+
+
+def choix_garde(affectation, i):
+    """Choix gardé par doubler pour le passage i : un nom, « deux », « pistes » (corrigé piste par piste, en ligne de
+    commande), ou « auto »."""
+    a = affectation if isinstance(affectation, dict) else {}
+    pistes = a.get("pistes") if isinstance(a.get("pistes"), dict) else {}
+    if pistes.get(str(i)):
+        return "pistes"
+    passages = a.get("passages") if isinstance(a.get("passages"), dict) else {}
+    v = passages.get(str(i))
+    return str(v) if v else CHOIX_AUTO
+
+
+def affectation_voulue(gardee, attente, voix_cibles):
+    """L'affectation complète à passer à doubler : celle qu'il garde, plus les choix en attente ({i: nom | « deux » |
+    « auto »} ; un choix de passage remplace ses corrections piste par piste). None : plus aucune correction (revenir à
+    l'automatique)."""
+    g = gardee if isinstance(gardee, dict) else {}
+    passages = {str(k): str(v) for k, v in (g.get("passages") or {}).items() if v} if isinstance(g.get("passages"), dict) else {}
+    pistes = ({str(k): dict(v) for k, v in g["pistes"].items() if isinstance(v, dict) and v}
+              if isinstance(g.get("pistes"), dict) else {})
+    for i, choix in (attente or {}).items():
+        k = str(i)
+        pistes.pop(k, None)
+        if choix == CHOIX_AUTO:
+            passages.pop(k, None)
+        else:
+            passages[k] = str(choix)
+    if not passages and not pistes:
+        return None
+    a = {"format": 1, "voix_cibles": list(voix_cibles), "passages": dict(sorted(passages.items(), key=lambda kv: int(kv[0])))}
+    if pistes:
+        a["pistes"] = pistes
+    return a
+
+
+def etat_correction(res, caps):
+    """(possible, raison) : peut-on corriger à la main qui chante chaque passage de ce résultat ? Il faut une voix par
+    chanteur en chant, un doubler qui connaît --affectation, les deux versions de chaque passage, et un remix possible
+    (vidéo source retrouvée)."""
+    if not res.plusieurs_voix or len(res.voix_cibles) < 2:
+        return False, "une seule voix cible"
+    if res.mode != "chant":
+        return False, "parole : une seule voix cible sert"
+    if "--affectation" not in caps:
+        return False, RAISON_DOUBLER_ANCIEN
+    if res.versions_duo is None:
+        v = (res.rapport or {}).get("versions")
+        return False, RAISON_VERSIONS_NON if isinstance(v, dict) and v.get("mode") == "non" else RAISON_SANS_VERSIONS
+    possible, raison = moteur.remix_possible(res.video_source, res.dossier)
+    return (True, "") if possible else (False, raison)
 
 
 def _voix_des_medias(dossier):
@@ -497,8 +662,10 @@ def segments_frise(rapport):
         if m.get("voix_cible"):   # une voix par chanteur : la voix du passage, et celle de chaque piste
             seg["voix_cible"] = str(m["voix_cible"])
             vp = m.get("voix_pistes")
-            if isinstance(vp, dict):
-                seg["voix_pistes"] = {str(k): str(v) for k, v in vp.items()}
+            if isinstance(vp, dict):   # un nom par piste, ou une liste de deux (« les deux », corrigé à la main)
+                seg["voix_pistes"] = {str(k): (_noms(v) if isinstance(v, (list, tuple)) else str(v)) for k, v in vp.items()}
+            if m.get("corrige"):
+                seg["corrige"] = True
         segs.append(seg)
     if segs:
         return segs

@@ -340,7 +340,7 @@ class Finir(unittest.TestCase):
         return [json.loads(l) for l in self.evenements.read_text().splitlines() if '"sortie"' in l][-1]
 
     def normales(self):
-        noms = ['clip - voix Test.mp4', 'clip - voix Test.mp3', 'clip - voix Test.lrc', 'clip - voix Test.es.srt']
+        noms = ['clip - voix Test.mp4', 'clip - voix Test.mp3', 'clip - voix Test.lrc', 'paroles/clip - voix Test.es.srt']
         travail = ['mix.wav', 'seche_voix_convertie.wav', 'reverb_voix_convertie.wav', 'instrumental.wav']
         return {n: sha(self.dossier / n) for n in noms} | {n: sha(self.tv / n if n != 'instrumental.wav' else self.t / n)
                                                           for n in travail}

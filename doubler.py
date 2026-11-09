@@ -15,7 +15,7 @@
 
 Les vidéos données ensemble partent dans UNE seule session Kaggle (installation payée une fois) :
   1. sur le PC, le son de chaque vidéo est extrait (44,1 kHz stéréo flottant ; extrait calé sur une image clé avec
-     --debut/--duree), puis envoyé en FLAC 24 bits (crête ramenée à -1 dBFS par un gain connu, retiré sur Kaggle) ;
+     --debut/--duree), puis envoyé en FLAC 16 bits (crête ramenée à -1 dBFS par un gain connu, retiré sur Kaggle) ;
   2. sur Kaggle (jeu de données et noyau privés), un seul noyau GPU sépare chaque voix, choisit le mode et la hauteur
      (en chant, un décalage d'octave par chanteur), et convertit (kaggle/doubler_kaggle.py) ; la voix isolée revient
      elle aussi en FLAC. En chant, la voix est d'abord nettoyée (voix principale et chœurs séparés, reverb d'origine
@@ -64,6 +64,7 @@ import math
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -95,6 +96,7 @@ PISTES_AUDIO = ('toutes', 'doublage')
 PISTES_AUDIO_DEFAUT = 'toutes'
 CLES_CONFIG = {'autotune': 'intensité de l\'auto-tune à chaque doublage, de 0 (désactivé, défaut) à 100',
                'donnees': 'dossier des données (voix/, sorties/)',
+               'envoi_flac': 'son envoyé à Kaggle en FLAC 16 bits (défaut) ou 24 bits (comme avant le 06/11/2026)',
                'gpu': 'cartes GPU utilisées par le noyau : auto (défaut : les deux T4 de la machine, une seule si elle '
                       'n\'en a qu\'une), 1 (une carte, comme avant) ou 2',
                'kaggle.compte': 'compte Kaggle (nom d\'utilisateur)',
@@ -107,6 +109,9 @@ CLES_CONFIG = {'autotune': 'intensité de l\'auto-tune à chaque doublage, de 0 
                           'ou non',
                'pistes_audio': 'pistes audio de la vidéo doublée : toutes (défaut : doublage, original, beat seul, voix '
                                'convertie seule, voix d\'origine seule ; le doublage par défaut) ou doublage (lui seul)',
+               'versions_duo': 'une voix par chanteur : chaque passage converti dans les deux voix pour corriger qui chante '
+                               "quoi au remix : toutes (défaut), utiles (passages incertains, voisins d'un changement de "
+                               'voix, chantés ensemble) ou non',
                'voix': 'voix cible par défaut, un dossier de <données>/voix (sinon la seule voix présente)'}
 OUI = {'oui', 'o', 'yes', 'y', 'true', 'vrai', '1', 'on'}
 NON = {'non', 'n', 'no', 'false', 'faux', '0', 'off'}
@@ -198,6 +203,15 @@ def ecrire_config(cle, valeur):
         valeur = str(valeur).strip().lower()
         if valeur not in PISTES_AUDIO:
             raise SystemExit(f'pistes_audio : toutes ou doublage attendu (reçu : {valeur})')
+    if cle == 'versions_duo':
+        valeur = str(valeur).strip().lower()
+        if valeur not in VERSIONS_DUO:
+            raise SystemExit(f"versions_duo : {', '.join(VERSIONS_DUO)} attendu (reçu : {valeur})")
+    if cle == 'envoi_flac':
+        valeur = str(valeur).strip().lower().removesuffix('bits').strip()
+        if valeur not in ENVOI_FLAC:
+            raise SystemExit(f'envoi_flac : 16 ou 24 attendu (reçu : {valeur})')
+        valeur = int(valeur)
     if cle == 'kaggle.machine' and not re.fullmatch(MACHINE_SYNTAXE, valeur):
         raise SystemExit(f'kaggle.machine : nom de machine Kaggle attendu, par exemple {MACHINE_DEFAUT} (reçu : {valeur})')
     if cle == 'voix' and not re.fullmatch(NOM_VOIX, valeur):
@@ -374,10 +388,12 @@ def afficher_config(a, en_json=False):
     autotune = autotune_config(conf)
     gpu = gpu_config(conf)
     pistes_audio = pistes_audio_config(conf)
+    envoi = envoi_flac_config(conf)
     fat1 = trouver_fat1()
     effectif = {'config': str(CONFIG), 'donnees': str(DONNEES), 'source_donnees': a.source_donnees, 'voix': str(VOIX),
                 'sorties': a.sortie, 'voix_defaut': VOIX_DEFAUT, 'source_voix_defaut': VOIX_DEFAUT_SOURCE,
                 'moteur': moteur, 'paroles': paroles, 'autotune': autotune, 'gpu': gpu, 'pistes_audio': pistes_audio,
+                'envoi_flac': envoi, 'versions_duo': versions_duo_config(conf),
                 'x42_autotune': str(fat1) if fat1 else None,
                 'kaggle': {'compte': valeur_config(conf, 'kaggle.compte'), **noms, 'machine': MACHINE},
                 'jeton_kaggle': 'présent' if JETON.exists() else 'absent', 'commande_kaggle': str(KAGGLE),
@@ -402,6 +418,9 @@ def afficher_config(a, en_json=False):
     print(f"  pistes audio   {pistes_audio}{'' if valeur_config(conf, 'pistes_audio') is not None else '  (défaut)'} : "
           + ('le doublage seul' if pistes_audio == 'doublage' else
              "doublage (par défaut), original, beat seul, voix convertie seule, voix d'origine seule"))
+    print(f"  versions duo   {versions_duo_config(conf)}{'' if valeur_config(conf, 'versions_duo') is not None else '  (défaut)'}"
+          ' : une voix par chanteur, chaque passage dans les deux voix (corriger au remix)')
+    print(f"  envoi FLAC     {envoi} bits{'' if valeur_config(conf, 'envoi_flac') is not None else '  (défaut)'}")
     for n in KAGGLE_DEFAUTS:
         print(f"  kaggle.{n:8s} {noms[n] or '— (kaggle.compte manque : doubler --config kaggle.compte <nom>)'}")
     print(f"  kaggle.machine {MACHINE}{'' if valeur_config(conf, 'kaggle.machine') else '  (défaut : GPU T4 x2)'}")
@@ -511,18 +530,57 @@ def crete_dbfs(fichier):
 
 
 CRETE_FLAC_DBFS = -1.0   # crête des FLAC échangés avec Kaggle
+# Son envoyé à Kaggle : FLAC 16 bits depuis le 06/11/2026 (24 bits avant) : 16,4 Mo au lieu de 30,9 pour une chanson,
+# erreur 88 dB sous le signal (après la séparation, elle reste bien sous ce que la séparation elle-même laisse passer).
+# Clé « envoi_flac » de la configuration : 24 pour revenir à l'envoi d'avant
+ENVOI_FLAC = ('16', '24')
+ENVOI_FLAC_DEFAUT = '16'
 
 
-def encoder_flac(wav, flac):
-    """WAV flottant -> FLAC 24 bits (sans perte au sens utile, environ deux fois plus léger). Le FLAC est en entiers et
-    écrêterait au-delà de 0 dBFS, où l'original monte souvent : la crête est ramenée à -1 dBFS par un gain connu, rendu
-    ici et transmis au noyau (réglage gain_entree), qui le retire à la lecture. Écart après l'aller-retour : environ
-    -140 dBFS (mesuré sur une chanson dont la crête atteint +0,5 dBFS)."""
+def encoder_flac(wav, flac, bits=16):
+    """WAV flottant -> FLAC 16 bits (défaut ; 24 avec bits=24), environ quatre fois plus léger que le WAV flottant (deux
+    fois en 24 bits). Le FLAC est en entiers et écrêterait au-delà de 0 dBFS, où l'original monte souvent : la crête est
+    ramenée à -1 dBFS par un gain connu, rendu ici et transmis au noyau (réglage gain_entree), qui le retire à la lecture
+    (soundfile lit les deux en flottant, sans changement du noyau). Écart après l'aller-retour : environ 88 dB sous le
+    signal en 16 bits, -140 dBFS en 24 bits (mesuré sur une chanson dont la crête atteint +0,5 dBFS)."""
     crete = crete_dbfs(wav)
     gain = 10 ** ((CRETE_FLAC_DBFS - crete) / 20) if math.isfinite(crete) else 1.0
-    ff('-i', wav, '-af', f'volume={gain:.17g}', '-c:a', 'flac', '-sample_fmt', 's32', '-bits_per_raw_sample', '24',
+    format_ = ['-sample_fmt', 's16'] if int(bits) == 16 else ['-sample_fmt', 's32', '-bits_per_raw_sample', '24']
+    ff('-i', wav, '-af', f'volume={gain:.17g}', '-c:a', 'flac', *format_,
        '-compression_level', '8', '-metadata', f'comment=doubler : gain {gain:.17g} appliqué (crête à -1 dBFS), à retirer', flac)
     return gain
+
+
+VERSIONS_DUO = ('toutes', 'utiles', 'non')   # voir kaggle/doubler_kaggle.py (versions_duo)
+VERSIONS_DUO_DEFAUT = 'toutes'
+
+
+def versions_duo_config(conf):
+    """Clé « versions_duo » de la configuration : toutes (défaut), utiles ou non ; une valeur illisible compte comme
+    toutes, avec un avis."""
+    v = valeur_config(conf, 'versions_duo')
+    if v is None:
+        return VERSIONS_DUO_DEFAUT
+    v = str(v).strip().lower()
+    if v not in VERSIONS_DUO:
+        dire(f'attention : « versions_duo » de {CONFIG} illisible ({v!r}) : {VERSIONS_DUO_DEFAUT} '
+             '(doubler --config versions_duo toutes|utiles|non)')
+        return VERSIONS_DUO_DEFAUT
+    return v
+
+
+def envoi_flac_config(conf):
+    """Clé « envoi_flac » de la configuration : 16 (défaut) ou 24 bits ; une valeur illisible compte comme 16, avec un
+    avis."""
+    v = valeur_config(conf, 'envoi_flac')
+    if v is None:
+        return int(ENVOI_FLAC_DEFAUT)
+    v = str(v).strip().lower().removesuffix('bits').strip()
+    if v not in ENVOI_FLAC:
+        dire(f'attention : « envoi_flac » de {CONFIG} illisible ({v!r}) : {ENVOI_FLAC_DEFAUT} bits '
+             '(doubler --config envoi_flac 16|24)')
+        return int(ENVOI_FLAC_DEFAUT)
+    return int(v)
 
 
 def decoder_flac(flac, wav):
@@ -955,10 +1013,10 @@ def preparer_source(video, info, debut, duree, travail):
 
 # --- Kaggle ----------------------------------------------------------------------------------------------------------
 
-def envoyer_jeu(travaux, voix, dossier):
+def envoyer_jeu(travaux, voix, dossier, bits=16):
     """Une version du jeu de données privé par session : la référence de la voix choisie (de chaque voix, avec une voix
-    par chanteur) et le son des vidéos seulement, en FLAC 24 bits (gain de chaque vidéo noté dans tr['gain_entree'], à
-    transmettre au noyau)."""
+    par chanteur) et le son des vidéos seulement, en FLAC 16 bits (bits=24 : clé envoi_flac ; gain de chaque vidéo noté
+    dans tr['gain_entree'], à transmettre au noyau)."""
     jeu = dossier / 'jeu'
     shutil.rmtree(jeu, ignore_errors=True)
     jeu.mkdir(parents=True)
@@ -966,7 +1024,8 @@ def envoyer_jeu(travaux, voix, dossier):
         shutil.copy2(m['reference'], jeu / f"voix-{m['id']}.wav")
     taille, taille_wav = 0, 0
     for tr in travaux:
-        tr['gain_entree'] = encoder_flac(tr['travail'] / 'original.wav', jeu / tr['entree'])
+        tr['gain_entree'] = encoder_flac(tr['travail'] / 'original.wav', jeu / tr['entree'], bits)
+        tr['bits_envoi'] = int(bits)
         tr['taille_envoi'] = (jeu / tr['entree']).stat().st_size
         taille += tr['taille_envoi']
         taille_wav += (tr['travail'] / 'original.wav').stat().st_size
@@ -974,7 +1033,8 @@ def envoyer_jeu(travaux, voix, dossier):
         json.dump({'title': JEU.split('/')[1], 'id': JEU, 'licenses': [{'name': 'unknown'}]}, f)
     existe = kaggle('datasets', 'status', JEU)[0] == 0
     noms = [m['id'] for m in voix_membres(voix)]
-    dire(f'Kaggle : envoi du son de {len(travaux)} vidéo(s) ({taille / 1e6:.0f} Mo en FLAC au lieu de {taille_wav / 1e6:.0f} Mo '
+    dire(f'Kaggle : envoi du son de {len(travaux)} vidéo(s) ({taille / 1e6:.0f} Mo en FLAC {bits} bits au lieu de '
+         f'{taille_wav / 1e6:.0f} Mo '
          f"en WAV) et de {'la voix ' + noms[0] if len(noms) == 1 else 'les voix ' + ' et '.join(noms)} dans le jeu privé {JEU}")
     code, texte = (kaggle('datasets', 'version', '-p', str(jeu), '-m', f"{len(travaux)} video(s), voix {voix['id']}") if existe
                    else kaggle('datasets', 'create', '-p', str(jeu)))
@@ -1026,8 +1086,14 @@ def rapports_passes(sorties, n=30):
     return sorted(vus, key=vus.get)[-n:]
 
 
+# Une voix par chanteur avec les deux versions de chaque passage (versions_duo) : la conversion de chaque piste est à
+# refaire dans l'autre voix. Part de la conversion automatique que cela ajoute : tous les passages (toutes), environ
+# la moitié (utiles : incertains, ambigus, chantés ensemble ou voisins d'un changement de voix)
+SURCOUT_VERSIONS_DUO = {'toutes': 1.0, 'utiles': 0.5, 'non': 0.0}
+
+
 def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=MOTEUR_DEFAUT, paroles=True, voix_cibles=1,
-                    cartes=1):
+                    cartes=1, versions_duo='non'):
     """Durée probable d'une session (de l'envoi du noyau à sa fin), d'après la durée audio des vidéos et les rapports
     passés (rapports_passes : sous <sorties>/*/travail/*/, sorties pouvant être une liste de dossiers) : démarrage (file
     Kaggle comprise) + installation + chargement des modèles, le reste de la session (chargement de la séparation, fin
@@ -1160,6 +1226,8 @@ def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=
         t_sep += 0.05
     total, plus_longue = float(sum(durees_s)), float(max(durees_s, default=0.0))
     conversion = pas * sum(float(x) * t_conv(float(x)) for x in durees_s)
+    if voix_cibles > 1 and chant:   # les deux versions de chaque passage (versions_duo)
+        conversion *= 1 + SURCOUT_VERSIONS_DUO.get(versions_duo, 0.0)
     # paroles : part fixe (copie locale des modèles) et transcription, traduction comprise, par seconde d'audio
     t_par = statistics.median(par) if par else 0.45
     p_fixe = statistics.median(par_fixes) if par_fixes else 25.0
@@ -2338,7 +2406,57 @@ def echantillons(fichier):
     return int(s.get('duration_ts') or 0), int(s.get('sample_rate') or 0)
 
 
-def remettre_sur_video(t, mix, dossier, base, sous_titres=(), plan=None, pistes=(), titre=None, langue=None):
+# Sons encodés à part avant la remise sur la vidéo, puis copiés tels quels dans la vidéo : un fichier audio seul dont le
+# conteneur garde l'amorce du codec (essais du 06/11/2026) : la liste d'édition du m4a pour l'AAC (aussi pour un mkv :
+# un .mka la perd, et le son y partait 23 ms trop tard), l'Ogg pour l'Opus (un .webm perdait 6,5 ms)
+CONTENEURS_AUDIO_SEUL = {'.mp4': '.m4a', '.m4v': '.m4a', '.mov': '.m4a', '.mkv': '.m4a', '.webm': '.opus'}
+
+
+class PistesEncodees:
+    """Sons de la vidéo doublée encodés à l'avance, chacun dans son processus ffmpeg, en parallèle : même codec
+    (CONTENEURS), mêmes filtres qu'avant (aresample, apad, atrim), donc le même son décodé au bit près, et les mêmes
+    horodatages de paquets (amorce du codec comprise, CONTENEURS_AUDIO_SEUL) ; la remise sur la vidéo ne fait plus que
+    multiplexer (-c:a copy). Seule différence, en mkv : le muxeur recale le fichier sur le premier paquet qu'il reçoit,
+    désormais celui du son (amorce AAC de 23 ms) et non plus l'image : toute la vidéo (image, sons, sous-titres) glisse
+    d'un bloc de 23 ms, sans rien changer à leur calage. Avant le 06/11/2026, les cinq pistes étaient encodées l'une après
+    l'autre dans la commande de la remise (environ 1 min 50 pour une chanson). Les fichiers sont gardés le temps d'un
+    mixage, dans un dossier caché de travail/ effacé à la fin (contexte) : la version auto-tune reprend l'original, le
+    beat seul et la voix d'origine déjà encodés pour la version normale."""
+
+    def __init__(self, dossier):
+        self.dossier = Path(tempfile.mkdtemp(prefix='.pistes-', dir=dossier))
+        self.faits = {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        shutil.rmtree(self.dossier, ignore_errors=True)
+        return False
+
+    def encoder(self, sons, audio, ext):
+        """sons : [(fichier, filtre ou None)] ; rend les fichiers encodés, dans le même ordre. Un même son déjà encodé
+        avec le même filtre et le même codec (et pas modifié depuis) n'est pas réencodé."""
+        from concurrent.futures import ThreadPoolExecutor
+        cles = []
+        for f, filtre in sons:
+            st = Path(f).stat()
+            cles.append((str(Path(f).resolve()), st.st_size, st.st_mtime_ns, filtre or '', tuple(audio)))
+        a_faire = [c for c in dict.fromkeys(cles) if c not in self.faits]
+
+        def encoder(cle):
+            sortie = self.dossier / f'piste{len(self.faits) + a_faire.index(cle)}{CONTENEURS_AUDIO_SEUL.get(ext, ".mka")}'
+            ff('-i', cle[0], *(['-af', cle[3]] if cle[3] else []), '-vn', *audio, sortie)
+            return sortie
+        if a_faire:
+            with ThreadPoolExecutor(max_workers=min(len(a_faire), max(1, (os.cpu_count() or 2) // 2))) as ex:
+                faits = list(ex.map(encoder, a_faire))
+            self.faits.update(zip(a_faire, faits))
+        return [self.faits[c] for c in cles]
+
+
+def remettre_sur_video(t, mix, dossier, base, sous_titres=(), plan=None, pistes=(), titre=None, langue=None,
+                       encodees=None):
     """Le mix remis sur la vidéo : image copiée sans réencodage, sous-titres d'origine gardés (ceux que le conteneur
     accepte tels quels), puis les pistes de sous_titres ajoutées ([{fichier (srt, au temps de la coupe, celui du
     décalage du mix decalage_son : le conteneur les recale avec l'image et le son), langue (ISO 639-2), titre}] :
@@ -2348,7 +2466,12 @@ def remettre_sur_video(t, mix, dossier, base, sous_titres=(), plan=None, pistes=
     titre}], sons de l'extrait comme le mix), calées exactement comme lui (même -itsoffset, même coupe de l'image) et
     ramenées à sa durée, à l'échantillon près. Toutes : codec de CONTENEURS, étiquette de langue langue (ISO 639-2/B ;
     défaut : celle de la source, quand elle est connue), titre aussi dans handler_name en mp4 ; en mp4, ffmpeg les met
-    dans le même alternate_group (une seule jouée)."""
+    dans le même alternate_group (une seule jouée).
+    Chaque son est encodé à part, en parallèle (PistesEncodees ; encodees : celles d'un mixage en cours, sinon un
+    dossier pour cet appel seul), puis la commande finale multiplexe sans réencoder (-c:a copy)."""
+    if encodees is None:
+        with PistesEncodees(t) as e:
+            return remettre_sur_video(t, mix, dossier, base, sous_titres, plan, pistes, titre, langue, e)
     p = plan or plan_video(t)
     src, video, info, ext, fv = p['src'], p['video'], p['info'], p['ext'], p['fv']
     audio, options, acceptes = CONTENEURS[ext]
@@ -2356,9 +2479,14 @@ def remettre_sur_video(t, mix, dossier, base, sous_titres=(), plan=None, pistes=
     langue = langue or src.get('langue')
     decalage = ['-itsoffset', f"{p['decalage_son']:.6f}"] if abs(p['decalage_son']) > 1e-6 else []
     sons = [{'fichier': mix, 'titre': titre or base.split(' - ', 1)[-1]}, *pistes]
+    # même durée que le mix : complétées de silence ou coupées à la fin, jamais décalées
+    n, sr = echantillons(mix) if pistes else (0, 0)
+    filtres = [f'aresample={sr},apad=whole_len={n},atrim=end_sample={n}' if k and n and sr else None
+               for k in range(len(sons))]
+    fichiers = encodees.encoder([(s['fichier'], f) for s, f in zip(sons, filtres)], audio, ext)
     entrees, cartes = [], ['-map', f"0:{fv['index']}"]
-    for i, s in enumerate(sons):
-        entrees += [*decalage, '-i', s['fichier']]
+    for i, f in enumerate(fichiers):
+        entrees += [*decalage, '-i', f]
         cartes += ['-map', f'{1 + i}:a:0']
     gardes, jetes = [], []
     for s in flux(info, 'subtitle'):
@@ -2378,7 +2506,6 @@ def remettre_sur_video(t, mix, dossier, base, sous_titres=(), plan=None, pistes=
         cartes += ['-map', '0:t?']   # polices jointes des sous-titres
         if sous_titres:
             options = [*options, '-default_mode', 'infer_no_subs']   # les paroles ne s'affichent pas d'office
-    n, sr = echantillons(mix) if pistes else (0, 0)
     meta = []
     for k, s in enumerate(sons):
         meta += [f'-metadata:s:a:{k}', f"title={s['titre']}", f'-disposition:a:{k}', 'default' if k == 0 else '0']
@@ -2386,14 +2513,64 @@ def remettre_sur_video(t, mix, dossier, base, sous_titres=(), plan=None, pistes=
             meta += [f'-metadata:s:a:{k}', f'language={langue}']
         if ext in CONTENEURS_MP4:
             meta += [f'-metadata:s:a:{k}', f"handler_name={s['titre']}"]
-        if k and n and sr:   # même durée que le mix : complétée de silence ou coupée à la fin, jamais décalée
-            meta += [f'-filter:a:{k}', f'aresample={sr},apad=whole_len={n},atrim=end_sample={n}']
     ff(*p['coupe'], '-i', video, *entrees, *cartes, '-c:v', 'copy', '-c:s', 'copy', *codecs,
-       '-c:t', 'copy', *audio, *meta, *options, sortie)
+       '-c:t', 'copy', '-c:a', 'copy', *meta, *options, sortie)
+    if ext in CONTENEURS_MP4 and (sous_titres or gardes):
+        desactiver_sous_titres_mp4(sortie, any((s.get('disposition') or {}).get('default') for s in gardes))
     if jetes:
         dire(f"sous-titres non copiés ({', '.join(sorted({s.get('codec_name', '?') for s in jetes}))}) : le conteneur "
              f'{ext} ne les accepte pas tels quels')
     return sortie
+
+
+def _boites_mp4(data, debut, fin):
+    """(type, début du contenu, fin) des boîtes d'un mp4 entre debut et fin, sans descendre."""
+    i = debut
+    while i + 8 <= fin:
+        taille, typ = struct.unpack('>I4s', data[i:i + 8])
+        entete = 8
+        if taille == 1:
+            taille, entete = struct.unpack('>Q', data[i + 8:i + 16])[0], 16
+        elif taille == 0:
+            taille = fin - i
+        if taille < entete:
+            return
+        yield typ, i + entete, min(i + taille, fin)
+        i += taille
+
+
+def desactiver_sous_titres_mp4(sortie, garde_un_defaut=False):
+    """Efface le drapeau « enabled » (bit 0 des flags du tkhd) des pistes de sous-titres d'un mp4, sur place, sauf si une
+    piste d'origine gardée a la disposition « default » (garde_un_defaut : on ne touche alors à rien). ffmpeg 6.1
+    (movenc, enable_tracks) pose ce drapeau sur la première piste de sous-titres même quand aucune n'est « default », et
+    mpv la sélectionne alors d'office, paroles comprises (essai du 09/11/2026) ; ffprobe lit ce drapeau comme « default »,
+    la disposition du fichier fini ne dit donc rien. Les tailles ne changent pas. Rend le nombre de pistes désactivées."""
+    if garde_un_defaut:
+        return 0
+    data = bytearray(Path(sortie).read_bytes())
+    n = 0
+    for typ, c, f in _boites_mp4(data, 0, len(data)):
+        if typ != b'moov':
+            continue
+        for t2, c2, f2 in _boites_mp4(data, c, f):
+            if t2 != b'trak':
+                continue
+            tkhd = handler = None
+            for t3, c3, f3 in _boites_mp4(data, c2, f2):
+                if t3 == b'tkhd':
+                    tkhd = c3 + 3
+                elif t3 == b'mdia':
+                    for t4, c4, _ in _boites_mp4(data, c3, f3):
+                        if t4 == b'hdlr':
+                            handler = bytes(data[c4 + 8:c4 + 12])
+            if tkhd is not None and handler in (b'sbtl', b'text', b'subt') and data[tkhd] & 1:
+                data[tkhd] &= 0xFE
+                n += 1
+    if n:
+        tmp = Path(sortie).with_name('.' + Path(sortie).name + '.tmp')
+        tmp.write_bytes(bytes(data))
+        os.replace(tmp, sortie)
+    return n
 
 
 def titres_pistes(voix, autotune=False):
@@ -2428,14 +2605,14 @@ def pistes_en_plus(t, tv, voix, gains, autotune=False):
             {'fichier': t / 'voix_source.wav', 'titre': titres['voix_origine']}]
 
 
-def video_avec_repli(t, mix, dossier, base, pistes_st, pistes_a, plan, titre, langue=None):
-    """remettre_sur_video (langue : étiquette des pistes audio) ; refusée par ffmpeg, elle est refaite sans les pistes
-    audio en plus, puis aussi sans les pistes de paroles : la vidéo doublée passe avant elles. Rend (vidéo, pistes de
-    paroles gardées, pistes audio en plus gardées)."""
+def video_avec_repli(t, mix, dossier, base, pistes_st, pistes_a, plan, titre, langue=None, encodees=None):
+    """remettre_sur_video (langue : étiquette des pistes audio ; encodees : PistesEncodees du mixage) ; refusée par
+    ffmpeg, elle est refaite sans les pistes audio en plus, puis aussi sans les pistes de paroles : la vidéo doublée
+    passe avant elles. Rend (vidéo, pistes de paroles gardées, pistes audio en plus gardées)."""
     essais = [(pistes_st, pistes_a)] + [(pistes_st, [])] * bool(pistes_a) + [([], [])] * bool(pistes_st)
     for i, (st, pa) in enumerate(essais):
         try:
-            return remettre_sur_video(t, mix, dossier, base, st, plan, pa, titre, langue), st, pa
+            return remettre_sur_video(t, mix, dossier, base, st, plan, pa, titre, langue, encodees), st, pa
         except Exception as e:  # noqa: BLE001
             if i == len(essais) - 1:
                 raise
@@ -2696,8 +2873,9 @@ def preparer_paroles(tv, dossier, base, decalage, duree_video=None, decalage_ffm
         dv = caler_paroles(json.loads(json.dumps(d)), decalage_ffmpeg)
         fin_v = None if duree_video is None else duree_video - float(decalage) + float(decalage_ffmpeg)
     pistes, fichiers = [], []
+    (dossier / DOSSIER_PAROLES).mkdir(exist_ok=True)
     for n, (nom_f, code_f, titre, segments) in enumerate(a_ecrire):
-        srt = dossier / nom_f
+        srt = dossier / DOSSIER_PAROLES / nom_f
         ecrire_srt(segments(d), srt, duree_video)
         fichiers.append(srt)
         if dv is not None:
@@ -2709,8 +2887,28 @@ def preparer_paroles(tv, dossier, base, decalage, duree_video=None, decalage_ffm
     lrc = dossier / f'{base}.lrc'
     ecrire_lrc(d['segments'], lrc, decalage, base, d['langue'])
     fichiers.append(lrc)
-    info.update({'fichiers': [f.name for f in fichiers], 'nom_langue': nom})
+    deplaces = ranger_anciens_srt(dossier, base)
+    info.update({'fichiers': [f.relative_to(dossier).as_posix() for f in fichiers], 'nom_langue': nom})
+    if deplaces:
+        info['srt_deplaces'] = deplaces
     return pistes, fichiers, info
+
+
+# Les .srt vont dans un sous-dossier de la sortie : à côté de la vidéo, VLC et mpv les chargent d'office comme
+# sous-titres (depuis le 09/11/2026). Le .lrc reste à côté du mp3, pour les lecteurs de musique.
+DOSSIER_PAROLES = 'paroles'
+
+
+def ranger_anciens_srt(dossier, base):
+    """Un doublage d'avant le 09/11/2026 a ses .srt à côté de la vidéo (<base>.<langue>.srt, .fr.srt,
+    .traduction.fr.srt) : ils sont refaits dans paroles/ par preparer_paroles, ceux d'à côté sont retirés. Rend leurs
+    noms."""
+    anciens = sorted(f for f in dossier.iterdir()
+                     if f.is_file() and f.name.startswith(base + '.') and f.suffix == '.srt'
+                     and f.name.count('.') >= base.count('.') + 2)
+    for f in anciens:
+        f.unlink()
+    return [f.name for f in anciens]
 
 
 # --- Une vidéo -------------------------------------------------------------------------------------------------------
@@ -2755,12 +2953,461 @@ def emplacements(video, debut, duree, a, voix):
             'tv': dossier / 'travail' / voix['id'], 'base': f"{video.stem} - voix {voix['affichage']}"}
 
 
+# --- Une voix par chanteur : corriger à la main qui chante quoi (--remix --passage / --affectation) -------------------
+#
+# L'attribution automatique d'un passage à un chanteur se trompe parfois. Le noyau, avec versions_duo (travail/<a+b>/
+# versions/), a converti chaque passage de chaque piste dans les deux voix cibles (ou les passages utiles) ; le remix
+# recompose la voix convertie sur le PC, sans Kaggle, d'après l'affectation voulue : mêmes morceaux, mêmes fondus, même
+# porte des silences, même mise au niveau de chaque piste, même garde-crête que le noyau. Sans correction, rien n'est
+# recomposé : voix_convertie.flac reste celle du noyau, au bit près.
+#
+# Affectation gardée (travail/<a+b>/affectation.json) :
+#   {"format": 1, "voix_cibles": ["jules", "marie"], "passages": {"12": "marie", "13": "deux"},
+#    "pistes": {"14": {"choeurs_sec": "jules"}}}
+# Valeurs : le nom d'une voix cible, ou « deux » (les deux voix ensemble, à puissance égale). « pistes » (une piste d'un
+# passage) l'emporte sur « passages ». Un passage sans entrée garde la voix automatique de chaque piste.
+
+AFFECTATION = 'affectation.json'
+DOSSIER_VERSIONS = 'versions'
+CHOIX_DEUX = ('deux', 'les-deux', 'lesdeux', 'both', 'ensemble')
+CHOIX_AUTO = ('auto', 'automatique')
+PISTES_NOMS = {'principale': 'lead_sec', 'lead': 'lead_sec', 'lead_sec': 'lead_sec', 'choeurs': 'choeurs_sec',
+               'chœurs': 'choeurs_sec', 'choeurs_sec': 'choeurs_sec', 'secours': 'secours', 'voix': 'voix',
+               'complete': 'voix'}
+MESSAGE_SANS_VERSIONS = ("ce doublage n'a pas les deux versions de chaque passage ({detail}) : refaites-le (sans "
+                         '--versions-duo non) pour pouvoir corriger qui chante quoi')
+VOIX_SEULE_SANS_CHOIX = "ce doublage n'a pas une voix par chanteur : rien à corriger (--voix homme:A,femme:B)"
+
+
+def charger_noyau():
+    """Le noyau comme module, sans rien lancer : ses réglages (remplacés avant l'envoi) valent {}. Sert aux fonctions
+    de numpy seul (enveloppes, passages par voix) que le PC refait comme lui."""
+    import base64
+    import types
+    src = SCRIPT_NOYAU.read_text(encoding='utf-8').replace("'__REGLAGES__'", repr(base64.b64encode(b'{}').decode()))
+    m = types.ModuleType('doubler_kaggle')
+    m.__file__ = str(SCRIPT_NOYAU)
+    exec(compile(src, str(SCRIPT_NOYAU), 'exec'), m.__dict__)
+    return m
+
+
+def lire_affectation(tv):
+    """L'affectation gardée dans travail/<a+b>/, ou None (automatique)."""
+    f = tv / AFFECTATION
+    if not f.is_file():
+        return None
+    try:
+        a = json.loads(f.read_text(encoding='utf-8'))
+    except ValueError as e:
+        raise RuntimeError(f'{f} illisible ({e}) : le corriger, ou le supprimer pour revenir à l\'automatique') from None
+    return a if isinstance(a, dict) else None
+
+
+def ecrire_affectation(tv, aff):
+    """Garde l'affectation (écriture atomique) ; None : revient à l'automatique (fichier effacé)."""
+    f = tv / AFFECTATION
+    if not aff or not (aff.get('passages') or aff.get('pistes')):
+        f.unlink(missing_ok=True)
+        return
+    tmp = f.with_name(f.name + '.tmp')
+    tmp.write_text(json.dumps(aff, ensure_ascii=False, indent=1) + '\n', encoding='utf-8')
+    os.replace(tmp, f)
+
+
+def nom_voix_choisie(texte, voix_cibles, cles):
+    """« marie », « femme », « deux » ou « auto » -> un nom de voix cible, « deux » ou « auto » (ValueError sinon).
+    cles : {clé (homme, femme, chanteur1…) -> nom de voix}."""
+    t = str(texte).strip().lower()
+    if t in CHOIX_AUTO:
+        return 'auto'
+    if t in CHOIX_DEUX:
+        return 'deux'
+    if t in voix_cibles:
+        return t
+    if t.replace('-', '').replace('_', '').replace(' ', '') in cles:
+        return cles[t.replace('-', '').replace('_', '').replace(' ', '')]
+    raise ValueError(f"voix « {texte} » inconnue (voix de ce doublage : {', '.join(voix_cibles)} ; ou deux, auto)")
+
+
+def lire_passage(texte, voix_cibles, cles):
+    """« 12=marie », « 12-15=deux », « 12,14=jules », « 12/choeurs=jules » -> ([numéros], piste ou None, choix)."""
+    m = re.fullmatch(r'\s*([\d,\- ]+?)\s*(?:/\s*([\w]+))?\s*=\s*(\S.*?)\s*', str(texte))
+    if not m:
+        raise ValueError(f'« {texte} » : N=voix attendu (12=marie, 12-15=deux, 12/choeurs=jules, 12=auto)')
+    numeros = []
+    for morceau in m.group(1).split(','):
+        morceau = morceau.strip()
+        if not morceau:
+            continue
+        borne = re.fullmatch(r'(\d+)\s*-\s*(\d+)', morceau)
+        if borne:
+            a, b = int(borne.group(1)), int(borne.group(2))
+            if b < a:
+                raise ValueError(f'« {morceau} » : plage à l\'envers')
+            numeros += range(a, b + 1)
+        elif morceau.isdigit():
+            numeros.append(int(morceau))
+        else:
+            raise ValueError(f'« {morceau} » : numéro de passage attendu')
+    piste = None
+    if m.group(2):
+        piste = PISTES_NOMS.get(m.group(2).lower())
+        if piste is None:
+            raise ValueError(f"piste « {m.group(2)} » inconnue (principale, choeurs, secours, voix)")
+    return numeros, piste, nom_voix_choisie(m.group(3), voix_cibles, cles)
+
+
+def affectation_demandee(a, tv, voix_cibles, cles):
+    """L'affectation voulue : celle qui est gardée, remplacée par --affectation (fichier ou « auto »), puis complétée par
+    chaque --passage. Rend (affectation ou None, modifiée : vrai si une option y a touché)."""
+    aff = lire_affectation(tv)
+    modifiee = False
+    demande = getattr(a, 'affectation', None)
+    if demande is not None:
+        modifiee = True
+        if str(demande).strip().lower() in CHOIX_AUTO:
+            aff = None
+        else:
+            try:
+                aff = json.loads(Path(demande).expanduser().read_text(encoding='utf-8'))
+            except (OSError, ValueError) as e:
+                raise RuntimeError(f'--affectation {demande} : {e}') from None
+            if not isinstance(aff, dict):
+                raise RuntimeError(f'--affectation {demande} : un objet JSON est attendu')
+    aff = {'format': 1, 'voix_cibles': list(voix_cibles), 'passages': dict((aff or {}).get('passages') or {}),
+           'pistes': {k: dict(v) for k, v in ((aff or {}).get('pistes') or {}).items()}}
+    for texte in getattr(a, 'passage', None) or []:
+        modifiee = True
+        try:
+            numeros, piste, choix = lire_passage(texte, voix_cibles, cles)
+        except ValueError as e:
+            raise RuntimeError(f'--passage {texte} : {e}') from None
+        for i in numeros:
+            k = str(i)
+            if piste is None:   # un choix pour tout le passage remplace ses corrections piste par piste
+                aff['pistes'].pop(k, None)
+                if choix == 'auto':
+                    aff['passages'].pop(k, None)
+                else:
+                    aff['passages'][k] = choix
+            elif choix == 'auto':
+                aff['pistes'].get(k, {}).pop(piste, None)
+            else:
+                aff['pistes'].setdefault(k, {})[piste] = choix
+    # normalisation : des noms de voix de ce doublage, « deux »
+    for k, v in list(aff['passages'].items()):
+        try:
+            aff['passages'][k] = nom_voix_choisie(v, voix_cibles, cles)
+        except ValueError as e:
+            raise RuntimeError(f'affectation, passage {k} : {e}') from None
+    for k, d in list(aff['pistes'].items()):
+        for piste, v in list(d.items()):
+            if PISTES_NOMS.get(piste) is None:
+                raise RuntimeError(f'affectation, passage {k} : piste « {piste} » inconnue')
+            try:
+                d[PISTES_NOMS[piste]] = nom_voix_choisie(v, voix_cibles, cles)
+            except ValueError as e:
+                raise RuntimeError(f'affectation, passage {k}/{piste} : {e}') from None
+            if PISTES_NOMS[piste] != piste:
+                del d[piste]
+        if not d:
+            del aff['pistes'][k]
+    aff['passages'] = dict(sorted(((k, v) for k, v in aff['passages'].items() if v != 'auto'), key=lambda kv: int(kv[0])))
+    aff['pistes'] = dict(sorted(((k, {p: v for p, v in d.items() if v != 'auto'}) for k, d in aff['pistes'].items()),
+                                key=lambda kv: int(kv[0])))
+    aff['pistes'] = {k: d for k, d in aff['pistes'].items() if d}
+    if not aff['pistes']:
+        del aff['pistes']
+    if not aff['passages'] and not aff.get('pistes'):
+        aff = None
+    return aff, modifiee
+
+
+def lire_stereo(fichier):
+    """Un fichier audio lu par ffmpeg en flottant 32 bits, deux canaux, 44,1 kHz : tableau (n, 2)."""
+    import numpy as np
+    r = subprocess.run(['ffmpeg', '-v', 'error', '-nostdin', '-i', str(fichier), '-ac', '2', '-ar', '44100', '-f', 'f32le',
+                        '-'], capture_output=True)
+    if r.returncode:
+        raise RuntimeError(f'son illisible : {fichier}\n{r.stderr.decode(errors="replace")[-300:]}')
+    return np.frombuffer(r.stdout, np.float32).reshape(-1, 2)
+
+
+def recette_versions(tv, rapport):
+    """versions/versions.json du doublage (les deux versions de chaque passage), ou une erreur claire : un doublage plus
+    ancien, fait avec --versions-duo non, ou dont les versions n'ont pas pu être écrites."""
+    v = rapport.get('versions')
+    f = tv / DOSSIER_VERSIONS / 'versions.json'
+    if not isinstance(v, dict):
+        raise RuntimeError(MESSAGE_SANS_VERSIONS.format(detail='doublage fait avant le 09/11/2026'))
+    if v.get('mode') in (None, 'non'):
+        raise RuntimeError(MESSAGE_SANS_VERSIONS.format(detail='fait avec --versions-duo non'))
+    if v.get('erreur'):
+        raise RuntimeError(MESSAGE_SANS_VERSIONS.format(detail=f"le noyau ne les a pas écrites : {v['erreur']}"))
+    if not f.is_file():
+        raise RuntimeError(MESSAGE_SANS_VERSIONS.format(detail=f'{f} manque'))
+    return json.loads(f.read_text(encoding='utf-8'))
+
+
+def voix_de_la_piste(aff, rec_piste, m, i, voix_cibles):
+    """Indices des voix de la piste rec_piste sur le morceau m (liste de la recette) : l'affectation (la piste d'abord,
+    puis le passage), sinon la voix automatique."""
+    if aff:
+        choix = ((aff.get('pistes') or {}).get(str(i)) or {}).get(rec_piste['nom']) or (aff.get('passages') or {}).get(str(i))
+        if choix == 'deux':
+            return list(range(len(voix_cibles)))
+        if choix:
+            return [voix_cibles.index(choix)]
+    return [m[5]]
+
+
+def recomposer(tv, rec, aff, rapport):
+    """La voix convertie de l'affectation aff d'après les deux versions de chaque passage (recette rec). Rend (voix
+    convertie mono, code de la voix entendue à chaque trame de 10 ms, voix et décalage dominants, choix de chaque piste
+    sur chaque passage {(piste, i): [voix]}, gains de mise au niveau {piste: gain}).
+    Même assemblage que le noyau : chaque passage de chaque piste vient de la couche de sa voix (fondus et porte déjà
+    appliqués) ; chaque piste nettoyée reprend le niveau de sa source, la piste de secours celui de la voix complète, puis
+    les pistes s'additionnent et le garde-crête ramène la somme sous 0,99."""
+    import numpy as np
+    N = charger_noyau()
+    n, pad, k10 = rec['echantillons'], rec['pad'], rec['trames']
+    noms = rec['voix_cibles']
+    nv = len(noms)
+    total = np.zeros(n, np.float32)
+    choix, gains = {}, {}
+    present = np.zeros((nv, k10), bool)
+    dom_v, dom_d, pris = np.full(k10, -1, np.int64), np.zeros(k10), np.zeros(k10, bool)
+    pas = rec['trame_echantillons']
+    voix_seule = None
+    for p in rec['pistes']:
+        couches = {}
+
+        def couche(j, parite):
+            if j not in couches:
+                paire = lire_stereo(tv / DOSSIER_VERSIONS / p['fichiers'][j]) / np.float32(p['gains_fichiers'][j])
+                couches[j] = paire[:n] if len(paire) >= n else np.vstack([paire, np.zeros((n - len(paire), 2), np.float32)])
+            return couches[j][:, parite]
+        y = np.zeros(n, np.float32)
+        v_t, d_t, couvert = np.full(k10, -1, np.int64), np.zeros(k10), np.zeros(k10, bool)
+        pour_trames = []
+        for m in p['morceaux']:
+            i, a, b, fa, fb, v, dec, dispo = m
+            voix = voix_de_la_piste(aff, p, m, i, noms)
+            choix[(p['nom'], i)] = voix
+            manque = [noms[j] for j in voix if j not in dispo]
+            if manque:
+                raise RuntimeError(f"passage {i} (piste {p['nom']}) : pas de version dans la voix {', '.join(manque)} "
+                                   f"(doublage fait avec --versions-duo {rec.get('mode')}) : choisir {noms[v]}, ou refaire "
+                                   'le doublage avec --versions-duo toutes')
+            lo, hi = max(0, a - pad), min(n, b + pad)
+            poids = np.float32(1.0 if len(voix) == 1 else 1 / math.sqrt(len(voix)))
+            for j in voix:
+                y[lo:hi] += couche(j, i % 2)[lo:hi] * poids
+            ta, tb = a // pas, min(-(-b // pas), k10)
+            v_t[ta:tb], couvert[ta:tb] = voix[0], True
+            d_t[ta:tb] = dec if voix[0] == v else rec['decalages'][voix[0]]
+            pour_trames.append((ta, tb, voix))
+        ouvert = np.zeros(k10, bool)
+        for a_, b_ in p['ouvert']:
+            ouvert[a_:b_] = True
+        ouvert &= couvert
+        for ta, tb, voix in pour_trames:
+            for j in voix:
+                present[j, ta:tb] |= ouvert[ta:tb]
+        neuf = ouvert & ~pris
+        dom_v[neuf], dom_d[neuf] = v_t[neuf], d_t[neuf]
+        pris |= ouvert
+        # mise au niveau de la piste, comme le noyau (voix principale, chœurs : leur source ; secours : la voix complète)
+        niv, g = p['niveau'], 1.0
+        if niv['type'] == 'source' and p['morceaux']:
+            e = N.enveloppe_db(y)
+            act = np.zeros(len(e), bool)
+            for a_, b_ in niv['actif']:
+                act[a_:b_] = True
+            lm = min(len(e), len(act))
+            ry = (float(np.sqrt(np.mean(10 ** (e[:lm][act[:lm]] / 10)))) + 1e-9 if act[:lm].any()
+                  else float(np.sqrt(np.mean(y.astype(np.float64) ** 2))) + 1e-9)
+            g = niv['rms_source'] / max(ry, 1e-9)
+        elif niv['type'] == 'secours' and p['morceaux']:
+            masque = np.zeros(n, bool)
+            for a_, b_ in niv['porte']:
+                masque[a_:b_] = True
+            if masque.any():
+                sy = float(np.sqrt(np.mean(y.astype(np.float64)[masque] ** 2)))
+                g = (float(np.clip(niv['rms_source'] / sy, 10 ** (-niv['borne_db'] / 20), 10 ** (niv['borne_db'] / 20)))
+                     if sy > 1e-9 and niv['rms_source'] > 1e-9 else 1.0)
+        gains[p['nom']] = g
+        total += (y * np.float32(g)).astype(np.float32)
+    combien = present.sum(0)
+    code = np.where(combien == 0, -1, np.where(combien >= 2, nv, np.argmax(present, axis=0)))
+    crete = float(np.abs(total).max())
+    if crete > 0.99:
+        total *= np.float32(0.99 / crete)
+    return total, code, (dom_v, dom_d), choix, gains
+
+
+def ecrire_flac_mono(x, flac):
+    """Voix convertie mono 24 bits (comme le noyau l'écrit)."""
+    import numpy as np
+    r = subprocess.run(['nice', '-n', '10', 'ffmpeg', '-v', 'error', '-y', '-f', 'f32le', '-ar', '44100', '-ac', '1', '-i',
+                        '-', '-c:a', 'flac', '-sample_fmt', 's32', '-bits_per_raw_sample', '24', '-compression_level', '8',
+                        str(flac)], input=np.clip(x, -1, 1).astype(np.float32).tobytes(), capture_output=True)
+    if r.returncode:
+        raise RuntimeError(f'écriture de {flac} impossible : {r.stderr.decode(errors="replace")[-300:]}')
+
+
+def sauver_automatique(tv, rapport):
+    """Avant la première correction : garde ce que le noyau avait rendu (voix convertie, courbes, rapport), pour y revenir."""
+    for nom, copie in (('voix_convertie.flac', 'voix_convertie_auto.flac'), ('courbes.json', 'courbes_auto.json')):
+        if (tv / nom).exists() and not (tv / copie).exists():
+            shutil.copy2(tv / nom, tv / copie)
+    aff = rapport.get('affectation') or {}
+    if 'auto' not in aff:
+        aff['auto'] = {k: aff.get(k) for k in ('passages', 'secondes_par_voix', 'morceaux_en_duo')}
+        rapport['affectation'] = aff
+    for m in rapport.get('morceaux') or []:
+        if m.get('voix_pistes') is not None and 'voix_pistes_auto' not in m:
+            m.update({'voix_pistes_auto': m['voix_pistes'], 'voix_cible_auto': m.get('voix_cible'),
+                      'decalage_auto': m.get('decalage'), 'base_auto': m.get('base')})
+
+
+def revenir_a_automatique(tv, rapport):
+    """L'affectation automatique du noyau remise telle quelle (fichiers et rapport) ; vrai si une correction existait."""
+    avait = (tv / 'voix_convertie_auto.flac').exists() or bool((rapport.get('affectation') or {}).get('manuelle'))
+    for nom, copie in (('voix_convertie.flac', 'voix_convertie_auto.flac'), ('courbes.json', 'courbes_auto.json')):
+        if (tv / copie).exists():
+            os.replace(tv / copie, tv / nom)
+    aff = rapport.get('affectation') or {}
+    auto = aff.pop('auto', None)
+    aff.pop('manuelle', None)
+    if auto:
+        aff.update({k: v for k, v in auto.items() if v is not None})
+    for m in rapport.get('morceaux') or []:
+        if 'voix_pistes_auto' in m:
+            m['voix_pistes'], m['voix_cible'] = m.pop('voix_pistes_auto'), m.pop('voix_cible_auto')
+            m['decalage'], m['base'] = m.pop('decalage_auto'), m.pop('base_auto')
+        m.pop('corrige', None)
+    return avait
+
+
+def appliquer_affectation(tr, a, voix):
+    """Remix d'une voix par chanteur : si l'affectation voulue (gardée, --affectation, --passage) corrige quelque chose,
+    refait la voix convertie (voix_convertie.flac), les courbes et le rapport d'après les deux versions de chaque passage ;
+    sinon, revient à l'automatique si une correction existait. Sans option ni correction gardée : rien. Doit passer
+    avant la lecture du rapport par finir(). Rend la liste des passages corrigés (vide : automatique)."""
+    tv = tr['tv']
+    demande = getattr(a, 'affectation', None) is not None or bool(getattr(a, 'passage', None))
+    membres = voix_membres(voix)
+    if len(membres) < 2:
+        if demande:
+            raise RuntimeError(VOIX_SEULE_SANS_CHOIX)
+        return []
+    rapport = json.loads((tv / 'rapport.json').read_text())
+    noms = [m['id'] for m in membres]
+    cles = {m['cle']: m['id'] for m in membres if m.get('cle')}
+    aff, modifiee = affectation_demandee(a, tv, noms, cles)
+    if aff is None:
+        if modifiee or (tv / AFFECTATION).exists():
+            ecrire_affectation(tv, None)
+        if revenir_a_automatique(tv, rapport):
+            (tv / 'rapport.json').write_text(json.dumps(rapport, ensure_ascii=False, indent=1))
+            dire('affectation automatique rétablie (voix convertie, courbes et rapport du noyau)')
+        return []
+    rec = recette_versions(tv, rapport)
+    if rec['voix_cibles'] != noms:
+        raise RuntimeError(f"voix du doublage {rec['voix_cibles']} et de --voix {noms} différentes")
+    valides = {m[0] for p in rec['pistes'] for m in p['morceaux']}
+    inconnus = sorted({int(k) for k in [*aff.get('passages', {}), *aff.get('pistes', {})] if int(k) not in valides})
+    if inconnus:
+        raise RuntimeError(f"passage(s) {', '.join(map(str, inconnus))} sans voix à corriger (muets, ou inexistants) ; "
+                           f"passages chantés : {min(valides)} à {max(valides)}")
+    t0 = time.time()
+    sauver_automatique(tv, rapport)
+    total, code, (dom_v, dom_d), choix, gains = recomposer(tv, rec, aff, rapport)
+    ecrire_flac_mono(total, tv / 'voix_convertie.flac')
+    ecrire_affectation(tv, aff)
+    corriges = sorted({int(k) for k in [*aff.get('passages', {}), *aff.get('pistes', {})]})
+    mettre_a_jour_rapport(tv, rapport, rec, aff, code, dom_v, dom_d, choix, corriges)
+    mettre_a_jour_courbes(tv, rec, code, dom_v, dom_d)
+    (tv / 'rapport.json').write_text(json.dumps(rapport, ensure_ascii=False, indent=1))
+    dire(f"affectation corrigée à la main : {len(corriges)} passage(s) ({', '.join(map(str, corriges[:12]))}"
+         f"{', …' if len(corriges) > 12 else ''}), voix convertie refaite depuis les deux versions en {time.time() - t0:.1f} s")
+    return corriges
+
+
+def mettre_a_jour_rapport(tv, rapport, rec, aff, code, dom_v, dom_d, choix, corriges):
+    """rapport.json suit l'affectation : passages entendus de chaque voix, secondes par voix, passages en duo, chaque
+    morceau (voix des pistes, voix et décalage du passage, « corrige »), et affectation.manuelle."""
+    import numpy as np
+    N = charger_noyau()
+    noms = rec['voix_cibles']
+    nv = len(noms)
+    aff_r = rapport.setdefault('affectation', {})
+    aff_r['passages'] = N.passages_voix(code, noms, 0.01, 0.2)
+    aff_r['secondes_par_voix'] = {**{v: round(float((code == j).sum()) * 0.01, 1) for j, v in enumerate(noms)},
+                                  'ensemble': round(float((code == nv).sum()) * 0.01, 1)}
+    en_duo = 0
+    for m in rapport.get('morceaux') or []:
+        i = m.get('i')
+        piste_voix = {p: v for (p, k), v in choix.items() if k == i}
+        if not piste_voix or m.get('voix_pistes_auto') is None:
+            continue
+        vp = {p: (noms[v[0]] if len(v) == 1 else [noms[j] for j in v]) for p, v in piste_voix.items()}
+        m['voix_pistes'] = vp
+        tous = {noms[j] for v in piste_voix.values() for j in v}
+        en_duo += len(tous) >= 2
+        modifie = i in corriges and vp != m['voix_pistes_auto']
+        m['corrige'] = bool(i in corriges)
+        if modifie:
+            principale = next(iter(vp.values()))
+            premier = principale if isinstance(principale, str) else principale[0]
+            m['voix_cible'] = premier
+            m['decalage'] = next((mo[6] if noms.index(premier) == mo[5] else rec['decalages'][noms.index(premier)]
+                                  for p in rec['pistes'] for mo in p['morceaux'] if mo[0] == i), m.get('decalage'))
+            m['base'] = 'corrigé à la main : ' + ', '.join(f"{p} → {v if isinstance(v, str) else ' + '.join(v)}"
+                                                           for p, v in vp.items())
+        else:
+            m['voix_cible'], m['decalage'], m['base'] = m['voix_cible_auto'], m['decalage_auto'], m['base_auto']
+    aff_r['morceaux_en_duo'] = int(en_duo)
+    aff_r['voix_utilisees'] = [v for v in noms if aff_r['secondes_par_voix'].get(v) or aff_r['secondes_par_voix']['ensemble']]
+    aff_r['manuelle'] = {'fichier': AFFECTATION, 'passages': aff.get('passages', {}), 'pistes': aff.get('pistes', {}),
+                         'corriges': corriges, 'voix_convertie': 'voix_convertie.flac',
+                         'automatique': 'voix_convertie_auto.flac'}
+
+
+def mettre_a_jour_courbes(tv, rec, code, dom_v, dom_d):
+    """courbes.json suit l'affectation : voix entendue à chaque trame, décalage de la piste dominante, et mélodie de la
+    voix convertie (celle de la voix entendue, d'après la mélodie de chaque voix sur toute la chanson)."""
+    import numpy as np
+    f = tv / 'courbes.json'
+    if not f.is_file():
+        return
+    c = json.loads(f.read_text())
+    n20 = len(c['source_hz'])
+    N = charger_noyau()
+    c20 = [int(v) for v in N.a_longueur(code, 2 * n20, -1)[::2][:n20]]
+    dv = np.asarray(N.a_longueur(dom_v, 2 * n20, -1)[::2][:n20], np.int64)
+    dd = N.a_longueur(dom_d, 2 * n20, 0.0)[::2][:n20]
+    dec = np.asarray(c['decalage_dt'], np.float64)
+    ent = np.asarray(c20) >= 0
+    dec = np.where(ent, dd, dec)
+    hz = np.zeros(n20)
+    for j, f0 in enumerate(rec['f0_voix_hz']):
+        f0 = np.asarray(N.a_longueur(f0, n20, 0.0))[:n20]
+        sel = ent & (dv == j)
+        hz[sel] = f0[sel]
+    c.update({'voix_par_trame': c20, 'convertie_hz': [round(float(v), 1) if v > 1 else 0 for v in hz],
+              'decalage_dt': [int(v) if float(v).is_integer() else round(float(v), 1) for v in dec]})
+    f.write_text(json.dumps(c, separators=(',', ':')))
+
+
 def finir(tr, a, voix, temps_local=None):
     """Mixage, MP3, remise sur la vidéo (et extraits de comparaison des pas de diffusion) depuis travail/."""
     t, tv, dossier, base = tr['travail'], tr['tv'], tr['dossier'], tr['base']
     for f in (t / 'original.wav', t / 'voix_source.wav', t / 'source.json', tv / 'voix_convertie.flac', tv / 'rapport.json'):
         if not f.exists():
             raise RuntimeError(f'travail incomplet ({f} manque) : relancer sans --remix')
+    appliquer_affectation(tr, a, voix)   # une voix par chanteur : l'affectation corrigée à la main, si elle y est
     rapport = json.loads((tv / 'rapport.json').read_text())
     mode = rapport['mode']
     voix_db = a.voix_db if a.voix_db is not None else (4.0 if mode == 'chant' else 0.0)
@@ -2807,7 +3454,8 @@ def finir(tr, a, voix, temps_local=None):
     debut = time.time()
     paroles_on = getattr(a, 'paroles', True)
     pistes_st, fichiers_paroles, info_paroles, chantee = [], [], {'demande': paroles_on}, None
-    with Etape('video', titre, 'son remis sur la vidéo (image copiée)' + (', paroles en sous-titres' if paroles_on else '')):
+    with Etape('video', titre, 'son remis sur la vidéo (image copiée)' + (', paroles en sous-titres' if paroles_on else '')), \
+            PistesEncodees(t) as encodees:
         plan = plan_video(t)
         if paroles_on:
             try:   # paroles.json, .srt : temps de la vidéo doublée ; pistes de la vidéo : temps de la coupe
@@ -2831,7 +3479,8 @@ def finir(tr, a, voix, temps_local=None):
             pistes_a = pistes_en_plus(t, tv, voix, gains) if toutes else []
             demandees = pistes_st
             sortie, pistes_st, pistes_a = video_avec_repli(t, tv / 'mix.wav', dossier, base, pistes_st, pistes_a, plan,
-                                                           titres_pistes(voix)['doublage'], langue_a['etiquette'])
+                                                           titres_pistes(voix)['doublage'], langue_a['etiquette'],
+                                                           encodees)
             if demandees and not pistes_st:
                 info_paroles['raison'] = 'pistes de sous-titres refusées par ffmpeg (fichiers .srt et .lrc gardés)'
             info_pistes['video'] = [titres_pistes(voix)['doublage'], *(p['titre'] for p in pistes_a)]
@@ -2843,7 +3492,7 @@ def finir(tr, a, voix, temps_local=None):
                     pistes_at = pistes_en_plus(t, tv, voix, gains, autotune=True) if toutes else []
                     sortie_at, _, pistes_at = video_avec_repli(t, tv / 'mix_autotune.wav', dossier, b_at, pistes_st,
                                                                pistes_at, plan, titres_pistes(voix, True)['doublage'],
-                                                               langue_a['etiquette'])
+                                                               langue_a['etiquette'], encodees)
                     info_at['fichiers']['video'] = sortie_at.name
                     info_pistes['video_autotune'] = [titres_pistes(voix, True)['doublage'],
                                                      *(p['titre'] for p in pistes_at)]
@@ -2985,7 +3634,7 @@ class Verrou:
         return False
 
 
-CHAMPS_SESSION = ('id', 'nom', 'video', 'dossier', 'travail', 'tv', 'base', 'entree', 'gain_entree', 'taille_envoi',
+CHAMPS_SESSION = ('id', 'nom', 'video', 'dossier', 'travail', 'tv', 'base', 'entree', 'gain_entree', 'taille_envoi', 'bits_envoi',
                   'duree_audio_s', 'extraction_s', 'debut_epoch', 'debut_demande', 'duree_demande')
 
 
@@ -3049,6 +3698,10 @@ def ranger_retour(travaux, retour, kdir):
         if not src.is_dir():
             continue
         tr['tv'].mkdir(parents=True, exist_ok=True)
+        # un nouveau doublage remplace l'ancien : plus d'affectation corrigée, de copie de l'automatique ni de versions
+        for ancien in (AFFECTATION, 'voix_convertie_auto.flac', 'courbes_auto.json'):
+            (tr['tv'] / ancien).unlink(missing_ok=True)
+        shutil.rmtree(tr['tv'] / DOSSIER_VERSIONS, ignore_errors=True)
         try:
             flac = src / 'voix_source.flac'
             if flac.exists():
@@ -3089,6 +3742,7 @@ def finir_travaux(travaux, a, voix, session, temps, envoi_s, estimation):
             # la musique seule (original - voix isolée) est calculée et vérifiée par finir(), comme pour --remix
             temps_local = {'extraction_s': tr.get('extraction_s'), 'envoi_jeu_s': envoi_s,
                            'envoi_flac_mo': round(tr['taille_envoi'] / 1e6, 1) if tr.get('taille_envoi') else None,
+                           'envoi_flac_bits': tr.get('bits_envoi'),
                            'gain_entree_db': round(20 * math.log10(tr['gain_entree']), 3) if tr.get('gain_entree') else None,
                            'attente_demarrage_noyau_s': attente, 'version_noyau': temps.get('version_noyau'),
                            'noyau_depuis_envoi_s': temps['noyau_depuis_envoi_s'], 'estimation_noyau_s': estimation,
@@ -3153,6 +3807,7 @@ def reglages_noyau(a, voix, ancres, travaux):
                              'gain_entree': tr['gain_entree'], 'gain_entree_db': round(20 * math.log10(tr['gain_entree']), 3),
                              'retour_flac': True} for tr in travaux]}
     if voix.get('membres'):
+        reglages['versions_duo'] = getattr(a, 'versions_duo', None) or VERSIONS_DUO_DEFAUT   # absent pour une seule voix
         reglages['voix_cibles'] = {'mode': voix['mode'], 'voix': [
             {'cle': m['cle'], 'nom': m['id'], 'fichier': f"voix-{m['id']}.wav", 'f0_parole_hz': m['f0'],
              'facteur_chant': FACTEUR_CHANT, 'affichage': m['affichage']} for m in voix['membres']]}
@@ -3208,7 +3863,7 @@ def traiter_lot(videos, a, voix):
         debut = time.time()
         try:
             with Etape('envoi', titres, f'son de {len(travaux)} vidéo(s) en FLAC vers le jeu privé {JEU}'):
-                envoyer_jeu(travaux, voix, kdir)
+                envoyer_jeu(travaux, voix, kdir, getattr(a, 'envoi_flac', 16))
         except Exception as e:  # noqa: BLE001
             return abandon(f'de l\'envoi sur Kaggle : {e}')
         envoi_s = round(time.time() - debut, 1)
@@ -3220,7 +3875,8 @@ def traiter_lot(videos, a, voix):
         cartes = cartes_prevues(getattr(a, 'gpu', 'auto'), MACHINE)
         # historique : les rapports de ce dossier de sortie, et ceux du dossier par défaut (un dossier neuf n'en a pas)
         estimation = estimer_noyau_s([tr['duree_audio_s'] for tr in travaux], a.pas, [a.sortie, SORTIES],
-                                     not a.sans_nettoyage, a.mode, a.moteur, a.paroles, len(voix_membres(voix)), cartes)
+                                     not a.sans_nettoyage, a.mode, a.moteur, a.paroles, len(voix_membres(voix)), cartes,
+                                     getattr(a, 'versions_duo', 'non') if voix.get('membres') else 'non')
         # limite du suivi : au moins le double de l'estimation (le nettoyage allonge beaucoup une longue chanson)
         attente_maxi = max((30 + 20 * len(travaux)) * 60, 2 * estimation + 30 * 60)
         dire(f"chaîne : chant → {'voix nettoyée' if not a.sans_nettoyage else 'voix complète (sans nettoyage)'}, "
@@ -3422,6 +4078,20 @@ def main():
                         'retirée (vidéo, mp3 et .lrc à la corbeille)')
     p.add_argument('--autotune-gamme', type=_gamme_option, default=None, metavar='GAMME',
                    help=f'gamme de l\'auto-tune : {GAMME_AIDE}')
+    p.add_argument('--versions-duo', choices=VERSIONS_DUO, default=None,
+                   help='une voix par chanteur : convertir chaque passage chanté dans les deux voix cibles, pour corriger '
+                        "ensuite qui chante quoi au remix (--passage, --affectation), sans Kaggle : toutes (défaut en duo : "
+                        "tous les passages), utiles (passages incertains, voisins d'un changement de voix, chantés "
+                        'ensemble : moins de GPU) ou non (comme avant). Défaut lu dans la configuration (clé « versions_duo »)')
+    p.add_argument('--passage', action='append', default=None, metavar='N=VOIX',
+                   help='avec --remix et une voix par chanteur : corriger qui chante le passage N (numéros de la frise et '
+                        'de rapport.json) : VOIX est une voix du doublage, sa clé (homme, femme, chanteur1…), deux (les '
+                        'deux ensemble) ou auto ; N-M une plage, N,M plusieurs, N/principale|choeurs|secours=VOIX une seule '
+                        "piste du passage. Répétable ; s'ajoute à l'affectation gardée (travail/A+B/affectation.json)")
+    p.add_argument('--affectation', default=None, metavar='FICHIER|auto',
+                   help="avec --remix et une voix par chanteur : l'affectation corrigée voulue en entier (fichier JSON, "
+                        'format de travail/A+B/affectation.json), ou auto pour revenir à l\'automatique. Un remix sans '
+                        "option garde l'affectation gardée")
     p.add_argument('--debut', type=float, default=None, help="début de l'extrait (s), pour un essai")
     p.add_argument('--duree', type=float, default=None, help="durée de l'extrait (s)")
     p.add_argument('--remix', action='store_true', help='refaire seulement le mixage et la vidéo depuis travail/ (sans Kaggle)')
@@ -3513,6 +4183,10 @@ def executer(p, a):
     moteur_donne = a.moteur is not None
     a.moteur = a.moteur or moteur_conf or MOTEUR_DEFAUT
     a.gpu = a.gpu or gpu_config(conf)
+    a.envoi_flac = envoi_flac_config(conf)
+    a.versions_duo = a.versions_duo or versions_duo_config(conf)
+    if (a.passage or a.affectation is not None) and not a.remix:
+        p.error('--passage et --affectation corrigent un doublage déjà fait : ils vont avec --remix')
     a.paroles = not a.sans_paroles and paroles_config(conf)
     a.autotune_reglage = reglage_autotune(a, conf)
     if a.voix is None:

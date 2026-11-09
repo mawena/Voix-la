@@ -137,6 +137,7 @@ class VoixCombinee(unittest.TestCase):
              'affichage': 'Jules'},
             {'cle': 'femme', 'nom': 'marie', 'fichier': 'voix-marie.wav', 'f0_parole_hz': 210.0, 'facteur_chant': 2.0,
              'affichage': 'Marie'}]})
+        self.assertEqual(deux.pop('versions_duo'), 'toutes')   # deux versions de chaque passage, seulement en duo
         self.assertEqual({k: v for k, v in deux.items() if k != 'voix_cibles'}, un)
 
     def test_estimation(self):
@@ -162,7 +163,7 @@ class VoixCombinee(unittest.TestCase):
         (t / 'original.wav').write_bytes(b'x' * 100)
         tr = {'travail': t, 'entree': 'entree-a.flac'}
         with mock.patch.object(self.D, 'kaggle', kaggle), mock.patch.object(self.D.time, 'sleep', lambda s: None), \
-                mock.patch.object(self.D, 'encoder_flac', lambda w, f: Path(f).write_bytes(b'f') or 1.0), \
+                mock.patch.object(self.D, 'encoder_flac', lambda w, f, bits=16: Path(f).write_bytes(b'f') or 1.0), \
                 contextlib.redirect_stdout(io.StringIO()) as dit:
             self.D.envoyer_jeu([tr], v, self.tmp / 'k')
         self.assertEqual(envoyes['fichiers'], ['dataset-metadata.json', 'entree-a.flac', 'voix-jules.wav', 'voix-marie.wav'])
@@ -253,7 +254,7 @@ class Session(unittest.TestCase):
             return {'pousse_epoch': 1000.0, 'version_noyau': 7, 'noyau_depuis_envoi_s': 60.0, 'rapatriement_s': 1.0}
         return lancer_noyau
 
-    def envoyer(self, travaux, voix, kdir):
+    def envoyer(self, travaux, voix, kdir, bits=16):
         self.envoyees = [m['id'] for m in self.D.voix_membres(voix)]
         for tr in travaux:
             tr['gain_entree'], tr['taille_envoi'] = 1.0, 1

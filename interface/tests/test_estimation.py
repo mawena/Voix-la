@@ -105,7 +105,7 @@ class EssaiEstimationDeDoubler(Dossier):
     def selon_doubler(self, durees, pas=30, sorties=None, nettoyage=True, mode="auto", moteur_="yingmusic",
                       paroles=True, voix_cibles=1, cartes=1):
         s = self.doubler.estimer_noyau_s(durees, pas, sorties or [self.sorties], nettoyage, mode, moteur_, paroles,
-                                         voix_cibles, cartes)
+                                         voix_cibles, cartes, "toutes" if voix_cibles > 1 else "non")   # son défaut en duo
         return round(float(s), 1)
 
     def test_la_session_est_celle_de_doubler(self):

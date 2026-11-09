@@ -69,7 +69,7 @@ class EssaiCapacites(EssaiIsole):
                          frozenset(moteur.OPTIONS_SUIVIES) - RECENTES - {"--reprendre", "--moteur", "--sans-nettoyage",
                                                                          "--sans-paroles", "--autotune",
                                                                          "--sans-autotune", "--autotune-gamme",
-                                                                         "--gpu"})
+                                                                         "--gpu", "--passage", "--affectation"})
         self.assertTrue(moteur.disponible())
 
     def test_doubler_introuvable(self):

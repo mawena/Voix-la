@@ -26,7 +26,7 @@ clonée, et rend la même vidéo et son audio en MP3.
 Toutes les vidéos d'une même commande partent dans une seule session Kaggle :
 .IP 1. 4
 sur le PC, le son de chaque vidéo est extrait et envoyé en FLAC 24 bits dans
-un jeu de données privé ;
+un jeu de données privé (FLAC 16 bits : \fBenvoi_flac\fR, 24 pour l'ancien envoi) ;
 .IP 2. 4
 sur les deux GPU T4 de Kaggle, un noyau privé sépare la voix, choisit entre
 chant et parole et le décalage d'octave de chaque chanteur, nettoie la voix
@@ -87,7 +87,43 @@ voix. Si la chanson n'a qu'une voix détectée, tout prend la voix de sa classe,
 sinon la première, avec un message ; en parole, seule la première voix sert.
 Sorties : \fI<titre> \- voix <A> et <B>.<conteneur>\fR, \fI.mp3\fR, et
 \fItravail/<a>+<b>/\fR (les mêmes quel que soit l'ordre donné ; \fB\-\-remix\fR
-et l'auto\-tune les reprennent).
+et l'auto\-tune les reprennent). Le noyau convertit aussi chaque passage dans
+l'autre voix (\fB\-\-versions\-duo\fR), pour pouvoir corriger à la main qui
+chante quoi (\fB\-\-passage\fR, \fB\-\-affectation\fR).
+.TP
+.BR \-\-versions\-duo " toutes|utiles|non"
+Avec une voix par chanteur : convertit chaque passage chanté dans les deux voix
+cibles (voix principale, chœurs et piste de secours compris) et rapatrie les deux
+versions dans \fItravail/<a>+<b>/versions/\fR, pour corriger ensuite qui chante
+quoi au remix, sans Kaggle. Le doublage automatique est identique, au bit près.
+\fBtoutes\fR (défaut, clé \fBversions_duo\fR) : tous les passages, environ deux
+fois le temps de GPU de la conversion ; \fButiles\fR : seulement les passages
+incertains, de hauteur ambiguë, chantés ensemble ou voisins d'un changement de
+voix (tous si une seule voix est trouvée) ; \fBnon\fR : comme avant (rien à
+corriger après coup). Sans effet avec une seule voix.
+.TP
+.BI \-\-passage " N=voix"
+Avec \fB\-\-remix\fR et une voix par chanteur : corrige qui chante le passage
+\fIN\fR (les numéros de la frise « Voix de chaque passage » de l'interface et de
+\fIrapport.json\fR, \fImorceaux[].i\fR). \fIvoix\fR : une voix du doublage, sa clé
+(\fBhomme\fR, \fBfemme\fR, \fBchanteur1\fR\&...), \fBdeux\fR (les deux ensemble, à
+puissance égale) ou \fBauto\fR (revenir à l'automatique pour ce passage).
+\fIN\-M\fR : une plage ; \fIN,M\fR : plusieurs ; \fIN\fB/\fIpiste\fB=\fIvoix\fR : une
+seule piste du passage (\fBprincipale\fR, \fBchoeurs\fR, \fBsecours\fR ou \fBvoix\fR).
+Répétable. Ex. : \fB\-\-remix \-\-passage 12\-15=marie \-\-passage 20/choeurs=jules\fR.
+S'ajoute à l'affectation déjà gardée. Le remix recompose la voix convertie sur le
+PC depuis les deux versions (quelques secondes) ; \fIrapport.json\fR,
+\fIcourbes.json\fR (\fBvoix_par_trame\fR) et la vidéo à cinq pistes suivent.
+Un doublage sans \fIversions/\fR (fait avant, ou avec \fB\-\-versions\-duo non\fR)
+ou un passage sans version dans la voix demandée (\fButiles\fR) le dit clairement.
+.TP
+.BI \-\-affectation " fichier\fR|\fBauto"
+Avec \fB\-\-remix\fR et une voix par chanteur : l'affectation corrigée voulue en
+entier, en JSON (\fB{"format": 1, "passages": {"12": "marie", "13": "deux"},
+"pistes": {"14": {"choeurs_sec": "jules"}}}\fR ; « pistes » l'emporte sur
+« passages »), ou \fBauto\fR pour revenir à l'automatique (voix convertie, courbes
+et rapport du noyau remis tels quels). L'affectation corrigée est gardée dans
+\fItravail/<a>+<b>/affectation.json\fR : un remix sans option la garde.
 .TP
 .BR \-\-mode " auto|chant|parole"
 Mode du doublage (défaut : auto).
@@ -108,7 +144,7 @@ toujours par Seed\-VC 22 kHz.
 En chant, convertit la voix isolée complète, sans nettoyage (plus rapide).
 .TP
 .B \-\-sans\-paroles
-Ni transcription ni traduction des paroles, ni sous-titres, \fB.srt\fR ou \fB.lrc\fR (clé \fBparoles\fR, oui par défaut).
+Ni transcription ni traduction des paroles, ni sous-titres, \fB.srt\fR ou \fB.lrc\fR (clé \fBparoles\fR, oui par défaut). Les \fB.srt\fR vont dans \fIparoles/\fR, à côté de la vidéo : VLC et mpv ne les chargent donc pas d'office ; le \fB.lrc\fR reste à côté du mp3. En mp4, m4v et mov, la piste de paroles de la vidéo n'est pas activée d'office non plus (mpv ne l'affiche pas).
 Les pistes audio gardent alors l'étiquette de langue du son d'origine.
 .TP
 .BR \-\-pistes\-audio " toutes|doublage"
@@ -172,10 +208,11 @@ Extrait commun à toutes les vidéos, pour un essai.
 .TP
 .B \-\-remix
 Refait seulement le mixage et la vidéo depuis \fItravail/\fR, sans Kaggle
-(paroles et pistes audio comprises : un ancien doublage y gagne ses cinq
+(avec une voix par chanteur : l'affectation corrigée à la main, voir
+\fB\-\-passage\fR ; paroles et pistes audio comprises : un ancien doublage y gagne ses cinq
 pistes, étiquetées de la langue de son \fIparoles.json\fR ;
 \fIparoles.json\fR et les \fB.srt\fR d'un extrait mkv ou webm fait
-avant le 05/11/2026, en avance sur la vidéo doublée, y sont recalés).
+avant le 05/11/2026, en avance sur la vidéo doublée, y sont recalés ; les \fB.srt\fR d'un doublage fait avant le 09/11/2026, à côté de la vidéo, sont rangés dans \fIparoles/\fR).
 .TP
 .B \-\-reprendre
 Finit la dernière session Kaggle interrompue (coupure réseau, PC éteint) :
@@ -209,7 +246,7 @@ Sans argument, affiche la configuration et les valeurs utilisées (données,
 commande kaggle, script du noyau, ancres de genre) ; avec \fIclé valeur\fR,
 écrit une clé : \fBdonnees\fR, \fBvoix\fR, \fBmoteur\fR, \fBparoles\fR, \fBautotune\fR
 (intensité de 0 à 100), \fBgpu\fR (auto, 1 ou 2), \fBpistes_audio\fR (toutes ou
-doublage), \fBkaggle.compte\fR, \fBkaggle.jeu\fR,
+doublage), \fBenvoi_flac\fR (16 ou 24 bits), \fBversions_duo\fR (toutes, utiles ou non), \fBkaggle.compte\fR, \fBkaggle.jeu\fR,
 \fBkaggle.noyau\fR, \fBkaggle.outils\fR, \fBkaggle.machine\fR (machine Kaggle demandée
 à l'envoi du noyau, \fBNvidiaTeslaT4\fR par défaut ; refusée par Kaggle, doubler
 réessaie sur celle\-ci).

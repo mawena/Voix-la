@@ -5,7 +5,7 @@ plusieurs en mode sélection).
 Un dossier de sortie peut contenir plusieurs voix (travail/<voix>/) :
 - si toutes ses voix partent (ou s'il n'en a qu'une), c'est le dossier entier qui va à la corbeille, avec travail/ ;
 - sinon, seulement les fichiers des voix choisies : vidéo et MP3 doublés, leur version « (auto-tune) » (vidéo, MP3,
-  .lrc), beat et voix seule enregistrés par l'interface, vidéos à partager de partage/, travail/<voix>/. Les sons communs de travail/ restent pour
+  .lrc), paroles de la voix (.srt de paroles/, .lrc), beat et voix seule enregistrés par l'interface, vidéos à partager de partage/, travail/<voix>/. Les sons communs de travail/ restent pour
   les autres voix. Une voix par chanteur (« a+b ») est une voix comme une autre : ses fichiers « voix A et B ».
 Les caches (copies vidéo des pistes, ma voix seule, miniatures, analyses) ne sont pas touchés : ils sont nommés d'après
 les fichiers, ne servent plus, et leur purge les efface le moment venu. Rien n'en dépend ici.
@@ -51,8 +51,24 @@ def fichiers_autotune(res):
     return vus
 
 
+def fichiers_paroles(res):
+    """Les paroles écrites par doubler pour cette voix : ses .srt (dans paroles/ depuis le 09/11/2026, à côté de la vidéo
+    pour un doublage plus ancien) et son .lrc (à côté du mp3)."""
+    base = pistes.base_sorties(res)
+    trouves = []
+    for d in (res.dossier / "paroles", res.dossier):
+        try:
+            suivants = sorted(d.iterdir())
+        except OSError:
+            continue
+        trouves += [f for f in suivants if f.is_file() and f.name.startswith(base + ".") and f.suffix == ".srt"]
+    lrc = res.dossier / f"{base}.lrc"
+    return trouves + ([lrc] if lrc.is_file() else [])
+
+
 def _fichiers_de_la_voix(res):
-    return [p for p in (res.video, res.mp3) if p] + fichiers_autotune(res) + pistes.exports_existants(res) + \
+    return [p for p in (res.video, res.mp3) if p] + fichiers_paroles(res) + fichiers_autotune(res) + \
+        pistes.exports_existants(res) + \
         export_social.fichiers_partages(res) + ([res.dossier_voix] if res.dossier_voix else [])
 
 

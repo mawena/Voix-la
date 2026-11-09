@@ -85,7 +85,7 @@ import tempfile
 import time
 from pathlib import Path
 
-VERSION = '0.13.0'   # même version que le paquet Debian (debian/changelog) et l'interface (voixla.__version__)
+VERSION = '0.14.0'   # même version que le paquet Debian (debian/changelog) et l'interface (voixla.__version__)
 # Dossier du code : le dépôt, ou /usr/lib/voix-la une fois le paquet installé (/usr/bin/doubler lance ce fichier)
 DEPOT = Path(__file__).resolve().parent
 SCRIPT_NOYAU = DEPOT / 'kaggle' / 'doubler_kaggle.py'   # le noyau envoyé à Kaggle

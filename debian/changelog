@@ -1,3 +1,15 @@
+voix-la (0.13.0) unstable; urgency=medium
+
+  * Interface : séance d'enregistrement de la voix chantée dans la page Voix
+    (parole, tessiture, notes à tenir, chanson sur sa musique seule avec
+    paroles synchronisées et tonalité au choix), chansons conseillées pour
+    la voix et dans ses langues, import des fichiers du téléphone et
+    contrôles (durée, saturation, bruit, musique du casque).
+  * Interface : l'Écoute à l'aveugle quitte la barre latérale (menu,
+    Alt+5 et « Comparer les voix » l'ouvrent toujours).
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Mon, 09 Nov 2026 20:00:00 +0000
+
 voix-la (0.12.0) unstable; urgency=medium
 
   * Comparer plusieurs voix en une session : doubler --comparer voixA,voixB

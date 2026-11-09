@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
 import traceback
 
 from voixla import gstreamer
@@ -96,7 +97,7 @@ def scenario_doubler(f):
     video = os.path.join(os.environ["VOIXLA_DONNEES"], "Clip.mp4")
     with open(video, "wb"):
         pass
-    dp.ajouter([video])
+    dp.ajouter([Path(video)])
     yield 800
     verifier(dp.b_lancer.get_sensitive(), "Lancer grisé avec une vidéo et deux voix")
     verifier("2 voix" in dp.r_comparees.get_subtitle() and "Conseil" in dp.r_comparees.get_subtitle(),

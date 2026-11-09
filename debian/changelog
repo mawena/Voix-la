@@ -1,3 +1,14 @@
+voix-la (0.12.0) unstable; urgency=medium
+
+  * Comparer plusieurs voix en une session : doubler --comparer voixA,voixB
+    double le même extrait dans deux à six voix en une seule session Kaggle
+    (frais fixes payés une fois) ; écoute à l'aveugle « Comparer les voix ».
+  * Interface : section « Sur Kaggle » dans la page Travaux, avec les
+    notebooks du compte en attente ou en cours, leur état lu chez Kaggle et
+    un lien vers leur page ; résumé dans la page État.
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Mon, 09 Nov 2026 18:20:00 +0000
+
 voix-la (0.11.1) unstable; urgency=medium
 
   * Interface : « Abandonner la session » (bannière de reprise et travaux)

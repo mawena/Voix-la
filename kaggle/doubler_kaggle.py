@@ -4028,12 +4028,12 @@ def main():
         for j, (v, rv) in enumerate(zip(comparees, refs_comp['chant44k'])):
             f0_v = float(v.get('f0_parole_hz') or rv['f0_mediane'])
             centre_v = float(v.get('facteur_chant') or R['voix']['facteur_chant']) * f0_v
-            sv = {k: v.get(k) for k in ('nom', 'fichier', 'f0_parole_hz', 'facteur_chant', 'affichage')} | {
+            fiche_v = {k: v.get(k) for k in ('nom', 'fichier', 'f0_parole_hz', 'facteur_chant', 'affichage')} | {
                 'f0_rmvpe_reference_hz': round(rv['f0_mediane'], 1), 'duree_reference_s': round(rv['duree'], 2),
                 'centre_chant_hz': round(centre_v, 1)}
-            session['comparer']['voix'].append(sv)
+            session['comparer']['voix'].append(fiche_v)
             contextes.append({'j': j, 'nom': v['nom'], 'centre': centre_v, 'f0_parole': f0_v,
-                              'mel_len': rv['mel2'].size(2), 'session_voix': sv, 'emb': rv['emb']})
+                              'mel_len': rv['mel2'].size(2), 'session_voix': fiche_v, 'emb': rv['emb']})
             log(f"voix à comparer {j + 1}/{len(comparees)} : {v['nom']}, référence {rv['duree']:.2f} s, parole {f0_v:.0f} Hz, "
                 f"centre de chant {centre_v:.0f} Hz")
         session['temps']['references_cibles_s'] = round(time.time() - t, 1)

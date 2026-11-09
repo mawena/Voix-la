@@ -1086,8 +1086,14 @@ def rapports_passes(sorties, n=30):
     return sorted(vus, key=vus.get)[-n:]
 
 
+# Une voix par chanteur avec les deux versions de chaque passage (versions_duo) : la conversion de chaque piste est à
+# refaire dans l'autre voix. Part de la conversion automatique que cela ajoute : tous les passages (toutes), environ
+# la moitié (utiles : incertains, ambigus, chantés ensemble ou voisins d'un changement de voix)
+SURCOUT_VERSIONS_DUO = {'toutes': 1.0, 'utiles': 0.5, 'non': 0.0}
+
+
 def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=MOTEUR_DEFAUT, paroles=True, voix_cibles=1,
-                    cartes=1):
+                    cartes=1, versions_duo='non'):
     """Durée probable d'une session (de l'envoi du noyau à sa fin), d'après la durée audio des vidéos et les rapports
     passés (rapports_passes : sous <sorties>/*/travail/*/, sorties pouvant être une liste de dossiers) : démarrage (file
     Kaggle comprise) + installation + chargement des modèles, le reste de la session (chargement de la séparation, fin
@@ -1220,6 +1226,8 @@ def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=
         t_sep += 0.05
     total, plus_longue = float(sum(durees_s)), float(max(durees_s, default=0.0))
     conversion = pas * sum(float(x) * t_conv(float(x)) for x in durees_s)
+    if voix_cibles > 1 and chant:   # les deux versions de chaque passage (versions_duo)
+        conversion *= 1 + SURCOUT_VERSIONS_DUO.get(versions_duo, 0.0)
     # paroles : part fixe (copie locale des modèles) et transcription, traduction comprise, par seconde d'audio
     t_par = statistics.median(par) if par else 0.45
     p_fixe = statistics.median(par_fixes) if par_fixes else 25.0
@@ -3867,7 +3875,8 @@ def traiter_lot(videos, a, voix):
         cartes = cartes_prevues(getattr(a, 'gpu', 'auto'), MACHINE)
         # historique : les rapports de ce dossier de sortie, et ceux du dossier par défaut (un dossier neuf n'en a pas)
         estimation = estimer_noyau_s([tr['duree_audio_s'] for tr in travaux], a.pas, [a.sortie, SORTIES],
-                                     not a.sans_nettoyage, a.mode, a.moteur, a.paroles, len(voix_membres(voix)), cartes)
+                                     not a.sans_nettoyage, a.mode, a.moteur, a.paroles, len(voix_membres(voix)), cartes,
+                                     getattr(a, 'versions_duo', 'non') if voix.get('membres') else 'non')
         # limite du suivi : au moins le double de l'estimation (le nettoyage allonge beaucoup une longue chanson)
         attente_maxi = max((30 + 20 * len(travaux)) * 60, 2 * estimation + 30 * 60)
         dire(f"chaîne : chant → {'voix nettoyée' if not a.sans_nettoyage else 'voix complète (sans nettoyage)'}, "

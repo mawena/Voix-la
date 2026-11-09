@@ -784,9 +784,11 @@ def estimation_noyau_s(durees_s, pas, sorties, nettoyage=True, mode="auto", mote
     if not callable(estimer):
         return None
     try:
-        s = estimer([float(x or 0) for x in durees_s], int(pas or 30), [Path(x) for x in sorties],
-                    nettoyage=bool(nettoyage), mode=mode or "auto", moteur=moteur_chant or "yingmusic",
-                    paroles=bool(paroles), voix_cibles=max(1, int(voix_cibles or 1)), cartes=max(1, int(cartes or 1)))
+        options = dict(nettoyage=bool(nettoyage), mode=mode or "auto", moteur=moteur_chant or "yingmusic",
+                       paroles=bool(paroles), voix_cibles=max(1, int(voix_cibles or 1)), cartes=max(1, int(cartes or 1)))
+        if options["voix_cibles"] > 1 and "versions_duo" in getattr(estimer, "__code__", None).co_varnames:
+            options["versions_duo"] = "toutes"    # doubler convertit chaque passage dans les deux voix (son défaut)
+        s = estimer([float(x or 0) for x in durees_s], int(pas or 30), [Path(x) for x in sorties], **options)
         return float(s) if s is not None and float(s) >= 0 else None
     except Exception:  # noqa: BLE001 — erreur dans doubler.py : le repli de l'interface
         return None

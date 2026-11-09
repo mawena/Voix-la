@@ -211,7 +211,32 @@ Secondes chantées à deux sur les 110 s (deux pistes actives, à moins de 15 dB
 Sur la chanson entière, le dernier doublage de ce duo n'avait trouvé que 5 s chantées à deux. Sur la voix isolée,
 chœurs compris, le chiffre compte aussi les chœurs : c'est la voix principale qui compte ici.
 
-<!-- REEL_PC -->
+**Nature des passages à deux** sur l'extrait de 45 s (analyse sur le PC, pYIN ; unisson : écart de hauteur de moins
+d'un demi-ton entre les deux pistes). Les chiffres sont de petits nombres de secondes, sur un seul extrait :
+
+| Séparation de la voix principale sèche | À deux (s) | dont voisé | unisson | octave | autre intervalle | hauteurs médianes (Hz) |
+|---|---|---|---|---|---|---|
+| Sucial | 17,6 | 14,9 | 3,3 | 0,0 | 11,6 | 313 / 410 |
+| aufr33 | 12,0 | 11,0 | 4,5 | 0,0 | 6,5 | 313 / 410 |
+| BS-Roformer karaoké frazer | 14,7 | 12,8 | 0,6 | 0,0 | 12,2 | 315 / 413 |
+| MedleyVox | 17,3 | 15,3 | 3,4 | 0,4 | 11,4 | 339 / 353 |
+| SepFormer WSJ0-2mix | 25,9 | 19,4 | 10,6 | 0,5 | 8,3 | 357 / 311 |
+
+- Sur ce duo, les passages à deux sont surtout des **harmonies à un autre intervalle** (environ 11 s sur 15 voisées),
+  pas des unissons exacts (moins de 4 s pour les trois modèles les plus fiables). L'unisson exact est donc le cas
+  minoritaire, et le moins séparable : la double conversion le couvre.
+- Les trois Roformer s'accordent sur des hauteurs médianes de 313 et 410 Hz (homme, femme) ; MedleyVox rend deux
+  pistes aux hauteurs voisines (339 / 353 Hz) : il mélange encore les deux voix sur l'extrait, ce que les mesures
+  synthétiques ne montrent pas. SepFormer rend 10,6 s d'« unisson » : il copie la même voix sur les deux sorties.
+- Temps sur CPU (PC, 4 fils) du karaoké frazer : 427 à 510 s pour 45 s de son (rtf 9 à 11), donc à garder sur GPU.
+
+**Écoute** : `banc/ecoute/unisson/` (voix principale non séparée, pistes Sucial homme/femme, MedleyVox, karaoké
+frazer, chaque piste seule sur la musique) et `banc/ecoute/unisson-double/` (voix principale d'un bloc, ou chaque
+chanteur séparé par Sucial dans sa voix). La double conversion des passages à deux n'a pas pu être rendue (session
+GPU non disponible dans le budget).
+
+**Réserve sur la recommandation** : sur le vrai duo, MedleyVox ne se montre pas aussi net que sur les duos
+synthétiques ; l'écoute tranche entre lui et Sucial/frazer pour les harmonies.
 
 ## Recommandation
 

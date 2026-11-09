@@ -306,8 +306,9 @@ langues ; il est gardé dans `interface.json` (`paroles_langue`). L'interrupteur
 
 ## Karaoké
 
-Page « Karaoké » (Alt+7), ou « Chanter… » dans le menu « ⋮ » d'une carte de la bibliothèque (quand le doublage a son
-`travail/instrumental.wav`).
+Page « Karaoké » (Alt+7), ou « Chanter… » dans le menu « ⋮ » d'une carte de la bibliothèque et dans l'en-tête du
+détail d'un doublage (quand le doublage a son `travail/instrumental.wav` ; sans lui, le bouton du détail est grisé et
+l'infobulle dit pourquoi). Les deux appellent `fenetre.chanter(res)`, qui ouvre la page sur ce doublage.
 
 - **Préparer** : le doublage, puis le passage (chanson entière ; extrait de la ligne X à la ligne Y, ou début et fin à la
   main sans paroles ; extrait en boucle, 2 à 10 tours). Conseil affiché : mettre un casque. Micro du PC au choix (pas
@@ -330,8 +331,16 @@ Page « Karaoké » (Alt+7), ou « Chanter… » dans le menu « ⋮ » d'une ca
   `.prise-…`, effacées après un jour ; MP3 `<titre> - karaoké AAAA-MM-JJ HHhMM.mp3`), ignoré par la bibliothèque. Cache :
   `~/.cache/voix-la/karaoke/` (500 Mo). En ligne de commande : `python3 -m voixla.karaoke analyser|mp3`.
 - **Sobriété** : note et mix dans la file des analyses, sous `nice -n 10`, par `file-attente` au-delà d'une minute de son.
-- **Limites** : « Doubler ma prise » attend que `doubler` accepte un fichier audio seul ; la mesure de latence au vrai
-  micro (casque Bluetooth compris) reste à essayer.
+- **Doubler ma prise** : sur le résultat d'une prise (gardée ou non), « Doubler ma prise… » demande la voix cible, puis
+  lance un travail `doubler` sur le **mix ta voix + beat** de la prise, enregistré en FLAC dans `karaoke/` sous le nom
+  `<titre> - ma prise AAAA-MM-JJ HHhMM.flac` (`karaoke.preparer_entree_doubler` ; le mix en cache est refait s'il a
+  été purgé). Le travail est `doubler <fichier> --voix <voix> --mode=chant` ; il passe par le quota GPU comme la page
+  Doubler (sans dialogue : s'il ne tient pas, il attend la remise à zéro, sauf réglage « lancer »). Le résultat arrive
+  dans la bibliothèque, mp3 seul, sous le nom de la prise ; le fichier reste dans `karaoke/` (que la bibliothèque ne
+  lit pas) parce que `--remix` le relit. Grisé quand le mix n'est pas prêt, qu'aucune voix n'existe ou que `doubler`
+  n'annonce pas « audio seul » (`moteur.capacites()` : `son_seul`). Pourquoi le mix et pas la voix seule : voir
+  le CHANGELOG (séparation propre, beat rendu par la musique seule, mode chant sûr).
+- **Limites** : la mesure de latence au vrai micro (casque Bluetooth compris) reste à essayer.
 - **Essais** : `tests/faux_karaoke.py` (chanson inventée à mélodie connue), `test_justesse` (juste 100, un demi-ton
   faux 1, une octave plus bas 100, retard de 100 ms 100…), `test_karaoke`, et la page sous Xvfb
   (`tests/essai_karaoke_gui.py`).
@@ -452,7 +461,8 @@ fait écouter les résultats :
   `interface.json`, clé `voix_comparees`). La ligne dit combien de voix, et conseille un extrait de 20 à 40 s quand une
   vidéo est entière. L'estimation de durée et le quota GPU comptent les conversions en plus
   (`doubler.estimer_noyau_s(…, voix_comparees=N)`, sinon le repli de l'interface) ; la demande part avec
-  `--comparer A,B,C` à la place de `--voix`. Dans la file, le travail porte la première voix.
+  `--comparer A,B,C` à la place de `--voix`. Dans la file, la carte du travail (page Travaux) dit « comparaison de N
+  voix : » suivi de toutes les voix ; « Voir » ouvre le résultat de la première.
 - **Résultats** : le détail d'un doublage dont le dossier a deux voix ou plus (`comparaison.json` de `doubler --comparer`,
   ou des doublages de voix différentes du même extrait) a un groupe **Comparer les voix** : les voix et un bouton
   **Comparer**. Il prépare un banc d'écoute à l'aveugle dans le cache (`~/.cache/voix-la/comparaisons/<empreinte du
@@ -626,8 +636,10 @@ les sessions du compte restent « queued » et c'est le seul endroit où on le v
 - **Ce que Kaggle ne donne pas** : la place dans sa file, l'heure de démarrage prévue, la machine d'un notebook d'un
   autre projet, ni de quoi annuler une version (`kaggle kernels delete` supprime tout le notebook : l'interface ne
   l'appelle jamais). Le bouton de chaque ligne ouvre la page du notebook sur Kaggle, où l'on arrête la session à la
-  main. Une phrase d'aide le dit sous la liste ; quand plusieurs sessions attendent en même temps, elle ajoute que
-  Kaggle peut les faire passer une par une, ou n'avoir plus de GPU libre.
+  main. Une phrase d'aide le dit sous la liste et rappelle que, si rien ne démarre, la cause peut aussi être un incident
+  chez Kaggle (la page du notebook affiche alors une bannière d'incident) ; quand plusieurs sessions attendent en même
+  temps, elle ajoute que Kaggle peut les faire passer une par une, ou n'avoir plus de GPU libre. Le message d'une
+  attente anormale d'un travail (`travaux.texte_attente_anormale`) dit la même chose.
 - **Affichage** : une ligne par notebook (titre, état en clair, « lancé il y a 1 h 32 », badge « Voix-là » sur celui
   de doubler, reconnu par le champ `noyau` de `session-en-cours.json` et `session-precedente.json` et par le noyau de
   la configuration) ; les terminés récents en repli ; « Rien en attente ni en cours » si le compte est au repos ; un

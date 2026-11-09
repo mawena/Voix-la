@@ -13,6 +13,7 @@
   doubler --config [CLE VALEUR]                      affiche la configuration, ou écrit une clé
   doubler --reprendre                                finit une session Kaggle interrompue (sans GPU)
   doubler "clip.mp4@60+40" "film.mkv@1:10+35"        un extrait propre à chaque vidéo d'un lot
+  doubler chanson.mp3 [--debut S --duree S]          un fichier audio seul (mp3, wav, flac, m4a, ogg, opus…)
 
 Les vidéos données ensemble partent dans UNE seule session Kaggle (installation payée une fois) :
   1. sur le PC, le son de chaque vidéo est extrait (44,1 kHz stéréo flottant ; extrait calé sur une image clé avec
@@ -42,6 +43,12 @@ le son des vidéos et la référence de la voix choisie partent sur Kaggle.
 Une voix par chanteur (--voix homme:A,femme:B pour un duo mixte, chanteur1:A,chanteur2:B pour un duo de même genre) :
 chaque piste de chaque passage (voix principale, chœurs, secours) prend la voix du chanteur qu'on y reconnaît, l'octave
 se décide pour chaque couple chanteur -> voix ; sorties <titre> - voix A et B.<ext>, travail/A+B/.
+Un fichier audio seul (mp3, wav, flac, m4a, ogg, opus… : tout fichier sans image ; la pochette jointe d'un mp3 n'en est
+pas une) suit la même chaîne, sans image : pas de remise sur la vidéo, la sortie est <titre> - voix <Nom>.mp3 (320 kbps)
+avec .lrc, paroles/*.srt (si les paroles sont demandées) et travail/ comme pour une vidéo (son d'origine, beat seul,
+voix d'origine, voix convertie, rapport.json). --debut/--duree coupent exactement où on le demande (pas d'image clé),
+--remix et --reprendre fonctionnent comme pour une vidéo, --pistes-audio n'a pas d'objet, l'auto-tune donne son mp3 et son
+.lrc. Le dossier de sortie porte le nom du fichier : un mp3 et une vidéo de même nom se partageraient le même dossier.
 Comparer des voix (--comparer A,B,C, avec --debut/--duree pour un extrait) : le même extrait est doublé dans chaque voix
 en UNE seule session Kaggle. Envoi, démarrage, séparation, nettoyage et paroles ne sont payés qu'une fois ; seule la
 conversion est refaite pour chaque voix (les morceaux de toutes les voix se partagent les deux GPU). Une sortie complète
@@ -1022,6 +1029,12 @@ def flux_video(info):
     return v[0]
 
 
+def a_une_image(info):
+    """Vrai si le fichier a une image (une pochette jointe à un mp3 n'en est pas une) ; sinon c'est un son seul (mp3,
+    wav, flac, m4a, ogg, opus…) : doubler le traite sans image, ni remise sur la vidéo."""
+    return any(not s.get('disposition', {}).get('attached_pic') for s in flux(info, 'video'))
+
+
 def flux_audio(info):
     a = flux(info, 'audio')
     if not a:
@@ -1054,6 +1067,27 @@ def preparer_source(video, info, debut, duree, travail):
     a = flux_audio(info)
     src = {'video': str(video), 'flux_audio': a['index'], 'langue': a.get('tags', {}).get('language'),
            'canaux_origine': a.get('channels'), 'codec_origine': a.get('codec_name')}
+    if not a_une_image(info):
+        # son seul : pas d'image clé, l'extrait commence où on le demande ; rien à caler sur une image
+        src['audio_seul'] = True
+        total = float(info['format'].get('duration') or 0) or None
+        if debut is not None or duree is not None:
+            demande = debut or 0.0
+            if total is not None and demande >= total:
+                raise RuntimeError(f'--debut {demande:g} s : après la fin du son ({total:.1f} s)')
+            fin = (demande + duree) if duree else total
+            if total is not None and fin is not None:
+                fin = min(fin, total)
+            src.update({'debut_demande': demande, 'debut': round(demande, 3)})
+            if fin is not None:
+                src['duree'] = round(fin - demande, 3)
+        src['decalage_son'] = 0.0
+        coupe = (['-ss', src['debut']] + (['-t', src['duree']] if 'duree' in src else [])) if 'debut' in src else []
+        ff(*coupe, '-i', video, '-map', f"0:{a['index']}", '-ac', 2, '-ar', 44100, '-c:a', 'pcm_f32le',
+           travail / 'original.wav')
+        with open(travail / 'source.json', 'w') as f:
+            json.dump(src, f, ensure_ascii=False, indent=1)
+        return src
     if debut is not None or duree is not None:
         demande = debut or 0.0
         k = image_cle(video, info, demande)
@@ -2444,6 +2478,9 @@ def plan_video(t):
     m4v et mov, et pour une vidéo entière, ils sont égaux."""
     src = json.loads((t / 'source.json').read_text())
     video = Path(src['video'])
+    if src.get('audio_seul'):   # son seul : rien à remettre sur une image
+        return {'src': src, 'video': video, 'info': None, 'ext': None, 'fv': None, 'coupe': [], 'decalage_son': 0.0,
+                'debut_son': 0.0, 'audio_seul': True}
     info = sonder(video)
     ext = video.suffix.lower()
     if ext not in CONTENEURS:
@@ -2460,7 +2497,7 @@ def plan_video(t):
         if ext in RECALES_SUR_L_IMAGE and image is not None:
             debut_son = max(0.0, round(src['debut'] - 0.001 - image, 3))   # avance de la copie sur l'image clé (au ms)
     return {'src': src, 'video': video, 'info': info, 'ext': ext, 'fv': fv, 'coupe': coupe, 'decalage_son': decalage_son,
-            'debut_son': debut_son}
+            'debut_son': debut_son, 'audio_seul': False}
 
 
 SOUS_TITRES_NOUVEAUX = {'.mp4': 'mov_text', '.m4v': 'mov_text', '.mov': 'mov_text', '.mkv': 'srt', '.webm': 'webvtt'}
@@ -3470,6 +3507,10 @@ def mettre_a_jour_courbes(tv, rec, code, dom_v, dom_d):
     f.write_text(json.dumps(c, separators=(',', ':')))
 
 
+class _SansImage(Exception):
+    """Son seul : pas de vidéo auto-tune à faire (sert à sauter ce bloc)."""
+
+
 def finir(tr, a, voix, temps_local=None):
     """Mixage, MP3, remise sur la vidéo (et extraits de comparaison des pas de diffusion) depuis travail/."""
     t, tv, dossier, base = tr['travail'], tr['tv'], tr['dossier'], tr['base']
@@ -3523,9 +3564,11 @@ def finir(tr, a, voix, temps_local=None):
     debut = time.time()
     paroles_on = getattr(a, 'paroles', True)
     pistes_st, fichiers_paroles, info_paroles, chantee = [], [], {'demande': paroles_on}, None
-    with Etape('video', titre, 'son remis sur la vidéo (image copiée)' + (', paroles en sous-titres' if paroles_on else '')), \
+    plan = plan_video(t)
+    audio = plan['audio_seul']   # un son seul : le mp3 est la sortie, pas d'image ni de remise sur la vidéo
+    with Etape('video', titre, ('son seul : pas d\'image, mp3 et paroles' if audio else
+                                'son remis sur la vidéo (image copiée)' + (', paroles en sous-titres' if paroles_on else ''))), \
             PistesEncodees(t) as encodees:
-        plan = plan_video(t)
         if paroles_on:
             try:   # paroles.json, .srt : temps de la vidéo doublée ; pistes de la vidéo : temps de la coupe
                 pistes_st, fichiers_paroles, i_p = preparer_paroles(tv, dossier, base, plan['debut_son'],
@@ -3545,19 +3588,26 @@ def finir(tr, a, voix, temps_local=None):
             dire(f"pistes audio en {langue_a['nom']} ({langue_a['etiquette']}), la langue des paroles"
                  f" (son d'origine : {langue_a['source'] or 'sans langue'})")
         try:
-            pistes_a = pistes_en_plus(t, tv, voix, gains) if toutes else []
-            demandees = pistes_st
-            sortie, pistes_st, pistes_a = video_avec_repli(t, tv / 'mix.wav', dossier, base, pistes_st, pistes_a, plan,
-                                                           titres_pistes(voix)['doublage'], langue_a['etiquette'],
-                                                           encodees)
-            if demandees and not pistes_st:
-                info_paroles['raison'] = 'pistes de sous-titres refusées par ffmpeg (fichiers .srt et .lrc gardés)'
-            info_pistes['video'] = [titres_pistes(voix)['doublage'], *(p['titre'] for p in pistes_a)]
-            info_paroles['pistes_video'] = [st['titre'] for st in pistes_st]
             sortie_at = lrc_at = None
+            if audio:
+                sortie, pistes_st, pistes_a = None, [], []
+                info_pistes['video'] = None
+                info_paroles['pistes_video'] = []
+            else:
+                pistes_a = pistes_en_plus(t, tv, voix, gains) if toutes else []
+                demandees = pistes_st
+                sortie, pistes_st, pistes_a = video_avec_repli(t, tv / 'mix.wav', dossier, base, pistes_st, pistes_a,
+                                                               plan, titres_pistes(voix)['doublage'],
+                                                               langue_a['etiquette'], encodees)
+                if demandees and not pistes_st:
+                    info_paroles['raison'] = 'pistes de sous-titres refusées par ffmpeg (fichiers .srt et .lrc gardés)'
+                info_pistes['video'] = [titres_pistes(voix)['doublage'], *(p['titre'] for p in pistes_a)]
+                info_paroles['pistes_video'] = [st['titre'] for st in pistes_st]
             if info_at and info_at.get('applique'):
                 b_at = base_autotune(base)
                 try:   # mêmes pistes de paroles et sous-titres d'origine que la version normale, pistes audio auto-tune
+                    if audio:
+                        raise _SansImage
                     pistes_at = pistes_en_plus(t, tv, voix, gains, autotune=True) if toutes else []
                     sortie_at, _, pistes_at = video_avec_repli(t, tv / 'mix_autotune.wav', dossier, b_at, pistes_st,
                                                                pistes_at, plan, titres_pistes(voix, True)['doublage'],
@@ -3565,6 +3615,8 @@ def finir(tr, a, voix, temps_local=None):
                     info_at['fichiers']['video'] = sortie_at.name
                     info_pistes['video_autotune'] = [titres_pistes(voix, True)['doublage'],
                                                      *(p['titre'] for p in pistes_at)]
+                except _SansImage:
+                    info_at['fichiers']['video'] = None
                 except Exception as e:  # noqa: BLE001 — le mp3 auto-tune reste
                     dire(f'ATTENTION : vidéo auto-tune impossible ({str(e).strip().splitlines()[-1][:200]}) : mp3 seul')
                     info_at['fichiers']['video'] = None
@@ -3597,7 +3649,7 @@ def finir(tr, a, voix, temps_local=None):
                  'seche': str(tv / 'seche_voix_autotune.wav'),
                  'reverb': str(tv / info_at['fichiers']['reverb']) if info_at['fichiers'].get('reverb') else None,
                  'intensite': info_at['intensite'], 'tonalite': g_at.get('tonalite'), 'gamme': g_at.get('type')}
-    EV('sortie', titre, mp4=str(sortie), mp3=str(mp3), rapport=str(tv / 'rapport.json'),
+    EV('sortie', titre, mp4=str(sortie) if sortie else None, mp3=str(mp3), rapport=str(tv / 'rapport.json'),
        comparaisons=[str(e) for e in extraits] or None,
        courbes=str(tv / 'courbes.json') if (tv / 'courbes.json').exists() else None,
        paroles=str(tv / 'paroles.json') if paroles_on and (tv / 'paroles.json').exists() else None,
@@ -3655,9 +3707,9 @@ def finir(tr, a, voix, temps_local=None):
     if extraits:
         dire(f"comparaison {comp['pas'][0]} / {comp['pas'][1]} pas sur {fmt_t(comp['debut_s'])}–{fmt_t(comp['fin_s'])} : "
              + ', '.join(e.name for e in extraits))
-    dire(f'fini : {sortie}\n         {mp3}' + ''.join(f'\n         {f}' for f in (sortie_at, ev_at and ev_at['mp3']) if f))
-    EV('etape', titre, etape='fini', etat='fin', message=str(sortie), duree_s=round(time.time() - tr.get('debut_epoch', debut0), 1))
-    return sortie
+    dire(f'fini : {sortie or mp3}' + (f'\n         {mp3}' if sortie else '') + ''.join(f'\n         {f}' for f in (sortie_at, ev_at and ev_at['mp3']) if f))
+    EV('etape', titre, etape='fini', etat='fin', message=str(sortie or mp3), duree_s=round(time.time() - tr.get('debut_epoch', debut0), 1))
+    return sortie or mp3
 
 
 ETAT = Path.home() / '.local' / 'state' / 'voix-la'   # verrou Kaggle commun et session en cours (pour --reprendre)
@@ -4141,8 +4193,9 @@ def arguments_autotune(argv):
 def main():
     p = argparse.ArgumentParser(prog='doubler', description=__doc__.split('\n')[0],
                                 formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__.split('\n', 1)[1])
-    p.add_argument('videos', nargs='*', help='vidéo(s) mp4, mkv, webm, mov… ; « vidéo@60+40 » : extrait propre à cette '
-                                              'vidéo (début+durée en s ou m:ss ; @60 jusqu\'à la fin, @+40 le début)')
+    p.add_argument('videos', nargs='*', help='vidéo(s) mp4, mkv, webm, mov…, ou fichier(s) audio seul mp3, wav, flac, '
+                                              'm4a, ogg, opus (sortie : mp3, sans image) ; « vidéo@60+40 » : extrait propre à '
+                                              'cette vidéo (début+durée en s ou m:ss ; @60 jusqu\'à la fin, @+40 le début)')
     p.add_argument('--voix', default=None, metavar='NOM',
                    help='voix cible : un dossier de <données>/voix (défaut : clé « voix » de la configuration, '
                         'sinon la seule voix présente) ; une voix par chanteur : homme:NOM,femme:NOM (duo mixte) ou '
@@ -4292,7 +4345,7 @@ def executer(p, a):
             sys.exit(f"{len(echecs)} vidéo(s) en échec : {', '.join(map(str, echecs))}")
         return 0
     if not a.videos:
-        p.error('aucune vidéo')
+        p.error('aucune vidéo ni aucun fichier audio')
     if a.octave == '12':
         a.octave = '+12'
     moteur_conf = valeur_config(conf, 'moteur')

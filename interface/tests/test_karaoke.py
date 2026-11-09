@@ -22,7 +22,7 @@ from voixla import chemins, karaoke as K, paroles as P, preparation as prep, rap
 from voixla.justesse import Passage
 
 from . import faux_karaoke as fk
-from .commun import EssaiIsole
+from .commun import EssaiIsole, creer_voix
 
 FFMPEG = shutil.which("ffmpeg")
 INTERFACE = Path(__file__).resolve().parents[1]
@@ -348,6 +348,49 @@ class TestAnalyse(EssaiAvecCache):
         sortie = K.exporter(prise, dossier / "karaoke" / "a.mp3", "t")
         self.assertTrue(sortie.is_file() and K.mix_pret(prise) is not None)
         self.assertEqual(K.lire_plan(prise)["resultat"]["score"], res["score"])   # la note n'est pas refaite
+
+    def test_doubler_ma_prise_entree_et_travail(self):
+        """« Doubler ma prise » : le mix prise + beat en FLAC dans karaoke/, nommé « <titre> - ma prise <date> », donné à
+        doubler (faux) : un doublage mp3 seul, dans la bibliothèque, sous ce nom."""
+        from voixla import moteur, travaux
+        dossier, prise = self.preparer(fk.voix(), K.passage_lignes(fk.lignes(), 0, 1, fk.duree_chanson()))
+        res = K.analyser(prise)
+        Path(res["mix"]).unlink()                      # cache purgé : le mix est refait
+        entree, duree = K.preparer_entree_doubler(prise, fk.TITRE, dossier)
+        self.assertEqual(entree.parent, dossier / "karaoke")
+        self.assertRegex(entree.name, rf"^{fk.TITRE} - ma prise \d{{4}}-\d{{2}}-\d{{2}} \d{{2}}h\d{{2}}\.flac$")
+        self.assertAlmostEqual(duree, K.duree_audio(K.mix_pret(prise)), delta=0.05)
+        self.assertEqual(K.preparer_entree_doubler(prise, fk.TITRE, dossier)[0], entree, "deuxième fois : le même")
+        self.assertEqual(K.prises_gardees(dossier), [], "la prise cachée n'est pas gardée pour autant")
+        creer_voix(self.donnees, "voixa", "Voix A", hauteur=110.0)
+        d = travaux.demande_doubler_prise(entree, duree, "voixa", self.donnees)
+        self.assertIn("--mode=chant", d["argv"])
+        self.assertIn("--voix=voixa", d["argv"])
+        self.assertEqual(d["argv"][len(moteur.commande())], str(entree))
+        code, sortie = moteur.lancer(d["argv"][:-1] if d["argv"][-1].startswith("--evenements") else d["argv"],
+                                     moteur.environnement(self.donnees), timeout=60)
+        self.assertEqual(code, 0, sortie)
+        (r,) = rapports.lire_dossier(chemins.dossier_sorties(self.donnees) / entree.stem, {"voixa": "Voix A"})
+        self.assertTrue(r.complet and r.video is None)
+        self.assertEqual(r.mp3.name, f"{entree.stem} - voix Voix A.mp3")
+        self.assertEqual(moteur.remix_possible(r.video_source, r.dossier), (True, ""))
+
+    def test_quota_de_la_prise(self):
+        from voixla import quota, travaux
+        d = {"type": "doublage", "estimations": {"kaggle": 600.0}}
+        self.assertEqual(travaux.juger_quota(d, None, [], "demander"), (d, False))
+        maintenant = time.time()
+        large = quota.EtatQuota(30 * 3600, 0.0, maintenant + 86400, "local", False, [], 0.0)
+        m, attend = travaux.juger_quota(d, large, [], "demander")
+        self.assertFalse(attend)
+        self.assertEqual(m["quota"]["decision"], "tient")
+        plein = quota.EtatQuota(30 * 3600, 30 * 3600 - 60, maintenant + 86400, "local", False, [], 30 * 3600 - 60)
+        m, attend = travaux.juger_quota(d, plein, [], "demander")
+        self.assertTrue(attend)
+        self.assertGreater(m["attendre_jusqu_a"], maintenant + 86400)
+        m, attend = travaux.juger_quota(d, plein, [], "lancer")
+        self.assertFalse(attend)
+        self.assertEqual(m["quota"]["decision"], "lancer")
 
     def test_ligne_de_commande_sans_plan(self):
         r = subprocess.run([sys.executable, "-m", "voixla.karaoke", "analyser", str(self.tmp / "absente.wav")],

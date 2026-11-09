@@ -162,3 +162,14 @@ def test_wilson():
     lo, hi = depouiller.wilson(5, 10)
     assert lo < 0.5 < hi
     assert depouiller.wilson(0, 0) == (0.0, 0.0)
+
+
+def test_tessiture_format_plat_en_hz():
+    f0 = np.concatenate([np.full(30, h) for h in (100.0, 110.0, 120.0, 130.0, 140.0, 150.0)])
+    t = tessiture.tessiture_depuis_f0(f0)
+    for k in ("p05", "p10", "p50", "p90", "p95"):
+        assert 99.0 < t[k] < 151.0
+    assert t["p05"] <= t["p10"] <= t["p50"] <= t["p90"] <= t["p95"]
+    bas, haut = t["confort"]
+    assert bas == pytest.approx(t["p10"]) and haut == pytest.approx(t["p90"])
+    json.dumps(t)

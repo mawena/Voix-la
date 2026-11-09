@@ -69,6 +69,10 @@ def tessiture_depuis_f0(f0: np.ndarray, zone=(10, 90)) -> dict:
                            "bas_hz": midi_en_hz(bas), "haut_hz": midi_en_hz(haut),
                            "bas_note": midi_en_note(bas), "haut_note": midi_en_note(haut),
                            "largeur_demitons": haut - bas}
+    # format plat lu par les autres outils (Hz)
+    for c in CENTILES:
+        out[f"p{c:02d}"] = out["centiles"][str(c)]["hz"]
+    out["confort"] = [out["zone_confort"]["bas_hz"], out["zone_confort"]["haut_hz"]]
     return out
 
 

@@ -147,14 +147,33 @@ class ComparerEnChant(unittest.TestCase):
 
 
 class ComparerEnParole(unittest.TestCase):
-    def test_chaque_voix_a_son_timbre_en_parole(self):
+    def test_une_sortie_par_voix_en_parole(self):
+        # Seed-VC 22 kHz : la référence de chaque voix est préparée à la demande (le faux modèle 22 kHz ne rend aucun son,
+        # faute de hauteur conditionnée : on vérifie que chaque voix a sa conversion, son rapport et ses courbes)
         res = lancer(reglages(('voixa', 'voixb'), mode='parole'))
         self.assertEqual(res['compteurs'].get('nettoyage', 0), 0, 'pas de nettoyage en parole')
-        for n, (y, rapport, _) in res['voix'].items():
+        self.assertEqual(res['compteurs']['separation'], 1)
+        self.assertEqual(sorted(res['voix']), ['voixa', 'voixb'])
+        for n, (y, rapport, courbes) in res['voix'].items():
             with self.subTest(voix=n):
                 self.assertEqual(rapport['mode'], 'parole')
+                self.assertEqual(rapport['modele'], 'parole22k')
+                self.assertEqual(rapport['voix_cible']['nom'], n)
+                self.assertNotIn('erreur', rapport)
+                self.assertGreater(len(y), 40 * SR)
+                self.assertGreater(len(courbes['source_hz']), 100)
+
+    def test_chaque_voix_a_son_timbre_avec_le_modele_44k(self):
+        # la parole convertie par le modèle de chant 44 kHz (modele_parole) : une référence par voix, comme en chant
+        r = reglages(('voixa', 'voixb'), mode='parole')
+        r['modele_parole'] = 'chant44k'
+        res = lancer(r)
+        for n, (y, rapport, _) in res['voix'].items():
+            with self.subTest(voix=n):
+                self.assertEqual(rapport['modele'], 'chant44k')
                 autre = 'voixb' if n == 'voixa' else 'voixa'
-                self.assertGreater(temoin_db(y, n), temoin_db(y, autre) + 20)
+                self.assertGreater(temoin_db(y, n), -30)
+                self.assertLess(temoin_db(y, autre), temoin_db(y, n) - 25)
 
 
 class SansComparer(unittest.TestCase):

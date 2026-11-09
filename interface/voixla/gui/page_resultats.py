@@ -2199,6 +2199,16 @@ class PageDetail(Adw.NavigationPage):
         passage corrigeable, ou de celui de l'instant t), « corriger-<t>-<choix> » (choix en attente : nom de voix,
         deux ou auto), « appliquer », « revenir-auto » (sa confirmation) ; plusieurs voix du même extrait :
         « comparer » ou « comparer-<scénario de la page Écoute> » (l'écoute à l'aveugle s'ouvre)."""
+        if action == "comparer-voir" and self.g_comparer is not None:
+            def vers_comparer():
+                # le groupe « Comparer les voix » en haut de la vue
+                from gi.repository import Graphene    # chargé par gui/essais.py (captures d'essai)
+                ok, point = self.g_comparer.compute_point(self.corps, Graphene.Point())
+                if ok:
+                    self.defilement.get_vadjustment().set_value(max(0.0, point.y - 12))
+                return False
+            GLib.timeout_add(3000, vers_comparer)
+            return
         if action.startswith("comparer"):
             apres = action.split("-", 1)[1] if "-" in action else None
             GLib.timeout_add(1500, lambda: (self.comparer_voix(apres), False)[1])

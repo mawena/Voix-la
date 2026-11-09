@@ -68,8 +68,54 @@ def attendre_que(condition, delai=30.0):
         yield 100
 
 
+def scenario_doubler(f):
+    """Page Doubler : « Comparer plusieurs voix » (cases à cocher), réglages envoyés à doubler, estimation."""
+    dp = f.pages["doubler"]
+    f.aller("doubler")
+    yield from attendre_que(lambda: "--comparer" in f.caps and len(getattr(dp, "_ids_voix", [])) == 3, 20)
+    modes = [c[0] for c in dp._choix_dispo]
+    if not verifier("comparer" in modes, f"choix de voix : {modes}"):
+        return
+    dp.r_choix_voix.set_selected(modes.index("comparer"))
+    yield 400
+    verifier(dp.comparer() and dp.r_comparees.get_visible() and not dp.r_voix.get_visible(),
+             "« Comparer plusieurs voix » n'affiche pas la liste des voix")
+    verifier(len(dp._lignes_comparees) == 3, f"cases : {list(dp._lignes_comparees)}")
+    verifier(not dp.b_lancer.get_sensitive(), "Lancer actif sans vidéo ni voix")
+    cases = [c for _, c in dp._lignes_comparees.values()]
+    cases[0].set_active(True)
+    yield 200
+    verifier(dp.voix_a_comparer() == ["voixa"] and dp._voix_choisie() is None, "une seule voix : pas de comparaison")
+    verifier("au moins deux voix" in dp.r_comparees.get_subtitle(), dp.r_comparees.get_subtitle())
+    cases[2].set_active(True)
+    yield 200
+    verifier(dp.voix_a_comparer() == ["voixa", "voixc"], f"voix cochées : {dp.voix_a_comparer()}")
+    verifier(f.prefs.get("voix_comparees") == ["voixa", "voixc"], f"préférence : {f.prefs.get('voix_comparees')}")
+    r = dp.reglages()
+    verifier(r.get("comparer") == ["voixa", "voixc"] and r.get("voix") == "voixa", f"réglages : {r}")
+    video = os.path.join(os.environ["VOIXLA_DONNEES"], "Clip.mp4")
+    with open(video, "wb"):
+        pass
+    dp.ajouter([video])
+    yield 800
+    verifier(dp.b_lancer.get_sensitive(), "Lancer grisé avec une vidéo et deux voix")
+    verifier("2 voix" in dp.r_comparees.get_subtitle() and "Conseil" in dp.r_comparees.get_subtitle(),
+             dp.r_comparees.get_subtitle())
+    une = dp._estimer([30.0], {**r, "comparer": None})
+    trois = dp._estimer([30.0], {**r, "comparer": ["voixa", "voixb", "voixc"]})
+    verifier(trois["kaggle"] > une["kaggle"] and abs(trois["mix"] - 3 * une["mix"]) < 0.5,
+             f"estimation : une voix {une}, trois voix {trois}")
+    # une seule case décochée de plus, puis retour à « Une voix pour tous » : plus de comparaison dans les réglages
+    dp.r_choix_voix.set_selected(modes.index("une"))
+    yield 300
+    verifier("comparer" not in dp.reglages() and dp.r_voix.get_visible(), f"réglages après retour : {dp.reglages()}")
+    dp.retirer(dp.videos[0])
+
+
 def scenario(app):
     f = app.fenetre
+    yield from scenario_doubler(f)
+    f.aller("resultats")
     page = f.pages["resultats"]
     yield from attendre_que(lambda: page._charge, 20)
     res = next((r for r in page.resultats if r.titre.startswith("Chanson")), None)

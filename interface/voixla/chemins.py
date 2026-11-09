@@ -39,6 +39,8 @@ PREFERENCES_DEFAUT = {
     "voix_par_chanteur": False,
     "duo_chanteurs": "genre",
     "voix_chanteurs": [],       # [voix d'homme ou chanteur 1, voix de femme ou chanteur 2] ; null : pas choisie
+    # Doubler, « Comparer plusieurs voix » : les voix cochées (identifiants), gardées d'une session à l'autre
+    "voix_comparees": [],
     "mode": "auto",
     "octave": "auto",
     "pas": 30,

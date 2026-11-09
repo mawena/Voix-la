@@ -32,7 +32,8 @@ from . import chemins
 OPTIONS_SUIVIES = ("--evenements", "--donnees", "--config", "--json", "--voix-liste", "--ajouter-voix", "--remix",
                    "--debut", "--duree", "--pas", "--voix-db", "--reverb-db", "--octave", "--mode", "--sortie",
                    "--mix-v1", "--comparer-pas", "--reprendre", "--moteur", "--sans-nettoyage", "--sans-paroles",
-                   "--autotune", "--sans-autotune", "--autotune-gamme", "--gpu", "--passage", "--affectation")
+                   "--autotune", "--sans-autotune", "--autotune-gamme", "--gpu", "--passage", "--affectation",
+                   "--comparer")
 MOTEURS = (("yingmusic", "YingMusic-SVC"), ("seedvc", "Seed-VC 44 kHz"))
 NOM_VOIX = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")   # même règle que doubler --ajouter-voix
 EXTRAIT_NOM = re.compile(r" \(extrait (\d+)m(\d+(?:,\d+)?)(?:\+(\d+)m(\d+(?:,\d+)?))?\)$")
@@ -313,7 +314,10 @@ def args_doublage(videos, reglages, donnees, extrait=None, evenements=None, caps
             a.append(chemin)
         else:
             a.append(str(Path(v)))
-    if reglages.get("voix"):
+    comparer = [v for v in (reglages.get("comparer") or []) if v]
+    if len(comparer) > 1 and "--comparer" in caps:
+        a.append(f"--comparer={','.join(comparer)}")   # plusieurs voix, une session ; remplace --voix
+    elif reglages.get("voix"):
         a.append(f"--voix={reglages['voix']}")
     if reglages.get("mode") and reglages["mode"] != "auto":
         a.append(f"--mode={reglages['mode']}")
@@ -774,7 +778,7 @@ def module_doubler():
 
 
 def estimation_noyau_s(durees_s, pas, sorties, nettoyage=True, mode="auto", moteur_chant="yingmusic", paroles=True,
-                       voix_cibles=1, cartes=1):
+                       voix_cibles=1, cartes=1, voix_comparees=1):
     """Durée probable de la session Kaggle (de la poussée du noyau à sa fin) calculée par doubler lui-même
     (doubler.estimer_noyau_s, sur les rapports passés de sorties) : la valeur qu'il annoncera au lancement, dans
     estimation_s de ses événements « kaggle ». None si doubler.py manque, ne se charge pas, ou n'accepte pas ces
@@ -788,6 +792,10 @@ def estimation_noyau_s(durees_s, pas, sorties, nettoyage=True, mode="auto", mote
                        paroles=bool(paroles), voix_cibles=max(1, int(voix_cibles or 1)), cartes=max(1, int(cartes or 1)))
         if options["voix_cibles"] > 1 and "versions_duo" in getattr(estimer, "__code__", None).co_varnames:
             options["versions_duo"] = "toutes"    # doubler convertit chaque passage dans les deux voix (son défaut)
+        if int(voix_comparees or 1) > 1:
+            if "voix_comparees" not in getattr(estimer, "__code__", None).co_varnames:
+                return None    # doubler d'avant --comparer : l'interface prend son propre modèle
+            options["voix_comparees"] = int(voix_comparees)
         s = estimer([float(x or 0) for x in durees_s], int(pas or 30), [Path(x) for x in sorties], **options)
         return float(s) if s is not None and float(s) >= 0 else None
     except Exception:  # noqa: BLE001 — erreur dans doubler.py : le repli de l'interface

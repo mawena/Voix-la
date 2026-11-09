@@ -982,14 +982,22 @@ def facteur_pas(pas):
     return max(0.3, 1 + 0.4 * ((float(pas or 30) - 30) / 20))
 
 
-def _noyau_selon_doubler(durees, pas, sorties, nettoyage, mode, moteur_chant, paroles, voix_cibles, cartes):
+def _noyau_selon_doubler(durees, pas, sorties, nettoyage, mode, moteur_chant, paroles, voix_cibles, cartes,
+                         voix_comparees=1):
     """La session estimée par doubler (moteur.estimation_noyau_s) d'après les rapports de sorties (un dossier ou une
     liste), ou None."""
     dossiers = [sorties] if isinstance(sorties, (str, os.PathLike)) else list(sorties)
-    return moteur.estimation_noyau_s(durees, pas, dossiers, nettoyage, mode, moteur_chant, paroles, voix_cibles, cartes)
+    return moteur.estimation_noyau_s(durees, pas, dossiers, nettoyage, mode, moteur_chant, paroles, voix_cibles, cartes,
+                                     voix_comparees)
 
 
-def noyau_repli(modele, total, pas=30, nettoye=False, mode="auto", moteur_chant="seedvc", paroles=True, cartes=1):
+# Comparer des voix, sans doubler.py pour estimer : part de la pente de la session que la conversion d'une voix prend
+# (le reste, séparation, nettoyage, paroles, n'est fait qu'une fois) ; chaque voix de plus la refait
+PART_CONVERSION_REPLI = 0.45
+
+
+def noyau_repli(modele, total, pas=30, nettoye=False, mode="auto", moteur_chant="seedvc", paroles=True, cartes=1,
+                voix_comparees=1):
     """Session estimée par le modèle de l'interface (repli, sans doubler.py) : sa pente, sans les paroles, puis les
     paroles comme doubler les compte. Une carte, la parole ou Seed-VC : P en entier (P = a + b × secondes de son, modèle
     « paroles »). Deux cartes avec YingMusic-SVC, paroles sur la carte 1 pendant la conversion : P compte aussi
@@ -999,6 +1007,8 @@ def noyau_repli(modele, total, pas=30, nettoye=False, mode="auto", moteur_chant=
     a, b = modele[("kaggle_nettoye_2cartes" if deux else "kaggle_nettoye") if nettoye else "kaggle"]
     ying = moteur_chant == "yingmusic"
     s = a + b * total * (1.0 if ying else facteur_pas(pas))
+    if voix_comparees > 1:   # chaque voix de plus : une conversion de plus, et sa référence à préparer
+        s += (voix_comparees - 1) * (PART_CONVERSION_REPLI * b * total * (1.0 if ying else facteur_pas(pas)) + 20.0)
     if paroles:
         ap, bp = modele["paroles"]
         p = ap + bp * total
@@ -1011,20 +1021,23 @@ def noyau_repli(modele, total, pas=30, nettoye=False, mode="auto", moteur_chant=
 
 
 def estimer(durees_audio, pas=30, modele=None, nettoyage=False, mode="auto", moteur=None, cartes=1, paroles=True,
-            voix_cibles=1, sorties=None):
+            voix_cibles=1, sorties=None, voix_comparees=1):
     """{étape: secondes} pour un appel doubler avec ces vidéos (durées d'audio en secondes). nettoyage : chant nettoyé
     (le défaut du doubler actuel ; en mode auto, on suppose du chant, comme doubler) ; les pas ne changent la durée
     qu'avec Seed-VC (avec YingMusic, 50 ou 100 pas n'apportent rien de mesurable). cartes : cartes GPU que le noyau
     prendra (moteur.cartes_prevues). paroles : faux avec --sans-paroles. voix_cibles : 2 pour une voix par chanteur.
+    voix_comparees : nombre de voix comparées en une session (--comparer) : la conversion, le mixage et la remise sur la
+    vidéo sont refaits pour chaque voix, le reste (envoi, séparation, nettoyage, paroles) ne l'est pas.
     Session (« kaggle ») : avec sorties (dossier des sorties, ou liste de dossiers), celle que calcule doubler lui-même
     sur ses rapports (moteur.estimation_noyau_s) ; sans sorties, ou si doubler.py ne répond pas, noyau_repli."""
     modele = {**MODELE_DEFAUT, **(modele or {})}
     durees = [float(d or 0) for d in durees_audio] or [0.0]
     total = sum(durees)
     e = {}
+    comparees = max(1, int(voix_comparees or 1))
     for cle in ("extraction", "mix", "video"):
         a, b = modele[cle]
-        e[cle] = sum(a + b * d for d in durees)
+        e[cle] = sum(a + b * d for d in durees) * (comparees if cle != "extraction" else 1)
     for cle in ("envoi", "rapatriement"):
         a, b = modele[cle]
         e[cle] = a + b * total
@@ -1033,9 +1046,9 @@ def estimer(durees_audio, pas=30, modele=None, nettoyage=False, mode="auto", mot
     noyau = None
     if sorties is not None:
         noyau = _noyau_selon_doubler(durees, pas, sorties, bool(nettoyage), mode, moteur_chant, paroles, voix_cibles,
-                                     cartes)
+                                     cartes, comparees)
     e["kaggle"] = noyau if noyau is not None else noyau_repli(modele, total, pas, nettoye, mode, moteur_chant, paroles,
-                                                              cartes)
+                                                              cartes, comparees)
     e["attente"] = 0.0
     e["fini"] = 0.0
     return {k: round(v, 1) for k, v in e.items()}

@@ -3304,7 +3304,7 @@ def appliquer_affectation(tr, a, voix):
         return []
     rapport = json.loads((tv / 'rapport.json').read_text())
     noms = [m['id'] for m in membres]
-    cles = {m['cle']: m['id'] for m in membres}
+    cles = {m['cle']: m['id'] for m in membres if m.get('cle')}
     aff, modifiee = affectation_demandee(a, tv, noms, cles)
     if aff is None:
         if modifiee or (tv / AFFECTATION).exists():

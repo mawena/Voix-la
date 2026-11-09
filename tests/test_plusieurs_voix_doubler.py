@@ -137,6 +137,7 @@ class VoixCombinee(unittest.TestCase):
              'affichage': 'Jules'},
             {'cle': 'femme', 'nom': 'marie', 'fichier': 'voix-marie.wav', 'f0_parole_hz': 210.0, 'facteur_chant': 2.0,
              'affichage': 'Marie'}]})
+        self.assertEqual(deux.pop('versions_duo'), 'toutes')   # deux versions de chaque passage, seulement en duo
         self.assertEqual({k: v for k, v in deux.items() if k != 'voix_cibles'}, un)
 
     def test_estimation(self):

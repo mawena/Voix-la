@@ -1,20 +1,29 @@
 """Séance d'enregistrement de la voix chantée : la vue (la logique est dans voixla/seance.py, sans GTK).
 
 Ouverte depuis la page Voix (« Enregistrer ma voix chantée… »), empilée par-dessus elle : pas d'onglet de plus dans la
-barre latérale. Les étapes (parole, tessiture, notes à tenir, chanson, chanson libre) ont de grandes consignes ; les
-pistes se jouent avec le lecteur de l'application (gui/lecteur.py, ses commandes : lecture / pause, barre de position)
+barre latérale. En haut, « Comment ça marche » (5 lignes). Chaque étape (parole, tessiture, notes à tenir, chanson,
+chanson libre) affiche sa durée, une case « Fait » (gardée dans voix/<nom>/seance.json) et le nom de fichier conseillé
+pour le téléphone ; tout le contenu est fourni : le texte à lire en grand (étape 1), la piste de tessiture guide réglée
+sur la voix (étape 2), deux chansons du domaine public avec accompagnement et paroles (étape 5). Les pistes se jouent avec le lecteur de l'application (gui/lecteur.py, ses commandes : lecture / pause, barre de position)
 et le temps restant ; les paroles de la chanson (le .lrc du doublage, décalé des 5 s de bips) s'affichent avec la vue
 des paroles de l'application (gui/vue_paroles.py). L'import des fichiers du téléphone, leur contrôle et la durée déjà
-enregistrée sont en bas.
+enregistrée sont en bas. L'import reconnaît l'étape d'un fichier à son nom (« 1-parole », « 5-frere-jacques »…) et la
+laisse corriger.
+
+Pour les essais et les captures : VOIXLA_SEANCE_ETAPE (étape ouverte), VOIXLA_SEANCE_CHANSON (chanson de l'étape 5),
+VOIXLA_SEANCE_POSITION (instant, en secondes, où placer les paroles).
 """
 
+import os
 import threading
 from pathlib import Path
 
-from gi.repository import Adw, Gio, GLib, Gtk
+from gi.repository import Adw, Gio, GLib, Gtk, Pango
 
 from .. import bibliotheque, chemins, formats
 from .. import seance as S
+from .. import seance_chansons as CH
+from .. import seance_textes as TX
 from . import commun
 from .lecteur import Lecteur
 from .vue_paroles import VueParoles
@@ -23,7 +32,16 @@ CSS = b"""
 .seance-titre { font-size: 1.9em; font-weight: 800; }
 .seance-consigne { font-size: 1.25em; }
 .seance-carte { padding: 20px; }
+.seance-pas { font-size: 1.15em; }
+.seance-nom { font-family: monospace; font-weight: 700; font-size: 1.15em; }
 """
+
+TAILLES_TEXTE = (0.6, 0.8, 1.0, 1.25, 1.5, 1.8)     # facteurs de taille du texte à lire (1,0 : déjà grand)
+ECHELLE_TEXTE = 2.0                                   # le texte à lire est 2 fois la taille normale, puis ce facteur
+# les fichiers que l'import sait ranger : (libellé, étape, chanson de l'étape 5)
+CHOIX_IMPORT = tuple((f"{i}  {e.titre}", e.cle, "") for i, e in enumerate(S.ETAPES[:4], 1)) + tuple(
+    (f"5  {c.titre}", "libre", c.cle) for c in CH.CHANSONS) + (("5  Chanson libre (un doublage)", "libre", ""),)
+CHOIX_CHANSON_LIBRE = tuple((c.cle, c.titre) for c in CH.CHANSONS) + (("doublage", "Un de mes doublages"),)
 _css = False
 
 
@@ -59,31 +77,35 @@ class PageSeance(Adw.NavigationPage):
         self.fenetre = fenetre
         self.ident, self.nom = ident, nom
         self.dossier_voix = chemins.dossier_voix(fenetre.donnees) / ident
+        self.etat = S.lire_etat(self.dossier_voix)
         self.etape = S.ETAPES[0]
         self.conseils = []              # [Conseil], les conseillées d'abord
         self.annuler = threading.Event()
-        self._piste = None              # (« guide » | « musique » | « notes », chemin) chargée dans le lecteur
+        self._piste = None              # (« guide » | « musique » | « notes » | …, chemin) chargée dans le lecteur
         self._boutons_etape = {}
         self._rangees_controle = []
         self._en_preparation = False
         self._bloque = False
+        self.centre_hz, self.centre_source = S.centre_voix(self.dossier_voix, self.etat["centre"])
+        self.chanson_libre = CH.CHANSONS[0].cle      # « doublage » : un doublage de la bibliothèque
+        self._lignes_import, self._fichiers_import = [], []
 
         vue = Adw.ToolbarView()
         vue.add_top_bar(Adw.HeaderBar())
         self.set_child(vue)
         defile = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
         vue.set_content(defile)
-        pince = Adw.Clamp(maximum_size=820, tightening_threshold=600)
+        pince = Adw.Clamp(maximum_size=1100, tightening_threshold=800)
         defile.set_child(pince)
         corps = commun.boite(espace=18, marges=16)
         pince.set_child(corps)
 
-        intro = Gtk.Label(
-            label=f"Voix « {nom} » : pour que le modèle te reconnaisse dans tes doublages, il lui faut ta voix "
-                  "chantée, pas seulement ta parole. Tu chantes dans ton téléphone, casque branché sur le PC, sur "
-                  "les pistes de cette page ; puis tu importes tes fichiers ici.",
-            xalign=0, wrap=True, css_classes=["dim-label"])
-        corps.append(intro)
+        # comment ça marche : 5 lignes
+        comment = commun.boite(espace=6, css_classes=["card", "seance-carte"])
+        comment.append(Gtk.Label(label=f"Comment ça marche — voix « {nom} »", xalign=0, css_classes=["title-3"]))
+        for i, texte in enumerate(S.COMMENT_CA_MARCHE, 1):
+            comment.append(Gtk.Label(label=f"{i}.  {texte}", xalign=0, wrap=True, css_classes=["seance-pas"]))
+        corps.append(comment)
 
         # rappel des consignes
         g = Adw.PreferencesGroup(title="Avant de commencer")
@@ -98,7 +120,7 @@ class PageSeance(Adw.NavigationPage):
         barre = Gtk.Box(spacing=6, halign=Gtk.Align.CENTER)
         premier = None
         for i, e in enumerate(S.ETAPES, 1):
-            b = Gtk.ToggleButton(label=f"{i}  {e.titre}", group=premier, active=e is self.etape)
+            b = Gtk.ToggleButton(label=self._libelle_etape(i, e), group=premier, active=e is self.etape)
             premier = premier or b
             b.connect("toggled", lambda b, e=e: b.get_active() and self.choisir_etape(e.cle))
             barre.append(b)
@@ -107,18 +129,78 @@ class PageSeance(Adw.NavigationPage):
                                            hscrollbar_policy=Gtk.PolicyType.AUTOMATIC)
         corps.append(defile_etapes)
 
-        # la carte de l'étape
+        # la carte de l'étape : titre, durée, case « Fait », nom de fichier conseillé, consignes
         self.carte = commun.boite(espace=12, css_classes=["card", "seance-carte"])
         tete = Gtk.Box(spacing=12)
         self.l_titre = Gtk.Label(xalign=0, hexpand=True, wrap=True, css_classes=["seance-titre"])
         self.b_duree = commun.badge("", "accent")
+        self.c_fait = Gtk.CheckButton(label="Fait", valign=Gtk.Align.CENTER,
+                                      tooltip_text="Coche quand l’étape est enregistrée : la case est gardée")
+        self.c_fait.connect("toggled", lambda b: self._fait_change(b.get_active()))
         tete.append(self.l_titre)
         tete.append(self.b_duree)
+        tete.append(self.c_fait)
         self.carte.append(tete)
+        self.l_nom_fichier = Gtk.Label(xalign=0, wrap=True, use_markup=True)
+        self.carte.append(self.l_nom_fichier)
         self.b_consignes = commun.boite(espace=8)
         self.carte.append(self.b_consignes)
 
-        # chanson : doublage, tonalité, boutons
+        # étape 1 : le texte à lire, en grand, puis la parole libre
+        self.b_texte = commun.boite(espace=12)
+        regl = Gtk.Box(spacing=6)
+        regl.append(Gtk.Label(label="Taille du texte", xalign=0, css_classes=["heading"]))
+        self.b_moins = commun.bouton(None, "list-remove-symbolic", "Texte plus petit", clic=lambda: self._taille_texte(-1))
+        self.b_plus = commun.bouton(None, "list-add-symbolic", "Texte plus grand", clic=lambda: self._taille_texte(1))
+        self.l_taille = Gtk.Label(css_classes=["chiffres", "dim-label"], width_chars=5)
+        for w in (self.b_moins, self.l_taille, self.b_plus):
+            regl.append(w)
+        self.b_texte.append(regl)
+        self.b_paragraphes = commun.boite(espace=18)
+        self.b_texte.append(self.b_paragraphes)
+        self.carte.append(self.b_texte)
+
+        # étapes 2 et 5 : le centre de la voix, sinon « voix grave » ou « voix aiguë »
+        self.b_centre = commun.boite(espace=6)
+        self.l_centre = Gtk.Label(xalign=0, wrap=True, css_classes=["seance-pas"])
+        self.b_centre.append(self.l_centre)
+        self.b_choix_voix = Gtk.Box(spacing=8, halign=Gtk.Align.START)
+        premier = None
+        self._boutons_voix = {}
+        for cle, libelle, hz in TX.CHOIX_VOIX:
+            b = Gtk.ToggleButton(label=f"{libelle} ({hz:.0f} Hz)", group=premier,
+                                 active=self.etat["centre"] == cle and self.centre_hz == hz)
+            premier = premier or b
+            b.connect("toggled", lambda b, c=cle: b.get_active() and self._choisir_voix(c))
+            self.b_choix_voix.append(b)
+            self._boutons_voix[cle] = b
+        self.b_centre.append(self.b_choix_voix)
+        self.carte.append(self.b_centre)
+
+        # étape 5 : quelle chanson ?
+        self.b_libre = commun.boite(espace=8)
+        liste_libre = Gtk.ListBox(css_classes=["boxed-list"], selection_mode=Gtk.SelectionMode.NONE)
+        self.r_libre = Adw.ComboRow(title="Chanson", subtitle="Du domaine public, avec accompagnement et paroles")
+        self.r_libre.set_model(Gtk.StringList.new([t for _c, t in CHOIX_CHANSON_LIBRE]))
+        self.r_libre.connect("notify::selected", lambda *_: self._libre_change())
+        liste_libre.append(self.r_libre)
+        self.b_libre.append(liste_libre)
+        self.l_transposition = commun.legende("")
+        self.b_libre.append(self.l_transposition)
+        self.b_publique = Gtk.Box(spacing=8, halign=Gtk.Align.START)
+        self.b_melodie = commun.bouton("S’entraîner : avec la mélodie", "media-playback-start-symbolic",
+                                       infobulle="4 bips, puis la chanson au piano avec ses accords",
+                                       clic=lambda: self.preparer_publique("melodie"))
+        self.b_accomp = commun.bouton("Prise : accompagnement seul", "media-record-symbolic",
+                                      styles=("suggested-action",),
+                                      infobulle="La vraie prise : 4 bips, puis les accords et un léger métronome",
+                                      clic=lambda: self.preparer_publique("accompagnement"))
+        self.b_publique.append(self.b_melodie)
+        self.b_publique.append(self.b_accomp)
+        self.b_libre.append(self.b_publique)
+        self.carte.append(self.b_libre)
+
+        # chanson d'un doublage : doublage, tonalité, boutons
         self.b_chanson = commun.boite(espace=8)
         liste = Gtk.ListBox(css_classes=["boxed-list"], selection_mode=Gtk.SelectionMode.NONE)
         self.r_doublage = Adw.ComboRow(title="Doublage", subtitle="Les chansons conseillées pour ta voix d’abord")
@@ -167,16 +249,15 @@ class PageSeance(Adw.NavigationPage):
         self.b_lecteur.append(self.lecteur)
         self.carte.append(self.b_lecteur)
 
-        # paroles
+        # paroles (ou ce qui s'affiche pendant la piste : sirènes, notes de la gamme)
         self.b_paroles = commun.boite(espace=4)
-        self.vue_paroles = VueParoles(lambda t: self.lecteur.aller_a(t), langue="originale", taille="tres-grande")
-        self.vue_paroles.karaoke.set_size_request(-1, 300)   # grandes paroles, lisibles de loin pendant la prise
+        self.vue_paroles = VueParoles(lambda t: self.lecteur.aller_a(t), langue="originale", taille="geante")
+        self.vue_paroles.karaoke.set_size_request(-1, 360)   # grandes paroles, lisibles de loin pendant la prise
         self.vue_paroles.b_panneau.set_visible(False)
         self.vue_paroles.suivre(self._fournisseur)
         self.vue_paroles.dire("Choisis un doublage pour voir ses paroles")
         self.b_paroles.append(self.vue_paroles)
-        self.l_note_paroles = commun.legende(S.NOTE_PAROLES[:1].upper() + S.NOTE_PAROLES[1:]
-                                             + ". Elles sont décalées des 5 s de bips : elles suivent ta prise.")
+        self.l_note_paroles = commun.legende("")
         self.b_paroles.append(self.l_note_paroles)
         self.carte.append(self.b_paroles)
         corps.append(self.carte)
@@ -184,17 +265,23 @@ class PageSeance(Adw.NavigationPage):
         # import
         self.g_import = Adw.PreferencesGroup(
             title="Importer mes enregistrements",
-            description="Choisis les fichiers de ton téléphone (m4a, aac, mp3, wav, ogg, opus, 3gp, amr) : ils sont "
-                        "copiés tels quels dans le dossier de la voix, puis contrôlés (durée, saturation, bruit de "
-                        "fond, musique du casque).")
-        self.r_etape_import = Adw.ComboRow(title="Étape de ces fichiers")
+            description="Choisis les fichiers de ton téléphone (m4a, aac, mp3, wav, ogg, opus, 3gp, amr). L’étape de "
+                        "chacun est reconnue à son nom (« 1-parole », « 5-frere-jacques »…) et tu peux la corriger ; "
+                        "ils sont copiés tels quels dans le dossier de la voix, puis contrôlés (durée, saturation, "
+                        "bruit de fond, musique du casque).")
+        self.r_etape_import = Adw.ComboRow(title="Étape des fichiers au nom non reconnu")
         self.r_etape_import.set_model(Gtk.StringList.new([f"{i}  {e.titre}" for i, e in enumerate(S.ETAPES, 1)]))
         self.g_import.add(self.r_etape_import)
+        corps.append(self.g_import)
+        self.g_a_importer = Adw.PreferencesGroup(title="Étape de chaque fichier", visible=False)
+        corps.append(self.g_a_importer)
         self.b_importer = commun.bouton("Importer mes enregistrements…", "document-open-symbolic",
                                         styles=("suggested-action",), clic=self.importer, halign=Gtk.Align.START)
-        corps.append(self.g_import)
-        boite_import = commun.boite(espace=8)
+        self.b_valider = commun.bouton("Importer ces fichiers", "emblem-ok-symbolic", styles=("suggested-action",),
+                                       clic=self.valider_import, halign=Gtk.Align.START, visible=False)
+        boite_import = Gtk.Box(spacing=8, halign=Gtk.Align.START)
         boite_import.append(self.b_importer)
+        boite_import.append(self.b_valider)
         corps.append(boite_import)
         self.g_controles = Adw.PreferencesGroup(title="Contrôle des fichiers importés", visible=False)
         corps.append(self.g_controles)
@@ -205,12 +292,20 @@ class PageSeance(Adw.NavigationPage):
         self.r_parole, self.barre_parole = self._ligne_total("Parole", S.OBJECTIF_PAROLE_S)
         corps.append(self.g_total)
 
+        self._construire_texte()
         self.connect("hidden", lambda *_: self._quitter())
-        self.choisir_etape("parole")
+        choisie = os.environ.get("VOIXLA_SEANCE_CHANSON")      # essais et captures : « frere-jacques »…
+        if choisie in dict(CHOIX_CHANSON_LIBRE):
+            self.r_libre.set_selected([c for c, _t in CHOIX_CHANSON_LIBRE].index(choisie))
+        self.chanson_libre = CHOIX_CHANSON_LIBRE[max(0, self.r_libre.get_selected())][0]
+        self.choisir_etape(os.environ.get("VOIXLA_SEANCE_ETAPE") or "parole")
         self.charger_doublages()
         self.charger_totaux()
 
     # --- étapes -----------------------------------------------------------------------------------------------------
+
+    def _libelle_etape(self, i, e):
+        return f"{'✓ ' if self.etat['fait'].get(e.cle) else ''}{i}  {e.titre}"
 
     def _ligne_total(self, titre, objectif):
         r = Adw.ActionRow(title=titre)
@@ -221,26 +316,180 @@ class PageSeance(Adw.NavigationPage):
         self.g_total.add(r)
         return r, barre
 
+    # --- étape 1 : le texte à lire --------------------------------------------------------------------------------
+
+    def _construire_texte(self):
+        """Le texte à lire (voixla/seance_textes.py), puis la parole libre : un Gtk.Label par paragraphe, à l'échelle
+        choisie."""
+        self._etiquettes_texte = []
+
+        def para(texte, gras=False, marge=0):
+            l = Gtk.Label(label=texte, xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR,
+                          margin_start=marge, natural_wrap_mode=Gtk.NaturalWrapMode.WORD)
+            self._etiquettes_texte.append((l, gras))
+            self.b_paragraphes.append(l)
+            return l
+        for t in TX.TEXTE_PAROLE:
+            para(t)
+        self.b_paragraphes.append(Gtk.Separator())
+        para(TX.TITRE_LIBRE, gras=True)
+        para(TX.CONSIGNE_LIBRE)
+        for sujet in TX.SUJETS_LIBRES:
+            para(f"•  {sujet}", marge=12)
+        self._appliquer_taille_texte()
+
+    def _appliquer_taille_texte(self):
+        facteur = ECHELLE_TEXTE * self.etat["taille_texte"]
+        for l, gras in self._etiquettes_texte:
+            attrs = Pango.AttrList()
+            attrs.insert(Pango.attr_scale_new(facteur))
+            if gras:
+                attrs.insert(Pango.attr_weight_new(Pango.Weight.BOLD))
+            l.set_attributes(attrs)
+        self.l_taille.set_label(f"{round(self.etat['taille_texte'] * 100)} %")
+        t = self.etat["taille_texte"]
+        self.b_moins.set_sensitive(t > TAILLES_TEXTE[0] + 1e-6)
+        self.b_plus.set_sensitive(t < TAILLES_TEXTE[-1] - 1e-6)
+
+    def _taille_texte(self, sens):
+        i = min(range(len(TAILLES_TEXTE)), key=lambda k: abs(TAILLES_TEXTE[k] - self.etat["taille_texte"]))
+        i = max(0, min(len(TAILLES_TEXTE) - 1, i + sens))
+        self.etat["taille_texte"] = TAILLES_TEXTE[i]
+        self._appliquer_taille_texte()
+        self._enregistrer_etat()
+
+    def _enregistrer_etat(self):
+        try:
+            S.ecrire_etat(self.dossier_voix, self.etat)
+        except OSError as e:
+            self.fenetre.toast(f"Séance non enregistrée : {e}")
+
+    def _fait_change(self, fait):
+        if self._bloque:
+            return
+        self.etat["fait"][self.etape.cle] = bool(fait)
+        self._enregistrer_etat()
+        i = S.ETAPES.index(self.etape) + 1
+        self._boutons_etape[self.etape.cle].set_label(self._libelle_etape(i, self.etape))
+
+    # --- le centre de la voix --------------------------------------------------------------------------------------
+
+    def _maj_centre(self):
+        """Dit d'où vient le centre C de la voix ; sans mesure, propose « voix grave » ou « voix aiguë »."""
+        if self.centre_hz:
+            self.l_centre.set_label(TX.EXPLICATION_CENTRE[0].format(source=self.centre_source,
+                                                                    hz=formats.nombre(self.centre_hz, 0)))
+        else:
+            self.l_centre.set_label(TX.EXPLICATION_CENTRE[1])
+        mesure = S.zone_de_chant(self.dossier_voix) is not None
+        self.b_choix_voix.set_visible(not mesure)
+        self.l_centre.set_visible(True)
+
+    def _choisir_voix(self, cle):
+        if self._bloque:
+            return
+        self.etat["centre"] = cle
+        self._enregistrer_etat()
+        self.centre_hz, self.centre_source = S.centre_voix(self.dossier_voix, cle)
+        self._maj_centre()
+        self._piste_changee()
+        self._paroles_libre()
+        if self.etape.cle == "tessiture":
+            self.preparer_tessiture()
+
+    def _piste_changee(self):
+        """Le centre ou la tonalité ont changé : la piste chargée n'est plus la bonne."""
+        self.lecteur.liberer()
+        self._piste = None
+        self.b_lecteur.set_visible(False)
+
     def choisir_etape(self, cle):
         e = S.etape(cle)
         self.etape = e
         self._boutons_etape[cle].set_active(True)
         self.lecteur.liberer()
         self._piste = None
+        self._bloque = True
+        self.c_fait.set_active(bool(self.etat["fait"].get(cle)))
+        self._bloque = False
         self.l_titre.set_label(f"{S.ETAPES.index(e) + 1}. {e.titre}")
         self.b_duree.set_label(f"≈ {formats.duree(e.duree_s)}")
+        noms = " ou ".join(f"« {n} »" for n in e.noms)
+        self.l_nom_fichier.set_markup(f"Nom du fichier à donner sur le téléphone : <b>{commun.echapper(noms)}</b>"
+                                      + (" (un fichier par chanson)" if len(e.noms) > 1 else ""))
         commun.vider(self.b_consignes)
-        for c in e.consignes:
+        consignes = e.consignes
+        if cle == "libre" and self.chanson_libre == "doublage":
+            consignes = TX.CONSIGNES_CHANSON_DOUBLAGE
+        for c in consignes:
             self.b_consignes.append(Gtk.Label(label=c, xalign=0, wrap=True, css_classes=["seance-consigne"]))
-        self.b_chanson.set_visible(e.piste == "chanson")
-        self.b_paroles.set_visible(e.piste == "chanson")
+        doublage = (cle == "chanson") or (cle == "libre" and self.chanson_libre == "doublage")
+        self.b_texte.set_visible(cle == "parole")
+        self.b_centre.set_visible(cle in ("tessiture", "libre") and not doublage)
+        self.b_libre.set_visible(cle == "libre")
+        self.b_publique.set_visible(cle == "libre" and not doublage)
+        self.l_transposition.set_visible(cle == "libre" and not doublage)
+        self.b_chanson.set_visible(doublage)
+        self.b_paroles.set_visible(doublage or cle in ("tessiture", "libre"))
         self.b_lecteur.set_visible(False)
         self.b_progres.set_visible(False)
         self.r_etape_import.set_selected(S.ETAPES.index(e))
+        self._maj_centre()
         if e.piste == "notes":
             self.preparer_notes()
-        elif e.piste == "chanson":
+        elif e.piste == "tessiture":
+            self.l_note_paroles.set_visible(True)
+            self.l_note_paroles.set_label("Ce qui s’affiche suit la piste : la sirène en cours, puis le nom de chaque "
+                                          "note de la gamme. Les 5 premières secondes sont les bips.")
+            if self.centre_hz:
+                self.preparer_tessiture()
+            else:
+                self.vue_paroles.dire("Choisis ta voix (grave ou aiguë) pour régler la piste")
+        elif e.piste == "chanson" or (cle == "libre" and doublage):
             self._doublage_change()
+        elif cle == "libre":
+            self._paroles_libre()
+
+    def _libre_change(self):
+        """Étape 5 : une chanson du domaine public, ou un doublage."""
+        i = self.r_libre.get_selected()
+        self.chanson_libre = CHOIX_CHANSON_LIBRE[i][0] if 0 <= i < len(CHOIX_CHANSON_LIBRE) else CHOIX_CHANSON_LIBRE[0][0]
+        if self.etape.cle == "libre" and not self._bloque:
+            self.choisir_etape("libre")
+
+    def _placer_essai(self):
+        """Essais et captures : VOIXLA_SEANCE_POSITION place les paroles à cet instant (en secondes)."""
+        try:
+            t = float(os.environ.get("VOIXLA_SEANCE_POSITION", ""))
+        except ValueError:
+            return
+        # la vue des paroles se replace à sa mise en page : on attend qu'elle soit posée
+        GLib.timeout_add(1200, lambda: (self.vue_paroles.placer(t), False)[1])
+
+    def _paroles_libre(self):
+        """Les paroles de la chanson du domaine public choisie, et la transposition dans la voix."""
+        c = CH.chanson(self.chanson_libre)
+        if c is None:
+            return
+        self.l_note_paroles.set_visible(True)
+        self.l_note_paroles.set_label("Chanson du domaine public. Les paroles suivent la piste (décalées des 5 s de bips) "
+                                      "et la syllabe à chanter se remplit.")
+        self.vue_paroles.definir(S.paroles_chanson_publique(c.cle))
+        self.vue_paroles.placer(0.0)
+        self._placer_essai()
+        if self.centre_hz:
+            d = CH.transposition(c, self.centre_hz)
+            sens = "plus haut" if d > 0 else "plus bas"
+            texte = (f"Placée dans ta voix : la note médiane de la mélodie tombe sur ton centre "
+                     f"({formats.nombre(self.centre_hz, 0)} Hz), la chanson est "
+                     + (f"{abs(d)} demi-ton{'s' if abs(d) > 1 else ''} {sens} que sa version d’origine."
+                        if d else "dans sa tonalité d’origine.")
+                     + f" Elle dure {formats.duree(c.duree_s() + S.DEBUT_CHANSON_S)} avec les bips.")
+        else:
+            texte = "Choisis ta voix (grave ou aiguë) pour régler les pistes."
+        self.l_transposition.set_label(texte)
+        for b in (self.b_melodie, self.b_accomp):
+            b.set_sensitive(bool(self.centre_hz) and not self._en_preparation)
 
     def _quitter(self):
         self.annuler.set()
@@ -260,7 +509,7 @@ class PageSeance(Adw.NavigationPage):
         self.b_progres.set_visible(True)
         self.progres.set_fraction(0.0)
         self.l_progres.set_label(texte)
-        for b in (self.b_repeter, self.b_prise):
+        for b in (self.b_repeter, self.b_prise, self.b_melodie, self.b_accomp):
             b.set_sensitive(False)
 
     def _fin_preparation(self):
@@ -268,6 +517,8 @@ class PageSeance(Adw.NavigationPage):
         self.b_progres.set_visible(False)
         for b in (self.b_repeter, self.b_prise):
             b.set_sensitive(self.conseil() is not None)
+        for b in (self.b_melodie, self.b_accomp):
+            b.set_sensitive(bool(self.centre_hz))
 
     def preparer_notes(self):
         self._demarrer_preparation("Préparation des notes…")
@@ -280,6 +531,51 @@ class PageSeance(Adw.NavigationPage):
             self._fin_preparation()
             if self.etape.piste == "notes":
                 self.charger_piste("notes", chemin, "Les notes à tenir", lire=False)
+
+        def echec(e):
+            self._fin_preparation()
+            commun.informer(self.fenetre, "Piste impossible à préparer", str(e))
+        commun.en_fil(faire, fini, echec)
+
+    def preparer_tessiture(self):
+        """La piste des sirènes et de la gamme, réglée sur le centre C de la voix ; ce qui s'affiche la suit."""
+        if not self.centre_hz or self._en_preparation:
+            return
+        self._demarrer_preparation("Préparation de la tessiture…")
+        annuler, centre = self.annuler, self.centre_hz
+
+        def faire():
+            return S.preparer_tessiture(centre, lambda f, t: GLib.idle_add(self._progres, f, t), annuler=annuler)
+
+        def fini(chemin):
+            self._fin_preparation()
+            if self.etape.piste == "tessiture" and centre == self.centre_hz:
+                self.vue_paroles.definir(S.paroles_tessiture(centre))
+                self.vue_paroles.placer(0.0)
+                self._placer_essai()
+                self.charger_piste("tessiture", chemin, "Tessiture : sirènes et gamme", lire=False)
+
+        def echec(e):
+            self._fin_preparation()
+            commun.informer(self.fenetre, "Piste impossible à préparer", str(e))
+        commun.en_fil(faire, fini, echec)
+
+    def preparer_publique(self, genre):
+        """genre : « melodie » (pour s'entraîner) ou « accompagnement » (la vraie prise), pour la chanson choisie."""
+        c = CH.chanson(self.chanson_libre)
+        if c is None or not self.centre_hz or self._en_preparation:
+            return
+        self._demarrer_preparation(f"Préparation de « {c.titre} »…")
+        annuler, centre = self.annuler, self.centre_hz
+
+        def faire():
+            return S.preparer_chanson_publique(c.cle, genre, centre, lambda f, t: GLib.idle_add(self._progres, f, t),
+                                               annuler=annuler)
+
+        def fini(chemin):
+            self._fin_preparation()
+            if self.etape.cle == "libre" and self.chanson_libre == c.cle:
+                self.charger_piste(genre, chemin, f"{c.titre} · {S.GENRES_CHANSON[genre]}", lire=True)
 
         def echec(e):
             self._fin_preparation()
@@ -363,8 +659,11 @@ class PageSeance(Adw.NavigationPage):
         self.r_doublage.set_selected(0)
         self._doublage_change()
 
+    def _mode_doublage(self):
+        return self.etape.cle == "chanson" or (self.etape.cle == "libre" and self.chanson_libre == "doublage")
+
     def _doublage_change(self):
-        if self._bloque:
+        if self._bloque or not self._mode_doublage():
             return
         c = self.conseil()
         for b in (self.b_repeter, self.b_prise):
@@ -395,6 +694,8 @@ class PageSeance(Adw.NavigationPage):
             self.l_note_paroles.set_visible(False)
             return
         self.l_note_paroles.set_visible(True)
+        self.l_note_paroles.set_label(S.NOTE_PAROLES[:1].upper() + S.NOTE_PAROLES[1:]
+                                      + ". Elles sont décalées des 5 s de bips : elles suivent ta prise.")
         self.vue_paroles.definir(p)
         self.vue_paroles.placer(0.0)
 
@@ -413,20 +714,28 @@ class PageSeance(Adw.NavigationPage):
                 return
             fichiers = [p for p in (commun.chemin_de(choisis.get_item(i)) for i in range(choisis.get_n_items())) if p]
             if fichiers:
-                self.importer_fichiers(fichiers)
+                self.proposer_import(fichiers)
         d.open_multiple(self.fenetre, None, fini)
 
-    def importer_fichiers(self, fichiers):
-        cle = S.ETAPES[max(0, self.r_etape_import.get_selected())].cle
-        piste = self._piste_de(cle)
+    def importer_fichiers(self, fichiers, choix=None):
+        """Copie et contrôle des fichiers. choix : [(étape, chanson de l'étape 5)] un par fichier ; sinon l'étape est
+        reconnue d'après le nom (« 3-notes.m4a »), à défaut celle de la liste « nom non reconnu »."""
+        defaut = S.ETAPES[max(0, self.r_etape_import.get_selected())].cle
+        if choix is None:
+            choix = []
+            for f in fichiers:
+                cle, detail = S.reconnaitre(Path(f).name)
+                choix.append((cle or defaut, detail))
         voix = self.dossier_voix
+        pistes = [self._piste_de(cle, detail) for cle, detail in choix]
         self.b_importer.set_sensitive(False)
         self.fenetre.toast(f"Import de {len(fichiers)} fichier{'s' if len(fichiers) > 1 else ''}…", duree=2)
 
         def faire():
             sortie = []
-            for source, dest, erreur in S.importer(fichiers, voix, cle):
-                sortie.append((source, dest, erreur, S.controler_prise(dest, cle, piste) if dest else None))
+            for f, (cle, detail), piste in zip(fichiers, choix, pistes):
+                for source, dest, erreur in S.importer([f], voix, cle, detail=detail):
+                    sortie.append((source, dest, erreur, S.controler_prise(dest, cle, piste) if dest else None))
             return sortie
 
         def fini(sortie):
@@ -436,12 +745,47 @@ class PageSeance(Adw.NavigationPage):
         commun.en_fil(faire, fini, lambda e: (self.b_importer.set_sensitive(True),
                                               commun.informer(self.fenetre, "Import impossible", str(e))))
 
-    def _piste_de(self, cle):
+    def proposer_import(self, fichiers):
+        """Une ligne par fichier choisi, avec l'étape reconnue d'après son nom, à corriger avant d'importer."""
+        for r in self._lignes_import:
+            self.g_a_importer.remove(r)
+        self._lignes_import, self._fichiers_import = [], list(fichiers)
+        defaut = S.ETAPES[max(0, self.r_etape_import.get_selected())].cle
+        libelles = [t for t, _c, _d in CHOIX_IMPORT]
+        for f in fichiers:
+            cle, detail = S.reconnaitre(Path(f).name)
+            reconnu = cle is not None
+            cle = cle or defaut
+            r = Adw.ComboRow(title=commun.echapper(Path(f).name),
+                             subtitle="Étape reconnue d’après le nom" if reconnu else "Nom non reconnu : à choisir")
+            r.set_model(Gtk.StringList.new(libelles))
+            r.set_selected(next((i for i, (_t, c, d) in enumerate(CHOIX_IMPORT) if c == cle and d == detail),
+                                next(i for i, (_t, c, _d) in enumerate(CHOIX_IMPORT) if c == cle)))
+            self.g_a_importer.add(r)
+            self._lignes_import.append(r)
+        self.g_a_importer.set_visible(bool(fichiers))
+        self.b_valider.set_visible(bool(fichiers))
+
+    def valider_import(self):
+        choix = [(CHOIX_IMPORT[max(0, r.get_selected())][1], CHOIX_IMPORT[max(0, r.get_selected())][2])
+                 for r in self._lignes_import]
+        fichiers = self._fichiers_import
+        self.proposer_import([])
+        if fichiers:
+            self.importer_fichiers(fichiers, choix)
+
+    def _piste_de(self, cle, detail=""):
         """La piste que jouait le casque pour les prises de cette étape, si elle est préparée."""
         if cle == "notes":
             p = S.dossier_seance() / "notes.mp3"
             return p if p.is_file() else None
-        if cle == "chanson":
+        if cle == "tessiture" and self.centre_hz:
+            p = S.chemin_tessiture(self.centre_hz)
+            return p if p.is_file() else None
+        if cle == "libre" and detail and self.centre_hz:
+            p = S.chemin_chanson(detail, "accompagnement", self.centre_hz)
+            return p if p.is_file() else None
+        if cle in ("chanson", "libre") and not detail:
             if self._piste and self._piste[0] in ("musique", "guide"):
                 return self._piste[1]
             c = self.conseil()

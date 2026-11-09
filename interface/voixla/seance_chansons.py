@@ -201,14 +201,31 @@ def calendrier(chanson, tempo=TEMPO_BPM):
     return sortie
 
 
+SYLLABES_PAR_LIGNE_MAX = 6
+
+
+def moities(notes):
+    """Coupe une ligne de plus de 6 syllabes en deux moitiés (6 + 5 pour onze) : à l'écran, chacune tient sur une ligne
+    en très grand, sans retour à la ligne. [(début, fin)] d'indices de notes."""
+    n = len(notes)
+    if n <= SYLLABES_PAR_LIGNE_MAX:
+        return [(0, n)]
+    k = (n + 1) // 2
+    return [(0, k), (k, n)]
+
+
 def paroles(chanson, centre_s=0.0, tempo=TEMPO_BPM, langue="fr"):
-    """Les paroles synchronisées de la chanson (voixla.paroles.Paroles), une ligne à la fois, avec une syllabe par note
-    (le karaoké remplit la syllabe en cours). centre_s : décalage de départ (les 5 s de bips)."""
+    """Les paroles synchronisées de la chanson (voixla.paroles.Paroles), une ligne à l'écran à la fois (une ligne
+    chantée de plus de 6 syllabes est affichée en deux moitiés), avec une syllabe par note : le karaoké remplit la
+    syllabe en cours. centre_s : décalage de départ (les 5 s de bips)."""
     from .paroles import Couche, Ligne, Mot, Paroles
     lignes = []
     for l, notes in calendrier(chanson, tempo):
-        mots = [Mot(centre_s + a, centre_s + b, syl.strip()) for a, b, _m, syl in notes]
-        lignes.append(Ligne(centre_s + notes[0][0], centre_s + notes[-1][1], l.texte, mots))
+        for i, j in moities(notes):
+            morceau = notes[i:j]
+            mots = [Mot(centre_s + a, centre_s + b, syl.strip()) for a, b, _m, syl in morceau]
+            texte = "".join(syl for *_t, syl in morceau).strip()
+            lignes.append(Ligne(centre_s + morceau[0][0], centre_s + morceau[-1][1], texte, mots))
     return Paroles(Couche(langue, "paroles de la séance, domaine public", lignes), {}, "seance")
 
 

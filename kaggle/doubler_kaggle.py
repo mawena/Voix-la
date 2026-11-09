@@ -1554,8 +1554,200 @@ def mesurer_piste(xp, f0p, x, morceaux, empreinte_fn=None, vecteur=None, porte_g
     return out
 
 
-def affecter_pistes(segs, noms_pistes, mesures, modele, cibles, octave_imposee=None, reglages=None):
-    """Voix cible et décalage de chaque piste sur chaque morceau. segs : morceaux décidés (k, cible, decalage) ; mesures :
+# --- Transposition de la chanson (chant seulement) : la musique seule est transposée de musique_dt demi-tons ENTIERS, un
+# seul pour toute la chanson, et chaque voix reçoit musique_dt + son octave (la règle d'octave ci-dessus, inchangée). Les
+# proches de la voix cible ne la reconnaissent que près de sa zone de chant naturelle (banc : reconnue à 174 et 219 Hz,
+# pas de 246 à 295 Hz, pour une zone vers 190 Hz). Règle de banc/realisme/transposition.py (regle_decalage), copiée ici :
+# le noyau est un script seul. La musique est transposée sur le PC (Rubber Band R3) ; le noyau décide et rapporte.
+# Parole : jamais de transposition.
+
+TRANSPOSITION_DEFAUT = {
+    'max_dt': 5,                    # au-delà de ±5 demi-tons, la musique transposée s'entend
+    'confort_dt': 4.0,              # zone de confort sans tessiture mesurée : centre de chant x 2^(±4/12)
+    'poids_hors_confort': 3.0,      # par demi-ton de p10 ou de p90 hors de la zone
+    'poids_centre': 0.5,            # par demi-ton d'écart de la médiane au centre (géométrique) de la zone
+    'poids_transposition': 0.15,    # par demi-ton de transposition de la musique
+}
+
+
+def zone_de_voix(v, centre):
+    """Zone de confort [bas, haut] (Hz) d'une voix cible : celle que doubler.py envoie (v['zone'], de tessiture.json), sinon
+    centre de chant x 2^(±confort_dt/12). Rend {'confort': [bas, haut], 'origine': 'tessiture' ou 'parole'}."""
+    z = (v or {}).get('zone')
+    if isinstance(z, dict) and isinstance(z.get('confort'), (list, tuple)) and len(z['confort']) == 2:
+        try:
+            bas, haut = sorted(float(x) for x in z['confort'])
+        except (TypeError, ValueError):
+            bas = haut = 0.0
+        if bas > 0 and haut > bas:
+            return {'confort': [bas, haut], 'origine': z.get('origine') or 'tessiture'}
+    c = TRANSPOSITION_DEFAUT['confort_dt']
+    return {'confort': [centre * 2 ** (-c / 12), centre * 2 ** (c / 12)], 'origine': 'parole'}
+
+
+def _dt_hz(f, ref):
+    return 12.0 * math.log2(f / ref)
+
+
+def cout_transposition_voix(src, confort, d, poids):
+    """Coût d'un décalage d de la voix (demi-tons) : débordement de ses p10 et p90 hors de la zone de confort, plus l'écart de sa
+    médiane au centre géométrique de la zone. src : {'p10', 'p50', 'p90'} en Hz, voix convertie avant transposition."""
+    bas, haut = confort
+    centre = math.sqrt(bas * haut)
+    deborde = 0.0
+    for cle in ('p10', 'p90'):
+        if src.get(cle):
+            f = src[cle] * 2 ** (d / 12)
+            deborde += max(0.0, _dt_hz(bas, f)) + max(0.0, _dt_hz(f, haut))
+    med = src['p50'] * 2 ** (d / 12)
+    return poids['poids_hors_confort'] * deborde + poids['poids_centre'] * abs(_dt_hz(med, centre))
+
+
+def choisir_transposition(voix, reglages=None):
+    """Le nombre entier de demi-tons dont transposer la chanson (un seul pour toutes les voix), dans [-max_dt, +max_dt] :
+    celui qui minimise, sur toutes les voix, le coût de cout_transposition_voix plus poids_transposition x |dt| (à coût égal, le
+    plus petit |dt|). voix : [{'nom', 'p10', 'p50', 'p90', 'confort': [bas, haut]}] (hauteurs de la voix convertie, octave
+    comprise, avant transposition). Un duo (deux voix) : un seul dt qui minimise l'écart total des deux voix à leur zone.
+    Rend {'musique_dt', 'cout', 'voix': [par voix : avant/après (Hz), dans_zone, ecart_zone_dt]}."""
+    P = {**TRANSPOSITION_DEFAUT, **{k: v for k, v in (reglages or {}).items() if k in TRANSPOSITION_DEFAUT}}
+    m = int(P['max_dt'])
+    essais = []
+    for dt in range(-m, m + 1):
+        c = sum(cout_transposition_voix(v, v['confort'], dt, P) for v in voix) + P['poids_transposition'] * abs(dt)
+        essais.append((round(c, 9), abs(dt), dt))
+    essais.sort()
+    dt = essais[0][2] if voix else 0
+    return {'musique_dt': dt, 'cout': essais[0][0] if voix else 0.0, 'voix': detail_transposition(voix, dt)}
+
+
+def detail_transposition(voix, dt):
+    """Par voix : hauteurs p10/p50/p90 (Hz) avant et après la transposition de dt demi-tons, zone, p10 et p90 dedans, et
+    débordement cumulé hors de la zone (demi-tons)."""
+    out = []
+    for v in voix:
+        bas, haut = v['confort']
+        apres = {c: round(v[c] * 2 ** (dt / 12), 1) for c in ('p10', 'p50', 'p90') if v.get(c)}
+        dehors = sum(max(0.0, _dt_hz(bas, apres[c])) + max(0.0, _dt_hz(apres[c], haut)) for c in ('p10', 'p90') if c in apres)
+        out.append({'voix': v.get('nom'), 'zone_hz': [round(bas, 1), round(haut, 1)],
+                    'avant_hz': {c: round(v[c], 1) for c in ('p10', 'p50', 'p90') if v.get(c)}, 'apres_hz': apres,
+                    'dans_zone': dehors < 1e-9, 'ecart_zone_dt': round(dehors, 2)})
+    return out
+
+
+def hauteurs_des_voix(segs, f0_tout, nb_voix):
+    """Hauteurs (p10, p50, p90, en Hz, F0 RMVPE voisée) de la voix convertie de chaque voix cible, avant transposition : les
+    trames voisées de ses morceaux (celui de la cible s['cible'], 0 sans voix par chanteur), chacune décalée du décalage
+    du morceau (octave comprise). Liste de nb_voix éléments, None pour une voix qui ne chante pas."""
+    import numpy as np
+    parts = [[] for _ in range(nb_voix)]
+    for s in segs:
+        if s.get('muet'):
+            continue
+        j = s.get('cible') or 0
+        if j >= nb_voix:
+            continue
+        coeur = f0_tout[s['debut'] // PAS:s['fin'] // PAS]
+        v = coeur[coeur > 1]
+        if len(v):
+            parts[j].append(v * 2 ** (s['decalage'] / 12))
+    out = []
+    for p in parts:
+        v = np.concatenate(p) if p else np.zeros(0)
+        out.append(None if len(v) < 20 else {c: float(np.percentile(v, q)) for c, q in (('p10', 10), ('p50', 50), ('p90', 90))})
+    return out
+
+
+def lire_transposer(valeur):
+    """Valeur de l'option transposer du travail : 'auto' (défaut), 'non', ou un entier de demi-tons (au plus ±12)."""
+    if valeur in (None, '', 'auto'):
+        return 'auto'
+    if valeur in ('non', False, 'off', 'aucune'):
+        return 'non'
+    try:
+        n = int(valeur)
+    except (TypeError, ValueError):
+        return 'auto'
+    return max(-12, min(12, n))
+
+
+def decider_transposition(segs, f0_tout, voix, demande='auto', mode='chant', reglages=None):
+    """Décision de transposition de la chanson. voix : [{'nom', 'centre_hz', 'zone' (facultative)}], une par voix cible (une
+    seule : la voix de l'analyse) ; segs : morceaux décidés (decalage = octave, après un éventuel --octave) ; demande : 'auto',
+    'non' ou un entier. Rend le dict du rapport (rapport['transposition']), dont musique_dt, sans rien modifier."""
+    demande = lire_transposer(demande)
+    zones = [zone_de_voix(v, v['centre_hz']) for v in voix]
+    rap = {'demande': demande, 'mode': mode, 'musique_dt': 0, 'applique': False,
+           'zone_origine': [z['origine'] for z in zones],
+           'max_dt': int((reglages or {}).get('max_dt', TRANSPOSITION_DEFAUT['max_dt']))}
+    hauts = hauteurs_des_voix(segs, f0_tout, len(voix)) if mode == 'chant' else [None] * len(voix)
+    mesures = [{'nom': v['nom'], 'confort': z['confort'], **h} for v, z, h in zip(voix, zones, hauts) if h]
+    rap['voix'] = detail_transposition(mesures, 0)
+    if mode != 'chant':
+        rap['raison'] = 'parole : pas de transposition (la voix suit la hauteur de la voix cible, la musique reste)'
+        return rap
+    if demande == 'non':
+        rap['raison'] = 'transposition désactivée (--transposer non) : octave seule'
+        return rap
+    if not mesures:
+        rap['raison'] = 'aucune voix chantée mesurée : pas de transposition'
+        return rap
+    dt = choisir_transposition(mesures, reglages)['musique_dt'] if demande == 'auto' else int(demande)
+    rap['musique_dt'] = dt
+    rap['applique'] = dt != 0
+    rap['voix'] = detail_transposition(mesures, dt)
+    meds = ', '.join(f"{d['voix']} {d['avant_hz']['p50']:.0f} Hz → {d['apres_hz']['p50']:.0f} Hz "
+                     f"(zone {d['zone_hz'][0]:.0f}–{d['zone_hz'][1]:.0f} Hz)" for d in rap['voix'])
+    if demande != 'auto':
+        rap['raison'] = f'imposée (--transposer {dt:+d}) : médiane de la voix convertie {meds}'
+    elif dt == 0:
+        rap['raison'] = f'la voix convertie est déjà au mieux dans la zone de la voix cible : {meds}'
+    else:
+        rap['raison'] = f'chanson transposée de {dt:+d} demi-ton(s) pour que la voix convertie tombe dans la zone : {meds}'
+    return rap
+
+
+def appliquer_transposition(segs, info, modele, dt):
+    """Ajoute dt (demi-tons) au décalage de chaque morceau chanté et à tout ce que la décision d'octave a rapporté ou que les
+    étapes suivantes relisent (modele de reconnaissance des pistes, décalages par classe, par voix, par chanteur). Octave et
+    transposition restent séparées dans le rapport (rapport['transposition'])."""
+    if not dt:
+        return
+    for s in segs:
+        if not s.get('muet'):
+            s['decalage'] += dt
+    if modele is not None:
+        modele['decalage'] = [d + dt for d in modele['decalage']]
+    for cle in ('decalage_par_classe', 'decalage_par_genre'):
+        if isinstance(info.get(cle), dict):
+            info[cle] = {k: (v + dt if isinstance(v, (int, float)) else v) for k, v in info[cle].items()}
+    dpvc = info.get('decalage_par_voix_et_classe')
+    if isinstance(dpvc, dict):
+        info['decalage_par_voix_et_classe'] = {n: {c: d + dt for c, d in pc.items()} for n, pc in dpvc.items()}
+    vp = info.get('voix_principale')
+    if isinstance(vp, dict) and isinstance(vp.get('decalage'), (int, float)):
+        vp['decalage'] += dt
+    for c in info.get('chanteurs') or []:
+        if isinstance(c, dict) and isinstance(c.get('decalage'), (int, float)):
+            c['decalage'] += dt
+    info['transposition_dt'] = dt
+
+
+def decalages_par_voix_cible(segs, nb_voix):
+    """Par voix cible : le décalage (octave + dt) de son morceau le plus long en voisé, pour le rapport ; None sans morceau."""
+    out = [None] * nb_voix
+    poids = [0.0] * nb_voix
+    for s in segs:
+        if s.get('muet') or not s.get('f0_med'):
+            continue
+        j = s.get('cible') or 0
+        if j < nb_voix and s['voise_s'] > poids[j]:
+            out[j], poids[j] = s['decalage'], s['voise_s']
+    return out
+
+
+def affecter_pistes(segs, noms_pistes, mesures, modele, cibles, octave_imposee=None, reglages=None, transposition_dt=0):
+    """Voix cible et décalage de chaque piste sur chaque morceau (octave imposée : elle, plus transposition_dt, le décalage de
+    la chanson transposée). segs : morceaux décidés (k, cible, decalage ; dt déjà compris) ; mesures :
     {piste: {i: mesure}} (mesurer_piste ; la piste « voix », voix complète, n'en a pas besoin) ; modele : decider_chanteurs
     (None : une seule voix trouvée, tout suit le morceau). Rend {piste: {i: {'chanteur', 'cible', 'voix', 'decalage',
     'etat', 'raison', 'marge', 'mesure'}}} ; états : ceux de reconnaitre, plus voix_seule (une seule voix trouvée) et
@@ -1580,7 +1772,7 @@ def affecter_pistes(segs, noms_pistes, mesures, modele, cibles, octave_imposee=N
                 k, etat, raison, marge = reconnaitre(m, modele, k_m, R)
                 j, d = modele['cible'][k], modele['decalage'][k]
             if octave_imposee in (-12, 0, 12):
-                d = octave_imposee
+                d = octave_imposee + transposition_dt
             res[nom][i] = {'chanteur': None if k is None else modele['noms'][k], 'cible': j, 'voix': V[j]['nom'],
                            'decalage': d, 'etat': etat, 'raison': raison, 'marge': marge, 'mesure': m}
     return res
@@ -1700,13 +1892,15 @@ def charger_couches(info):
     return c
 
 
-def decalages_par_voix(info, cibles, octave_imposee=None):
+def decalages_par_voix(info, cibles, octave_imposee=None, transposition_dt=0):
     """Décalage de chaque voix cible, pour la version d'un passage dans cette voix : celui du chanteur qui va à cette voix
     (decision_hauteur.chanteurs) ; une seule voix trouvée, pour l'autre voix : celui de la classe de sa clé (homme,
-    femme), sinon de la classe de la voix trouvée (decalage_par_voix_et_classe) ; octave imposée : elle partout."""
+    femme), sinon de la classe de la voix trouvée (decalage_par_voix_et_classe) ; octave imposée : elle partout. Ces
+    décalages comprennent déjà la transposition de la chanson (appliquer_transposition), sauf l'octave imposée, à laquelle
+    transposition_dt s'ajoute, et le repli sans décision (transposition_dt seul)."""
     V = cibles['voix']
     if octave_imposee in (-12, 0, 12):
-        return [octave_imposee] * len(V)
+        return [octave_imposee + transposition_dt] * len(V)
     dpvc = info.get('decalage_par_voix_et_classe') or {}
     chanteurs = [c for c in info.get('chanteurs') or [] if isinstance(c, dict)]
     classe_trouvee = (chanteurs[0].get('classe') if chanteurs else None) or (info.get('voix_principale') or {}).get('classe')
@@ -1718,7 +1912,7 @@ def decalages_par_voix(info, cibles, octave_imposee=None):
             continue
         classe = v.get('cle') if v.get('cle') in ('homme', 'femme') else classe_trouvee
         d = (dpvc.get(v['nom']) or {}).get(classe) if classe else None
-        out.append(d if d is not None else 0)
+        out.append(d if d is not None else transposition_dt)
     return out
 
 
@@ -4017,7 +4211,7 @@ def main():
     # contexte (centre de chant, hauteur de parole, longueur de la référence), car la décision d'octave et la taille des
     # morceaux en dépendent. Une seule voix : un contexte, celui d'avant.
     refs_comp = {}
-    contextes = [{'j': None, 'nom': R['voix']['nom'], 'centre': centre, 'f0_parole': f0_parole,
+    contextes = [{'j': None, 'nom': R['voix']['nom'], 'centre': centre, 'f0_parole': f0_parole, 'zone': R['voix'].get('zone'),
                   'mel_len': refs['chant44k']['mel2'].size(2), 'session_voix': session['voix'], 'emb': ref_emb}]
     if comparees:
         t = time.time()
@@ -4032,7 +4226,7 @@ def main():
                 'f0_rmvpe_reference_hz': round(rv['f0_mediane'], 1), 'duree_reference_s': round(rv['duree'], 2),
                 'centre_chant_hz': round(centre_v, 1)}
             session['comparer']['voix'].append(fiche_v)
-            contextes.append({'j': j, 'nom': v['nom'], 'centre': centre_v, 'f0_parole': f0_v,
+            contextes.append({'j': j, 'nom': v['nom'], 'centre': centre_v, 'f0_parole': f0_v, 'zone': v.get('zone'),
                               'mel_len': rv['mel2'].size(2), 'session_voix': fiche_v, 'emb': rv['emb']})
             log(f"voix à comparer {j + 1}/{len(comparees)} : {v['nom']}, référence {rv['duree']:.2f} s, parole {f0_v:.0f} Hz, "
                 f"centre de chant {centre_v:.0f} Hz")
@@ -4189,6 +4383,18 @@ def main():
             info['octave_imposee'] = tr['octave']   # la décision ci-dessus reste pour mémoire
             for s in segs:
                 s['decalage'], s['base'] = tr['octave'], 'imposé'
+        # transposition de la chanson (chant) : un décalage entier pour la musique, ajouté à l'octave de chaque voix
+        voix_t = ([{'nom': v['nom'], 'centre_hz': v['centre_hz'], 'zone': v.get('zone')} for v in cibles['voix']] if plusieurs
+                  else [{'nom': ctx['nom'], 'centre_hz': ctx['centre'], 'zone': ctx.get('zone')}])
+        transp = decider_transposition(segs, f0_tout, voix_t, tr.get('transposer', 'auto'), mode, R)
+        appliquer_transposition(segs, info, chanteurs, transp['musique_dt'])
+        decs_voix = decalages_par_voix_cible(segs, len(voix_t))
+        for d in transp['voix']:
+            dec = decs_voix[[v['nom'] for v in voix_t].index(d['voix'])]
+            d['decalage_voix_dt'] = dec
+            d['octave_dt'] = None if dec is None else dec - transp['musique_dt']
+        rapport['transposition'] = transp
+        log(f"[{tr['id']}] TRANSPOSITION {transp['musique_dt']:+d} dt : {transp['raison']}")
         rapport['decision_hauteur'] = info
         rapport['temps']['analyse_s'] = round(time.time() - t, 1)
         log(f"[{tr['id']}] {len(segs)} morceaux de {coeur_max / SR:.2f} s au plus, {sum(s['muet'] for s in segs)} muets ; "
@@ -4356,7 +4562,8 @@ def main():
             else:
                 mesures[p['nom']] = mesurer_piste(p['x'], f0_piste(p['x']), e['x'], liste, emb_fn, modele['vecteur'])
         octave = e['tr']['octave'] if e['tr']['octave'] in (-12, 0, 12) else None
-        aff = affecter_pistes(segs, [p['nom'] for p in e['pistes']], mesures, modele, cibles, octave, R)
+        aff = affecter_pistes(segs, [p['nom'] for p in e['pistes']], mesures, modele, cibles, octave, R,
+                              e['rapport']['transposition']['musique_dt'])
         for p in e['pistes']:
             p['affectation'] = {i: (a['cible'], a['decalage']) for i, a in aff[p['nom']].items()}
         e['aff'], e['plans'] = aff, plans
@@ -4379,7 +4586,7 @@ def main():
         aussi la version dans l'autre voix (tous, ou les utiles)."""
         info = e['rapport']['decision_hauteur']
         octave = e['tr']['octave'] if e['tr']['octave'] in (-12, 0, 12) else None
-        decs = decalages_par_voix(info, cibles, octave)
+        decs = decalages_par_voix(info, cibles, octave, e['rapport']['transposition']['musique_dt'])
         utiles = (morceaux_utiles(e['segs'], e.get('aff'), e.get('plans'), info.get('voix') or 1, R)
                   if versions_mode == 'utiles' else None)
         e['versions'] = {'mode': versions_mode, 'decalages': decs, 'nv': len(cibles['voix']),

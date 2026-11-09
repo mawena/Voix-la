@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import chemins, controle, formats
+from . import seance_chansons as chansons
+from . import seance_textes as textes
 
 # --- Étapes --------------------------------------------------------------------------------------------------------
 
@@ -42,6 +44,7 @@ CONSIGNES_GENERALES = (
     "Au 4e bip, tape dans tes mains : cela permet de recaler ta prise, même avec la latence d’un casque Bluetooth.",
     "Ne t’envoie pas les fichiers par WhatsApp (le son est recompressé) : câble USB, ou un dossier partagé.",
 )
+COMMENT_CA_MARCHE = textes.COMMENT_CA_MARCHE
 
 
 @dataclass(frozen=True)
@@ -50,30 +53,38 @@ class Etape:
     titre: str
     consignes: tuple
     duree_s: int
-    piste: str | None      # None, « notes » ou « chanson »
+    piste: str | None      # None, « tessiture », « notes », « chanson » ou « libre »
     dossier: str           # « parole » ou « chant » : où va l'enregistrement dans voix/<nom>/
+    noms: tuple = ()       # noms de fichier conseillés sur le téléphone, sans extension
 
+
+# durée de la piste de la tessiture : 5 s de bips, 6 sirènes séparées de 3 s, puis la gamme deux fois
+SIRENE_S, SILENCE_SIRENE_S, SIRENES_PAR_VOYELLE = 8.0, 3.0, 3
+NOTE_GAMME_S = 1.2
+VOYELLES_SIRENE = ("aaa", "ou")
+VOYELLES_GAMME = ("la", "mi")
+DEGRES_GAMME = (0, 2, 4, 5, 7, 9, 11, 12)
+NOMS_GAMME = ("do", "ré", "mi", "fa", "sol", "la", "si", "do")
+INTRO_GAMME_S = 2.0
+TESSITURE_S = (DEBUT_CHANSON_S + len(VOYELLES_SIRENE) * SIRENES_PAR_VOYELLE * (SIRENE_S + SILENCE_SIRENE_S)
+               + len(VOYELLES_GAMME) * (INTRO_GAMME_S + (2 * len(DEGRES_GAMME) - 1) * NOTE_GAMME_S + SILENCE_SIRENE_S)
+               + 2.0)
 
 ETAPES = (
-    Etape("parole", "Parole", (
-        "Parle normalement pendant 2 minutes, comme à un ami : raconte ta journée, lis un texte.",
-        "Pas de musique, pas de piste : seulement ta voix, dans une pièce calme."), 120, None, "parole"),
-    Etape("tessiture", "Tessiture", (
-        "Chante une sirène sur « aaa » : du plus grave au plus aigu que tu peux, sans forcer, puis redescends.",
-        "Recommence sur « ou ». Passe doucement d’une note à l’autre, sans à-coup.",
-        "Pas de piste : prends ton temps, une minute suffit."), 60, None, "chant"),
+    Etape("parole", "Parole", (textes.CONSIGNE_PAROLE,), 180, None, "parole", ("1-parole",)),
+    Etape("tessiture", "Tessiture", textes.CONSIGNES_TESSITURE, int(round(TESSITURE_S)), "tessiture", "chant",
+          ("2-tessiture",)),
     Etape("notes", "Notes à tenir", (
         "La piste joue 6 notes, de la plus grave à la plus aiguë : tiens chacune 5 secondes, puis repose-toi 3 secondes.",
         "Deux tours : le premier sur « aaa », le second sur « ou ».",
         "Chante la note que tu entends, sans vibrato ni effet."), TOURS_NOTES * len(NOTES_HZ) * (
-            NOTE_TENUE_S + NOTE_SILENCE_S), "notes", "chant"),
+            NOTE_TENUE_S + NOTE_SILENCE_S), "notes", "chant", ("3-notes",)),
     Etape("chanson", "Chanson", (
         "Choisis un doublage et une tonalité. Répète d’abord avec la voix d’origine pour trouver ta place.",
         "Puis la vraie prise sur la musique seule : chante toute la chanson, avec les paroles ci-dessous.",
-        "Tape dans tes mains sur le 4e bip."), 4 * 60, "chanson", "chant"),
-    Etape("libre", "Chanson libre", (
-        "Chante une chanson de ton choix, a cappella ou avec ton propre accompagnement.",
-        "Le casque n’est pas nécessaire. Garde ta voix naturelle."), 3 * 60, None, "chant"),
+        "Tape dans tes mains sur le 4e bip."), 4 * 60, "chanson", "chant", ("4-chanson",)),
+    Etape("libre", "Chanson libre", textes.CONSIGNES_CHANSON_PUBLIQUE, 3 * 60, "libre", "chant",
+          tuple(c.nom_fichier for c in chansons.CHANSONS)),
 )
 
 
@@ -238,6 +249,260 @@ def preparer_notes(progression=None, cache=None, annuler=None):
     if not (sortie.is_file() and sortie.stat().st_size > 0):
         piste_notes(sortie, (lambda f: progression(f, "Préparation des notes…")) if progression else None, annuler)
     return sortie
+
+
+# --- Centre de la voix, tessiture et chansons du domaine public (synthèse numpy, encodage ffmpeg) --------------------
+
+CENTRE_GRAVE_HZ, CENTRE_AIGU_HZ = textes.CHOIX_VOIX[0][2], textes.CHOIX_VOIX[1][2]
+VERSION_PISTES = 1       # change quand la synthèse change : les pistes du cache sont refaites
+
+
+def centre_voix(dossier_voix, choix=None):
+    """(C en Hz, d'où il vient) : le milieu de la zone de confort de tessiture.json (sinon son p50), sinon deux fois la
+    hauteur de parole médiane de voix.json ; à défaut, le choix « grave » (190 Hz) ou « aigue » (380 Hz) fait à la main.
+    (None, '') si rien ne permet de le dire."""
+    zone = zone_de_chant(dossier_voix)
+    if zone is not None:
+        return zone[0], ("ta tessiture mesurée" if zone[3] else "deux fois la hauteur de ta parole")
+    for cle, _libelle, hz in textes.CHOIX_VOIX:
+        if choix == cle:
+            return hz, f"voix {'grave' if cle == 'grave' else 'aiguë'}, d’après ton choix"
+    return None, ""
+
+
+def _signal_bips(longueur_s, rate=44100):
+    """Les 4 bips à 880 Hz (t = 1, 2, 3, 4 s), 0,15 s chacun, dans un tableau mono de longueur_s secondes."""
+    import numpy as np
+    sortie = np.zeros(int(longueur_s * rate))
+    n = int(0.15 * rate)
+    t = np.arange(n) / rate
+    bip = 0.31 * np.sin(2 * np.pi * HAUTEUR_BIP_HZ * t) * np.clip((0.15 - t) / 0.05, 0.0, 1.0)
+    for d in BIPS_S:
+        i = int(d * rate)
+        sortie[i:i + n] += bip
+    return sortie
+
+
+def _ecrire_mp3(signal, sortie, annuler=None, progression=None, rate=44100):
+    """Écrit un signal mono (flottant) en mp3 stéréo : limiteur à 0,89, wav temporaire, ffmpeg."""
+    import numpy as np
+    import wave
+    sortie = Path(sortie)
+    sortie.parent.mkdir(parents=True, exist_ok=True)
+    pic = float(np.max(np.abs(signal))) if len(signal) else 0.0
+    if pic > LIMITE:
+        signal = signal * (LIMITE / pic)
+    pcm = (np.clip(signal, -1.0, 1.0) * 32767).astype("<i2")
+    brut = sortie.with_name(sortie.stem + ".part.wav")
+    tmp = sortie.with_name(sortie.stem + ".part" + sortie.suffix)
+    try:
+        with wave.open(str(brut), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(rate)
+            w.writeframes(pcm.tobytes())
+        _ffmpeg(["-i", str(brut), *_encoder(tmp)], len(signal) / rate, progression, annuler=annuler)
+        tmp.replace(sortie)
+    finally:
+        for f in (brut, tmp):
+            f.unlink(missing_ok=True)
+    return sortie
+
+
+def _tonalite_douce(frequence, rate=44100, harmoniques=(1.0, 0.35, 0.12)):
+    """Phase cumulée d'une fréquence qui varie (tableau) → son doux : fondamentale et deux harmoniques."""
+    import numpy as np
+    phase = 2 * np.pi * np.cumsum(frequence) / rate
+    return sum(a * np.sin(k * phase) for k, a in enumerate(harmoniques, 1)) / sum(harmoniques)
+
+
+def _enveloppe_douce(n, montee_s, descente_s, rate=44100):
+    import numpy as np
+    i = np.arange(n) / rate
+    mont = 0.5 - 0.5 * np.cos(np.pi * np.clip(i / montee_s, 0.0, 1.0))
+    desc = 0.5 - 0.5 * np.cos(np.pi * np.clip((n / rate - i) / descente_s, 0.0, 1.0))
+    return mont * desc
+
+
+def sirene(centre_hz, rate=44100):
+    """Une sirène guide : une glissade continue de C × 2^(−9/12) à C × 2^(+9/12), puis retour, en 8 s (un cosinus sur la
+    hauteur en demi-tons : lente aux extrémités, sans à-coup), son doux, enveloppe douce."""
+    import numpy as np
+    n = int(SIRENE_S * rate)
+    t = np.arange(n) / rate
+    x = 0.5 - 0.5 * np.cos(2 * np.pi * t / SIRENE_S)             # 0 → 1 → 0
+    f = centre_hz * 2.0 ** ((-9.0 + 18.0 * x) / 12.0)
+    return 0.32 * _tonalite_douce(f, rate) * _enveloppe_douce(n, 0.4, 0.4, rate)
+
+
+def tonique_gamme(centre_hz):
+    """La tonique de la gamme : le demi-ton entier le plus proche de C × 2^(−5/12), en MIDI."""
+    return int(round(chansons.midi_de_hz(centre_hz * 2.0 ** (-5 / 12))))
+
+
+def notes_gamme(centre_hz):
+    """Les 15 notes de la gamme, montée puis descente : [(nom, fréquence Hz)]."""
+    t = tonique_gamme(centre_hz)
+    montee = list(zip(NOMS_GAMME, DEGRES_GAMME))
+    chemin = montee + montee[-2::-1]
+    return [(nom, chansons.hauteur_hz(t + d)) for nom, d in chemin]
+
+
+def calendrier_tessiture(centre_hz):
+    """[(début s, fin s, texte, genre)] de la piste de tessiture, bips compris (les 5 premières secondes) ; genre :
+    « sirene », « repos », « intro » (annonce de la gamme) ou « note »."""
+    t, sortie = DEBUT_CHANSON_S, []
+    n = SIRENES_PAR_VOYELLE
+    for v in VOYELLES_SIRENE:
+        for k in range(1, n + 1):
+            sortie.append((t, t + SIRENE_S, f"Sirène sur « {v} »  ({k}/{n})", "sirene"))
+            t += SIRENE_S
+            sortie.append((t, t + SILENCE_SIRENE_S, "Respire…", "repos"))
+            t += SILENCE_SIRENE_S
+    for v in VOYELLES_GAMME:
+        sortie.append((t, t + INTRO_GAMME_S, f"La gamme, sur « {v} »", "intro"))
+        t += INTRO_GAMME_S
+        for nom, _f in notes_gamme(centre_hz):
+            sortie.append((t, t + NOTE_GAMME_S, nom.capitalize(), "note"))
+            t += NOTE_GAMME_S
+        sortie.append((t, t + SILENCE_SIRENE_S, "Respire…", "repos"))
+        t += SILENCE_SIRENE_S
+    return sortie
+
+
+def signal_tessiture(centre_hz, rate=44100):
+    """Le son de la piste de tessiture (mono) : bips, 6 sirènes guides, la gamme deux fois."""
+    import numpy as np
+    fin = calendrier_tessiture(centre_hz)[-1][1]
+    sortie = np.zeros(int((max(fin, TESSITURE_S - 2.0) + 2.0) * rate))
+    sortie[:int(DEBUT_CHANSON_S * rate)] = _signal_bips(DEBUT_CHANSON_S, rate)
+    notes = iter(notes_gamme(centre_hz) * len(VOYELLES_GAMME))
+    for a, _b, _texte, genre in calendrier_tessiture(centre_hz):
+        i = int(round(a * rate))
+        if genre == "sirene":
+            son = sirene(centre_hz, rate)
+        elif genre == "note":
+            _nom, f = next(notes)
+            n = int(NOTE_GAMME_S * rate)
+            son = 0.3 * _tonalite_douce(np.full(n, f), rate) * _enveloppe_douce(n, 0.06, 0.08, rate)
+        else:
+            continue
+        sortie[i:i + len(son)] += son
+    return sortie
+
+
+def paroles_tessiture(centre_hz):
+    """Ce qui s'affiche pendant la piste de tessiture (voixla.paroles.Paroles) : la sirène en cours, le nom de chaque note
+    de la gamme en grand, et les moments de repos."""
+    from .paroles import Couche, Ligne, Paroles
+    lignes = [Ligne(a, b, texte) for a, b, texte, _g in calendrier_tessiture(centre_hz)]
+    return Paroles(Couche("fr", "piste de la séance", lignes), {}, "seance")
+
+
+def chemin_tessiture(centre_hz, cache=None):
+    return (Path(cache) if cache else dossier_seance()) / f"tessiture-v{VERSION_PISTES}-{int(round(centre_hz))}.mp3"
+
+
+def preparer_tessiture(centre_hz, progression=None, cache=None, annuler=None):
+    """La piste de la tessiture, réglée sur le centre C de la voix (ce qui existe déjà n'est pas refait)."""
+    sortie = chemin_tessiture(centre_hz, cache)
+    if not (sortie.is_file() and sortie.stat().st_size > 0):
+        _ecrire_mp3(signal_tessiture(centre_hz), sortie, annuler,
+                    (lambda f: progression(f, "Préparation de la tessiture…")) if progression else None)
+    return sortie
+
+
+GENRES_CHANSON = {"melodie": "avec la mélodie", "accompagnement": "accompagnement seul"}
+
+
+def chemin_chanson(cle, genre, centre_hz, cache=None):
+    c = chansons.chanson(cle)
+    if c is None or genre not in GENRES_CHANSON:
+        raise ErreurSeance(f"chanson inconnue : {cle} ({genre})")
+    d = chansons.transposition(c, centre_hz)
+    return (Path(cache) if cache else dossier_seance()) / f"{cle}-v{VERSION_PISTES}-{d:+d}-{genre}.mp3"
+
+
+def preparer_chanson_publique(cle, genre, centre_hz, progression=None, cache=None, annuler=None):
+    """La piste d'une chanson du domaine public : 4 bips, puis (à 5 s) la chanson dans la hauteur de la voix, avec la
+    mélodie au piano ou en accompagnement seul (accords et métronome léger). Hors du fil de l'interface."""
+    sortie = chemin_chanson(cle, genre, centre_hz, cache)
+    if not (sortie.is_file() and sortie.stat().st_size > 0):
+        import numpy as np
+        c = chansons.chanson(cle)
+        son = chansons.rendre(c, centre_hz, genre == "melodie")
+        signal = np.concatenate([_signal_bips(DEBUT_CHANSON_S), son])
+        _ecrire_mp3(signal, sortie, annuler,
+                    (lambda f: progression(f, "Préparation de la chanson…")) if progression else None)
+    return sortie
+
+
+def paroles_chanson_publique(cle):
+    """Les paroles synchronisées d'une chanson du domaine public, décalées des 5 s de bips."""
+    c = chansons.chanson(cle)
+    return chansons.paroles(c, DEBUT_CHANSON_S) if c else None
+
+
+# --- Ce que la personne a déjà fait (voix/<nom>/seance.json) ---------------------------------------------------------
+
+def fichier_etat(dossier_voix):
+    return Path(dossier_voix) / "seance.json"
+
+
+def lire_etat(dossier_voix):
+    """{"fait": {étape: vrai}, "taille_texte": facteur, "centre": « grave » | « aigue »} lu dans seance.json ; les valeurs
+    abîmées sont ignorées."""
+    brut = chemins.lire_json(fichier_etat(dossier_voix), {})
+    brut = brut if isinstance(brut, dict) else {}
+    fait = brut.get("fait") if isinstance(brut.get("fait"), dict) else {}
+    taille = brut.get("taille_texte")
+    centre = brut.get("centre")
+    return {"fait": {e.cle: fait.get(e.cle) is True for e in ETAPES},
+            "taille_texte": float(taille) if isinstance(taille, (int, float)) and not isinstance(taille, bool)
+            and 0.5 <= taille <= 4.0 else 1.0,
+            "centre": centre if centre in ("grave", "aigue") else None}
+
+
+def ecrire_etat(dossier_voix, etat):
+    donnees = {"fait": {k: bool(v) for k, v in etat.get("fait", {}).items() if etape(k) is not None},
+               "taille_texte": etat.get("taille_texte", 1.0)}
+    if etat.get("centre") in ("grave", "aigue"):
+        donnees["centre"] = etat["centre"]
+    Path(dossier_voix).mkdir(parents=True, exist_ok=True)
+    chemins.ecrire_json(fichier_etat(dossier_voix), donnees)
+
+
+def marquer_fait(dossier_voix, cle_etape, fait=True):
+    etat = lire_etat(dossier_voix)
+    etat["fait"][cle_etape] = bool(fait)
+    ecrire_etat(dossier_voix, etat)
+    return etat
+
+
+# --- Reconnaître l'étape d'un fichier d'après son nom ------------------------------------------------------------------
+
+def _normaliser(nom):
+    import unicodedata
+    sans = unicodedata.normalize("NFD", nom.lower())
+    sans = "".join(c for c in sans if unicodedata.category(c) != "Mn")
+    return re.sub(r"[^a-z0-9]+", "-", sans).strip("-")
+
+
+_MOTS_ETAPE = (("parole", ("parole",)), ("tessiture", ("tessiture", "sirene", "gamme")), ("notes", ("notes",)),
+               ("chanson", ("chanson",)), ("libre", ("clair-de-la-lune", "frere-jacques", "libre")))
+
+
+def reconnaitre(nom_fichier):
+    """(clé de l'étape, clé de la chanson ou '') d'après le nom d'un fichier : « 1-parole.m4a », « 5-frere-jacques.mp3 »,
+    « Tessiture 2.wav »… ; (None, '') si rien n'est reconnu. Le numéro du début l'emporte, sinon le nom suffit."""
+    base = _normaliser(Path(nom_fichier).stem)
+    morceau = next((c for c in chansons.CHANSONS if c.cle in base), None)
+    if morceau is not None:
+        return "libre", morceau.cle
+    numero = re.match(r"([1-5])(?:-|$)", base)
+    if numero:
+        return ETAPES[int(numero.group(1)) - 1].cle, ""
+    return next((cle for cle, mots in _MOTS_ETAPE if any(m in base for m in mots)), None), ""
 
 
 # --- Chansons conseillées ------------------------------------------------------------------------------------------
@@ -484,18 +749,20 @@ def dossier_destination(dossier_voix, cle_etape):
     return Path(dossier_voix) / e.dossier
 
 
-def nom_importe(cle_etape, suffixe, existants=(), maintenant=None):
-    """Un nom horodaté qui garde l'étape : 20261109-153012-notes.m4a (-2, -3… si deux fichiers dans la même seconde)."""
+def nom_importe(cle_etape, suffixe, existants=(), maintenant=None, detail=""):
+    """Un nom horodaté qui garde l'étape : 20261109-153012-notes.m4a (-2, -3… si deux fichiers dans la même seconde) ;
+    detail (la chanson de l'étape 5) le suit : 20261109-153012-libre-frere-jacques.m4a."""
     base = time.strftime("%Y%m%d-%H%M%S", time.localtime(maintenant if maintenant is not None else time.time()))
     suffixe = suffixe.lower()
-    nom, n = f"{base}-{cle_etape}{suffixe}", 1
+    etiquette = f"{cle_etape}-{detail}" if detail else cle_etape
+    nom, n = f"{base}-{etiquette}{suffixe}", 1
     while nom in existants:
         n += 1
-        nom = f"{base}-{cle_etape}-{n}{suffixe}"
+        nom = f"{base}-{etiquette}-{n}{suffixe}"
     return nom
 
 
-def importer(fichiers, dossier_voix, cle_etape, maintenant=None):
+def importer(fichiers, dossier_voix, cle_etape, maintenant=None, detail=""):
     """Copie tels quels des fichiers audio choisis à la main dans voix/<nom>/chant/ ou parole/ ; renvoie
     [(source, destination | None, message d'erreur)]. Un fichier de format inconnu, absent ou qui n'est pas lisible
     par ffprobe comme un son est refusé."""
@@ -513,7 +780,7 @@ def importer(fichiers, dossier_voix, cle_etape, maintenant=None):
             resultats.append((f, None, "ce fichier n’est pas un son lisible"))
             continue
         dest.mkdir(parents=True, exist_ok=True)
-        nom = nom_importe(cle_etape, f.suffix, {p.name for p in dest.iterdir()}, maintenant)
+        nom = nom_importe(cle_etape, f.suffix, {p.name for p in dest.iterdir()}, maintenant, detail)
         try:
             shutil.copyfile(f, dest / nom)
         except OSError as e:

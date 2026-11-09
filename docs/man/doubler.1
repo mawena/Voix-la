@@ -4,7 +4,7 @@
 doubler \- remplace la voix d'une vidéo par une voix clonée (GPU gratuit de Kaggle)
 .SH SYNOPSIS
 .B doubler
-\fIvidéo\fR [\fIvidéo\fR...] [\fIoptions\fR]
+\fIvidéo\fR|\fIaudio\fR [\fIvidéo\fR|\fIaudio\fR...] [\fIoptions\fR]
 .br
 .B doubler \-\-ajouter\-voix
 \fInom\fR \fIenregistrement\fR
@@ -68,6 +68,18 @@ dit et fait la version normale seule.
 .PP
 Un extrait propre à chaque vidéo s'écrit \fIvidéo\fB@\fIdébut\fB+\fIdurée\fR
 (secondes ou m:ss) : \fB"clip.mp4@60+40"\fR démarre à 60 s et dure 40 s.
+.PP
+Un fichier audio seul (mp3, wav, flac, m4a, ogg, opus : tout fichier sans
+image ; la pochette jointe à un mp3 n'en est pas une) suit la même chaîne, sans
+image : pas de remise sur la vidéo, la sortie est \fI<titre> \- voix <Nom>.mp3\fR
+(320 kbit/s), avec \fI.lrc\fR, les \fI.srt\fR de \fIparoles/\fR si les paroles sont
+demandées et \fItravail/\fR comme pour une vidéo (son d'origine, beat seul, voix
+d'origine, voix convertie, \fIrapport.json\fR). \fB\-\-debut\fR et \fB\-\-duree\fR
+coupent exactement où on le demande (pas d'image clé), \fB\-\-remix\fR et
+\fB\-\-reprendre\fR fonctionnent comme pour une vidéo, \fB\-\-pistes\-audio\fR n'a
+pas d'objet et l'auto\-tune donne son mp3 et son \fI.lrc\fR. Le dossier de sortie
+porte le nom du fichier : un mp3 et une vidéo de même nom partageraient le même
+dossier.
 .SH OPTIONS
 .TP
 .BI \-\-voix " nom"

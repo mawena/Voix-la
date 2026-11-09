@@ -7,6 +7,53 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+## [0.14.0] - 2026-11-09
+
+### Ajouté
+
+- `doubler` accepte un fichier audio seul (mp3, wav, flac, m4a, ogg, opus ; la pochette jointe à un mp3 n'est pas une
+  image) : même chaîne, sans image ni remise sur la vidéo. Sortie : `<titre> - voix <Nom>.mp3`, `.lrc`, `paroles/*.srt`
+  si les paroles sont demandées et `travail/` comme pour une vidéo (pas de vidéo, pas de pistes audio en plus ;
+  `source.json` porte `audio_seul`, l'événement `sortie` a `mp4` à `null`). `--debut` / `--duree` coupent exactement où
+  on le demande (pas d'image clé), `--remix`, `--reprendre`, `--comparer` et l'auto-tune (mp3 et `.lrc`) marchent ;
+  la bibliothèque affiche une pochette générée, la corbeille emporte les mêmes fichiers. Page de manuel et
+  `doubler --help` mis à jour ; l'estimation de durée n'a pas changé (la remise sur la vidéo y pèse peu).
+- Interface : « Chanter… » dans l'en-tête du détail d'un doublage, comme dans le menu « ⋮ » de la bibliothèque : il
+  ouvre la page Karaoké sur ce doublage ; grisé, avec la raison, sans beat seul (`travail/instrumental.wav`).
+- Interface : « Doubler ma prise… » dans la page Karaoké, sur le résultat d'une prise : choix de la voix cible, puis
+  un travail `doubler` sur le mix ta voix + beat de la prise (FLAC `<titre> - ma prise AAAA-MM-JJ HHhMM.flac` dans
+  `karaoke/`, `--mode=chant`), jugé sur le quota GPU comme la page Doubler. Le résultat arrive dans la bibliothèque.
+  Choix du mix plutôt que de la voix seule : doubler sépare la voix de la musique, calcule la musique seule pour la
+  remettre sous la voix convertie et décide chant ou parole d'après elle ; avec la voix seule (sèche, sans beat), il
+  rendrait une voix sans rien dessous et pourrait prendre le chant pour de la parole.
+- Interface, séance d'enregistrement : **tout le contenu des étapes 1, 2 et 5 est fourni**, pour que n'importe qui suive
+  les consignes sans rien chercher ailleurs. Un encadré « Comment ça marche » (5 lignes) ; chaque étape affiche sa durée
+  estimée, une case « Fait » gardée dans `voix/<nom>/seance.json` et le nom de fichier conseillé pour le téléphone
+  (`1-parole`, `2-tessiture`, `3-notes`, `4-chanson`, `5-au-clair-de-la-lune`, `5-frere-jacques`).
+  - Étape 1 : un texte de lecture affiché en grand, avec une taille réglable, puis « Parle librement (1 min) » et trois
+    sujets (`voixla/seance_textes.py`).
+  - Étape 2 : une piste guide réglée sur la voix (centre C tiré de `tessiture.json` ou de `voix.json`, sinon un choix
+    « voix grave » ou « voix aiguë ») : 4 bips, six sirènes (trois sur « aaa », trois sur « ou ») puis la gamme sur « la »
+    et sur « mi », avec le nom de la note en cours affiché en grand.
+  - Étape 5 : « Au clair de la lune » (deux couplets) et « Frère Jacques » (deux fois), du domaine public
+    (`voixla/seance_chansons.py`), transposées pour que la note médiane tombe sur le centre de la voix, à 88 battements
+    par minute, avec deux pistes (avec la mélodie au piano et accords I, IV, V ; accompagnement seul avec un léger
+    métronome) derrière 4 bips, et des paroles très grandes synchronisées, la syllabe en cours en surbrillance. La
+    chanson d'un doublage reste possible. Synthèse par numpy et ffmpeg, sans téléchargement.
+  - L'import reconnaît l'étape de chaque fichier à son nom et laisse la corriger avant d'importer.
+  - Paroles : une taille « géante » du karaoké, réservée à la séance (hors des réglages).
+- Essais : `tests/test_seance_contenu.py` (texte mot pour mot, syllabes et durées des chansons, transposition, accords,
+  sirènes, gamme, `seance.json`, reconnaissance des noms).
+
+### Modifié
+
+- Interface : la carte d'un travail de comparaison (`doubler --comparer`) dans la page Travaux montre toutes les voix
+  (« comparaison de 3 voix : A, B, C »), plus seulement la première.
+- Interface : le message d'une attente anormale d'un GPU et la phrase d'aide de la section « Sur Kaggle » disent que la
+  cause peut aussi être un incident chez Kaggle (« We are aware of an issue preventing notebooks from starting or
+  staying connected »), visible dans la bannière de la page du notebook, que le bouton « Ouvrir la page sur Kaggle »
+  ouvre.
+
 ## [0.13.0] - 2026-11-09
 
 ### Ajouté
@@ -597,7 +644,8 @@ Première version publique.
     `VOIXLA_DECODAGE_MATERIEL=1` remet le décodage matériel ;
   - les essais automatiques laissaient le son de l'application coupé.
 
-[Non publié]: https://github.com/mawena/Voix-la/compare/v0.13.0...HEAD
+[Non publié]: https://github.com/mawena/Voix-la/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/mawena/Voix-la/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/mawena/Voix-la/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/mawena/Voix-la/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/mawena/Voix-la/compare/v0.11.0...v0.11.1

@@ -2,7 +2,7 @@
 
 Voix-là : votre vidéo, avec une autre voix. Et voilà.
 
-> **Version 0.13.0** : paquet Debian `.deb` joint à chaque [release](https://github.com/mawena/Voix-la/releases). Voir le
+> **Version 0.14.0** : paquet Debian `.deb` joint à chaque [release](https://github.com/mawena/Voix-la/releases). Voir le
 > [journal des modifications](CHANGELOG.md).
 
 `doubler` prend une vidéo (chanson d'une chanteuse ou d'un chanteur, duo, rap, ou vidéo parlée) et rend la même vidéo,
@@ -365,6 +365,22 @@ Les temps s'écrivent en secondes (décimales avec `.` ou `,`) ou en `m:ss`. L'e
 et `--duree` pour elle ; les vidéos sans `@` gardent `--debut` et `--duree`. Un fichier qui existe tel quel n'est
 jamais découpé, même si son nom contient un `@`.
 
+### Un fichier audio seul
+
+`doubler` accepte aussi un fichier sans image (mp3, wav, flac, m4a, ogg, opus ; la pochette jointe à un mp3 n'est pas une
+image) : c'est la même chaîne, sans remise sur la vidéo.
+
+```sh
+doubler "Chanson.mp3" --voix voixA
+doubler "Chanson.flac" --voix voixA --debut 60 --duree 40   # extrait exact : pas d'image clé à chercher
+```
+
+La sortie est `<titre> - voix <Nom>.mp3` avec son `.lrc`, les `.srt` de `paroles/` si les paroles sont demandées et
+`travail/` comme pour une vidéo (son d'origine, beat seul, voix d'origine, voix convertie, `rapport.json`) ; pas de
+vidéo ni de pistes audio en plus. `--remix`, `--reprendre`, `--debut` / `--duree`, `--comparer` et l'auto-tune
+(`.mp3` et `.lrc`) marchent comme pour une vidéo ; la bibliothèque affiche une pochette générée. Le dossier de sortie
+porte le nom du fichier : un mp3 et une vidéo de même nom se partageraient donc le même dossier.
+
 Les autres options (`--voix`, `--mode`, `--octave`, `--pas`…) s'appliquent à toutes les vidéos. Une vidéo en échec
 n'empêche pas les suivantes.
 
@@ -557,7 +573,7 @@ Une étape en `erreur` est suivie d'un événement `erreur`. Les étapes commune
 
 | Option | Rôle | Défaut |
 |---|---|---|
-| `videos…` | une ou plusieurs vidéos (mp4, m4v, mov, mkv, webm…) ; `vidéo@DÉBUT+DURÉE` : extrait propre à cette vidéo | |
+| `videos…` | une ou plusieurs vidéos (mp4, m4v, mov, mkv, webm…) ou fichiers audio seul (mp3, wav, flac, m4a, ogg, opus : sortie mp3, sans image) ; `vidéo@DÉBUT+DURÉE` : extrait propre à cette vidéo | |
 | `--voix NOM` | voix cible, un dossier de `<données>/voix/` | clé `voix` de la configuration, sinon la seule voix présente |
 | `--voix homme:A,femme:B`, `--voix chanteur1:A,chanteur2:B` | une voix par chanteur (voir [Une voix par chanteur](#une-voix-par-chanteur)) | |
 | `--comparer A,B[,C…]` | comparer des voix : le même extrait doublé dans chacune (deux à six), en une seule session ; une sortie par voix et `comparaison.json` ; remplace `--voix` ; avec `--remix`, refait chaque sortie (voir [Comparer plusieurs voix en une session](#comparer-plusieurs-voix-en-une-session)) | |
@@ -747,8 +763,11 @@ Pour le chant :
 - la référence actuelle est de la parole : elle donne le timbre, la mélodie vient de la vidéo ; pour être reconnue
   dans ses doublages, une voix gagne à avoir aussi sa version chantée (objectif : 10 min de chant et 5 min de
   parole). La **séance d'enregistrement** de l'interface (page Voix, « Enregistrer ma voix chantée… ») guide la
-  prise : notes à tenir, chansons conseillées pour la voix dans la tonalité qui lui va, paroles à l'écran, puis import
-  des fichiers du téléphone avec leur contrôle (voir [l'interface](interface/README.md#séance-denregistrement)) ;
+  prise et fournit tout : le texte à lire en grand, une piste de sirènes et de gamme réglée sur la voix, les notes à
+  tenir, des chansons conseillées dans la tonalité qui va à la voix, deux chansons du domaine public (« Au clair de la
+  lune », « Frère Jacques ») avec accompagnement et paroles à l'écran, puis l'import des fichiers du téléphone, dont
+  l'étape est reconnue à leur nom (`1-parole`, `2-tessiture`, `3-notes`, `4-chanson`, `5-au-clair-de-la-lune`,
+  `5-frere-jacques`), avec leur contrôle (voir [l'interface](interface/README.md#séance-denregistrement)) ;
 - téléphone à 20 cm, en meilleure qualité d'enregistrement et en mode avion ; casque bien fermé et volume modéré pour
   que la musique ne déborde pas dans le micro ; sur une chanson, taper dans ses mains au 4e bip (il permet de recaler
   la prise) ; ne pas envoyer les fichiers par WhatsApp, qui recompresse le son ;

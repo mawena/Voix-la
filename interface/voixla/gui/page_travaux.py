@@ -45,7 +45,13 @@ ICONES_ETAPE = {
 
 def resume_reglages(demande, nom_voix=None):
     r = demande.get("reglages") or {}
-    morceaux = [f"voix {nom_voix(r['voix']) if nom_voix else r['voix']}"] if r.get("voix") else []
+    nom = (lambda v: nom_voix(v) if nom_voix else v)
+    comparees = [v for v in (r.get("comparer") or []) if v]
+    if len(comparees) > 1:
+        # doubler --comparer : toutes les voix comparées (la carte n'en montrait que la première)
+        morceaux = [f"comparaison de {len(comparees)} voix : " + ", ".join(nom(v) for v in comparees)]
+    else:
+        morceaux = [f"voix {nom(r['voix'])}"] if r.get("voix") else []
     if r.get("mode") and r["mode"] != "auto":
         morceaux.append(r["mode"])
     if r.get("octave") not in (None, "auto"):
@@ -294,9 +300,7 @@ class CarteTravail(Gtk.Box):
                      + ("Reprenez-la pour la finir sans GPU, ou abandonnez-la."
                         if session else "Elle n’existe plus : relancez le doublage."))
         elif attente:
-            texte = (f"Kaggle n’a pas encore donné de GPU : le noyau est en file d’attente depuis "
-                     f"{formats.duree(attente)}. Une autre session du compte (un autre projet ?) occupe peut-être les "
-                     "GPU. Vous pouvez patienter, ou abandonner cette session.")
+            texte = travaux.texte_attente_anormale(formats.duree(attente))
         elif t.est_reprise and statut == "annule" and session:
             texte = "Reprise annulée : la session Kaggle reste à finir ou à abandonner."
             reprendre = True

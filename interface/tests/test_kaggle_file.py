@@ -111,6 +111,7 @@ class EssaiLecture(EssaiIsole):
         self.assertEqual(l.actifs[0].libelle, "En cours")
         self.assertNotIn("une par une", kf.aide(l))
         self.assertIn("ni la place dans sa file", kf.aide(l))
+        self.assertIn("incident chez Kaggle", kf.aide(l))
         self.assertEqual(kf.resume(l), "1 en cours sur le compte")
 
     def test_rien_en_cours(self):

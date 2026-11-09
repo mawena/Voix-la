@@ -306,8 +306,9 @@ langues ; il est gardé dans `interface.json` (`paroles_langue`). L'interrupteur
 
 ## Karaoké
 
-Page « Karaoké » (Alt+7), ou « Chanter… » dans le menu « ⋮ » d'une carte de la bibliothèque (quand le doublage a son
-`travail/instrumental.wav`).
+Page « Karaoké » (Alt+7), ou « Chanter… » dans le menu « ⋮ » d'une carte de la bibliothèque et dans l'en-tête du
+détail d'un doublage (quand le doublage a son `travail/instrumental.wav` ; sans lui, le bouton du détail est grisé et
+l'infobulle dit pourquoi). Les deux appellent `fenetre.chanter(res)`, qui ouvre la page sur ce doublage.
 
 - **Préparer** : le doublage, puis le passage (chanson entière ; extrait de la ligne X à la ligne Y, ou début et fin à la
   main sans paroles ; extrait en boucle, 2 à 10 tours). Conseil affiché : mettre un casque. Micro du PC au choix (pas
@@ -330,8 +331,16 @@ Page « Karaoké » (Alt+7), ou « Chanter… » dans le menu « ⋮ » d'une ca
   `.prise-…`, effacées après un jour ; MP3 `<titre> - karaoké AAAA-MM-JJ HHhMM.mp3`), ignoré par la bibliothèque. Cache :
   `~/.cache/voix-la/karaoke/` (500 Mo). En ligne de commande : `python3 -m voixla.karaoke analyser|mp3`.
 - **Sobriété** : note et mix dans la file des analyses, sous `nice -n 10`, par `file-attente` au-delà d'une minute de son.
-- **Limites** : « Doubler ma prise » attend que `doubler` accepte un fichier audio seul ; la mesure de latence au vrai
-  micro (casque Bluetooth compris) reste à essayer.
+- **Doubler ma prise** : sur le résultat d'une prise (gardée ou non), « Doubler ma prise… » demande la voix cible, puis
+  lance un travail `doubler` sur le **mix ta voix + beat** de la prise, enregistré en FLAC dans `karaoke/` sous le nom
+  `<titre> - ma prise AAAA-MM-JJ HHhMM.flac` (`karaoke.preparer_entree_doubler` ; le mix en cache est refait s'il a
+  été purgé). Le travail est `doubler <fichier> --voix <voix> --mode=chant` ; il passe par le quota GPU comme la page
+  Doubler (sans dialogue : s'il ne tient pas, il attend la remise à zéro, sauf réglage « lancer »). Le résultat arrive
+  dans la bibliothèque, mp3 seul, sous le nom de la prise ; le fichier reste dans `karaoke/` (que la bibliothèque ne
+  lit pas) parce que `--remix` le relit. Grisé quand le mix n'est pas prêt, qu'aucune voix n'existe ou que `doubler`
+  n'annonce pas « audio seul » (`moteur.capacites()` : `son_seul`). Pourquoi le mix et pas la voix seule : voir
+  le CHANGELOG (séparation propre, beat rendu par la musique seule, mode chant sûr).
+- **Limites** : la mesure de latence au vrai micro (casque Bluetooth compris) reste à essayer.
 - **Essais** : `tests/faux_karaoke.py` (chanson inventée à mélodie connue), `test_justesse` (juste 100, un demi-ton
   faux 1, une octave plus bas 100, retard de 100 ms 100…), `test_karaoke`, et la page sous Xvfb
   (`tests/essai_karaoke_gui.py`).
@@ -452,7 +461,8 @@ fait écouter les résultats :
   `interface.json`, clé `voix_comparees`). La ligne dit combien de voix, et conseille un extrait de 20 à 40 s quand une
   vidéo est entière. L'estimation de durée et le quota GPU comptent les conversions en plus
   (`doubler.estimer_noyau_s(…, voix_comparees=N)`, sinon le repli de l'interface) ; la demande part avec
-  `--comparer A,B,C` à la place de `--voix`. Dans la file, le travail porte la première voix.
+  `--comparer A,B,C` à la place de `--voix`. Dans la file, la carte du travail (page Travaux) dit « comparaison de N
+  voix : » suivi de toutes les voix ; « Voir » ouvre le résultat de la première.
 - **Résultats** : le détail d'un doublage dont le dossier a deux voix ou plus (`comparaison.json` de `doubler --comparer`,
   ou des doublages de voix différentes du même extrait) a un groupe **Comparer les voix** : les voix et un bouton
   **Comparer**. Il prépare un banc d'écoute à l'aveugle dans le cache (`~/.cache/voix-la/comparaisons/<empreinte du
@@ -475,12 +485,40 @@ séance par-dessus la page, sans onglet de plus dans la barre latérale. On chan
 le PC, sur des pistes jouées par l'interface, puis on importe ses fichiers. Le code est dans `voixla/seance.py` (sans
 GTK, testé) et `gui/seance.py` (la vue).
 
+- **Comment ça marche**, en haut, en 5 lignes : installer le téléphone ; lancer l'enregistrement sur le téléphone
+  AVANT la piste ; une étape = un fichier ; importer à la fin ; environ 20 min en tout. Les textes sont dans
+  `voixla/seance_textes.py`, adressés à la personne qui enregistre, sans prénom.
 - **Rappel des consignes**, toujours visible : téléphone à 20 cm, meilleure qualité d'enregistrement, mode avion ;
   casque bien fermé et volume modéré (la musique ne doit pas passer dans le micro) ; taper dans ses mains sur le 4e
   bip ; pas d'envoi par WhatsApp (le son est recompressé).
-- **Cinq étapes**, de grandes consignes chacune : 1. parole (2 min, sans piste) ; 2. tessiture (une sirène sur « aaa »
-  puis « ou », sans piste) ; 3. notes à tenir (6 notes de 110 à 261,63 Hz, 5 s de son et 3 s de silence, deux tours :
-  « aaa » puis « ou ») ; 4. chanson ; 5. chanson libre.
+- **Cinq étapes**, dont tout le contenu est fourni (rien à chercher ailleurs). Chacune affiche une **durée estimée**,
+  une case **Fait** (gardée dans `voix/<nom>/seance.json`, avec la taille du texte et le choix grave/aiguë ; l'étape
+  porte alors un ✓) et le **nom de fichier conseillé** à donner sur le téléphone : `1-parole`, `2-tessiture`, `3-notes`,
+  `4-chanson`, `5-au-clair-de-la-lune`, `5-frere-jacques`.
+  1. **Parole** (≈ 3 min, sans piste) : un texte français de cinq paragraphes (`seance_textes.TEXTE_PAROLE`) affiché
+     en grand, sur toute la largeur, avec la **taille du texte réglable** (− / +, de 60 % à 180 %) et le défilement de
+     la page ; puis « Parle librement (1 min) » avec trois sujets au choix.
+  2. **Tessiture** (≈ 2 min) : une piste guide **réglée sur la voix**. Le centre C de la voix vient de `tessiture.json`
+     (milieu de `confort`, sinon `p50`), sinon de 2 × `hauteur_parole_mediane_hz` de `voix.json` ; sans ces données,
+     deux boutons proposent « Voix grave » (C = 190 Hz) ou « Voix aiguë » (C = 380 Hz). La piste : 4 bips à 880 Hz
+     (1, 2, 3 et 4 s), puis 6 **sirènes guides** de 8 s (une glissade continue de C × 2^(−9/12) à C × 2^(+9/12), puis
+     retour ; fondamentale et 2 harmoniques, enveloppe douce), trois fois sur « aaa » puis trois fois sur « ou », 3 s de
+     silence entre chacune ; puis la **gamme** do ré mi fa sol la si do, montée puis descente (tonique : le demi-ton
+     entier le plus proche de C × 2^(−5/12), 1,2 s par note), sur « la » puis sur « mi ». Le nom de la note en cours
+     s'affiche en grand, synchronisé.
+  3. **Notes à tenir** (6 notes de 110 à 261,63 Hz, 5 s de son et 3 s de silence, deux tours : « aaa » puis « ou »).
+  4. **Chanson** d'un doublage (voir plus bas).
+  5. **Chanson libre** (≈ 3 min) : deux chansons du **domaine public** avec accompagnement et paroles complètes, **Au
+     clair de la lune** (deux couplets) et **Frère Jacques** (chantée deux fois) — ou n'importe quel doublage, comme à
+     l'étape 4. Les notes et les paroles (une syllabe par note) sont dans `voixla/seance_chansons.py`. Chaque chanson
+     est **transposée en demi-tons entiers** pour que la note médiane de sa mélodie tombe sur le centre C de la voix,
+     à environ 88 battements par minute. Deux pistes, chacune derrière 4 bips : **avec la mélodie** (piano doux
+     synthétisé et accords simples I, IV, V choisis d'après la mélodie, en blanches) pour s'entraîner, et
+     **accompagnement seul** (les accords et un léger métronome) pour la vraie prise. Les **paroles** sont générées
+     depuis les durées des notes, décalées des 5 s de bips, en **très grand** (taille « géante » du karaoké, une
+     ligne à la fois, la suivante en petit) : une ligne de plus de 6 syllabes est affichée en deux moitiés, et la
+     syllabe en cours se remplit (le karaoké remplit déjà mot à mot ; ici un mot est une syllabe).
+     Tout est synthétisé avec numpy et ffmpeg, sans téléchargement.
 - **Les pistes** se jouent avec le lecteur de l'application (`gui/lecteur.py` : lecture / pause, barre de position) et
   le temps restant ; une seule lecture à la fois, comme ailleurs. Elles se préparent hors du fil de l'interface, avec une
   barre de progression, par ffmpeg, en mp3, dans `~/.cache/voix-la/seance/<empreinte>/` (l'empreinte vient du chemin,
@@ -506,8 +544,11 @@ GTK, testé) et `gui/seance.py` (la vue).
 - **Tout est dans l'interface** : aucune piste à préparer à la main, la séance fabrique les siennes dans le cache.
 - **Paroles synchronisées**, en très grand pendant la lecture : le `.lrc` du doublage, avec la vue des paroles de l'application, décalées des 5 s de bips,
   avec la mention « transcription automatique, il peut y avoir des fautes ».
-- **Importer mes enregistrements…** : sélecteur multiple (m4a, aac, mp3, wav, ogg, opus, 3gp, amr). Les fichiers sont
-  copiés **tels quels** dans `voix/<nom>/chant/` (ou `parole/` pour l'étape 1), sous un nom horodaté qui garde l'étape
+- **Importer mes enregistrements…** : sélecteur multiple (m4a, aac, mp3, wav, ogg, opus, 3gp, amr). L'**étape de
+  chaque fichier est reconnue à son nom** (`1-parole`, `2-tessiture`, `3-notes`, `4-chanson`, `5-au-clair-de-la-lune`,
+  `5-frere-jacques` ; le numéro du début l'emporte, sinon le nom suffit) : une ligne par fichier propose l'étape
+  trouvée, à corriger avant « Importer ces fichiers » ; un nom inconnu prend l'étape de la liste « nom non reconnu ».
+  Les fichiers sont copiés **tels quels** dans `voix/<nom>/chant/` (ou `parole/` pour l'étape 1), sous un nom horodaté qui garde l'étape
   (`20261109-153012-notes.m4a`). Ils ne sont lus que par ffmpeg (protocoles limités aux fichiers) : rien de ce qu'ils
   contiennent n'est exécuté. Chaque fichier est contrôlé : durée, saturation (crête à 0 dBFS), niveau, bruit de fond, et
   **musique du casque** dans la prise (ressemblance du rythme de la prise avec celui de la piste jouée, une fois les
@@ -515,8 +556,12 @@ GTK, testé) et `gui/seance.py` (la vue).
 - **Durées** : le total de chant et de parole déjà enregistré pour la voix (tous les fichiers audio de `chant/` et
   `parole/`), avec l'objectif de 10 min de chant et 5 min de parole.
 
+Pour les essais et les captures : `VOIXLA_SEANCE_ETAPE` (étape ouverte), `VOIXLA_SEANCE_CHANSON` (chanson de l'étape 5)
+et `VOIXLA_SEANCE_POSITION` (instant, en secondes, où placer les paroles).
+
 Essais : `tests/test_seance.py` (étapes, préparation des pistes sur des sons de synthèse, classement, paroles, import,
-contrôles) et `tests/test_seance_gui.py` (la fenêtre sous Xvfb : barre latérale sans l'écoute à l'aveugle, la séance
+contrôles), `tests/test_seance_contenu.py` (le texte mot pour mot, les notes, les syllabes et les durées des chansons, la
+transposition, les accords, les sirènes et la gamme, `seance.json`, la reconnaissance des noms) et `tests/test_seance_gui.py` (la fenêtre sous Xvfb : barre latérale sans l'écoute à l'aveugle, la séance
 de bout en bout).
 
 ## Enregistrer au téléphone
@@ -626,8 +671,10 @@ les sessions du compte restent « queued » et c'est le seul endroit où on le v
 - **Ce que Kaggle ne donne pas** : la place dans sa file, l'heure de démarrage prévue, la machine d'un notebook d'un
   autre projet, ni de quoi annuler une version (`kaggle kernels delete` supprime tout le notebook : l'interface ne
   l'appelle jamais). Le bouton de chaque ligne ouvre la page du notebook sur Kaggle, où l'on arrête la session à la
-  main. Une phrase d'aide le dit sous la liste ; quand plusieurs sessions attendent en même temps, elle ajoute que
-  Kaggle peut les faire passer une par une, ou n'avoir plus de GPU libre.
+  main. Une phrase d'aide le dit sous la liste et rappelle que, si rien ne démarre, la cause peut aussi être un incident
+  chez Kaggle (la page du notebook affiche alors une bannière d'incident) ; quand plusieurs sessions attendent en même
+  temps, elle ajoute que Kaggle peut les faire passer une par une, ou n'avoir plus de GPU libre. Le message d'une
+  attente anormale d'un travail (`travaux.texte_attente_anormale`) dit la même chose.
 - **Affichage** : une ligne par notebook (titre, état en clair, « lancé il y a 1 h 32 », badge « Voix-là » sur celui
   de doubler, reconnu par le champ `noyau` de `session-en-cours.json` et `session-precedente.json` et par le noyau de
   la configuration) ; les terminés récents en repli ; « Rien en attente ni en cours » si le compte est au repos ; un

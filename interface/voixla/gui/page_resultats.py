@@ -19,7 +19,7 @@ from pathlib import Path
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
-from .. import chemins, comparaison, formats, moteur, pistes, rapports
+from .. import chemins, comparaison, formats, karaoke, moteur, pistes, rapports
 from .. import lecture as regles
 from . import commun, pistes_gst
 from . import visualisations as vis
@@ -33,6 +33,9 @@ from .vue_paroles import TAILLES, Karaoke, PanneauParoles, VueParoles
 PRODUITS_VIS = {"spectre": "spectre", "onde": "onde", "vumetre": "bandes"}
 VOIX_SEULES = ("ma_voix", "ma_voix_at")     # voix seules combinées en cache (normale et auto-tune)
 POSITION_S = 30              # pendant la lecture, la position est retenue (reprise) toutes les 30 s au plus
+INFO_CHANTER = "Chanter… : le karaoké sur le beat seul de ce doublage"
+INFO_PAS_DE_BEAT = ("Pas de beat seul pour ce doublage (le dossier « travail » n’a pas d’instrumental.wav) : "
+                    "refaire le doublage pour pouvoir chanter dessus")
 HAUTEUR_ECRAN = 320          # hauteur de l'image dans le détail (hors mode cinéma)
 # Les panneaux que le mode cinéma (touche V) masque d'un coup : préférence → texte du menu « œil »
 PANNEAUX = (("frise_octave", "Frise d’octave"), ("frise_voix", "Voix de chaque passage"),
@@ -124,6 +127,11 @@ class PageDetail(Adw.NavigationPage):
                                         infobulle="Partager… : une vidéo courte pour les réseaux (l’extrait de la "
                                                   "boucle A-B, paroles karaoké)", sensitive=res.complet)
         entete.pack_end(self.b_partager)
+        # karaoké sur ce doublage, comme « Chanter… » du menu « ⋮ » de la bibliothèque (il chante sur le beat seul)
+        beat = karaoke.fichier_beat(res.travail)
+        self.b_chanter = commun.bouton("Chanter…", "audio-input-microphone-symbolic", clic=self.chanter,
+                                       infobulle=INFO_CHANTER if beat else INFO_PAS_DE_BEAT, sensitive=beat is not None)
+        entete.pack_end(self.b_chanter)
         self.b_oeil = Gtk.MenuButton(icon_name="view-reveal-symbolic", menu_model=self._menu_oeil(),
                                      tooltip_text="Panneaux, visualisations et paroles")
         self.b_oeil.update_property([Gtk.AccessibleProperty.LABEL], ["Panneaux, visualisations et paroles"])
@@ -2329,6 +2337,11 @@ class PageDetail(Adw.NavigationPage):
             GLib.timeout_add(3000, vers_frises)
 
     # --- partager : export pour les réseaux (gui/partage.py) ---------------------------------------------------------
+
+    def chanter(self):
+        """« Chanter… » : la page Karaoké ouverte sur ce doublage (comme la bibliothèque)."""
+        if hasattr(self.fenetre, "chanter"):
+            self.fenetre.chanter(self.res)
 
     def partager(self):
         """« Partager… » : le dialogue d'export pour les réseaux, l'extrait pris sur la boucle A-B du lecteur."""

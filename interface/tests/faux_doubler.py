@@ -35,6 +35,7 @@ comme un ancien doublage). Correction à la main (--remix --affectation FICHIER|
 travail/<a+b>/affectation.json écrit ou effacé, rapport (affectation.passages recalculés à partir des morceaux,
 secondes_par_voix, morceaux_en_duo, manuelle ; morceaux corrige, voix_pistes, voix_pistes_auto) et courbes.json
 (voix_par_trame) refaits, l'automatique gardé dans versions/auto.json ; sans les deux versions : « ÉCHEC », comme doubler.
+Fichier audio seul (mp3, wav, flac…) en entrée : sortie mp3 sans vidéo, source.json « audio_seul », comme doubler.
 FAUX_DOUBLER_SANS_AFFECTATION=1 : doubler trop ancien, sans --affectation ni --passage.
 Comparer des voix (--comparer A,B,C) : une seule session pour toutes les voix ; une sortie complète par voix dans le
 dossier de la vidéo (« <titre> - voix A.<ext> », travail/A/, rapport inventé de chaque voix), comparaison.json, un événement
@@ -85,6 +86,7 @@ if not SANS_GPU:
 PAROLES_FAUSSES = [(0.5, 2.5, "Un matin de pluie fine"), (3.0, 5.0, "le café refroidit doucement"),
                    (6.0, 8.5, "et la radio chante encore")]
 CONTENEURS = (".mp4", ".m4v", ".mov", ".mkv", ".webm")
+SONS = (".mp3", ".wav", ".flac", ".m4a", ".ogg", ".opus", ".oga", ".aac")   # sans image : la sortie est le mp3 seul
 SECRETS = re.compile(r"jeton|token|secret|password|mot.?de.?passe|(^|[._])(cle|clé|key)($|[._])", re.I)
 
 AIDE = """doubler (Voix-là) : remplace la voix d'une vidéo par une voix clonée (FAUX doubler des essais, sans Kaggle).
@@ -592,11 +594,14 @@ def duree_totale():
 
 def preparer_source(video, debut, duree, travail):
     src = {"video": str(video), "flux_audio": 1, "langue": "fra", "canaux_origine": 2, "codec_origine": "aac"}
+    audio = Path(str(video)).suffix.lower() in SONS
+    if audio:
+        src["audio_seul"] = True
     if debut is not None or duree is not None:
         demande = debut or 0.0
-        k = max(0.0, demande - 0.04)   # « image clé » un peu avant le début demandé, comme une vraie vidéo
+        k = demande if audio else max(0.0, demande - 0.04)   # « image clé » un peu avant, sauf pour un son seul
         fin = (demande + duree) if duree else max(duree_totale(), demande + 1.0)
-        src.update({"debut_demande": demande, "debut": round(k + 0.001, 3), "duree": round(fin - k, 3)})
+        src.update({"debut_demande": demande, "debut": round(k if audio else k + 0.001, 3), "duree": round(fin - k, 3)})
     src["decalage_son"] = 0.0
     (travail / "original.wav").write_bytes(b"")
     with open(travail / "source.json", "w", encoding="utf-8") as f:
@@ -775,9 +780,11 @@ def autotune(a, rapport, tv, dossier, base, sortie, mode):
         return None
     for f in FICHIERS_AUTOTUNE_TRAVAIL if mode == "chant" else FICHIERS_AUTOTUNE_TRAVAIL[:2]:
         (tv / f).write_bytes(b"")
-    mp3, video, lrc = dossier / f"{b}.mp3", dossier / f"{b}{sortie.suffix}", dossier / f"{b}.lrc"
+    mp3, lrc = dossier / f"{b}.mp3", dossier / f"{b}.lrc"
+    video = dossier / f"{b}{sortie.suffix}" if sortie is not None else None
     for f in (mp3, video, lrc):
-        f.write_bytes(b"")
+        if f is not None:
+            f.write_bytes(b"")
     gamme = a.autotune_gamme or ((prec.get("gamme") or {}).get("demandee") if gardee else None) or "auto"
     tonique, mode_g = lire_gamme_faux(gamme)
     chromatique = gamme == "chromatique"
@@ -794,10 +801,10 @@ def autotune(a, rapport, tv, dossier, base, sortie, mode):
                     "apres": {"ecart_median_cents": 4.0, "part_a_10_cents": 0.86}},
         "gains_db": {"seche": 6.5, **({"reverb": 1.2} if mode == "chant" else {})}, "temps_s": 2.0,
         "fichiers": {"mp3": mp3.name, "mix": "mix_autotune.wav", "seche": "seche_voix_autotune.wav",
-                     "reverb": "reverb_voix_autotune.wav" if mode == "chant" else None, "video": video.name, "lrc": lrc.name}}
+                     "reverb": "reverb_voix_autotune.wav" if mode == "chant" else None, "video": video.name if video else None, "lrc": lrc.name}}
     g = rapport["autotune"]["gamme"]
     dire(f"auto-tune {n} : gamme {g['tonalite'] or 'chromatique'}, écart médian aux notes 32 → 4 cents")
-    return {"mp4": str(video), "mp3": str(mp3), "lrc": str(lrc), "intensite": int(n), "tonalite": g["tonalite"],
+    return {"mp4": str(video) if video else None, "mp3": str(mp3), "lrc": str(lrc), "intensite": int(n), "tonalite": g["tonalite"],
             "gamme": g["type"]}
 
 
@@ -997,11 +1004,12 @@ def finir(tr, a, voix, temps_local=None):
             dire(f"mixage {mode} v{version} : voix source {cible:.1f} dB, voix {voix_db:+g} dB" + suite + detail)
     mix_s = time.time() - debut
     debut = time.time()
-    with Etape("video", titre, "son remis sur la vidéo (image copiée)"):
+    src = json.loads((t / "source.json").read_text(encoding="utf-8"))
+    audio = bool(src.get("audio_seul"))
+    with Etape("video", titre, "son seul : pas d'image, mp3 et paroles" if audio else "son remis sur la vidéo (image copiée)"):
         pause()
-        src = json.loads((t / "source.json").read_text(encoding="utf-8"))
         ext = Path(src["video"]).suffix.lower()
-        sortie = dossier / f"{base}{ext if ext in CONTENEURS else '.mkv'}"
+        sortie = mp3 if audio else dossier / f"{base}{ext if ext in CONTENEURS else '.mkv'}"
         sortie.write_bytes(b"")
     video_s = time.time() - debut
     rapport["mix"] = {"version": version, "voix_db": voix_db, "reverb_db": a.reverb_db if mode == "chant" else None,
@@ -1011,9 +1019,9 @@ def finir(tr, a, voix, temps_local=None):
         rapport["temps_local"] = temps_local
     (tv / "rapport.json").write_text(json.dumps(rapport, ensure_ascii=False, indent=1), encoding="utf-8")
     paroles = ecrire_paroles(tv, a)
-    ev_at = autotune(a, rapport, tv, dossier, base, sortie, mode)
+    ev_at = autotune(a, rapport, tv, dossier, base, None if audio else sortie, mode)
     (tv / "rapport.json").write_text(json.dumps(rapport, ensure_ascii=False, indent=1), encoding="utf-8")
-    EV("sortie", titre, mp4=str(sortie), mp3=str(mp3), rapport=str(tv / "rapport.json"), comparaisons=None,
+    EV("sortie", titre, mp4=None if audio else str(sortie), mp3=str(mp3), rapport=str(tv / "rapport.json"), comparaisons=None,
        **({"paroles": str(paroles)} if paroles else {}), autotune=ev_at, voix=[v["id"] for v in voix_membres(voix)])
     m = rapport.get("mesures_musique", {})
     dire(f"mode {mode} ({'imposé' if rapport.get('mode_force') else 'détecté'} : musique sous la voix "
@@ -1022,7 +1030,7 @@ def finir(tr, a, voix, temps_local=None):
     print("  hauteur par passage (dt = demi-tons) :", flush=True)
     for ligne in rapport.get("frise", []):
         print("   ", ligne, flush=True)
-    dire(f"fini : {sortie}\n         {mp3}")
+    dire(f"fini : {sortie}" + ("" if audio else f"\n         {mp3}"))
     EV("etape", titre, etape="fini", etat="fin", message=str(sortie), duree_s=round(time.time() - tr.get("debut_epoch", debut0), 1))
     return sortie
 
@@ -1225,7 +1233,8 @@ def analyseur():
     p = argparse.ArgumentParser(prog="doubler", description=(AIDE_ANCIENNE if ANCIEN else AIDE).split("\n")[0],
                                 formatter_class=argparse.RawDescriptionHelpFormatter,
                                 epilog=(AIDE_ANCIENNE if ANCIEN else AIDE).split("\n", 1)[1])
-    p.add_argument("videos", nargs="*", help="vidéo(s) mp4, mkv, webm, mov… ; « vidéo@60+40 » : extrait propre à cette vidéo")
+    p.add_argument("videos", nargs="*", help="vidéo(s) mp4, mkv, webm, mov…, ou fichier(s) audio seul mp3, wav, flac, m4a, ogg, opus (sortie : mp3, "
+                        "sans image) ; « vidéo@60+40 » : extrait propre à cette vidéo")
     p.add_argument("--voix", default=None, metavar="NOM",
                    help="voix cible : un dossier de <données>/voix (défaut : clé « voix » de la configuration, "
                         "sinon la seule voix présente) ; une voix par chanteur : homme:NOM,femme:NOM (duo mixte) ou "

@@ -7,6 +7,27 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+### Ajouté
+
+- Interface, séance d'enregistrement : **tout le contenu des étapes 1, 2 et 5 est fourni**, pour que n'importe qui suive
+  les consignes sans rien chercher ailleurs. Un encadré « Comment ça marche » (5 lignes) ; chaque étape affiche sa durée
+  estimée, une case « Fait » gardée dans `voix/<nom>/seance.json` et le nom de fichier conseillé pour le téléphone
+  (`1-parole`, `2-tessiture`, `3-notes`, `4-chanson`, `5-au-clair-de-la-lune`, `5-frere-jacques`).
+  - Étape 1 : un texte de lecture affiché en grand, avec une taille réglable, puis « Parle librement (1 min) » et trois
+    sujets (`voixla/seance_textes.py`).
+  - Étape 2 : une piste guide réglée sur la voix (centre C tiré de `tessiture.json` ou de `voix.json`, sinon un choix
+    « voix grave » ou « voix aiguë ») : 4 bips, six sirènes (trois sur « aaa », trois sur « ou ») puis la gamme sur « la »
+    et sur « mi », avec le nom de la note en cours affiché en grand.
+  - Étape 5 : « Au clair de la lune » (deux couplets) et « Frère Jacques » (deux fois), du domaine public
+    (`voixla/seance_chansons.py`), transposées pour que la note médiane tombe sur le centre de la voix, à 88 battements
+    par minute, avec deux pistes (avec la mélodie au piano et accords I, IV, V ; accompagnement seul avec un léger
+    métronome) derrière 4 bips, et des paroles très grandes synchronisées, la syllabe en cours en surbrillance. La
+    chanson d'un doublage reste possible. Synthèse par numpy et ffmpeg, sans téléchargement.
+  - L'import reconnaît l'étape de chaque fichier à son nom et laisse la corriger avant d'importer.
+  - Paroles : une taille « géante » du karaoké, réservée à la séance (hors des réglages).
+- Essais : `tests/test_seance_contenu.py` (texte mot pour mot, syllabes et durées des chansons, transposition, accords,
+  sirènes, gamme, `seance.json`, reconnaissance des noms).
+
 ## [0.13.0] - 2026-11-09
 
 ### Ajouté

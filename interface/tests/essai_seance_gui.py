@@ -21,6 +21,7 @@ import voixla.gui  # noqa: E402,F401  (fixe les versions de GTK et d'Adw)
 from gi.repository import Gtk, GLib  # noqa: E402
 
 from voixla import chemins, seance as S  # noqa: E402
+from voixla.gui.seance import CHOIX_IMPORT as S_CHOIX  # noqa: E402
 from voixla.gui import app as appli  # noqa: E402
 
 from . import faux_seance as fs  # noqa: E402
@@ -116,6 +117,27 @@ def scenario_seance(f):
     verifier(len(p._boutons_etape) == 5, f"étapes : {list(p._boutons_etape)}")
     verifier(p.etape.cle == "parole" and not p.b_chanson.get_visible() and not p.b_lecteur.get_visible(),
              "étape parole : pas de piste")
+    # « Comment ça marche » : 5 lignes ; l'étape 1 fournit son texte en grand, sa durée, son nom de fichier
+    verifier(any("Comment ça marche" in t for t in textes), "encadré « Comment ça marche » absent")
+    verifier(sum(1 for t in textes if t[:3] in ("1. ", "2. ", "3. ", "4. ", "5. ") and "  " in t[:5]) >= 5,
+             "les 5 lignes de « Comment ça marche »")
+    verifier(p.b_texte.get_visible() and any("Le matin, quand la ville se réveille" in t for t in textes),
+             "texte de l'étape 1 absent")
+    verifier(any(t.startswith("Voilà. Merci de m'avoir écouté") for t in textes), "fin du texte absente")
+    verifier(any("Parle librement (1 min)" in t for t in textes), "parole libre absente")
+    verifier(sum(1 for t in textes if "Raconte la meilleure journée" in t or "Décris ton plat préféré" in t
+                 or "comment venir chez toi" in t) == 3, "trois sujets libres")
+    verifier("1-parole" in p.l_nom_fichier.get_label(), f"nom de fichier : {p.l_nom_fichier.get_label()}")
+    verifier(p.b_duree.get_label().startswith("≈ 3 min"), f"durée : {p.b_duree.get_label()}")
+    t0 = p.etat["taille_texte"]
+    p._taille_texte(1)
+    verifier(p.etat["taille_texte"] > t0, "taille du texte non augmentée")
+    # la case « Fait » est gardée dans voix/voixA/seance.json
+    p.c_fait.set_active(True)
+    brut = chemins.lire_json(p.dossier_voix / "seance.json", {})
+    verifier(brut.get("fait", {}).get("parole") is True, f"seance.json : {brut}")
+    verifier(brut.get("taille_texte") == p.etat["taille_texte"], f"taille gardée : {brut}")
+    verifier(p._boutons_etape["parole"].get_label().startswith("✓"), "étape faite non marquée")
 
     # les durées déjà enregistrées (95 + 200 s de chant, 125 s de parole)
     yield from attendre(lambda: "4 min" in p.r_parole.get_subtitle() or "2 min" in p.r_parole.get_subtitle(), 10)
@@ -124,10 +146,20 @@ def scenario_seance(f):
     verifier("objectif de 5 min" in p.r_parole.get_subtitle() and "2 min" in p.r_parole.get_subtitle(),
              f"parole : {p.r_parole.get_subtitle()}")
 
-    # tessiture : toujours sans piste
+    # tessiture : une piste guide, réglée sur la voix (voix A : parole 100 Hz → centre 200 Hz)
     p.choisir_etape("tessiture")
-    yield 200
-    verifier(not p.b_lecteur.get_visible() and not p.b_chanson.get_visible(), "tessiture : une piste affichée")
+    yield from attendre(lambda: p._piste is not None, 60)
+    verifier(p.centre_hz == 200.0, f"centre : {p.centre_hz}")
+    verifier(p._piste and p._piste[0] == "tessiture" and p._piste[1].is_file(), f"piste de tessiture : {p._piste}")
+    verifier(p.b_lecteur.get_visible() and not p.b_chanson.get_visible(), "tessiture : lecteur ou doublage mal affichés")
+    verifier("2-tessiture" in p.l_nom_fichier.get_label(), p.l_nom_fichier.get_label())
+    yield from attendre(lambda: p.lecteur.duree() is not None, 10)
+    d = p.lecteur.duree()
+    verifier(d is not None and abs(d - S.TESSITURE_S) < 3.5, f"durée de la tessiture : {d}")
+    verifier(p.vue_paroles.paroles is not None and any(l.texte.startswith("Sirène sur « aaa »")
+                                                       for l in p.vue_paroles.paroles.originale.lignes),
+             "ce qui s'affiche pendant la tessiture")
+    verifier(not p.b_choix_voix.get_visible(), "choix grave/aiguë proposé alors que la voix est mesurée")
 
     # notes à tenir : la piste se prépare puis se charge dans le lecteur
     p.choisir_etape("notes")
@@ -188,6 +220,55 @@ def scenario_seance(f):
     yield from attendre(lambda: p._piste is not None and p._piste[0] == "guide", 90)
     verifier(p._piste and p._piste[0] == "guide" and p._piste[1].name == "guide_m3.mp3", f"guide : {p._piste}")
     p.lecteur.pause()
+
+    # chanson libre : deux chansons du domaine public, dans la voix (centre 200 Hz), avec leurs paroles
+    p.choisir_etape("libre")
+    yield 300
+    verifier(p.b_libre.get_visible() and p.b_publique.get_visible() and not p.b_chanson.get_visible(),
+             "étape 5 : réglages de la chanson libre")
+    verifier("5-au-clair-de-la-lune" in p.l_nom_fichier.get_label() and "5-frere-jacques" in p.l_nom_fichier.get_label(),
+             p.l_nom_fichier.get_label())
+    verifier(p.vue_paroles.paroles is not None and p.vue_paroles.paroles.originale.lignes[0].texte == "Au clair de la lune,",
+             "paroles d'Au clair de la lune")
+    verifier("7 demi-tons plus bas" in p.l_transposition.get_label(), p.l_transposition.get_label())
+    p.r_libre.set_selected(1)
+    yield 300
+    verifier(p.chanson_libre == "frere-jacques" and p.vue_paroles.paroles.originale.lignes[0].texte == "Frère Jacques,",
+             f"Frère Jacques : {p.chanson_libre}")
+    p.preparer_publique("accompagnement")
+    yield from attendre(lambda: p._piste is not None and p._piste[0] == "accompagnement", 90)
+    verifier(p._piste and p._piste[1].name.startswith("frere-jacques-") and p._piste[1].is_file(), f"piste : {p._piste}")
+    yield from attendre(lambda: p.lecteur.duree() is not None, 10)
+    d = p.lecteur.duree()
+    verifier(d is not None and abs(d - (5 + 64 * 60 / 88)) < 3.5, f"durée de Frère Jacques : {d}")
+    p.lecteur.pause()
+    # un de ses doublages : les réglages de l'étape 4
+    p.r_libre.set_selected(2)
+    yield 500
+    verifier(p.chanson_libre == "doublage" and p.b_chanson.get_visible() and not p.b_publique.get_visible(),
+             "chanson libre : un doublage")
+    p.r_libre.set_selected(0)
+    yield 300
+
+    # import : l'étape de chaque fichier est reconnue à son nom
+    src0 = Path(os.environ["VOIXLA_DONNEES"]).parent / "telephone"
+    src0.mkdir(exist_ok=True)
+    fs.son(src0 / "1-parole.m4a", 200, 3, canaux=1)
+    fs.son(src0 / "5-frere-jacques.m4a", 300, 3, canaux=1)
+    fs.son(src0 / "inconnu.m4a", 300, 3, canaux=1)
+    p.proposer_import([src0 / "1-parole.m4a", src0 / "5-frere-jacques.m4a", src0 / "inconnu.m4a"])
+    yield 300
+    choix = [S_CHOIX[r.get_selected()][1:] for r in p._lignes_import]
+    verifier(choix[:2] == [("parole", ""), ("libre", "frere-jacques")], f"étapes reconnues : {choix}")
+    verifier(p.g_a_importer.get_visible() and p.b_valider.get_visible(), "liste d'import cachée")
+    p._lignes_import[2].set_selected(2)           # corrigé à la main : « 3  Notes à tenir »
+    p.valider_import()
+    yield from attendre(lambda: len(p._rangees_controle) == 3, 60)
+    verifier(len(p._rangees_controle) == 3, f"contrôles de l'import par noms : {len(p._rangees_controle)}")
+    chant0 = sorted(x.name for x in (chemins.dossier_voix(f.donnees) / "voixA" / "chant").iterdir())
+    verifier(any(n.endswith("-libre-frere-jacques.m4a") for n in chant0), f"chant/ : {chant0}")
+    verifier(any(n.endswith("-notes.m4a") for n in chant0), f"chant/ : {chant0}")
+    verifier(not p.g_a_importer.get_visible(), "liste d'import encore visible")
 
     # import : un fichier de synthèse et un qui n'est pas un son
     src = Path(os.environ["VOIXLA_DONNEES"]).parent / "telephone"

@@ -46,9 +46,14 @@ class Base(unittest.TestCase):
 class TestEtapes(unittest.TestCase):
     def test_cinq_etapes_dans_l_ordre(self):
         self.assertEqual([e.cle for e in seance.ETAPES], ["parole", "tessiture", "notes", "chanson", "libre"])
-        self.assertEqual(seance.etape("parole").duree_s, 120)
+        self.assertEqual(seance.etape("parole").duree_s, 180)
         self.assertIsNone(seance.etape("parole").piste)
-        self.assertIsNone(seance.etape("tessiture").piste)
+        self.assertEqual(seance.etape("tessiture").piste, "tessiture")
+        self.assertEqual(seance.etape("libre").piste, "libre")
+        # le nom de fichier conseillé sur le téléphone
+        self.assertEqual([e.noms for e in seance.ETAPES], [
+            ("1-parole",), ("2-tessiture",), ("3-notes",), ("4-chanson",),
+            ("5-au-clair-de-la-lune", "5-frere-jacques")])
         self.assertEqual(seance.etape("notes").piste, "notes")
         self.assertEqual(seance.etape("chanson").piste, "chanson")
         self.assertEqual(seance.etape("parole").dossier, "parole")

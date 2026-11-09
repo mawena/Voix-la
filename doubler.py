@@ -109,6 +109,9 @@ CLES_CONFIG = {'autotune': 'intensité de l\'auto-tune à chaque doublage, de 0 
                           'ou non',
                'pistes_audio': 'pistes audio de la vidéo doublée : toutes (défaut : doublage, original, beat seul, voix '
                                'convertie seule, voix d\'origine seule ; le doublage par défaut) ou doublage (lui seul)',
+               'versions_duo': 'une voix par chanteur : chaque passage converti dans les deux voix pour corriger qui chante '
+                               "quoi au remix : toutes (défaut), utiles (passages incertains, voisins d'un changement de "
+                               'voix, chantés ensemble) ou non',
                'voix': 'voix cible par défaut, un dossier de <données>/voix (sinon la seule voix présente)'}
 OUI = {'oui', 'o', 'yes', 'y', 'true', 'vrai', '1', 'on'}
 NON = {'non', 'n', 'no', 'false', 'faux', '0', 'off'}
@@ -200,6 +203,10 @@ def ecrire_config(cle, valeur):
         valeur = str(valeur).strip().lower()
         if valeur not in PISTES_AUDIO:
             raise SystemExit(f'pistes_audio : toutes ou doublage attendu (reçu : {valeur})')
+    if cle == 'versions_duo':
+        valeur = str(valeur).strip().lower()
+        if valeur not in VERSIONS_DUO:
+            raise SystemExit(f"versions_duo : {', '.join(VERSIONS_DUO)} attendu (reçu : {valeur})")
     if cle == 'envoi_flac':
         valeur = str(valeur).strip().lower().removesuffix('bits').strip()
         if valeur not in ENVOI_FLAC:
@@ -386,7 +393,7 @@ def afficher_config(a, en_json=False):
     effectif = {'config': str(CONFIG), 'donnees': str(DONNEES), 'source_donnees': a.source_donnees, 'voix': str(VOIX),
                 'sorties': a.sortie, 'voix_defaut': VOIX_DEFAUT, 'source_voix_defaut': VOIX_DEFAUT_SOURCE,
                 'moteur': moteur, 'paroles': paroles, 'autotune': autotune, 'gpu': gpu, 'pistes_audio': pistes_audio,
-                'envoi_flac': envoi,
+                'envoi_flac': envoi, 'versions_duo': versions_duo_config(conf),
                 'x42_autotune': str(fat1) if fat1 else None,
                 'kaggle': {'compte': valeur_config(conf, 'kaggle.compte'), **noms, 'machine': MACHINE},
                 'jeton_kaggle': 'présent' if JETON.exists() else 'absent', 'commande_kaggle': str(KAGGLE),
@@ -411,6 +418,8 @@ def afficher_config(a, en_json=False):
     print(f"  pistes audio   {pistes_audio}{'' if valeur_config(conf, 'pistes_audio') is not None else '  (défaut)'} : "
           + ('le doublage seul' if pistes_audio == 'doublage' else
              "doublage (par défaut), original, beat seul, voix convertie seule, voix d'origine seule"))
+    print(f"  versions duo   {versions_duo_config(conf)}{'' if valeur_config(conf, 'versions_duo') is not None else '  (défaut)'}"
+          ' : une voix par chanteur, chaque passage dans les deux voix (corriger au remix)')
     print(f"  envoi FLAC     {envoi} bits{'' if valeur_config(conf, 'envoi_flac') is not None else '  (défaut)'}")
     for n in KAGGLE_DEFAUTS:
         print(f"  kaggle.{n:8s} {noms[n] or '— (kaggle.compte manque : doubler --config kaggle.compte <nom>)'}")
@@ -540,6 +549,24 @@ def encoder_flac(wav, flac, bits=16):
     ff('-i', wav, '-af', f'volume={gain:.17g}', '-c:a', 'flac', *format_,
        '-compression_level', '8', '-metadata', f'comment=doubler : gain {gain:.17g} appliqué (crête à -1 dBFS), à retirer', flac)
     return gain
+
+
+VERSIONS_DUO = ('toutes', 'utiles', 'non')   # voir kaggle/doubler_kaggle.py (versions_duo)
+VERSIONS_DUO_DEFAUT = 'toutes'
+
+
+def versions_duo_config(conf):
+    """Clé « versions_duo » de la configuration : toutes (défaut), utiles ou non ; une valeur illisible compte comme
+    toutes, avec un avis."""
+    v = valeur_config(conf, 'versions_duo')
+    if v is None:
+        return VERSIONS_DUO_DEFAUT
+    v = str(v).strip().lower()
+    if v not in VERSIONS_DUO:
+        dire(f'attention : « versions_duo » de {CONFIG} illisible ({v!r}) : {VERSIONS_DUO_DEFAUT} '
+             '(doubler --config versions_duo toutes|utiles|non)')
+        return VERSIONS_DUO_DEFAUT
+    return v
 
 
 def envoi_flac_config(conf):
@@ -2918,12 +2945,461 @@ def emplacements(video, debut, duree, a, voix):
             'tv': dossier / 'travail' / voix['id'], 'base': f"{video.stem} - voix {voix['affichage']}"}
 
 
+# --- Une voix par chanteur : corriger à la main qui chante quoi (--remix --passage / --affectation) -------------------
+#
+# L'attribution automatique d'un passage à un chanteur se trompe parfois. Le noyau, avec versions_duo (travail/<a+b>/
+# versions/), a converti chaque passage de chaque piste dans les deux voix cibles (ou les passages utiles) ; le remix
+# recompose la voix convertie sur le PC, sans Kaggle, d'après l'affectation voulue : mêmes morceaux, mêmes fondus, même
+# porte des silences, même mise au niveau de chaque piste, même garde-crête que le noyau. Sans correction, rien n'est
+# recomposé : voix_convertie.flac reste celle du noyau, au bit près.
+#
+# Affectation gardée (travail/<a+b>/affectation.json) :
+#   {"format": 1, "voix_cibles": ["jules", "marie"], "passages": {"12": "marie", "13": "deux"},
+#    "pistes": {"14": {"choeurs_sec": "jules"}}}
+# Valeurs : le nom d'une voix cible, ou « deux » (les deux voix ensemble, à puissance égale). « pistes » (une piste d'un
+# passage) l'emporte sur « passages ». Un passage sans entrée garde la voix automatique de chaque piste.
+
+AFFECTATION = 'affectation.json'
+DOSSIER_VERSIONS = 'versions'
+CHOIX_DEUX = ('deux', 'les-deux', 'lesdeux', 'both', 'ensemble')
+CHOIX_AUTO = ('auto', 'automatique')
+PISTES_NOMS = {'principale': 'lead_sec', 'lead': 'lead_sec', 'lead_sec': 'lead_sec', 'choeurs': 'choeurs_sec',
+               'chœurs': 'choeurs_sec', 'choeurs_sec': 'choeurs_sec', 'secours': 'secours', 'voix': 'voix',
+               'complete': 'voix'}
+MESSAGE_SANS_VERSIONS = ("ce doublage n'a pas les deux versions de chaque passage ({detail}) : refaites-le (sans "
+                         '--versions-duo non) pour pouvoir corriger qui chante quoi')
+VOIX_SEULE_SANS_CHOIX = "ce doublage n'a pas une voix par chanteur : rien à corriger (--voix homme:A,femme:B)"
+
+
+def charger_noyau():
+    """Le noyau comme module, sans rien lancer : ses réglages (remplacés avant l'envoi) valent {}. Sert aux fonctions
+    de numpy seul (enveloppes, passages par voix) que le PC refait comme lui."""
+    import base64
+    import types
+    src = SCRIPT_NOYAU.read_text(encoding='utf-8').replace("'__REGLAGES__'", repr(base64.b64encode(b'{}').decode()))
+    m = types.ModuleType('doubler_kaggle')
+    m.__file__ = str(SCRIPT_NOYAU)
+    exec(compile(src, str(SCRIPT_NOYAU), 'exec'), m.__dict__)
+    return m
+
+
+def lire_affectation(tv):
+    """L'affectation gardée dans travail/<a+b>/, ou None (automatique)."""
+    f = tv / AFFECTATION
+    if not f.is_file():
+        return None
+    try:
+        a = json.loads(f.read_text(encoding='utf-8'))
+    except ValueError as e:
+        raise RuntimeError(f'{f} illisible ({e}) : le corriger, ou le supprimer pour revenir à l\'automatique') from None
+    return a if isinstance(a, dict) else None
+
+
+def ecrire_affectation(tv, aff):
+    """Garde l'affectation (écriture atomique) ; None : revient à l'automatique (fichier effacé)."""
+    f = tv / AFFECTATION
+    if not aff or not (aff.get('passages') or aff.get('pistes')):
+        f.unlink(missing_ok=True)
+        return
+    tmp = f.with_name(f.name + '.tmp')
+    tmp.write_text(json.dumps(aff, ensure_ascii=False, indent=1) + '\n', encoding='utf-8')
+    os.replace(tmp, f)
+
+
+def nom_voix_choisie(texte, voix_cibles, cles):
+    """« marie », « femme », « deux » ou « auto » -> un nom de voix cible, « deux » ou « auto » (ValueError sinon).
+    cles : {clé (homme, femme, chanteur1…) -> nom de voix}."""
+    t = str(texte).strip().lower()
+    if t in CHOIX_AUTO:
+        return 'auto'
+    if t in CHOIX_DEUX:
+        return 'deux'
+    if t in voix_cibles:
+        return t
+    if t.replace('-', '').replace('_', '').replace(' ', '') in cles:
+        return cles[t.replace('-', '').replace('_', '').replace(' ', '')]
+    raise ValueError(f"voix « {texte} » inconnue (voix de ce doublage : {', '.join(voix_cibles)} ; ou deux, auto)")
+
+
+def lire_passage(texte, voix_cibles, cles):
+    """« 12=marie », « 12-15=deux », « 12,14=jules », « 12/choeurs=jules » -> ([numéros], piste ou None, choix)."""
+    m = re.fullmatch(r'\s*([\d,\- ]+?)\s*(?:/\s*([\w]+))?\s*=\s*(\S.*?)\s*', str(texte))
+    if not m:
+        raise ValueError(f'« {texte} » : N=voix attendu (12=marie, 12-15=deux, 12/choeurs=jules, 12=auto)')
+    numeros = []
+    for morceau in m.group(1).split(','):
+        morceau = morceau.strip()
+        if not morceau:
+            continue
+        borne = re.fullmatch(r'(\d+)\s*-\s*(\d+)', morceau)
+        if borne:
+            a, b = int(borne.group(1)), int(borne.group(2))
+            if b < a:
+                raise ValueError(f'« {morceau} » : plage à l\'envers')
+            numeros += range(a, b + 1)
+        elif morceau.isdigit():
+            numeros.append(int(morceau))
+        else:
+            raise ValueError(f'« {morceau} » : numéro de passage attendu')
+    piste = None
+    if m.group(2):
+        piste = PISTES_NOMS.get(m.group(2).lower())
+        if piste is None:
+            raise ValueError(f"piste « {m.group(2)} » inconnue (principale, choeurs, secours, voix)")
+    return numeros, piste, nom_voix_choisie(m.group(3), voix_cibles, cles)
+
+
+def affectation_demandee(a, tv, voix_cibles, cles):
+    """L'affectation voulue : celle qui est gardée, remplacée par --affectation (fichier ou « auto »), puis complétée par
+    chaque --passage. Rend (affectation ou None, modifiée : vrai si une option y a touché)."""
+    aff = lire_affectation(tv)
+    modifiee = False
+    demande = getattr(a, 'affectation', None)
+    if demande is not None:
+        modifiee = True
+        if str(demande).strip().lower() in CHOIX_AUTO:
+            aff = None
+        else:
+            try:
+                aff = json.loads(Path(demande).expanduser().read_text(encoding='utf-8'))
+            except (OSError, ValueError) as e:
+                raise RuntimeError(f'--affectation {demande} : {e}') from None
+            if not isinstance(aff, dict):
+                raise RuntimeError(f'--affectation {demande} : un objet JSON est attendu')
+    aff = {'format': 1, 'voix_cibles': list(voix_cibles), 'passages': dict((aff or {}).get('passages') or {}),
+           'pistes': {k: dict(v) for k, v in ((aff or {}).get('pistes') or {}).items()}}
+    for texte in getattr(a, 'passage', None) or []:
+        modifiee = True
+        try:
+            numeros, piste, choix = lire_passage(texte, voix_cibles, cles)
+        except ValueError as e:
+            raise RuntimeError(f'--passage {texte} : {e}') from None
+        for i in numeros:
+            k = str(i)
+            if piste is None:   # un choix pour tout le passage remplace ses corrections piste par piste
+                aff['pistes'].pop(k, None)
+                if choix == 'auto':
+                    aff['passages'].pop(k, None)
+                else:
+                    aff['passages'][k] = choix
+            elif choix == 'auto':
+                aff['pistes'].get(k, {}).pop(piste, None)
+            else:
+                aff['pistes'].setdefault(k, {})[piste] = choix
+    # normalisation : des noms de voix de ce doublage, « deux »
+    for k, v in list(aff['passages'].items()):
+        try:
+            aff['passages'][k] = nom_voix_choisie(v, voix_cibles, cles)
+        except ValueError as e:
+            raise RuntimeError(f'affectation, passage {k} : {e}') from None
+    for k, d in list(aff['pistes'].items()):
+        for piste, v in list(d.items()):
+            if PISTES_NOMS.get(piste) is None:
+                raise RuntimeError(f'affectation, passage {k} : piste « {piste} » inconnue')
+            try:
+                d[PISTES_NOMS[piste]] = nom_voix_choisie(v, voix_cibles, cles)
+            except ValueError as e:
+                raise RuntimeError(f'affectation, passage {k}/{piste} : {e}') from None
+            if PISTES_NOMS[piste] != piste:
+                del d[piste]
+        if not d:
+            del aff['pistes'][k]
+    aff['passages'] = dict(sorted(((k, v) for k, v in aff['passages'].items() if v != 'auto'), key=lambda kv: int(kv[0])))
+    aff['pistes'] = dict(sorted(((k, {p: v for p, v in d.items() if v != 'auto'}) for k, d in aff['pistes'].items()),
+                                key=lambda kv: int(kv[0])))
+    aff['pistes'] = {k: d for k, d in aff['pistes'].items() if d}
+    if not aff['pistes']:
+        del aff['pistes']
+    if not aff['passages'] and not aff.get('pistes'):
+        aff = None
+    return aff, modifiee
+
+
+def lire_stereo(fichier):
+    """Un fichier audio lu par ffmpeg en flottant 32 bits, deux canaux, 44,1 kHz : tableau (n, 2)."""
+    import numpy as np
+    r = subprocess.run(['ffmpeg', '-v', 'error', '-nostdin', '-i', str(fichier), '-ac', '2', '-ar', '44100', '-f', 'f32le',
+                        '-'], capture_output=True)
+    if r.returncode:
+        raise RuntimeError(f'son illisible : {fichier}\n{r.stderr.decode(errors="replace")[-300:]}')
+    return np.frombuffer(r.stdout, np.float32).reshape(-1, 2)
+
+
+def recette_versions(tv, rapport):
+    """versions/versions.json du doublage (les deux versions de chaque passage), ou une erreur claire : un doublage plus
+    ancien, fait avec --versions-duo non, ou dont les versions n'ont pas pu être écrites."""
+    v = rapport.get('versions')
+    f = tv / DOSSIER_VERSIONS / 'versions.json'
+    if not isinstance(v, dict):
+        raise RuntimeError(MESSAGE_SANS_VERSIONS.format(detail='doublage fait avant le 09/11/2026'))
+    if v.get('mode') in (None, 'non'):
+        raise RuntimeError(MESSAGE_SANS_VERSIONS.format(detail='fait avec --versions-duo non'))
+    if v.get('erreur'):
+        raise RuntimeError(MESSAGE_SANS_VERSIONS.format(detail=f"le noyau ne les a pas écrites : {v['erreur']}"))
+    if not f.is_file():
+        raise RuntimeError(MESSAGE_SANS_VERSIONS.format(detail=f'{f} manque'))
+    return json.loads(f.read_text(encoding='utf-8'))
+
+
+def voix_de_la_piste(aff, rec_piste, m, i, voix_cibles):
+    """Indices des voix de la piste rec_piste sur le morceau m (liste de la recette) : l'affectation (la piste d'abord,
+    puis le passage), sinon la voix automatique."""
+    if aff:
+        choix = ((aff.get('pistes') or {}).get(str(i)) or {}).get(rec_piste['nom']) or (aff.get('passages') or {}).get(str(i))
+        if choix == 'deux':
+            return list(range(len(voix_cibles)))
+        if choix:
+            return [voix_cibles.index(choix)]
+    return [m[5]]
+
+
+def recomposer(tv, rec, aff, rapport):
+    """La voix convertie de l'affectation aff d'après les deux versions de chaque passage (recette rec). Rend (voix
+    convertie mono, code de la voix entendue à chaque trame de 10 ms, voix et décalage dominants, choix de chaque piste
+    sur chaque passage {(piste, i): [voix]}, gains de mise au niveau {piste: gain}).
+    Même assemblage que le noyau : chaque passage de chaque piste vient de la couche de sa voix (fondus et porte déjà
+    appliqués) ; chaque piste nettoyée reprend le niveau de sa source, la piste de secours celui de la voix complète, puis
+    les pistes s'additionnent et le garde-crête ramène la somme sous 0,99."""
+    import numpy as np
+    N = charger_noyau()
+    n, pad, k10 = rec['echantillons'], rec['pad'], rec['trames']
+    noms = rec['voix_cibles']
+    nv = len(noms)
+    total = np.zeros(n, np.float32)
+    choix, gains = {}, {}
+    present = np.zeros((nv, k10), bool)
+    dom_v, dom_d, pris = np.full(k10, -1, np.int64), np.zeros(k10), np.zeros(k10, bool)
+    pas = rec['trame_echantillons']
+    voix_seule = None
+    for p in rec['pistes']:
+        couches = {}
+
+        def couche(j, parite):
+            if j not in couches:
+                paire = lire_stereo(tv / DOSSIER_VERSIONS / p['fichiers'][j]) / np.float32(p['gains_fichiers'][j])
+                couches[j] = paire[:n] if len(paire) >= n else np.vstack([paire, np.zeros((n - len(paire), 2), np.float32)])
+            return couches[j][:, parite]
+        y = np.zeros(n, np.float32)
+        v_t, d_t, couvert = np.full(k10, -1, np.int64), np.zeros(k10), np.zeros(k10, bool)
+        pour_trames = []
+        for m in p['morceaux']:
+            i, a, b, fa, fb, v, dec, dispo = m
+            voix = voix_de_la_piste(aff, p, m, i, noms)
+            choix[(p['nom'], i)] = voix
+            manque = [noms[j] for j in voix if j not in dispo]
+            if manque:
+                raise RuntimeError(f"passage {i} (piste {p['nom']}) : pas de version dans la voix {', '.join(manque)} "
+                                   f"(doublage fait avec --versions-duo {rec.get('mode')}) : choisir {noms[v]}, ou refaire "
+                                   'le doublage avec --versions-duo toutes')
+            lo, hi = max(0, a - pad), min(n, b + pad)
+            poids = np.float32(1.0 if len(voix) == 1 else 1 / math.sqrt(len(voix)))
+            for j in voix:
+                y[lo:hi] += couche(j, i % 2)[lo:hi] * poids
+            ta, tb = a // pas, min(-(-b // pas), k10)
+            v_t[ta:tb], couvert[ta:tb] = voix[0], True
+            d_t[ta:tb] = dec if voix[0] == v else rec['decalages'][voix[0]]
+            pour_trames.append((ta, tb, voix))
+        ouvert = np.zeros(k10, bool)
+        for a_, b_ in p['ouvert']:
+            ouvert[a_:b_] = True
+        ouvert &= couvert
+        for ta, tb, voix in pour_trames:
+            for j in voix:
+                present[j, ta:tb] |= ouvert[ta:tb]
+        neuf = ouvert & ~pris
+        dom_v[neuf], dom_d[neuf] = v_t[neuf], d_t[neuf]
+        pris |= ouvert
+        # mise au niveau de la piste, comme le noyau (voix principale, chœurs : leur source ; secours : la voix complète)
+        niv, g = p['niveau'], 1.0
+        if niv['type'] == 'source' and p['morceaux']:
+            e = N.enveloppe_db(y)
+            act = np.zeros(len(e), bool)
+            for a_, b_ in niv['actif']:
+                act[a_:b_] = True
+            lm = min(len(e), len(act))
+            ry = (float(np.sqrt(np.mean(10 ** (e[:lm][act[:lm]] / 10)))) + 1e-9 if act[:lm].any()
+                  else float(np.sqrt(np.mean(y.astype(np.float64) ** 2))) + 1e-9)
+            g = niv['rms_source'] / max(ry, 1e-9)
+        elif niv['type'] == 'secours' and p['morceaux']:
+            masque = np.zeros(n, bool)
+            for a_, b_ in niv['porte']:
+                masque[a_:b_] = True
+            if masque.any():
+                sy = float(np.sqrt(np.mean(y.astype(np.float64)[masque] ** 2)))
+                g = (float(np.clip(niv['rms_source'] / sy, 10 ** (-niv['borne_db'] / 20), 10 ** (niv['borne_db'] / 20)))
+                     if sy > 1e-9 and niv['rms_source'] > 1e-9 else 1.0)
+        gains[p['nom']] = g
+        total += (y * np.float32(g)).astype(np.float32)
+    combien = present.sum(0)
+    code = np.where(combien == 0, -1, np.where(combien >= 2, nv, np.argmax(present, axis=0)))
+    crete = float(np.abs(total).max())
+    if crete > 0.99:
+        total *= np.float32(0.99 / crete)
+    return total, code, (dom_v, dom_d), choix, gains
+
+
+def ecrire_flac_mono(x, flac):
+    """Voix convertie mono 24 bits (comme le noyau l'écrit)."""
+    import numpy as np
+    r = subprocess.run(['nice', '-n', '10', 'ffmpeg', '-v', 'error', '-y', '-f', 'f32le', '-ar', '44100', '-ac', '1', '-i',
+                        '-', '-c:a', 'flac', '-sample_fmt', 's32', '-bits_per_raw_sample', '24', '-compression_level', '8',
+                        str(flac)], input=np.clip(x, -1, 1).astype(np.float32).tobytes(), capture_output=True)
+    if r.returncode:
+        raise RuntimeError(f'écriture de {flac} impossible : {r.stderr.decode(errors="replace")[-300:]}')
+
+
+def sauver_automatique(tv, rapport):
+    """Avant la première correction : garde ce que le noyau avait rendu (voix convertie, courbes, rapport), pour y revenir."""
+    for nom, copie in (('voix_convertie.flac', 'voix_convertie_auto.flac'), ('courbes.json', 'courbes_auto.json')):
+        if (tv / nom).exists() and not (tv / copie).exists():
+            shutil.copy2(tv / nom, tv / copie)
+    aff = rapport.get('affectation') or {}
+    if 'auto' not in aff:
+        aff['auto'] = {k: aff.get(k) for k in ('passages', 'secondes_par_voix', 'morceaux_en_duo')}
+        rapport['affectation'] = aff
+    for m in rapport.get('morceaux') or []:
+        if m.get('voix_pistes') is not None and 'voix_pistes_auto' not in m:
+            m.update({'voix_pistes_auto': m['voix_pistes'], 'voix_cible_auto': m.get('voix_cible'),
+                      'decalage_auto': m.get('decalage'), 'base_auto': m.get('base')})
+
+
+def revenir_a_automatique(tv, rapport):
+    """L'affectation automatique du noyau remise telle quelle (fichiers et rapport) ; vrai si une correction existait."""
+    avait = (tv / 'voix_convertie_auto.flac').exists() or bool((rapport.get('affectation') or {}).get('manuelle'))
+    for nom, copie in (('voix_convertie.flac', 'voix_convertie_auto.flac'), ('courbes.json', 'courbes_auto.json')):
+        if (tv / copie).exists():
+            os.replace(tv / copie, tv / nom)
+    aff = rapport.get('affectation') or {}
+    auto = aff.pop('auto', None)
+    aff.pop('manuelle', None)
+    if auto:
+        aff.update({k: v for k, v in auto.items() if v is not None})
+    for m in rapport.get('morceaux') or []:
+        if 'voix_pistes_auto' in m:
+            m['voix_pistes'], m['voix_cible'] = m.pop('voix_pistes_auto'), m.pop('voix_cible_auto')
+            m['decalage'], m['base'] = m.pop('decalage_auto'), m.pop('base_auto')
+        m.pop('corrige', None)
+    return avait
+
+
+def appliquer_affectation(tr, a, voix):
+    """Remix d'une voix par chanteur : si l'affectation voulue (gardée, --affectation, --passage) corrige quelque chose,
+    refait la voix convertie (voix_convertie.flac), les courbes et le rapport d'après les deux versions de chaque passage ;
+    sinon, revient à l'automatique si une correction existait. Sans option ni correction gardée : rien. Doit passer
+    avant la lecture du rapport par finir(). Rend la liste des passages corrigés (vide : automatique)."""
+    tv = tr['tv']
+    demande = getattr(a, 'affectation', None) is not None or bool(getattr(a, 'passage', None))
+    membres = voix_membres(voix)
+    if len(membres) < 2:
+        if demande:
+            raise RuntimeError(VOIX_SEULE_SANS_CHOIX)
+        return []
+    rapport = json.loads((tv / 'rapport.json').read_text())
+    noms = [m['id'] for m in membres]
+    cles = {m['cle']: m['id'] for m in membres}
+    aff, modifiee = affectation_demandee(a, tv, noms, cles)
+    if aff is None:
+        if modifiee or (tv / AFFECTATION).exists():
+            ecrire_affectation(tv, None)
+        if revenir_a_automatique(tv, rapport):
+            (tv / 'rapport.json').write_text(json.dumps(rapport, ensure_ascii=False, indent=1))
+            dire('affectation automatique rétablie (voix convertie, courbes et rapport du noyau)')
+        return []
+    rec = recette_versions(tv, rapport)
+    if rec['voix_cibles'] != noms:
+        raise RuntimeError(f"voix du doublage {rec['voix_cibles']} et de --voix {noms} différentes")
+    valides = {m[0] for p in rec['pistes'] for m in p['morceaux']}
+    inconnus = sorted({int(k) for k in [*aff.get('passages', {}), *aff.get('pistes', {})] if int(k) not in valides})
+    if inconnus:
+        raise RuntimeError(f"passage(s) {', '.join(map(str, inconnus))} sans voix à corriger (muets, ou inexistants) ; "
+                           f"passages chantés : {min(valides)} à {max(valides)}")
+    t0 = time.time()
+    sauver_automatique(tv, rapport)
+    total, code, (dom_v, dom_d), choix, gains = recomposer(tv, rec, aff, rapport)
+    ecrire_flac_mono(total, tv / 'voix_convertie.flac')
+    ecrire_affectation(tv, aff)
+    corriges = sorted({int(k) for k in [*aff.get('passages', {}), *aff.get('pistes', {})]})
+    mettre_a_jour_rapport(tv, rapport, rec, aff, code, dom_v, dom_d, choix, corriges)
+    mettre_a_jour_courbes(tv, rec, code, dom_v, dom_d)
+    (tv / 'rapport.json').write_text(json.dumps(rapport, ensure_ascii=False, indent=1))
+    dire(f"affectation corrigée à la main : {len(corriges)} passage(s) ({', '.join(map(str, corriges[:12]))}"
+         f"{', …' if len(corriges) > 12 else ''}), voix convertie refaite depuis les deux versions en {time.time() - t0:.1f} s")
+    return corriges
+
+
+def mettre_a_jour_rapport(tv, rapport, rec, aff, code, dom_v, dom_d, choix, corriges):
+    """rapport.json suit l'affectation : passages entendus de chaque voix, secondes par voix, passages en duo, chaque
+    morceau (voix des pistes, voix et décalage du passage, « corrige »), et affectation.manuelle."""
+    import numpy as np
+    N = charger_noyau()
+    noms = rec['voix_cibles']
+    nv = len(noms)
+    aff_r = rapport.setdefault('affectation', {})
+    aff_r['passages'] = N.passages_voix(code, noms, 0.01, 0.2)
+    aff_r['secondes_par_voix'] = {**{v: round(float((code == j).sum()) * 0.01, 1) for j, v in enumerate(noms)},
+                                  'ensemble': round(float((code == nv).sum()) * 0.01, 1)}
+    en_duo = 0
+    for m in rapport.get('morceaux') or []:
+        i = m.get('i')
+        piste_voix = {p: v for (p, k), v in choix.items() if k == i}
+        if not piste_voix or m.get('voix_pistes_auto') is None:
+            continue
+        vp = {p: (noms[v[0]] if len(v) == 1 else [noms[j] for j in v]) for p, v in piste_voix.items()}
+        m['voix_pistes'] = vp
+        tous = {noms[j] for v in piste_voix.values() for j in v}
+        en_duo += len(tous) >= 2
+        modifie = i in corriges and vp != m['voix_pistes_auto']
+        m['corrige'] = bool(i in corriges)
+        if modifie:
+            principale = next(iter(vp.values()))
+            premier = principale if isinstance(principale, str) else principale[0]
+            m['voix_cible'] = premier
+            m['decalage'] = next((mo[6] if noms.index(premier) == mo[5] else rec['decalages'][noms.index(premier)]
+                                  for p in rec['pistes'] for mo in p['morceaux'] if mo[0] == i), m.get('decalage'))
+            m['base'] = 'corrigé à la main : ' + ', '.join(f"{p} → {v if isinstance(v, str) else ' + '.join(v)}"
+                                                           for p, v in vp.items())
+        else:
+            m['voix_cible'], m['decalage'], m['base'] = m['voix_cible_auto'], m['decalage_auto'], m['base_auto']
+    aff_r['morceaux_en_duo'] = int(en_duo)
+    aff_r['voix_utilisees'] = [v for v in noms if aff_r['secondes_par_voix'].get(v) or aff_r['secondes_par_voix']['ensemble']]
+    aff_r['manuelle'] = {'fichier': AFFECTATION, 'passages': aff.get('passages', {}), 'pistes': aff.get('pistes', {}),
+                         'corriges': corriges, 'voix_convertie': 'voix_convertie.flac',
+                         'automatique': 'voix_convertie_auto.flac'}
+
+
+def mettre_a_jour_courbes(tv, rec, code, dom_v, dom_d):
+    """courbes.json suit l'affectation : voix entendue à chaque trame, décalage de la piste dominante, et mélodie de la
+    voix convertie (celle de la voix entendue, d'après la mélodie de chaque voix sur toute la chanson)."""
+    import numpy as np
+    f = tv / 'courbes.json'
+    if not f.is_file():
+        return
+    c = json.loads(f.read_text())
+    n20 = len(c['source_hz'])
+    N = charger_noyau()
+    c20 = [int(v) for v in N.a_longueur(code, 2 * n20, -1)[::2][:n20]]
+    dv = np.asarray(N.a_longueur(dom_v, 2 * n20, -1)[::2][:n20], np.int64)
+    dd = N.a_longueur(dom_d, 2 * n20, 0.0)[::2][:n20]
+    dec = np.asarray(c['decalage_dt'], np.float64)
+    ent = np.asarray(c20) >= 0
+    dec = np.where(ent, dd, dec)
+    hz = np.zeros(n20)
+    for j, f0 in enumerate(rec['f0_voix_hz']):
+        f0 = np.asarray(N.a_longueur(f0, n20, 0.0))[:n20]
+        sel = ent & (dv == j)
+        hz[sel] = f0[sel]
+    c.update({'voix_par_trame': c20, 'convertie_hz': [round(float(v), 1) if v > 1 else 0 for v in hz],
+              'decalage_dt': [int(v) if float(v).is_integer() else round(float(v), 1) for v in dec]})
+    f.write_text(json.dumps(c, separators=(',', ':')))
+
+
 def finir(tr, a, voix, temps_local=None):
     """Mixage, MP3, remise sur la vidéo (et extraits de comparaison des pas de diffusion) depuis travail/."""
     t, tv, dossier, base = tr['travail'], tr['tv'], tr['dossier'], tr['base']
     for f in (t / 'original.wav', t / 'voix_source.wav', t / 'source.json', tv / 'voix_convertie.flac', tv / 'rapport.json'):
         if not f.exists():
             raise RuntimeError(f'travail incomplet ({f} manque) : relancer sans --remix')
+    appliquer_affectation(tr, a, voix)   # une voix par chanteur : l'affectation corrigée à la main, si elle y est
     rapport = json.loads((tv / 'rapport.json').read_text())
     mode = rapport['mode']
     voix_db = a.voix_db if a.voix_db is not None else (4.0 if mode == 'chant' else 0.0)
@@ -3214,6 +3690,10 @@ def ranger_retour(travaux, retour, kdir):
         if not src.is_dir():
             continue
         tr['tv'].mkdir(parents=True, exist_ok=True)
+        # un nouveau doublage remplace l'ancien : plus d'affectation corrigée, de copie de l'automatique ni de versions
+        for ancien in (AFFECTATION, 'voix_convertie_auto.flac', 'courbes_auto.json'):
+            (tr['tv'] / ancien).unlink(missing_ok=True)
+        shutil.rmtree(tr['tv'] / DOSSIER_VERSIONS, ignore_errors=True)
         try:
             flac = src / 'voix_source.flac'
             if flac.exists():
@@ -3319,6 +3799,7 @@ def reglages_noyau(a, voix, ancres, travaux):
                              'gain_entree': tr['gain_entree'], 'gain_entree_db': round(20 * math.log10(tr['gain_entree']), 3),
                              'retour_flac': True} for tr in travaux]}
     if voix.get('membres'):
+        reglages['versions_duo'] = getattr(a, 'versions_duo', None) or VERSIONS_DUO_DEFAUT   # absent pour une seule voix
         reglages['voix_cibles'] = {'mode': voix['mode'], 'voix': [
             {'cle': m['cle'], 'nom': m['id'], 'fichier': f"voix-{m['id']}.wav", 'f0_parole_hz': m['f0'],
              'facteur_chant': FACTEUR_CHANT, 'affichage': m['affichage']} for m in voix['membres']]}
@@ -3588,6 +4069,20 @@ def main():
                         'retirée (vidéo, mp3 et .lrc à la corbeille)')
     p.add_argument('--autotune-gamme', type=_gamme_option, default=None, metavar='GAMME',
                    help=f'gamme de l\'auto-tune : {GAMME_AIDE}')
+    p.add_argument('--versions-duo', choices=VERSIONS_DUO, default=None,
+                   help='une voix par chanteur : convertir chaque passage chanté dans les deux voix cibles, pour corriger '
+                        "ensuite qui chante quoi au remix (--passage, --affectation), sans Kaggle : toutes (défaut en duo : "
+                        "tous les passages), utiles (passages incertains, voisins d'un changement de voix, chantés "
+                        'ensemble : moins de GPU) ou non (comme avant). Défaut lu dans la configuration (clé « versions_duo »)')
+    p.add_argument('--passage', action='append', default=None, metavar='N=VOIX',
+                   help='avec --remix et une voix par chanteur : corriger qui chante le passage N (numéros de la frise et '
+                        'de rapport.json) : VOIX est une voix du doublage, sa clé (homme, femme, chanteur1…), deux (les '
+                        'deux ensemble) ou auto ; N-M une plage, N,M plusieurs, N/principale|choeurs|secours=VOIX une seule '
+                        "piste du passage. Répétable ; s'ajoute à l'affectation gardée (travail/A+B/affectation.json)")
+    p.add_argument('--affectation', default=None, metavar='FICHIER|auto',
+                   help="avec --remix et une voix par chanteur : l'affectation corrigée voulue en entier (fichier JSON, "
+                        'format de travail/A+B/affectation.json), ou auto pour revenir à l\'automatique. Un remix sans '
+                        "option garde l'affectation gardée")
     p.add_argument('--debut', type=float, default=None, help="début de l'extrait (s), pour un essai")
     p.add_argument('--duree', type=float, default=None, help="durée de l'extrait (s)")
     p.add_argument('--remix', action='store_true', help='refaire seulement le mixage et la vidéo depuis travail/ (sans Kaggle)')
@@ -3680,6 +4175,9 @@ def executer(p, a):
     a.moteur = a.moteur or moteur_conf or MOTEUR_DEFAUT
     a.gpu = a.gpu or gpu_config(conf)
     a.envoi_flac = envoi_flac_config(conf)
+    a.versions_duo = a.versions_duo or versions_duo_config(conf)
+    if (a.passage or a.affectation is not None) and not a.remix:
+        p.error('--passage et --affectation corrigent un doublage déjà fait : ils vont avec --remix')
     a.paroles = not a.sans_paroles and paroles_config(conf)
     a.autotune_reglage = reglage_autotune(a, conf)
     if a.voix is None:

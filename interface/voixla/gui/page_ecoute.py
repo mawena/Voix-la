@@ -230,6 +230,7 @@ class PageEcoute(commun.Page):
         self.correspondance = {}
         self.votes = []
         self.racine = chemins.dossier_ecoute()
+        self.racine_perso = None      # banc d'une comparaison de voix (voixla.comparaison) ; None : le banc d'essai
         self.courant = None           # nom de l'extrait affiché
         self.notes = {}               # extrait → {lettre: 1–5} (en mémoire jusqu'au vote)
         self.commentaires = {}        # extrait → texte
@@ -252,6 +253,11 @@ class PageEcoute(commun.Page):
         self.choix.set_list_factory(self._fabrique(None))
         self._id_choix = self.choix.connect("notify::selected", self._extrait_choisi)
         self.entete.pack_start(self.choix)
+        # comparaison de voix ouverte depuis les résultats : retour au banc d'essai
+        self.b_banc = commun.bouton("Banc d’essai", "go-previous-symbolic", clic=self.quitter_comparaison,
+                                    infobulle="Quitter la comparaison de voix et revenir au banc d’essai")
+        self.b_banc.set_visible(False)
+        self.entete.pack_start(self.b_banc)
 
         # Lecteur partagé (barre du bas, toujours visible quand il y a des versions)
         self.lecteur = LecteurEcoute(self._maj_lecture, lambda m: self.fenetre.toast(f"Lecture impossible : {m}"),
@@ -379,12 +385,36 @@ class PageEcoute(commun.Page):
             self._relire = True
             return
         self._chargement = True
-        racine = chemins.dossier_ecoute()
+        racine = self.racine_perso or chemins.dossier_ecoute()
 
         def lire():
             extraits, corr = ecoute.charger(racine)
             return racine, extraits, corr, (ecoute.lire_votes(racine) if extraits is not None else [])
         en_fil(lire, self._charge, self._echec_lecture)
+
+    def ouvrir_comparaison(self, racine, titre=None):
+        """Écoute à l'aveugle des voix d'une comparaison (voixla.comparaison.preparer : racine du banc préparé)."""
+        self.lecteur.liberer()
+        self.racine_perso = racine
+        self.courant, self._structure, self._votes_lus = None, "?", None
+        self.notes, self.commentaires, self.revote = {}, {}, set()
+        self.set_title("Comparer des voix")
+        self.b_banc.set_visible(True)
+        self.fenetre.aller("ecoute")
+        self._charger()
+
+    def quitter_comparaison(self):
+        if self.racine_perso is None:
+            return
+        self.lecteur.liberer()
+        self.racine_perso = None
+        self.courant, self._structure, self._votes_lus = None, "?", None
+        self.set_title("Écoute à l’aveugle")
+        self.b_banc.set_visible(False)
+        self._charger()
+
+    def comparaison(self):
+        return self.racine_perso is not None
 
     def _echec_lecture(self, e):
         self._chargement = False
@@ -483,6 +513,11 @@ class PageEcoute(commun.Page):
         self._maj_lecture()
 
     def _page_vide(self):
+        if self.comparaison():
+            return commun.page_vide("audio-headphones-symbolic", "Rien à comparer",
+                                    "Les doublages de cette comparaison ne sont plus là. Refaites-la avec "
+                                    "« doubler --comparer »."
+                                    )
         absent = self.extraits is None
         description = ("Le banc d’essai (banc/banc.py mixer) prépare des versions A, B, C… de chaque extrait, mixées "
                        "de la même façon. Elles apparaîtront ici, anonymes, pour être écoutées et notées à l’aveugle. "

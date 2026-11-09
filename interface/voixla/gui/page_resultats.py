@@ -19,7 +19,7 @@ from pathlib import Path
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
-from .. import chemins, formats, moteur, pistes, rapports
+from .. import chemins, comparaison, formats, moteur, pistes, rapports
 from .. import lecture as regles
 from . import commun, pistes_gst
 from . import visualisations as vis
@@ -249,6 +249,9 @@ class PageDetail(Adw.NavigationPage):
         # Informations
         self.g_infos = self._groupe_infos()
         corps.append(self.g_infos)
+        self.g_comparer = self._groupe_comparer()   # plusieurs voix du même extrait : les écouter côte à côte
+        if self.g_comparer is not None:
+            corps.append(self.g_comparer)
         self.g_pistes = self._groupe_pistes()
         corps.append(self.g_pistes)
         self.g_remix = self._groupe_remix()
@@ -1879,6 +1882,69 @@ class PageDetail(Adw.NavigationPage):
                 g.add(l)
         return g
 
+    def _voisines(self):
+        """Les doublages comparables de ce même dossier de sortie (voix différentes du même extrait), ce doublage compris."""
+        liste = getattr(self.page, "resultats", None) or [self.res]
+        return comparaison.comparables([r for r in liste if r.dossier == self.res.dossier] or [self.res])
+
+    def _groupe_comparer(self):
+        """« Comparer les voix » : les voix du même extrait, écoutées à l'aveugle (page Écoute, une seule lecture qui garde
+        la position d'une voix à l'autre) ; None quand ce dossier n'a qu'une voix."""
+        voisines = self._voisines()
+        if len(voisines) < 2:
+            return None
+        ordonnee = bool(comparaison.marque(self.res.dossier))
+        g = Adw.PreferencesGroup(
+            title="Comparer les voix",
+            description=commun.echapper(
+                (f"Ces {len(voisines)} voix ont doublé le même extrait en une seule session. " if ordonnee else
+                 f"{len(voisines)} voix ont doublé ce même extrait. ")
+                + "L’écoute à l’aveugle les mélange sous des lettres : on passe de l’une à l’autre au même instant, on "
+                  "note chacune, et les noms ne s’affichent qu’après le vote."))
+        ligne = Adw.ActionRow(title="Écouter à l’aveugle", subtitle="Versions A, B, C… dans un ordre tiré au hasard")
+        self.roue_comparer = Gtk.Spinner(valign=Gtk.Align.CENTER)
+        ligne.add_suffix(self.roue_comparer)
+        self.b_comparer = commun.bouton("Comparer", "audio-headphones-symbolic", styles=("suggested-action",),
+                                        clic=self.comparer_voix, valign=Gtk.Align.CENTER)
+        ligne.add_suffix(self.b_comparer)
+        g.add(ligne)
+        for r in voisines:
+            l = commun.ligne(r.voix_nom or r.voix, "Ce doublage" if r.voix == self.res.voix else "", None)
+            if r.voix != self.res.voix:
+                l.add_suffix(commun.bouton("Ouvrir", styles=("flat",), valign=Gtk.Align.CENTER,
+                                           clic=lambda r=r: self.page.ouvrir_detail(r)))
+            g.add(l)
+        return g
+
+    def comparer_voix(self, apres=None):
+        """Prépare le banc d'écoute à l'aveugle des voix de ce dossier (liens, voix seules et original en mp3 : quelques
+        secondes la première fois), puis ouvre la page Écoute dessus (apres : scénario d'essai de cette page)."""
+        voisines = self._voisines()
+        if len(voisines) < 2 or not getattr(self, "b_comparer", None) or not self.b_comparer.get_sensitive():
+            return
+        self.b_comparer.set_sensitive(False)
+        self.roue_comparer.start()
+
+        def fini(r):
+            self.roue_comparer.stop()
+            self.b_comparer.set_sensitive(True)
+            ok, racine = r
+            if not ok:
+                self.fenetre.toast(f"Comparaison impossible : {racine}")
+                return
+            ecoute = self.fenetre.pages.get("ecoute")
+            if hasattr(ecoute, "ouvrir_comparaison"):
+                ecoute.ouvrir_comparaison(racine)
+                if apres:
+                    ecoute.scenario(apres)
+
+        def faire():
+            try:
+                return True, comparaison.preparer(voisines)
+            except Exception as e:  # noqa: BLE001 — rendue à l'interface
+                return False, e
+        commun.en_fil(faire, fini)
+
     def _groupe_pistes(self):
         g = Adw.PreferencesGroup(title="Pistes séparées",
                                  description="À écouter seules par les bascules au-dessus du lecteur, ou à enregistrer "
@@ -2131,7 +2197,22 @@ class PageDetail(Adw.NavigationPage):
         « remix-at » ou « remix-sans-at » (interrupteur « Version auto-tune »), « remixer » (lance le remix) ; une voix
         par chanteur : « voix » (défile jusqu'à la frise des voix), « corriger » ou « corriger-<t> » (menu du premier
         passage corrigeable, ou de celui de l'instant t), « corriger-<t>-<choix> » (choix en attente : nom de voix,
-        deux ou auto), « appliquer », « revenir-auto » (sa confirmation)."""
+        deux ou auto), « appliquer », « revenir-auto » (sa confirmation) ; plusieurs voix du même extrait :
+        « comparer » ou « comparer-<scénario de la page Écoute> » (l'écoute à l'aveugle s'ouvre)."""
+        if action == "comparer-voir" and self.g_comparer is not None:
+            def vers_comparer():
+                # le groupe « Comparer les voix » en haut de la vue
+                from gi.repository import Graphene    # chargé par gui/essais.py (captures d'essai)
+                ok, point = self.g_comparer.compute_point(self.corps, Graphene.Point())
+                if ok:
+                    self.defilement.get_vadjustment().set_value(max(0.0, point.y - 12))
+                return False
+            GLib.timeout_add(3000, vers_comparer)
+            return
+        if action.startswith("comparer"):
+            apres = action.split("-", 1)[1] if "-" in action else None
+            GLib.timeout_add(1500, lambda: (self.comparer_voix(apres), False)[1])
+            return
         if action.startswith("piste-"):
             # après « lire » (1,8 s) : la vidéo a déjà une image à figer
             cle = action.split("-", 1)[1]

@@ -338,10 +338,11 @@ def reglages(timbres, moteur='seedvc', cibles=None, octave='auto'):
     return r
 
 
-def lancer_noyau(dossier, R, source=None, scene=SCENE, cartes=1):
+def lancer_noyau(dossier, R, source=None, scene=SCENE, cartes=1, compteurs=None):
     """Charge le noyau (chemins déplacés dans dossier), remplace ce qui touche au GPU, au réseau et aux modèles, lance
     main() ; rend le dossier de sortie de la vidéo. cartes=2 : une machine à deux GPU, dont les étapes tournent ici en
-    même temps, une par fil (le résultat ne doit pas dépendre de la carte qui fait chaque morceau)."""
+    même temps, une par fil (le résultat ne doit pas dépendre de la carte qui fait chaque morceau). compteurs (dict) :
+    reçoit le nombre de vidéos séparées (« separation »), nettoyées (« nettoyage ») et transcrites (« paroles »)."""
     src = source if source is not None else NOYAU.read_text(encoding='utf-8')
     src = src.replace("'__REGLAGES__'", repr(base64.b64encode(b'{}').decode()))
     src = src.replace('/tmp/', f'{dossier}/t/').replace('/kaggle/', f'{dossier}/kaggle/')   # dossier est lui-même sous /tmp
@@ -361,6 +362,8 @@ def lancer_noyau(dossier, R, source=None, scene=SCENE, cartes=1):
     def lancer(*commande, **options):
         assert commande[1].endswith('separer.py'), commande
         for t in json.loads(commande[2]):
+            if compteurs is not None:
+                compteurs['separation'] = compteurs.get('separation', 0) + 1
             ecrire_son(t['voix'], np.stack([scene['voix']] * 2, 1), SR)
             ecrire_son(t['reste'], np.stack([scene['reste']] * 2, 1), SR)
             with open(t['voix'] + '.duree', 'w') as f:
@@ -381,6 +384,16 @@ def lancer_noyau(dossier, R, source=None, scene=SCENE, cartes=1):
             return synthese(f_s, ref['tag'], SR)
 
     def etape(nom, travail):
+        if compteurs is not None and nom in ('nettoyer', 'paroles'):
+            cle = {'nettoyer': 'nettoyage', 'paroles': 'paroles'}[nom]
+            compteurs[cle] = compteurs.get(cle, 0) + len(travail['videos'])
+        if nom == 'paroles':   # paroles de synthèse : une ligne par vidéo, écrite où le noyau les attend
+            for v in travail['videos']:
+                m.ecrire_json(v['sortie'], {'format': 1, 'langue': 'fr', 'source': 'faux', 'traductions': {},
+                                            'decalage_s': 0.0, 'piste': v['piste'],
+                                            'segments': [{'debut': 1.0, 'fin': 2.0, 'texte': 'la la la'}]})
+            return {'videos': {v['id']: {'transcription_s': 0.1, 'lignes': 1} for v in travail['videos']}, 'code': 0,
+                    'duree_s': 0.1}
         if nom == 'nettoyer':
             res = {'karaoke': 'faux', 'dereverb': 'faux', 'recouvrement': 4, 'chargements_s': {}, 'videos': {}}
             for v in travail['videos']:

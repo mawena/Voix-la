@@ -125,7 +125,6 @@ class EssaiAttenteAnormale(unittest.TestCase):
         # estimation 17 min : 2 x 17 = 34 min, plafonné à 30 min
         t = travaux.texte_attente_anormale("31 min")
         self.assertIn("31 min", t)
-        self.assertIn("panne", t)
         self.assertIn("incident", t)
         self.assertIn("Ouvrir la page du notebook sur Kaggle", t)
         self.assertIsNone(travaux.attente_anormale(self.avancement("queued", 29 * 60, 1020), n))

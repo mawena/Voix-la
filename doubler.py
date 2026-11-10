@@ -3,7 +3,7 @@
 
   doubler <vidéo> [<vidéo>…] [--voix NOM | --voix homme:NOM,femme:NOM | --voix chanteur1:NOM,chanteur2:NOM]
           [--comparer NOM,NOM[,NOM…]]
-          [--mode auto|chant|parole] [--octave auto|0|-12|+12] [--pas 30]
+          [--mode auto|chant|parole] [--octave auto|0|-12|+12] [--transposer auto|non|N] [--pas 30]
           [--moteur yingmusic|seedvc] [--sans-nettoyage] [--sans-paroles] [--gpu auto|1|2] [--voix-db 4] [--reverb-db -13]
           [--mix-v1] [--pistes-audio toutes|doublage]
           [--autotune [N]] [--autotune-gamme auto|chromatique|la-mineur…] [--sans-autotune]
@@ -40,6 +40,18 @@ qu'elle sonne dans le mix) et Voix d'origine seule ; --pistes-audio doublage (cl
 Leur étiquette de langue est celle des paroles reconnues (la plus chantée, si la chanson en mêle deux), sinon celle du
 son d'origine. --remix refait seulement le mixage et la remise sur la vidéo, paroles et pistes audio comprises. Seuls
 le son des vidéos et la référence de la voix choisie partent sur Kaggle.
+Transposition de la chanson (chant ; --transposer auto|non|N, clé « transposer » de la configuration) : ses proches ne
+reconnaissent la voix cible que lorsqu'elle chante près de sa zone naturelle. Une chanson hors de cette zone est donc
+transposée EN ENTIER, musique comprise, comme un changement de tonalité au karaoké. Le noyau choisit un seul nombre entier
+de demi-tons pour toute la chanson (le plus petit possible, au plus ±5), qui range au mieux la voix convertie dans la zone
+de la voix cible (tessiture.json de son dossier, sinon 2 x sa hauteur de parole ±4 demi-tons) ; chaque voix reçoit ce
+décalage plus son octave (-12, 0 ou +12, comme avant ; --octave la force). Un duo (une voix par chanteur) : un seul
+décalage, qui minimise l'écart total des deux voix à leur zone. Parole : jamais. Sur le PC, la musique seule est transposée
+par Rubber Band R3 (paquet librubberband2) avant le mixage, à durée exacte, gardée dans travail/instrumental_transpose_<N>.wav
+(--remix la réutilise) ; le doublage et « Beat seul » sont sur la musique transposée, « Original » et « Voix d'origine
+seule » ne le sont jamais. Sans Rubber Band : avertissement, pas de transposition, octave seule. La décision (décalage,
+octave par chanteur, médianes avant et après, zone, raison) est dans rapport.json (« transposition ») et affichée à la fin.
+--remix suit la décision déjà prise : --transposer non ne peut pas changer la voix sans reconvertir (message, sans erreur).
 Une voix par chanteur (--voix homme:A,femme:B pour un duo mixte, chanteur1:A,chanteur2:B pour un duo de même genre) :
 chaque piste de chaque passage (voix principale, chœurs, secours) prend la voix du chanteur qu'on y reconnaît, l'octave
 se décide pour chaque couple chanteur -> voix ; sorties <titre> - voix A et B.<ext>, travail/A+B/.
@@ -126,6 +138,8 @@ CLES_CONFIG = {'autotune': 'intensité de l\'auto-tune à chaque doublage, de 0 
                'versions_duo': 'une voix par chanteur : chaque passage converti dans les deux voix pour corriger qui chante '
                                "quoi au remix : toutes (défaut), utiles (passages incertains, voisins d'un changement de "
                                'voix, chantés ensemble) ou non',
+               'transposer': 'transposition de la chanson pour la tessiture de la voix cible : auto (défaut), non, ou un '
+                             'nombre entier de demi-tons',
                'voix': 'voix cible par défaut, un dossier de <données>/voix (sinon la seule voix présente)'}
 OUI = {'oui', 'o', 'yes', 'y', 'true', 'vrai', '1', 'on'}
 NON = {'non', 'n', 'no', 'false', 'faux', '0', 'off'}
@@ -226,6 +240,11 @@ def ecrire_config(cle, valeur):
         if valeur not in ENVOI_FLAC:
             raise SystemExit(f'envoi_flac : 16 ou 24 attendu (reçu : {valeur})')
         valeur = int(valeur)
+    if cle == 'transposer':
+        try:
+            valeur = lire_transposer(valeur)
+        except ValueError as e:
+            raise SystemExit(f'transposer : {e}') from None
     if cle == 'kaggle.machine' and not re.fullmatch(MACHINE_SYNTAXE, valeur):
         raise SystemExit(f'kaggle.machine : nom de machine Kaggle attendu, par exemple {MACHINE_DEFAUT} (reçu : {valeur})')
     if cle == 'voix' and not re.fullmatch(NOM_VOIX, valeur):
@@ -301,6 +320,50 @@ def pistes_audio_config(conf):
              '(doubler --config pistes_audio toutes|doublage)')
         return PISTES_AUDIO_DEFAUT
     return v
+
+
+# Transposition de la chanson : auto (défaut), non, ou N demi-tons entiers imposés (au plus ±12 ; la règle auto reste dans ±5)
+TRANSPOSER_MAX = 12
+
+
+def lire_transposer(valeur):
+    """'auto', 'non' ou un entier de demi-tons (« -3 », « +2 ») -> 'auto', 'non' ou l'entier ; ValueError sinon."""
+    if valeur is None:
+        return 'auto'
+    if isinstance(valeur, bool):
+        raise ValueError('auto, non ou un nombre entier de demi-tons attendu')
+    if isinstance(valeur, (int, float)) and float(valeur).is_integer():
+        valeur = int(valeur)
+    v = str(valeur).strip().lower().replace('−', '-')
+    if v in ('auto', 'automatique', ''):
+        return 'auto'
+    if re.fullmatch(r'[+-]?\d+', v):   # « 0 » est un nombre (0 demi-ton imposé), pas un « non »
+        n = int(v)
+        if abs(n) > TRANSPOSER_MAX:
+            raise ValueError(f'{n} demi-tons : au plus ±{TRANSPOSER_MAX} (au-delà, la musique transposée ne s\'écoute plus)')
+        return n
+    if v in NON or v in ('aucune', 'jamais'):
+        return 'non'
+    raise ValueError(f'auto, non ou un nombre entier de demi-tons attendu (reçu : {valeur})')
+
+
+def transposer_config(conf):
+    """Clé « transposer » de la configuration : auto (défaut), non, ou N ; une valeur illisible compte comme auto, avec un avis."""
+    v = valeur_config(conf, 'transposer')
+    if v is None:
+        return 'auto'
+    try:
+        return lire_transposer(v)
+    except ValueError:
+        dire(f'attention : « transposer » de {CONFIG} illisible ({v!r}) : auto (doubler --config transposer auto|non|N)')
+        return 'auto'
+
+
+def _option_transposer(texte):
+    try:
+        return lire_transposer(texte)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from None
 
 
 def cartes_prevues(gpu, machine):
@@ -407,7 +470,8 @@ def afficher_config(a, en_json=False):
     effectif = {'config': str(CONFIG), 'donnees': str(DONNEES), 'source_donnees': a.source_donnees, 'voix': str(VOIX),
                 'sorties': a.sortie, 'voix_defaut': VOIX_DEFAUT, 'source_voix_defaut': VOIX_DEFAUT_SOURCE,
                 'moteur': moteur, 'paroles': paroles, 'autotune': autotune, 'gpu': gpu, 'pistes_audio': pistes_audio,
-                'envoi_flac': envoi, 'versions_duo': versions_duo_config(conf),
+                'envoi_flac': envoi, 'versions_duo': versions_duo_config(conf), 'transposer': transposer_config(conf),
+                'rubberband': transposition_disponible()[0],
                 'x42_autotune': str(fat1) if fat1 else None,
                 'kaggle': {'compte': valeur_config(conf, 'kaggle.compte'), **noms, 'machine': MACHINE},
                 'jeton_kaggle': 'présent' if JETON.exists() else 'absent', 'commande_kaggle': str(KAGGLE),
@@ -434,6 +498,9 @@ def afficher_config(a, en_json=False):
              "doublage (par défaut), original, beat seul, voix convertie seule, voix d'origine seule"))
     print(f"  versions duo   {versions_duo_config(conf)}{'' if valeur_config(conf, 'versions_duo') is not None else '  (défaut)'}"
           ' : une voix par chanteur, chaque passage dans les deux voix (corriger au remix)')
+    print(f"  transposer     {transposer_config(conf)}{'' if valeur_config(conf, 'transposer') is not None else '  (défaut)'}"
+          " : chanson transposée dans la tessiture de la voix cible (auto, non, ou N demi-tons) ; "
+          f"Rubber Band {'présent' if transposition_disponible()[0] else 'ABSENT (sudo apt install librubberband2)'}")
     print(f"  envoi FLAC     {envoi} bits{'' if valeur_config(conf, 'envoi_flac') is not None else '  (défaut)'}")
     for n in KAGGLE_DEFAUTS:
         print(f"  kaggle.{n:8s} {noms[n] or '— (kaggle.compte manque : doubler --config kaggle.compte <nom>)'}")
@@ -642,7 +709,33 @@ def charger_voix(nom):
     f0 = f.get('hauteur_parole_mediane_hz')
     if not f0:
         raise SystemExit(f'{fiche} : hauteur_parole_mediane_hz manque')
-    return {'id': nom, 'affichage': f.get('nom') or nom.capitalize(), 'reference': ref, 'f0': float(f0), 'fiche': f}
+    return {'id': nom, 'affichage': f.get('nom') or nom.capitalize(), 'reference': ref, 'f0': float(f0), 'fiche': f,
+            'zone': zone_de_chant(d, float(f0))}
+
+
+ZONE_CONFORT_DT = 4.0   # sans tessiture mesurée : zone de confort = centre de chant x 2^(±4/12)
+
+
+def zone_de_chant(dossier, f0_parole):
+    """Zone de chant de la voix cible, envoyée au noyau avec ses autres données : {'confort': [bas, haut], 'centre_hz',
+    'origine'}, en Hz. tessiture.json du dossier de la voix (écrit par la séance d'enregistrement ; schéma {p05, p10, p50, p90,
+    p95, confort: [bas, haut]}) s'il est lisible, sinon le centre = FACTEUR_CHANT x la hauteur de parole médiane, avec une
+    zone de ±ZONE_CONFORT_DT demi-tons autour."""
+    try:
+        t = json.loads((Path(dossier) / 'tessiture.json').read_text())
+        bas, haut = sorted(float(x) for x in t['confort'])
+        if 40 <= bas < haut <= 2000:
+            z = {'confort': [round(bas, 1), round(haut, 1)], 'centre_hz': round(math.sqrt(bas * haut), 1),
+                 'origine': 'tessiture'}
+            for cle in ('p05', 'p10', 'p50', 'p90', 'p95'):
+                if isinstance(t.get(cle), (int, float)) and not isinstance(t.get(cle), bool):
+                    z[cle] = round(float(t[cle]), 1)
+            return z
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    centre = FACTEUR_CHANT * f0_parole
+    return {'confort': [round(centre * 2 ** (-ZONE_CONFORT_DT / 12), 1), round(centre * 2 ** (ZONE_CONFORT_DT / 12), 1)],
+            'centre_hz': round(centre, 1), 'origine': 'parole'}
 
 
 # Une voix par chanteur : --voix homme:NOM,femme:NOM (duo mixte) ou chanteur1:NOM,chanteur2:NOM (duo de même genre,
@@ -1728,6 +1821,124 @@ def calculer_reste(t):
     return m
 
 
+# --- Transposition de la chanson : la musique seule, sur le PC (Rubber Band R3, transposition.py) -----------------------
+
+_TRANSPOSITION = None
+_AVIS_RUBBERBAND = []
+
+
+def charger_transposition():
+    """Le module transposition.py (à côté de doubler.py), chargé par son chemin."""
+    global _TRANSPOSITION
+    if _TRANSPOSITION is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('transposition_voixla', DEPOT / 'transposition.py')
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        _TRANSPOSITION = m
+    return _TRANSPOSITION
+
+
+def transposition_disponible():
+    """(vrai, '') si Rubber Band R3 est utilisable (librubberband.so.2, paquet librubberband2), sinon (faux, raison)."""
+    try:
+        return charger_transposition().disponible()
+    except Exception as e:  # noqa: BLE001 — module absent ou illisible : pas de transposition
+        return False, str(e)
+
+
+def transposition_demandee(a):
+    """Valeur de « transposer » envoyée au noyau pour ce doublage : celle demandée (auto, non ou N), mais « non » si Rubber
+    Band manque : la voix garde alors l'octave seule (règle d'avant), avec un avertissement (une fois par session)."""
+    v = getattr(a, 'transposer', 'auto')
+    if v == 'non':
+        return v
+    ok, raison = transposition_disponible()
+    if ok:
+        return v
+    if not _AVIS_RUBBERBAND:
+        _AVIS_RUBBERBAND.append(raison)
+        dire(f'ATTENTION : Rubber Band indisponible ({raison}) : la chanson ne sera pas transposée, la voix garde le décalage '
+             "d'octave seul, comme avant. Pour transposer : sudo apt install librubberband2")
+    return 'non'
+
+
+def musique_transposee(t, dt):
+    """La musique seule à mixer : (fichier, info). dt = 0 : travail/instrumental.wav. Sinon travail/instrumental_transpose_<dt>.wav,
+    la musique seule transposée de dt demi-tons par Rubber Band R3, à durée exacte, gardée en cache dans travail/ (un
+    --remix la réutilise tant que le son d'origine et la voix isolée n'ont pas changé). Sans Rubber Band, ou si la
+    transposition échoue : avertissement et travail/instrumental.wav (info['applique'] faux)."""
+    inst = t / 'instrumental.wav'
+    info = {'musique_dt': dt, 'applique': False}
+    if not dt:
+        return inst, info
+    ok, raison = transposition_disponible()
+    if not ok:
+        dire(f"ATTENTION : Rubber Band indisponible ({raison}) : la musique n'est PAS transposée de {dt:+d} demi-tons alors que "
+             "la voix convertie l'a été : elle sera fausse sur la musique d'origine. Installer librubberband2 "
+             "(sudo apt install librubberband2), puis refaire le mixage avec --remix")
+        return inst, {**info, 'raison': f'Rubber Band indisponible : {raison}'}
+    sortie = t / f'instrumental_transpose_{dt}.wav'
+    n_inst = echantillons(inst)[0]
+    sources = [t / 'original.wav', t / 'voix_source.wav']
+    try:
+        frais = (sortie.exists() and echantillons(sortie)[0] == n_inst
+                 and sortie.stat().st_mtime_ns >= max(f.stat().st_mtime_ns for f in sources if f.exists()))
+    except Exception:  # noqa: BLE001 — cache illisible : on le refait
+        frais = False
+    if frais:
+        return sortie, {**info, 'applique': True, 'cache': True, 'fichier': sortie.name, 'moteur': 'Rubber Band R3'}
+    tmp = t / f'.instrumental_transpose_{dt}.wav'
+    debut = time.time()
+    try:
+        n = charger_transposition().transposer_fichier(inst, tmp, dt)
+        if abs(n - n_inst) > 0:
+            raise RuntimeError(f'durée transposée de {n} échantillons pour {n_inst}')
+        os.replace(tmp, sortie)
+    except Exception as e:  # noqa: BLE001 — jamais de mixage en moins : musique d'origine, avec avertissement
+        tmp.unlink(missing_ok=True)
+        dire(f"ATTENTION : transposition de la musique impossible ({str(e).strip().splitlines()[-1][:200] if str(e).strip() else e!r}) : "
+             "musique d'origine gardée, la voix convertie sera fausse dessus")
+        return inst, {**info, 'raison': f'transposition échouée : {e}'}
+    return sortie, {**info, 'applique': True, 'cache': False, 'fichier': sortie.name, 'moteur': 'Rubber Band R3',
+                    'secondes': round(time.time() - debut, 1)}
+
+
+def avis_remix_transposition(a, rapport):
+    """--remix suit la décision du rapport (la voix est déjà convertie) : dit clairement ce qu'une demande contraire
+    (--transposer non ou N, ou la configuration) ne peut pas changer sans reconvertir. Rend le texte de l'avis, ou None."""
+    dt = int((rapport.get('transposition') or {}).get('musique_dt') or 0)
+    voulu = getattr(a, 'transposer', 'auto')
+    if not getattr(a, 'remix', False) or voulu == 'auto':
+        return None
+    if voulu == 'non' and dt:
+        return (f'--transposer non ne peut pas changer la voix avec --remix : elle a été convertie dans la chanson transposée '
+                f'de {dt:+d} demi-tons, et la musique transposée reste la seule juste avec elle. Pour doubler sans '
+                'transposition, relancer sans --remix (reconversion sur Kaggle)')
+    if isinstance(voulu, int) and voulu != dt:
+        return (f'--transposer {voulu:+d} ne peut pas changer la voix avec --remix : elle a été convertie avec une transposition '
+                f'de {dt:+d} demi-tons, gardée ; pour {voulu:+d}, relancer sans --remix (reconversion sur Kaggle)')
+    return None
+
+
+def ligne_transposition(rapport):
+    """Une ligne lisible de rapport['transposition'] (doubler, interface), ou None sans décision (rapports d'avant)."""
+    tp = rapport.get('transposition')
+    if not isinstance(tp, dict):
+        return None
+    dt = int(tp.get('musique_dt') or 0)
+    if tp.get('mode') != 'chant':
+        return None
+    if not dt:
+        return f"chanson non transposée ({tp.get('raison') or 'octave seule'})"
+    v = (tp.get('voix') or [{}])[0]
+    med = ''
+    if v.get('avant_hz') and v.get('apres_hz'):
+        med = f" : médiane {v['avant_hz']['p50']:.0f} → {v['apres_hz']['p50']:.0f} Hz"
+    zone = f", zone {v['zone_hz'][0]:.0f}–{v['zone_hz'][1]:.0f} Hz" if v.get('zone_hz') else ''
+    return f"chanson transposée de {dt:+d}".replace('-', '−') + f' demi-tons pour la voix{med}{zone}'
+
+
 def voix_v2(t, tv, voix_fichier, hp, info):
     """Voix sèche du mix v2 : chaîne v1 (passe-haut, compression douce), puis dé-esseur au niveau de référence, puis
     nuances de la voix d'origine. Rend le fichier stéréo seche_<voix>.wav (mêmes noms de fichiers qu'en v1)."""
@@ -1753,11 +1964,13 @@ def voix_v2(t, tv, voix_fichier, hp, info):
     return seche
 
 
-def mixer(t, tv, mode, voix_db, reverb_db, voix_fichier, sortie_wav, gains=None, version=2, info=None):
+def mixer(t, tv, mode, voix_db, reverb_db, voix_fichier, sortie_wav, gains=None, version=2, info=None, musique=None):
     """Voix sèche (passe-haut, compression douce ; en v2, dé-esseur et nuances de la voix d'origine) au niveau moyen de
     la voix d'origine + voix_db ; en chant, reverb synthétique reverb_db en dessous ; limiteur à 0,95. gains imposés :
-    ceux du mix principal (variantes de comparaison). info reçoit les mesures du mix v2."""
-    duree = duree_s(t / 'instrumental.wav')
+    ceux du mix principal (variantes de comparaison). info reçoit les mesures du mix v2. musique : la musique seule du
+    mix (défaut travail/instrumental.wav ; la chanson transposée, musique_transposee, quand la voix l'est)."""
+    musique = musique or t / 'instrumental.wav'
+    duree = duree_s(musique)
     hp = 90 if mode == 'chant' else 70
     info = {} if info is None else info
     info['version'] = version
@@ -1777,7 +1990,7 @@ def mixer(t, tv, mode, voix_db, reverb_db, voix_fichier, sortie_wav, gains=None,
         rev = reverb(tv, seche, f'reverb_{voix_fichier.stem}.wav', duree)
         if 'reverb' not in g:
             g['reverb'] = cible - moyenne_db(rev) + voix_db + reverb_db
-    assembler(t, seche, rev, g, sortie_wav)
+    assembler(t, seche, rev, g, sortie_wav, musique=True, fichier_musique=musique)
     return g, cible
 
 
@@ -1794,11 +2007,12 @@ def reverb(tv, seche, nom, duree):
     return rev
 
 
-def assembler(t, seche, rev, g, sortie_wav, musique=True):
+def assembler(t, seche, rev, g, sortie_wav, musique=True, fichier_musique=None):
     """Mix final : musique seule + voix sèche (gain g['seche']) + reverb (g['reverb'], s'il y en a une), puis limiteur.
     musique faux : la voix convertie seule, telle qu'elle sonne dans le mix (piste « voix convertie seule » de la vidéo) :
-    même graphe, musique mise à zéro (elle ne sert plus qu'à donner au résultat la durée du mix)."""
-    entrees = ['-i', t / 'instrumental.wav', '-i', seche]
+    même graphe, musique mise à zéro (elle ne sert plus qu'à donner au résultat la durée du mix). fichier_musique : la
+    musique seule à mixer (défaut travail/instrumental.wav ; la chanson transposée, de même durée, avec une voix transposée)."""
+    entrees = ['-i', fichier_musique or t / 'instrumental.wav', '-i', seche]
     graphe, fond = ('', '[0:a]') if musique else ('[0:a]volume=0[z];', '[z]')
     graphe += f"[1:a]volume={g['seche']:.2f}dB[s];"
     if rev is not None:
@@ -2374,10 +2588,12 @@ def reglage_pour(a, rapport):
             'explicite': bool(prec.get('explicite')), 'gamme': gamme}
 
 
-def faire_autotune(t, tv, dossier, base, mode, gains, reglage):
+def faire_autotune(t, tv, dossier, base, mode, gains, reglage, musique=None):
     """Version auto-tune, après le mix normal : voix sèche passée dans fat1, reverb, mix aux gains du mix normal, mp3.
     N'échoue jamais : plugin absent, parole sans demande explicite ou erreur -> version normale seule, avec un message.
-    Rend la section autotune du rapport ('applique' vrai si la version existe)."""
+    Rend la section autotune du rapport ('applique' vrai si la version existe). musique : la musique seule du mix (la
+    chanson transposée, s'il y en a une : la gamme se détecte dans la tonalité où chante la voix)."""
+    musique = musique or t / 'instrumental.wav'
     n = reglage['intensite']
     info = {'applique': False, 'intensite': n, 'source': reglage['source'], 'explicite': reglage['explicite'],
             'moteur': 'x42-autotune (fat1, LV2)'}
@@ -2397,7 +2613,7 @@ def faire_autotune(t, tv, dossier, base, mode, gains, reglage):
     b = base_autotune(base)
     mp3 = dossier / f'{b}.mp3'
     try:
-        gamme = choisir_gamme(reglage['gamme'], t / 'instrumental.wav')
+        gamme = choisir_gamme(reglage['gamme'], musique)
         if gamme['repli']:
             dire(f"auto-tune : {gamme['repli']}")
         passes = [{**p, 'tuning': gamme['accord_hz']} for p in ports_autotune(n)]
@@ -2405,10 +2621,10 @@ def faire_autotune(t, tv, dossier, base, mode, gains, reglage):
         appliquer_fat1(seche, seche_at, passes, gamme['masque'], plugin, latence)
         rev = None
         if 'reverb' in gains:
-            rev = reverb(tv, seche_at, 'reverb_voix_autotune.wav', duree_s(t / 'instrumental.wav'))
+            rev = reverb(tv, seche_at, 'reverb_voix_autotune.wav', duree_s(musique))
         else:
             (tv / 'reverb_voix_autotune.wav').unlink(missing_ok=True)
-        assembler(t, seche_at, rev, gains, tv / 'mix_autotune.wav')
+        assembler(t, seche_at, rev, gains, tv / 'mix_autotune.wav', fichier_musique=musique)
         ff('-i', tv / 'mix_autotune.wav', '-c:a', 'libmp3lame', '-b:a', '320k', mp3)
     except Exception as e:  # noqa: BLE001 — l'auto-tune ne fait jamais échouer le doublage
         for f in FICHIERS_AUTOTUNE_TRAVAIL:
@@ -2688,9 +2904,10 @@ def titres_pistes(voix, autotune=False):
             'voix': f'{convertie}{at} ({nom})', 'voix_origine': "Voix d'origine seule"}
 
 
-def pistes_en_plus(t, tv, voix, gains, autotune=False):
-    """Pistes audio de la vidéo doublée après le doublage : original (travail/original.wav), beat seul
-    (travail/instrumental.wav, celui de ce mixage), voix convertie seule, voix d'origine seule (travail/voix_source.wav).
+def pistes_en_plus(t, tv, voix, gains, autotune=False, musique=None):
+    """Pistes audio de la vidéo doublée après le doublage : original (travail/original.wav, JAMAIS transposé), beat seul
+    (travail/instrumental.wav, celui de ce mixage ; musique : la musique transposée, avec une voix transposée), voix
+    convertie seule, voix d'origine seule (travail/voix_source.wav, jamais transposée).
     La voix convertie seule est celle du mix, sans la musique : assembler() avec la voix sèche et la reverb de ce mixage
     (de la version auto-tune si autotune), aux mêmes gains, au même limiteur ; écrite dans travail/<voix>/.voix_seule*.wav,
     effacé après la vidéo. Sans elle (erreur), les trois autres pistes restent."""
@@ -2699,7 +2916,7 @@ def pistes_en_plus(t, tv, voix, gains, autotune=False):
     rev = tv / f'reverb_voix_{nom}.wav' if 'reverb' in gains else None
     seule = tv / f".voix_seule{'_autotune' if autotune else ''}.wav"
     try:
-        assembler(t, tv / f'seche_voix_{nom}.wav', rev, gains, seule, musique=False)
+        assembler(t, tv / f'seche_voix_{nom}.wav', rev, gains, seule, musique=False, fichier_musique=musique)
         voix_seule = [{'fichier': seule, 'titre': titres['voix']}]
     except Exception as e:  # noqa: BLE001 — une piste en moins, jamais de vidéo en moins
         seule.unlink(missing_ok=True)
@@ -2707,7 +2924,7 @@ def pistes_en_plus(t, tv, voix, gains, autotune=False):
              'vidéo sans cette piste')
         voix_seule = []
     return [{'fichier': t / 'original.wav', 'titre': titres['original']},
-            {'fichier': t / 'instrumental.wav', 'titre': titres['beat']}, *voix_seule,
+            {'fichier': musique or t / 'instrumental.wav', 'titre': titres['beat']}, *voix_seule,
             {'fichier': t / 'voix_source.wav', 'titre': titres['voix_origine']}]
 
 
@@ -3532,7 +3749,19 @@ def finir(tr, a, voix, temps_local=None):
     with Etape('mix', titre, f'mixage v{version} ({mode})'
                + (f", auto-tune {reglage['intensite']}" if reglage['intensite'] else '')):
         reste = calculer_reste(t)   # toujours recalculé et vérifié (jamais l'instrumental.wav d'une version précédente)
-        gains, cible = mixer(t, tv, mode, voix_db, a.reverb_db, tv / 'voix_convertie.flac', tv / 'mix.wav', version=version, info=info)
+        # chanson transposée : la musique seule de musique_dt demi-tons (décision du noyau, rapport.json), si le mode est
+        # le chant ; l'original et la voix d'origine ne le sont jamais
+        dt_musique = int((rapport.get('transposition') or {}).get('musique_dt') or 0) if mode == 'chant' else 0
+        avis = avis_remix_transposition(a, rapport)
+        if avis:
+            dire(avis)
+        musique, info_transposition = musique_transposee(t, dt_musique)
+        if dt_musique and info_transposition['applique']:
+            dire(f"musique transposée de {dt_musique:+d} demi-tons (Rubber Band R3, "
+                 + ('cache de travail/' if info_transposition.get('cache') else f"{info_transposition.get('secondes')} s")
+                 + f") : {info_transposition['fichier']}")
+        gains, cible = mixer(t, tv, mode, voix_db, a.reverb_db, tv / 'voix_convertie.flac', tv / 'mix.wav', version=version, info=info,
+                             musique=musique)
         mp3 = dossier / f'{base}.mp3'
         ff('-i', tv / 'mix.wav', '-c:a', 'libmp3lame', '-b:a', '320k', mp3)
         nu = info.get('nuances', {})
@@ -3548,7 +3777,8 @@ def finir(tr, a, voix, temps_local=None):
         comp = rapport.get('comparaison_pas')
         extraits = []
         if comp and (tv / comp['fichier']).exists():
-            mixer(t, tv, mode, voix_db, a.reverb_db, tv / comp['fichier'], tv / 'mix_comparaison.wav', gains, version=version)
+            mixer(t, tv, mode, voix_db, a.reverb_db, tv / comp['fichier'], tv / 'mix_comparaison.wav', gains, version=version,
+                  musique=musique)
             suffixe = '' if voix['id'] == VOIX_DEFAUT else f" (voix {voix['affichage']})"
             for pas, mix in zip(comp['pas'], (tv / 'mix.wav', tv / 'mix_comparaison.wav')):
                 sortie = dossier / f'comparaison_{pas}pas{suffixe}.mp3'
@@ -3557,7 +3787,7 @@ def finir(tr, a, voix, temps_local=None):
                 extraits.append(sortie)
         # version auto-tune, en plus (la version normale ci-dessus ne dépend jamais de l'auto-tune)
         if reglage['intensite']:
-            info_at = faire_autotune(t, tv, dossier, base, mode, gains, reglage)
+            info_at = faire_autotune(t, tv, dossier, base, mode, gains, reglage, musique)
         elif reglage['retirer']:
             info_at = retirer_autotune(tv, dossier, base)
     mix_s = time.time() - debut
@@ -3594,7 +3824,7 @@ def finir(tr, a, voix, temps_local=None):
                 info_pistes['video'] = None
                 info_paroles['pistes_video'] = []
             else:
-                pistes_a = pistes_en_plus(t, tv, voix, gains) if toutes else []
+                pistes_a = pistes_en_plus(t, tv, voix, gains, musique=musique) if toutes else []
                 demandees = pistes_st
                 sortie, pistes_st, pistes_a = video_avec_repli(t, tv / 'mix.wav', dossier, base, pistes_st, pistes_a,
                                                                plan, titres_pistes(voix)['doublage'],
@@ -3608,7 +3838,7 @@ def finir(tr, a, voix, temps_local=None):
                 try:   # mêmes pistes de paroles et sous-titres d'origine que la version normale, pistes audio auto-tune
                     if audio:
                         raise _SansImage
-                    pistes_at = pistes_en_plus(t, tv, voix, gains, autotune=True) if toutes else []
+                    pistes_at = pistes_en_plus(t, tv, voix, gains, autotune=True, musique=musique) if toutes else []
                     sortie_at, _, pistes_at = video_avec_repli(t, tv / 'mix_autotune.wav', dossier, b_at, pistes_st,
                                                                pistes_at, plan, titres_pistes(voix, True)['doublage'],
                                                                langue_a['etiquette'], encodees)
@@ -3630,7 +3860,7 @@ def finir(tr, a, voix, temps_local=None):
             for f in (tv / '.voix_seule.wav', tv / '.voix_seule_autotune.wav', *tv.glob(PISTES_PAROLES_TEMP)):
                 f.unlink(missing_ok=True)
     video_s = time.time() - debut
-    rapport['mix'] = {**info, 'musique_seule': reste, 'limite_dbtp': round(20 * math.log10(LIMITE), 2), 'voix_db': voix_db, 'reverb_db': a.reverb_db if mode == 'chant' else None,
+    rapport['mix'] = {**info, 'transposition': info_transposition, 'musique_seule': reste, 'limite_dbtp': round(20 * math.log10(LIMITE), 2), 'voix_db': voix_db, 'reverb_db': a.reverb_db if mode == 'chant' else None,
                       'gains_db': {k: round(v, 2) for k, v in gains.items()}, 'voix_source_db': cible}
     rapport['paroles_sorties'] = info_paroles
     rapport['pistes_audio'] = info_pistes
@@ -3662,6 +3892,9 @@ def finir(tr, a, voix, temps_local=None):
          f"modèle {rapport.get('modele')}, {principale.get('pas_diffusion')} pas")
     for ligne in lignes_voix_cibles(rapport):
         dire(ligne)
+    ligne_t = ligne_transposition(rapport)
+    if ligne_t:
+        dire(ligne_t)
     net = rapport.get('nettoyage')
     if net is not None:   # rapports d'avant le 04/11/2026 : ni moteur ni nettoyage
         nom_moteur = {'yingmusic': 'YingMusic-SVC', 'seedvc': 'Seed-VC'}.get(rapport.get('moteur'), rapport.get('moteur'))
@@ -3952,9 +4185,10 @@ def reglages_noyau(a, voix, ancres, travaux):
                 'moteur_chant': a.moteur, 'nettoyage': not a.sans_nettoyage,
                 'gpus': 'auto' if getattr(a, 'gpu', None) in (None, 'auto') else int(a.gpu),
                 'voix': {'nom': v0['id'], 'fichier': f"voix-{v0['id']}.wav", 'f0_parole_hz': v0['f0'],
-                         'facteur_chant': FACTEUR_CHANT},
+                         'facteur_chant': FACTEUR_CHANT, 'zone': v0['zone']},
                 'travaux': [{'id': tr['id'], 'entree': tr['entree'], 'mode': a.mode,
                              'octave': a.octave if a.octave == 'auto' else int(a.octave),
+                             'transposer': transposition_demandee(a),
                              'comparer_modeles': bool(a.comparer_modeles), 'comparer_pas': a.comparer_pas,
                              'gain_entree': tr['gain_entree'], 'gain_entree_db': round(20 * math.log10(tr['gain_entree']), 3),
                              'retour_flac': True} for tr in travaux]}
@@ -3962,11 +4196,11 @@ def reglages_noyau(a, voix, ancres, travaux):
         reglages['versions_duo'] = getattr(a, 'versions_duo', None) or VERSIONS_DUO_DEFAUT   # absent pour une seule voix
         reglages['voix_cibles'] = {'mode': voix['mode'], 'voix': [
             {'cle': m['cle'], 'nom': m['id'], 'fichier': f"voix-{m['id']}.wav", 'f0_parole_hz': m['f0'],
-             'facteur_chant': FACTEUR_CHANT, 'affichage': m['affichage']} for m in voix['membres']]}
+             'facteur_chant': FACTEUR_CHANT, 'affichage': m['affichage'], 'zone': m['zone']} for m in voix['membres']]}
     if voix.get('comparees'):   # le même extrait dans chaque voix (la première est « voix » : analyse)
         reglages['comparer'] = {'voix': [
             {'nom': m['id'], 'fichier': f"voix-{m['id']}.wav", 'f0_parole_hz': m['f0'], 'facteur_chant': FACTEUR_CHANT,
-             'affichage': m['affichage']} for m in voix['comparees']]}
+             'affichage': m['affichage'], 'zone': m['zone']} for m in voix['comparees']]}
     if a.modele_parole:
         reglages['modele_parole'] = a.modele_parole
     return reglages
@@ -4214,6 +4448,17 @@ def main():
                    help="auto : en chant, un seul décalage par chanteur, choisi d'après la hauteur (avec les ancres de "
                         "genre, facultatives, l'empreinte de la voix départage les cas ambigus et repère les duos) ; un "
                         'duo, retenu à quatre conditions, a un décalage par voix ; 0, -12 ou +12 : imposé partout')
+    p.add_argument('--transposer', type=_option_transposer, default=None, metavar='auto|non|N',
+                   help="chant : transposer la chanson ENTIÈRE, musique comprise (comme un changement de tonalité au "
+                        "karaoké), d'un nombre entier de demi-tons pour que la voix convertie chante dans la tessiture de "
+                        "la voix cible, où ses proches la reconnaissent. auto (défaut) : le noyau choisit le plus petit "
+                        "décalage, au plus ±5, qui range la voix convertie dans sa zone (tessiture.json de la voix, sinon "
+                        "2 x sa hauteur de parole ±4 demi-tons) ; en duo, un seul décalage pour les deux voix ; non : "
+                        "octave seule, musique intacte (comme avant) ; N : décalage imposé (-3, +2…). La musique est "
+                        "transposée sur le PC par Rubber Band R3 (paquet librubberband2 ; sans lui, avertissement et "
+                        "octave seule). Parole : jamais. Défaut lu dans la configuration (clé « transposer »). --octave "
+                        "garde son sens (il force l'octave de la voix, la transposition s'y ajoute). Avec --remix : la "
+                        "décision déjà prise (rapport.json) est suivie ; changer la voix demande de reconvertir")
     p.add_argument('--pas', type=int, default=30, help='pas de diffusion (défaut 30 ; 50 : ~40 %% de GPU de conversion en plus ; '
                                                        'au banc d\'essai, aucun écart mesurable et l\'oreille partagée)')
     p.add_argument('--moteur', choices=list(MOTEURS), default=None,
@@ -4354,6 +4599,8 @@ def executer(p, a):
     moteur_donne = a.moteur is not None
     a.moteur = a.moteur or moteur_conf or MOTEUR_DEFAUT
     a.gpu = a.gpu or gpu_config(conf)
+    a.transposer_donne = a.transposer is not None
+    a.transposer = a.transposer if a.transposer is not None else transposer_config(conf)
     a.envoi_flac = envoi_flac_config(conf)
     a.versions_duo = a.versions_duo or versions_duo_config(conf)
     if (a.passage or a.affectation is not None) and not a.remix:

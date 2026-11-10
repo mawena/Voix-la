@@ -3,10 +3,13 @@
 Interface GTK 4 / libadwaita de `doubler`. On y gère les voix, on lance des doublages et on suit leur progression,
 puis on écoute et on compare les résultats. Elle ne fait aucun calcul lourd : tout passe par la commande `doubler`.
 
-## Lancer
+## Installer et lancer
 
-Avec le paquet Debian (voir le README principal), `voix-la` ou « Voix-là » dans le menu des applications : le code
-est dans `/usr/lib/voix-la/`, et l'interface lance `/usr/bin/doubler`. Depuis le dépôt, pour le développement :
+L'interface fait partie du paquet `voix-la`, installé par le dépôt APT signé (`sudo apt install voix-la`, puis
+`sudo apt upgrade` pour les nouvelles versions) : voir [Installation](../README.md#installation) dans le README
+principal et la page [mawena.github.io/Voix-la](https://mawena.github.io/Voix-la/) (captures et installation en une
+commande). Ensuite, `voix-la` ou « Voix-là » dans le menu des applications : le code est dans `/usr/lib/voix-la/`, et
+l'interface lance `/usr/bin/doubler`. Depuis le dépôt, pour le développement :
 
 ```sh
 interface/installer.sh   # une fois : lanceur ~/.local/bin/voix-la, entrée du menu, icône

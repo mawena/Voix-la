@@ -7,6 +7,27 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+### Ajouté
+
+- **De deux à six voix par vidéo** : `--voix chanteur1:a,chanteur2:b,chanteur3:c…` (jusqu'à `chanteur6`) pour des chanteurs
+  de même genre, `--voix personne1:a,personne2:b,…` pour des personnes (chant comme parole) ; `homme:`/`femme:` et les
+  doublages à une ou deux voix ne changent pas (tests « comme avant » verts). Le premier qu'on entend prend la voix 1, le
+  suivant la voix 2, etc.
+  - **Chant** : les empreintes des morceaux sont regroupées en N chanteurs (k-moyennes sphériques, lissage de Viterbi à N
+    états, section de 3 s au moins) ; un groupe n'est retenu que s'il est assez séparé et assez présent, sinon N − 1
+    chanteurs, jusqu'au duo ou à la voix seule d'avant. Une octave par chanteur, un seul décalage de musique pour toutes les
+    voix, passages chantés ensemble reconnus chanteur par chanteur (ressemblance aux N centres et hauteur).
+  - **Parole** : diarisation par les empreintes CAMPPlus déjà dans le noyau (fenêtres glissantes de 1,5 s, regroupées en
+    personnes, changements de personne placés au creux d'énergie et ajoutés aux coupes), puis chaque personne est convertie
+    avec sa voix (Seed-VC 22 kHz). Choix justifié dans le README (pyannote écarté : poids à accès conditionné ; NeMo : lourd
+    ou limité à 4 personnes). Les chevauchements restent un seul flux, dans la voix de la personne dominante.
+  - **Correction à la main** : `--passage N=voix` avec N voix, `--passage N=a+c` (plusieurs voix ensemble), `deux`
+    (toutes). Avec plus de deux voix, `--versions-duo` vaut `utiles` par défaut (`toutes` : N fois la conversion).
+  - **Interface** : la page Doubler choisit 2 à 6 voix (« Nombre de voix », chanteurs ou personnes dans l'ordre, gardés dans
+    `interface.json`), la frise « Voix de chaque passage » a six couleurs et une légende, le menu de correction une ligne
+    par voix, la bibliothèque et les travaux nomment « A, B et C ».
+  - **Durée estimée** (`estimer_noyau_s`) avec N voix ; page de manuel et `doubler --help` à jour.
+
 ## [0.17.2] - 2026-11-10
 
 ### Ajouté

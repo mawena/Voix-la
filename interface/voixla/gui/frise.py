@@ -136,7 +136,9 @@ class Frise(Gtk.DrawingArea):
 
 # --- Une voix par chanteur : quelle voix cible chante chaque passage ---------------------------------------------------
 
-COULEURS_VOIX = [(0.13, 0.57, 0.64), (0.90, 0.38, 0.0)]   # sarcelle, orange : la 1re et la 2e voix cible
+# sarcelle, orange (la 1re et la 2e voix cible, comme avant), puis violet, vert, rose, bleu : jusqu'à six voix cibles
+COULEURS_VOIX = [(0.13, 0.57, 0.64), (0.90, 0.38, 0.0), (0.58, 0.36, 0.80), (0.36, 0.67, 0.17), (0.85, 0.24, 0.50),
+                 (0.20, 0.38, 0.85)]
 
 
 def couleur_voix(i):
@@ -317,7 +319,7 @@ class FriseVoix(Gtk.DrawingArea):
 
     def _nommer(self, noms):
         noms = [self.affichages.get(n, n.capitalize()) for n in noms]
-        return " et ".join(noms) + " ensemble" if len(noms) > 1 else noms[0] if noms else "—"
+        return formats.joindre(noms) + " ensemble" if len(noms) > 1 else noms[0] if noms else "—"
 
     def _infobulle(self, _w, x, _y, _clavier, tip):
         if self.duree <= 0:
@@ -363,14 +365,18 @@ def legende_voix(noms, affichages=None):
         item = Gtk.Box(spacing=6)
         pastille = Gtk.DrawingArea(content_width=12, content_height=12, valign=Gtk.Align.CENTER)
 
+        n_bandes = min(len(noms), 3)
+
         def deux(_z, cr, w, h):
-            for k in (0, 1):
+            for k in range(n_bandes):
                 cr.set_source_rgba(*couleur_voix(k), 0.9)
-                cr.rectangle(0, k * h / 2, w, h / 2)
+                cr.rectangle(0, k * h / n_bandes, w, h / n_bandes)
                 cr.fill()
         pastille.set_draw_func(deux)
         item.append(pastille)
-        item.append(Gtk.Label(label="les deux ensemble (voix principale et chœurs)", css_classes=["caption"]))
+        item.append(Gtk.Label(label=("les deux ensemble (voix principale et chœurs)" if len(noms) == 2 else
+                                     "plusieurs voix ensemble (voix principale et chœurs) : une bande par voix"),
+                              css_classes=["caption"]))
         b.append(item)
     return b
 

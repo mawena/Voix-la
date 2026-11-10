@@ -57,7 +57,8 @@ class EssaiAide(unittest.TestCase):
 class EssaiCapacites(EssaiIsole):
     def test_doubler_recent(self):
         caps = moteur.capacites()
-        self.assertEqual(caps, frozenset(moteur.OPTIONS_SUIVIES) | {"extrait_par_video", "voix_par_chanteur", "son_seul"})
+        self.assertEqual(caps, frozenset(moteur.OPTIONS_SUIVIES) | {"extrait_par_video", "voix_par_chanteur",
+                                                                            "voix_par_personne", "son_seul"})
         self.assertTrue(moteur.disponible())
         self.assertIn("usage: doubler", moteur._capacites["aide"])
 

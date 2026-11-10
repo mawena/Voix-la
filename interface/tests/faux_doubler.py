@@ -401,7 +401,13 @@ def charger_voix(nom):
     return {"id": nom, "affichage": f.get("nom") or nom.capitalize(), "reference": ref, "f0": float(f0), "fiche": f}
 
 
-CLES_VOIX = {"genre": ("homme", "femme"), "ordre": ("chanteur1", "chanteur2")}
+CLES_VOIX = {"genre": ("homme", "femme"), "ordre": tuple(f"chanteur{k}" for k in range(1, 7)),
+             "personnes": tuple(f"personne{k}" for k in range(1, 7))}
+
+
+def joindre_noms(noms):
+    noms = list(noms)
+    return noms[0] if len(noms) == 1 else ", ".join(noms[:-1]) + " et " + noms[-1] if noms else ""
 
 
 def charger_voix_spec(texte):
@@ -412,12 +418,13 @@ def charger_voix_spec(texte):
     paires = []
     for morceau in (m.strip() for m in texte.split(",") if m.strip()):
         cle, _, nom = (x.strip() for x in morceau.partition(":"))
+        cle = cle.lower().replace(" ", "").replace("-", "").replace("_", "")
         if not nom or cle in (c for c, _ in paires):
             raise SystemExit(f"--voix {texte} : « {morceau} » : clé:voix attendu")
         paires.append((cle.lower(), nom))
     mode = next((m for m, cles in CLES_VOIX.items() if all(c in cles for c, _ in paires)), None)
     if mode is None:
-        raise SystemExit(f"--voix {texte} : homme/femme et chanteur1/chanteur2 ne se mélangent pas")
+        raise SystemExit(f"--voix {texte} : homme/femme, chanteurN et personneN ne se mélangent pas")
     paires.sort(key=lambda p: CLES_VOIX[mode].index(p[0]))
     noms = list(dict.fromkeys(n for _, n in paires))
     if len(noms) == 1:
@@ -425,7 +432,7 @@ def charger_voix_spec(texte):
     membres = [charger_voix(n) for n in noms]
     for (cle, _), m in zip(paires, membres):
         m["cle"] = cle
-    return {"id": "+".join(noms), "affichage": " et ".join(m["affichage"] for m in membres),
+    return {"id": "+".join(noms), "affichage": joindre_noms(m["affichage"] for m in membres),
             "reference": membres[0]["reference"], "f0": membres[0]["f0"], "fiche": membres[0]["fiche"], "mode": mode,
             "membres": membres, "spec": ",".join(f"{c}:{n}" for c, n in paires)}
 
@@ -690,12 +697,28 @@ def rapport_kaggle(tr, a, voix):
                                   {"nom": "femme", "classe": "femme", "voix": m2, "decalage": 0}],
                     "f0_mediane_globale_hz": 230.0}
         morceaux[2]["decalage"] = 0
+        noms_v = [m["id"] for m in voix["membres"]]
+        if len(noms_v) > 2:   # trois voix ou plus : un passage par voix, puis toutes ensemble à la fin
+            nb = len(noms_v)
+            bornes = [round(d * (0.1 + 0.7 * k / nb), 2) for k in range(nb + 1)]
+            plus["voix_cibles"]["voix"] = [{"cle": m["cle"], "nom": m["id"], "affichage": m["affichage"],
+                                            "centre_chant_hz": round(FACTEUR_CHANT * m["f0"], 1)} for m in voix["membres"]]
+            plus["affectation"] = {
+                "mode": voix["mode"], "message": f"{nb} voix", "voix_utilisees": noms_v, "morceaux_en_duo": 1,
+                "passages": [{"debut_s": bornes[k], "fin_s": bornes[k + 1], "voix": [noms_v[k]]} for k in range(nb)]
+                            + [{"debut_s": bornes[nb], "fin_s": round(d, 2), "voix": noms_v[:2]}],
+                "secondes_par_voix": {**{n: round(d * 0.7 / nb, 1) for n in noms_v}, "ensemble": round(d * 0.2, 1)}}
+            decision = {"voix": nb, "axe": "empreintes", "message": f"{nb} voix : " + ", ".join(noms_v),
+                        "chanteurs": [{"nom": f"voix {k + 1}", "voix": n, "decalage": 0} for k, n in enumerate(noms_v)],
+                        "f0_mediane_globale_hz": 230.0}
+            m1, m2 = noms_v[0], noms_v[1]
         # les deux versions de chaque passage chanté (doubler --versions-duo toutes, défaut d'une voix par chanteur)
         if not SANS_VERSIONS:
             plus["versions"] = ({"mode": "non"} if os.environ.get("FAUX_DOUBLER_VERSIONS") == "non" else
-                                {"mode": "toutes", "dossier": "versions", "voix_cibles": [m1, m2],
-                                 "decalages": {m1: dec_homme, m2: 0}, "morceaux": [1, 2], "secondes": round(d * 0.9, 1),
-                                 "conversion_s": conv, "conversion_auto_s": conv, "surcout": 1.0})
+                                {"mode": "toutes" if len(noms_v) == 2 else "utiles", "dossier": "versions",
+                                 "voix_cibles": noms_v, "decalages": {n: dec_homme if k == 0 else 0 for k, n in enumerate(noms_v)},
+                                 "morceaux": [1, 2], "secondes": round(d * 0.9, 1),
+                                 "conversion_s": conv, "conversion_auto_s": conv, "surcout": float(len(noms_v) - 1)})
     return {
         **plus,
         "id": tr["id"], "reglages": {"pas": a.pas}, "voix_cible": voix["id"],
@@ -1238,7 +1261,8 @@ def analyseur():
     p.add_argument("--voix", default=None, metavar="NOM",
                    help="voix cible : un dossier de <données>/voix (défaut : clé « voix » de la configuration, "
                         "sinon la seule voix présente) ; une voix par chanteur : homme:NOM,femme:NOM (duo mixte) ou "
-                        "chanteur1:NOM,chanteur2:NOM (duo de même genre)")
+                        "chanteur1:NOM,chanteur2:NOM[,chanteur3:NOM…] (même genre) ; une voix par personne : "
+                        "personne1:NOM,personne2:NOM[,…]")
     if not SANS_COMPARER:
         p.add_argument("--comparer", default=None, metavar="A,B[,C…]",
                        help="comparer des voix : le même extrait doublé dans chaque voix, en une seule session ; "

@@ -11,6 +11,11 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ### Ajouté
 
+- Dépôt APT signé sur GitHub Pages (https://mawena.github.io/Voix-la/apt) : `apt upgrade` installe les nouvelles
+  versions. Clé dédiée « Voix-là APT (mawena) » (`data/apt/`), publication par `make apt` / `scripts/publier-apt.sh`
+  (index all et amd64, anciennes versions conservées), page d'accueil dans `site/`. Le paquet pose lui-même la source
+  `/etc/apt/sources.list.d/voix-la.sources` et la clé `/usr/share/keyrings/voix-la.gpg`.
+
 - **Affinage de la voix sur son chant** (commande `affiner`, pas encore essayée pour de vrai : aucune session Kaggle n'a
   encore tourné). Apprend le timbre chanté d'une voix sur 5 à 10 min de son chant, par un court entraînement de Seed-VC
   44,1 kHz sur le GPU gratuit de Kaggle (recherche, guide d'enregistrement et plan d'intégration au doublage dans

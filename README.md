@@ -163,6 +163,24 @@ sont installés sur Kaggle. L'interface graphique a ses propres prérequis (voir
 
 ## Installation
 
+### Par le dépôt APT (recommandé)
+
+Le dépôt APT signé de Voix-là est publié sur GitHub Pages (https://mawena.github.io/Voix-la/) : une fois ajouté,
+`sudo apt update && sudo apt upgrade` installe les nouvelles versions.
+
+```sh
+sudo curl -fsSL https://mawena.github.io/Voix-la/apt/voix-la.gpg -o /usr/share/keyrings/voix-la.gpg \
+ && sudo curl -fsSL https://mawena.github.io/Voix-la/apt/voix-la.sources -o /etc/apt/sources.list.d/voix-la.sources \
+ && sudo apt update
+sudo apt install voix-la
+```
+
+Le paquet remet lui-même la clé (`/usr/share/keyrings/voix-la.gpg`) et la source
+(`/etc/apt/sources.list.d/voix-la.sources`) en place : installé une fois depuis un `.deb`, il suit ensuite le dépôt.
+Clé de signature « Voix-là APT (mawena) », empreinte `20F9 E2A5 B482 09DE DBD3  9601 0604 C235 3943 6022`
+(`data/apt/LISEZMOI`). Pour publier une version : `make deb` puis `make apt` (`scripts/publier-apt.sh` ;
+`VOIXLA_APT_PUSH=0` pour essayer sans pousser).
+
 ### Paquet Debian
 
 Pour Ubuntu 24.04 ou plus récent (libadwaita 1.5 au moins). Le paquet `voix-la_<version>_all.deb` et ses sommes

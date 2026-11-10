@@ -38,7 +38,8 @@ PREFERENCES_DEFAUT = {
     # session à l'autre ; une voix qui n'existe plus n'est pas présélectionnée (voir choix_chanteurs)
     "voix_par_chanteur": False,
     "duo_chanteurs": "genre",
-    "voix_chanteurs": [],       # [voix d'homme ou chanteur 1, voix de femme ou chanteur 2] ; null : pas choisie
+    "voix_chanteurs": [],       # [voix d'homme ou chanteur 1, voix de femme ou chanteur 2, …] ; null : pas choisie
+    "nombre_voix": 2,           # de 2 à 6 voix (chanteurs ou personnes) ; « duo_chanteurs » : genre, ordre ou personnes
     # Doubler, « Comparer plusieurs voix » : les voix cochées (identifiants), gardées d'une session à l'autre
     "voix_comparees": [],
     "mode": "auto",
@@ -328,19 +329,29 @@ def modifier_preferences(valeurs):
     return p
 
 
-DUOS_CHANTEURS = ("genre", "ordre")
+DUOS_CHANTEURS = ("genre", "ordre", "personnes")
+VOIX_MINI, VOIX_MAXI = 2, 6
+
+
+def nombre_voix(prefs):
+    """Nombre de voix gardé dans les préférences (de 2 à 6 ; 2 si la valeur est absente ou abîmée)."""
+    n = (prefs if isinstance(prefs, dict) else {}).get("nombre_voix")
+    if isinstance(n, bool) or not isinstance(n, int):
+        return VOIX_MINI
+    return max(VOIX_MINI, min(VOIX_MAXI, n))
 
 
 def choix_chanteurs(prefs, ids=None):
-    """Le choix « une voix par chanteur » gardé dans les préférences : (par_chanteur, duo, [voix a, voix b]).
-    Une valeur abîmée prend sa valeur par défaut (une voix pour tous, duo mixte, voix non choisie). Avec ids (les
-    voix qui existent), une voix disparue devient None : rien n'est présélectionné, comme sans mémoire."""
+    """Le choix « une voix par chanteur » gardé dans les préférences : (par_chanteur, duo, [voix 1, voix 2, …]), de 2 à 6
+    voix (nombre_voix). Une valeur abîmée prend sa valeur par défaut (une voix pour tous, duo mixte, deux voix non
+    choisies). Avec ids (les voix qui existent), une voix disparue devient None : rien n'est présélectionné, comme sans
+    mémoire."""
     p = prefs if isinstance(prefs, dict) else {}
     par = p.get("voix_par_chanteur") is True
     duo = p.get("duo_chanteurs") if p.get("duo_chanteurs") in DUOS_CHANTEURS else DUOS_CHANTEURS[0]
     lues = p.get("voix_chanteurs") if isinstance(p.get("voix_chanteurs"), list) else []
     voix = []
-    for i in range(2):
+    for i in range(nombre_voix(p)):
         v = lues[i] if i < len(lues) else None
         if not isinstance(v, str) or not v or (ids is not None and v not in ids):
             v = None

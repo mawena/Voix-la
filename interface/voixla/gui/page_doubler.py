@@ -41,16 +41,24 @@ COMPARER_MAXI = 6
 TEXTE_COMPARER = ("Cochez deux voix ou plus : le même extrait est doublé dans chacune, en une seule session Kaggle. "
                   "Envoi, séparation, nettoyage et paroles ne sont payés qu’une fois ; seule la conversion est "
                   "refaite pour chaque voix. Les résultats s’écoutent ensuite à l’aveugle, côte à côte")
-DUOS = [("genre", "Duo mixte"), ("ordre", "Même genre")]   # homme et femme ; deux chanteurs, ordre d'apparition
-LIBELLES_CHANTEURS = {"genre": ("Voix d’homme", "Voix de femme"), "ordre": ("Chanteur 1", "Chanteur 2")}
+DUOS = [("genre", "Duo mixte"), ("ordre", "Chanteurs, dans l’ordre"), ("personnes", "Personnes, dans l’ordre")]
+VOIX_MAXI = 6   # de deux à six voix (le duo mixte, homme et femme, n'en a que deux)
+LIBELLES_CHANTEURS = {"genre": ("Voix d’homme", "Voix de femme"),
+                      "ordre": tuple(f"Chanteur {k}" for k in range(1, VOIX_MAXI + 1)),
+                      "personnes": tuple(f"Personne {k}" for k in range(1, VOIX_MAXI + 1))}
 SOUS_TITRES_CHANTEURS = {
     "genre": ("Voix qui remplace le chanteur", "Voix qui remplace la chanteuse"),
-    "ordre": ("Voix de celui qui chante le premier", "Voix de l’autre chanteur"),
+    "ordre": ("Voix de celui qui chante le premier", "Voix du suivant qu’on entend") + ("Voix du suivant",) * 4,
+    "personnes": ("Voix de la première personne entendue", "Voix de la suivante") + ("Voix de la suivante",) * 4,
 }
-TEXTE_PAR_CHANTEUR = ("Duo mixte : un homme et une femme ; même genre : chanteur 1, celui qui chante le premier. Chaque "
-                      "passage, et dans un duo la voix principale et les chœurs, prend la voix du chanteur qu’on y "
-                      "reconnaît ; si la chanson n’a qu’une voix, tout prend la voix de sa classe (sinon la première). "
-                      "En parole, la première voix seule")
+TEXTE_NOMBRE = ("De 2 à 6 voix : la première est celle du premier qu’on entend dans la vidéo, la deuxième celle du "
+                "suivant, etc. Les passages mal attribués se corrigent ensuite dans la frise du résultat, sans Kaggle")
+TEXTE_PAR_CHANTEUR = ("Duo mixte : un homme et une femme ; chanteurs dans l’ordre : le premier qu’on entend prend la "
+                      "première voix, etc. Chaque passage, et dans un duo la voix principale et les chœurs, prend la "
+                      "voix du chanteur qu’on y reconnaît ; si la chanson a moins de voix, seules celles trouvées "
+                      "servent (une seule : tout prend la voix de sa classe, sinon la première). Personnes : en parole, "
+                      "qui parle et quand est repéré (empreintes de voix) ; en chant, comme les chanteurs. Avec "
+                      "« Chanteurs », la parole prend la première voix seule")
 TEXTE_AUTOTUNE = ("Version « (auto-tune) » en plus de la normale, qui ne change pas : x42-autotune sur la voix sèche, "
                   "dans la gamme détectée sur la musique")
 TEXTE_X42_ABSENT = "x42-autotune absent : installez x42-plugins (sudo apt install x42-plugins)"
@@ -266,14 +274,22 @@ class PageDoubler(commun.Page):
         self._lignes_comparees = {}     # identifiant → (ligne, case)
         self._choix_dispo = list(CHOIX_VOIX)
         g.add(self.r_comparees)
-        self.r_voix_a = Adw.ComboRow(title=LIBELLES_CHANTEURS["genre"][0], visible=False)
-        self.r_voix_b = Adw.ComboRow(title=LIBELLES_CHANTEURS["genre"][1], visible=False)
-        for r in (self.r_voix_a, self.r_voix_b):
+        # nombre de voix (2 à 6) puis une ligne par voix ; r_voix_a et r_voix_b sont les deux premières
+        self.r_nombre = Adw.SpinRow(title="Nombre de voix", subtitle=TEXTE_NOMBRE, visible=False,
+                                    adjustment=Gtk.Adjustment(value=2, lower=2, upper=VOIX_MAXI, step_increment=1,
+                                                              page_increment=1))
+        self.r_nombre.connect("notify::value", lambda *_: self._choix_voix_change())
+        g.add(self.r_nombre)
+        self.rangees = [Adw.ComboRow(title=LIBELLES_CHANTEURS["genre"][k] if k < 2 else LIBELLES_CHANTEURS["ordre"][k],
+                                     visible=False) for k in range(VOIX_MAXI)]
+        self.r_voix_a, self.r_voix_b = self.rangees[0], self.rangees[1]
+        for r in self.rangees:
             r.connect("notify::selected", lambda *_: self._maj())
             g.add(r)
-        # le choix, le duo et les deux voix sont gardés dans interface.json d'une session à l'autre
-        for r in (self.r_choix_voix, self.r_duo, self.r_voix_a, self.r_voix_b):
+        # le choix, le duo, le nombre et les voix sont gardés dans interface.json d'une session à l'autre
+        for r in (self.r_choix_voix, self.r_duo, *self.rangees):
             r.connect("notify::selected", lambda *_: self._memoriser_chanteurs())
+        self.r_nombre.connect("notify::value", lambda *_: self._memoriser_chanteurs())
         self.r_mode = Adw.ComboRow(title="Mode", model=Gtk.StringList.new([m[1] for m in MODES]),
                                    subtitle="Automatique : chant s’il y a une musique sous la voix et que la voix "
                                             "chante ou rappe, sinon parole")
@@ -417,21 +433,32 @@ class PageDoubler(commun.Page):
             self.r_choix_voix.set_selected(next(i for i, c in enumerate(CHOIX_VOIX)
                                                 if c[0] == ("chanteurs" if par else "une")))
             self.r_duo.set_selected(next((i for i, d in enumerate(DUOS) if d[0] == duo), 0))
+            self.r_nombre.set_value(chemins.nombre_voix(p))
         finally:
             self._sans_memoire = False
+
+    def nombre_de_voix(self):
+        """Nombre de voix demandé (2 à 6) ; le duo mixte, homme et femme, n'en a que deux."""
+        n = max(2, min(VOIX_MAXI, int(round(self.r_nombre.get_value()))))
+        return 2 if DUOS[self.r_duo.get_selected()][0] == "genre" else n
+
+    def mode_chanteurs(self):
+        """« genre », « ordre » ou « personnes »."""
+        j = self.r_duo.get_selected()
+        return DUOS[j][0] if 0 <= j < len(DUOS) else DUOS[0][0]
 
     def _voix_changees(self):
         voix = self.fenetre.voix
         # les choix en cours, lus avant que la liste change (leur position dans le menu change avec elle)
         actuelle = self._choix_menu(self.r_voix) if hasattr(self, "_ids_voix") else None
-        gardes = [self._choix_menu(r) for r in (self.r_voix_a, self.r_voix_b)]
+        gardes = [self._choix_menu(r) for r in self.rangees]
         self._ids_voix = [v["id"] for v in voix]
         # voix cochées pour la comparaison : celles en cours, sinon celles gardées dans interface.json
         cochees = (set(self.voix_a_comparer()) if self._lignes_comparees else
                    {v for v in (self.fenetre.prefs.get("voix_comparees") or []) if isinstance(v, str)})
         # une voix par chanteur : le choix en cours, sinon celui gardé dans interface.json s'il existe encore ; une
         # voix disparue n'est pas présélectionnée et « Lancer » attend un choix
-        memoire = chemins.choix_chanteurs(self.fenetre.prefs, self._ids_voix)[2]
+        memoire = chemins.choix_chanteurs({**self.fenetre.prefs, "nombre_voix": VOIX_MAXI}, self._ids_voix)[2]
         noms = [f"{v['nom']} ({v['id']})" if v["nom"].lower() != v["id"] else v["nom"] for v in voix] or ["aucune voix"]
         self._sans_memoire = True
         try:
@@ -444,7 +471,7 @@ class PageDoubler(commun.Page):
             elif voix:
                 self.r_voix.set_selected(Gtk.INVALID_LIST_POSITION)
             self.r_voix.set_sensitive(bool(voix))
-            for r, garde, gardee in zip((self.r_voix_a, self.r_voix_b), gardes, memoire):
+            for r, garde, gardee in zip(self.rangees, gardes, memoire):
                 r.set_model(Gtk.StringList.new(noms))
                 cible = garde if garde in self._ids_voix else gardee
                 r.set_selected(self._ids_voix.index(cible) if cible in self._ids_voix else Gtk.INVALID_LIST_POSITION)
@@ -496,15 +523,17 @@ class PageDoubler(commun.Page):
         interface.json. Une ligne sans voix choisie garde la voix gardée jusque-là."""
         if self._sans_memoire or not hasattr(self, "_ids_voix"):
             return
-        avant = chemins.choix_chanteurs(self.fenetre.prefs)
+        p = {**self.fenetre.prefs, "nombre_voix": VOIX_MAXI}   # toutes les voix gardées, pas seulement les visibles
+        avant = chemins.choix_chanteurs(p)
         i, j = self.r_choix_voix.get_selected(), self.r_duo.get_selected()
         par = 0 <= i < len(self._choix_dispo) and self._choix_dispo[i][0] == "chanteurs"
         duo = DUOS[j][0] if 0 <= j < len(DUOS) else avant[1]
-        voix = [self._choix_menu(r) or v for r, v in zip((self.r_voix_a, self.r_voix_b), avant[2])]
-        if (par, duo, voix) == avant:
+        voix = [self._choix_menu(r) or v for r, v in zip(self.rangees, avant[2])]
+        nombre = max(2, min(VOIX_MAXI, int(round(self.r_nombre.get_value()))))
+        if (par, duo, voix, nombre) == (*avant, chemins.nombre_voix(self.fenetre.prefs)):
             return
         self.fenetre.prefs = chemins.modifier_preferences({"voix_par_chanteur": par, "duo_chanteurs": duo,
-                                                           "voix_chanteurs": voix})
+                                                           "voix_chanteurs": voix, "nombre_voix": nombre})
 
     def par_chanteur(self):
         """Vrai si « Une voix par chanteur » est choisi (et que doubler le connaît)."""
@@ -541,14 +570,16 @@ class PageDoubler(commun.Page):
 
     def _choix_voix_change(self):
         chanteurs, comparer = self.par_chanteur(), self.comparer()
-        mode = DUOS[self.r_duo.get_selected()][0]
+        mode = self.mode_chanteurs()
+        n = self.nombre_de_voix()
         self.r_comparees.set_visible(comparer)
         self.r_voix.set_visible(not chanteurs and not comparer)
-        for r, titre, sous in zip((self.r_voix_a, self.r_voix_b), LIBELLES_CHANTEURS[mode], SOUS_TITRES_CHANTEURS[mode]):
-            r.set_visible(chanteurs)
+        for k, (r, titre, sous) in enumerate(zip(self.rangees, LIBELLES_CHANTEURS[mode], SOUS_TITRES_CHANTEURS[mode])):
+            r.set_visible(chanteurs and k < n)
             r.set_title(titre)
             r.set_subtitle(sous)
         self.r_duo.set_visible(chanteurs)
+        self.r_nombre.set_visible(chanteurs and mode != "genre")   # le duo mixte n'a que deux voix
         self._rendre()
 
     def _voix_choisie(self):
@@ -558,8 +589,8 @@ class PageDoubler(commun.Page):
             c = self.voix_a_comparer()
             return c[0] if len(c) >= 2 else None   # la première voix sert à l'analyse ; reglages() liste toutes les voix
         if self.par_chanteur():
-            a, b = self._choix_menu(self.r_voix_a), self._choix_menu(self.r_voix_b)
-            return moteur.spec_voix(DUOS[self.r_duo.get_selected()][0], [a, b]) if a and b else None
+            choisies = [self._choix_menu(r) for r in self.rangees[:self.nombre_de_voix()]]
+            return moteur.spec_voix(self.mode_chanteurs(), choisies) if all(choisies) else None
         return self._choix_menu(self.r_voix)
 
     def montrer(self):
@@ -877,10 +908,9 @@ class PageDoubler(commun.Page):
         sur_kaggle = (reglages.get("calcul") or moteur.calcul_par_defaut(self._conf)) not in ("modal", "runpod")
         self._maj_quota([e.get("kaggle") or 0.0 for e in estimations] if sur_kaggle else [0.0] * len(estimations))
         if self.par_chanteur():
-            a, b = self._choix_menu(self.r_voix_a), self._choix_menu(self.r_voix_b)
-            self.r_duo.set_subtitle(TEXTE_PAR_CHANTEUR if not (a and b and a == b) else
-                                    "La même voix pour les deux chanteurs : un doublage à une voix, comme « Une voix "
-                                    "pour tous »")
+            choisies = [self._choix_menu(r) for r in self.rangees[:self.nombre_de_voix()]]
+            self.r_duo.set_subtitle(TEXTE_PAR_CHANTEUR if not (all(choisies) and len(set(choisies)) == 1) else
+                                    "La même voix pour tous : un doublage à une voix, comme « Une voix pour tous »")
 
     def _texte_comparees(self, n_videos):
         """Sous-titre de « Voix à comparer » : ce qui manque, puis le coût, et le conseil de l'extrait court."""
@@ -1068,14 +1098,15 @@ class PageDoubler(commun.Page):
             self.r_chaine.set_selected(next(i for i, c in enumerate(CHAINES) if c[0] == "mesure"))
         elif action == "extrait" and self.videos:
             self.regler_extrait(self.videos[0])
-        elif action in ("par-chanteur", "par-chanteur-ordre"):
+        elif action in ("par-chanteur", "par-chanteur-ordre", "par-chanteur-quatre", "par-personne-trois"):
             self.scenario("exemple")
             self.r_choix_voix.set_selected(1)
-            self.r_duo.set_selected(1 if action.endswith("ordre") else 0)
+            self.r_duo.set_selected(2 if "personne" in action else 1 if "ordre" in action or "quatre" in action else 0)
+            self.r_nombre.set_value({"par-chanteur-quatre": 4, "par-personne-trois": 3}.get(action, 2))
             ids = getattr(self, "_ids_voix", [])
-            if len(ids) >= 2:
-                self.r_voix_a.set_selected(0)
-                self.r_voix_b.set_selected(1)
+            for k, r in enumerate(self.rangees):
+                if k < len(ids):
+                    r.set_selected(k)
             self.r_autotune.set_enable_expansion(True)
         elif action == "exemple-extrait":
             self.scenario("exemple")

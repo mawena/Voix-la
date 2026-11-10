@@ -168,8 +168,8 @@ def version(res, noms_voix=None):
     l'interface."""
     noms_voix = noms_voix or {}
     titre = res.titre_court
-    voix = res.voix_nom or (res.voix and " et ".join(noms_voix.get(m) or m.capitalize()
-                                                   for m in moteur.membres_voix(res.voix))) or ""
+    voix = res.voix_nom or (res.voix and formats.joindre(noms_voix.get(m) or m.capitalize()
+                                                         for m in moteur.membres_voix(res.voix))) or ""
     image = res.video or res.mp3
     sig = _signature_fichier(image) if image is not None else None
     groupe = res.groupe or ""

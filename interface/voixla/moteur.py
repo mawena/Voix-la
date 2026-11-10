@@ -115,6 +115,8 @@ def analyser_aide(texte):
         caps.add("son_seul")   # un fichier audio seul (mp3, wav, flac…) en entrée : sortie mp3, sans image
     if "homme:NOM,femme:NOM" in (texte or "") and "chanteur1:NOM,chanteur2:NOM" in (texte or ""):
         caps.add("voix_par_chanteur")   # --voix homme:a,femme:b ou chanteur1:a,chanteur2:b : une voix par chanteur
+        if "personne1:NOM,personne2:NOM" in (texte or ""):
+            caps.add("voix_par_personne")   # jusqu'à six voix : chanteur1:…,chanteur6:… et personne1:…,personne6:…
     return frozenset(caps)
 
 
@@ -166,7 +168,8 @@ def spec_extrait(extrait):
 
 # --- Une voix par chanteur (--voix homme:a,femme:b ou chanteur1:a,chanteur2:b), comme doubler.lire_spec_voix --------
 
-CLES_VOIX = {"genre": ("homme", "femme"), "ordre": ("chanteur1", "chanteur2")}
+CLES_VOIX = {"genre": ("homme", "femme"), "ordre": tuple(f"chanteur{k}" for k in range(1, 7)),
+             "personnes": tuple(f"personne{k}" for k in range(1, 7))}   # jusqu'à six voix
 
 
 def lire_spec_voix(spec):
@@ -865,7 +868,8 @@ def estimation_noyau_s(durees_s, pas, sorties, nettoyage=True, mode="auto", mote
         options = dict(nettoyage=bool(nettoyage), mode=mode or "auto", moteur=moteur_chant or "yingmusic",
                        paroles=bool(paroles), voix_cibles=max(1, int(voix_cibles or 1)), cartes=max(1, int(cartes or 1)))
         if options["voix_cibles"] > 1 and "versions_duo" in getattr(estimer, "__code__", None).co_varnames:
-            options["versions_duo"] = "toutes"    # doubler convertit chaque passage dans les deux voix (son défaut)
+            # doubler convertit chaque passage dans les deux voix en duo (son défaut), seulement les utiles au-delà
+            options["versions_duo"] = "toutes" if options["voix_cibles"] == 2 else "utiles"
         if int(voix_comparees or 1) > 1:
             if "voix_comparees" not in getattr(estimer, "__code__", None).co_varnames:
                 return None    # doubler d'avant --comparer : l'interface prend son propre modèle

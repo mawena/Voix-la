@@ -1291,7 +1291,7 @@ class PageDetail(Adw.NavigationPage):
         if self.frise_voix is not None:
             p = self.frise_voix.passage_a(t)
             if p:
-                texte += " · " + " et ".join(self.fenetre.nom_voix(v) for v in p["voix"])
+                texte += " · " + formats.joindre(self.fenetre.nom_voix(v) for v in p["voix"])
         self.passage.set_label(texte)
 
     def _clic_frise(self, t):
@@ -1395,10 +1395,11 @@ class PageDetail(Adw.NavigationPage):
         boite = commun.boite(espace=4, marges=6)
         boite.append(Gtk.Label(label=f"Passage {i} · {formats.chrono_precis(m['debut'])} – "
                                      f"{formats.chrono_precis(m['fin'])}", xalign=0, css_classes=["heading"]))
-        auto = " et ".join(nom(v) for v in m["voix_auto"]) or "—"
+        auto = formats.joindre(nom(v) for v in m["voix_auto"]) or "—"
         boite.append(commun.legende(f"automatique : {auto}" + (" · corrigé à la main" if m["corrige"] else "")))
         actuel = self._choix_actuel(i)
-        choix = [(n, f"Chanté par {nom(n)}") for n in noms] + [(rapports.CHOIX_DEUX, "Les deux"),
+        choix = [(n, f"Chanté par {nom(n)}") for n in noms] + [(rapports.CHOIX_DEUX,
+                                                                "Les deux" if len(noms) == 2 else "Toutes ensemble"),
                                                                 (rapports.CHOIX_AUTO, f"Automatique ({auto})")]
         premier = None
         for valeur, libelle in choix:

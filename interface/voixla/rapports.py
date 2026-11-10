@@ -306,7 +306,7 @@ class Resultat:
         lignes = []
         if d.get("message"):
             texte = str(d["message"])
-            if d.get("voix") != 2 and d.get("pourquoi_une_voix"):
+            if (d.get("voix") or 0) < 2 and d.get("pourquoi_une_voix"):
                 texte += f" ({d['pourquoi_une_voix']})"
             lignes.append(texte)
         aff = r.get("affectation") or {}
@@ -535,7 +535,7 @@ def nom_affiche_voix(ident, noms_voix=None):
     noms_voix = noms_voix or {}
     if not ident:
         return ""
-    return " et ".join(noms_voix.get(m) or m.capitalize() for m in moteur.membres_voix(ident))
+    return formats.joindre(noms_voix.get(m) or m.capitalize() for m in moteur.membres_voix(ident))
 
 
 COMPARAISON_PAS = re.compile(r"^comparaison_(\d+)pas")

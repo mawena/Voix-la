@@ -1,6 +1,6 @@
 PYTHON ?= python3
 
-.PHONY: test unit cli deb clean
+.PHONY: test unit cli deb apt clean
 
 test: unit cli
 
@@ -17,6 +17,10 @@ cli:
 
 deb:
 	bash scripts/build-deb.sh
+
+# Publie dist/*.deb dans le dépôt APT signé (branche gh-pages ; VOIXLA_APT_PUSH=0 pour ne pas pousser)
+apt:
+	scripts/publier-apt.sh dist/*.deb
 
 clean:
 	rm -rf dist build debian/voix-la debian/.debhelper debian/files debian/*.substvars debian/*.debhelper debian/*.debhelper.log debian/debhelper-build-stamp

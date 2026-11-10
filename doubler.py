@@ -11,7 +11,9 @@
   doubler --ajouter-voix <nom> <enregistrement>      ajoute une voix (n'importe quel audio ou vidéo)
   doubler --voix-liste [--json]                      voix disponibles
   doubler --config [CLE VALEUR]                      affiche la configuration, ou écrit une clé
-  doubler --reprendre                                finit une session Kaggle interrompue (sans GPU)
+  doubler --reprendre                                finit une session Kaggle ou Runpod interrompue (sans GPU)
+  doubler --nettoyer-runpod                          supprime les pods Runpod voix-la-… restants
+  doubler … --calcul kaggle|modal|runpod|auto        où tourne le GPU (clé « calcul » ; défaut kaggle)
   doubler "clip.mp4@60+40" "film.mkv@1:10+35"        un extrait propre à chaque vidéo d'un lot
   doubler chanson.mp3 [--debut S --duree S]          un fichier audio seul (mp3, wav, flac, m4a, ogg, opus…)
 
@@ -78,6 +80,14 @@ défaut : « moteur » (doubler --config moteur seedvc), sinon yingmusic. Pistes
 (toutes, défaut, ou doublage). Cartes GPU : « gpu » (auto, 1 ou 2) ; machine Kaggle : « kaggle.machine »
 (NvidiaTeslaT4 par défaut : GPU T4 x2). Commande kaggle : $VOIXLA_KAGGLE, sinon ~/kaggle-venv/bin/kaggle. Ancres de
 genre (facultatives) : ~/.config/voix-la/ancres_genre.json, sinon kaggle/ du dépôt.
+Calcul ailleurs que sur Kaggle (--calcul, clé « calcul », voir calcul.py) : le MÊME noyau tourne sur Modal (application
+éphémère, carte « modal.gpu », L4 par défaut ; modèles publics dans le volume « voix-la-modeles », préparés par
+doubler --calcul modal --preparer-outils) ou sur un pod Runpod RTX 4090 (payant : seulement avec --calcul runpod ; pod
+« voix-la-… » toujours supprimé : finally, minuterie dans le pod, doubler --nettoyer-runpod). auto : Kaggle d'abord, puis
+Modal si Kaggle n'est pas disponible (la version Kaggle restée en file est à annuler sur le site : le lien est donné).
+La référence de la voix et le son ne sont gardés ni sur Modal ni sur Runpod : envoyés pour le calcul, effacés à la fin.
+Durée et coût estimés (en dollars) selon la carte. --reprendre : Runpod se reprend (pod suivi puis supprimé) ; une session
+Modal interrompue est perdue (l'application s'arrête avec le PC) et close proprement.
 YingMusic-SVC : code MIT, poids CC BY-NC 4.0, donc usage personnel et non commercial seulement.
 """
 import argparse
@@ -4615,6 +4625,55 @@ def traiter_lot(videos, a, voix):
     return echecs + finir_travaux(travaux, a, voix, session, temps, envoi_s, estimation)
 
 
+def session_ailleurs_notee():
+    """Vrai si la session en cours (SESSION) a tourné sur Modal ou Runpod : --reprendre n'a alors pas besoin de Kaggle."""
+    try:
+        return json.loads(SESSION.read_text()).get('calcul', 'kaggle') != 'kaggle'
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def configurer_kaggle_si_possible(conf, facultatif):
+    """configurer_kaggle ; sans compte Kaggle configuré, Modal et Runpod marchent quand même (facultatif)."""
+    try:
+        configurer_kaggle(conf)
+    except SystemExit:
+        if not facultatif:
+            raise
+
+
+def preparer_outils_modal(a, conf):
+    """Prépare une fois, dans le volume Modal « voix-la-modeles » (modèles PUBLICS seulement : wheels, Seed-VC, YingMusic-SVC,
+    poids), ce que prépare --preparer-outils sur Kaggle : le même noyau en mode « outils », dont DOUBLER_SORTIE est le
+    volume. Les doublages suivants sur Modal le montent. Coût : environ 10 à 15 min de carte (Modal)."""
+    kdir = Path(a.sortie).expanduser().resolve() / '.kaggle'
+    kdir.mkdir(parents=True, exist_ok=True)
+    calcul = charger_calcul()
+    module = charger_calcul('calcul_modal')
+    ok, raison = module.pret()
+    if not ok:
+        sys.exit('Modal : ' + raison)
+    gpu = gpu_calcul_config(conf, 'modal')
+    c = calcul.carte(gpu, 'modal')
+    script = kdir / 'noyau-modal-outils.py'
+    script.write_text(construire_script({'outils': True}))
+    retour = kdir / 'retour-outils-modal'
+    shutil.rmtree(retour, ignore_errors=True)
+    dire(f"Modal : préparation des outils dans le volume des modèles publics, carte {c['nom']}, environ 15 min "
+         f"({calcul.dollars(calcul.estimer_calcul(900, 'modal', c)[1])})")
+    try:
+        res = module.lancer({'script': script, 'jeu': None, 'retour': retour, 'gpu': gpu, 'timeout_s': 3600,
+                             'mode': 'outils'}, dire)
+    finally:
+        script.unlink(missing_ok=True)
+    if res['code'] != 0 or not (retour / 'outils.json').exists():
+        raise SystemExit('Modal : préparation des outils en échec ; fin du journal :\n' + '\n'.join(res['journal'][-20:]))
+    fiche = json.loads((retour / 'outils.json').read_text())
+    shutil.rmtree(retour, ignore_errors=True)
+    dire(f"outils prêts sur Modal : Seed-VC {fiche['commit'][:10]}, YingMusic-SVC "
+         f"{str((fiche.get('yingmusic') or {}).get('commit'))[:10]}, tailles {fiche.get('tailles_mo')} Mo")
+
+
 def reprendre_ailleurs(a, s, travaux, titres, voix, kdir):
     """--reprendre d'une session Modal ou Runpod. Modal : l'application éphémère s'arrête avec le PC, donc le calcul et
     le son envoyé aussi (rien ne reste ouvert ni facturé) : la session est close et il faut refaire le doublage.
@@ -4827,6 +4886,14 @@ def main():
                    help="cartes GPU du noyau : auto (défaut : les deux T4 de la machine Kaggle, une seule si elle n'en a "
                         "qu'une), 1 (une carte, comme avant) ou 2 ; même résultat, plus vite à deux. Défaut lu dans la "
                         'configuration (clé « gpu »)')
+    p.add_argument('--calcul', choices=list(CALCULS), default=None,
+                   help='où tourne le GPU : kaggle (défaut, gratuit), modal (crédit gratuit mensuel ; carte « modal.gpu », '
+                        'L4 par défaut), runpod (RTX 4090 PAYANTE : seulement sur demande, jamais automatique ; le pod est '
+                        'toujours supprimé à la fin) ou auto (Kaggle d\'abord, puis Modal si Kaggle n\'est pas disponible : '
+                        'pas de jeton, refus, quota épuisé, ou « queued » au-delà de « kaggle.attente_file_min », 20 min). '
+                        'Défaut lu dans la configuration (clé « calcul »). N\'a rien à voir avec --gpu, qui compte les cartes')
+    p.add_argument('--nettoyer-runpod', action='store_true',
+                   help='supprime les pods Runpod « voix-la-… » restants (jamais les autres) puis quitte')
     p.add_argument('--voix-db', type=float, default=None, help='voix par rapport à celle de la vidéo (défaut +4 en chant, 0 en parole)')
     p.add_argument('--reverb-db', type=float, default=-13, help='reverb sous la voix sèche, en chant (défaut -13)')
     p.add_argument('--mix-v1', action='store_true',
@@ -4917,7 +4984,17 @@ def executer(p, a):
         afficher_config(a, a.json)
         return 0
     conf = configurer(a)
+    if a.nettoyer_runpod:
+        charger_calcul('calcul_runpod').nettoyer(dire)
+        return 0
+    a.calcul = a.calcul or calcul_config(conf)
     if a.preparer_outils:
+        if a.calcul == 'runpod':
+            sys.exit('--preparer-outils : sur Runpod, le pod est supprimé à chaque session, les outils ne s\'y gardent pas '
+                     '(utiliser kaggle ou modal)')
+        if a.calcul in ('modal', 'auto'):
+            preparer_outils_modal(a, conf)
+            return 0
         configurer_kaggle(conf)
         preparer_outils(a)
         return 0
@@ -4929,11 +5006,12 @@ def executer(p, a):
         return 0
     a.pistes_audio = a.pistes_audio or pistes_audio_config(conf)
     if a.reprendre:
-        if not KAGGLE.exists() or not JETON.exists():
+        ailleurs = session_ailleurs_notee()
+        if not ailleurs and (not KAGGLE.exists() or not JETON.exists()):
             sys.exit(f'Kaggle : commande ({KAGGLE}) ou clé (~/.kaggle/access_token) absente')
         a.paroles = not a.sans_paroles and paroles_config(conf)
         a.autotune_reglage = reglage_autotune(a, conf)
-        configurer_kaggle(conf)
+        configurer_kaggle_si_possible(conf, ailleurs)
         echecs = reprendre(a)
         if echecs:
             sys.exit(f"{len(echecs)} vidéo(s) en échec : {', '.join(map(str, echecs))}")
@@ -4999,9 +5077,13 @@ def executer(p, a):
                 EV('erreur', titre, message=str(e))
                 echecs.append(v)
     else:
-        if not KAGGLE.exists() or not JETON.exists():
-            sys.exit(f'Kaggle : commande ({KAGGLE}) ou clé (~/.kaggle/access_token) absente')
-        configurer_kaggle(conf)
+        if a.calcul == 'kaggle' and (not KAGGLE.exists() or not JETON.exists()):
+            sys.exit(f'Kaggle : commande ({KAGGLE}) ou clé (~/.kaggle/access_token) absente '
+                     '(--calcul modal ou auto : doubler sur Modal)')
+        ok_c, raison_c = (True, '') if a.calcul in ('kaggle', 'auto') else moyen_pret(a.calcul)
+        if not ok_c:
+            sys.exit(f'{NOMS_CALCUL[a.calcul]} : {raison_c}')
+        configurer_kaggle_si_possible(conf, a.calcul != 'kaggle')
         echecs = traiter_lot(a.videos, a, voix)
     if echecs:
         sys.exit(f"{len(echecs)} vidéo(s) en échec : {', '.join(map(str, echecs))}")

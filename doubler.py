@@ -1,7 +1,8 @@
 #!/usr/bin/python3
 """doubler (Voix-là) : remplace la voix d'une vidéo par une voix clonée (YingMusic-SVC, Seed-VC ; GPU gratuit de Kaggle).
 
-  doubler <vidéo> [<vidéo>…] [--voix NOM | --voix homme:NOM,femme:NOM | --voix chanteur1:NOM,chanteur2:NOM]
+  doubler <vidéo> [<vidéo>…] [--voix NOM | --voix homme:NOM,femme:NOM | --voix chanteur1:NOM,…,chanteur6:NOM
+                              | --voix personne1:NOM,…,personne6:NOM]
           [--comparer NOM,NOM[,NOM…]]
           [--mode auto|chant|parole] [--octave auto|0|-12|+12] [--transposer auto|non|N] [--pas 30]
           [--moteur yingmusic|seedvc] [--sans-nettoyage] [--sans-paroles] [--gpu auto|1|2] [--voix-db 4] [--reverb-db -13]
@@ -54,9 +55,13 @@ par Rubber Band R3 (paquet librubberband2) avant le mixage, à durée exacte, ga
 seule » ne le sont jamais. Sans Rubber Band : avertissement, pas de transposition, octave seule. La décision (décalage,
 octave par chanteur, médianes avant et après, zone, raison) est dans rapport.json (« transposition ») et affichée à la fin.
 --remix suit la décision déjà prise : --transposer non ne peut pas changer la voix sans reconvertir (message, sans erreur).
-Une voix par chanteur (--voix homme:A,femme:B pour un duo mixte, chanteur1:A,chanteur2:B pour un duo de même genre) :
-chaque piste de chaque passage (voix principale, chœurs, secours) prend la voix du chanteur qu'on y reconnaît, l'octave
-se décide pour chaque couple chanteur -> voix ; sorties <titre> - voix A et B.<ext>, travail/A+B/.
+Une voix par chanteur (--voix homme:A,femme:B pour un duo mixte, chanteur1:A,chanteur2:B[,chanteur3:C…, jusqu'à 6] pour des
+chanteurs de même genre) : chaque piste de chaque passage (voix principale, chœurs, secours) prend la voix du chanteur qu'on y
+reconnaît, l'octave se décide pour chaque couple chanteur -> voix ; sorties <titre> - voix A et B.<ext> (A, B et C…),
+travail/A+B/. Une voix par personne (--voix personne1:A,personne2:B[,… jusqu'à 6]) : en chant comme chanteurN ; en parole
+(film, interview, sketch), le noyau repère qui parle et quand (empreintes de voix CAMPPlus sur des fenêtres glissantes,
+regroupées en N personnes dans l'ordre d'apparition) et chaque personne prend sa voix (Seed-VC 22 kHz). Avec plus de
+deux voix, --versions-duo vaut utiles par défaut (toutes : N fois la conversion).
 Un fichier audio seul (mp3, wav, flac, m4a, ogg, opus… : tout fichier sans image ; la pochette jointe d'un mp3 n'en est
 pas une) suit la même chaîne, sans image : pas de remise sur la vidéo, la sortie est <titre> - voix <Nom>.mp3 (320 kbps)
 avec .lrc, paroles/*.srt (si les paroles sont demandées) et travail/ comme pour une vidéo (son d'origine, beat seul,
@@ -744,6 +749,9 @@ def encoder_flac(wav, flac, bits=16):
 
 VERSIONS_DUO = ('toutes', 'utiles', 'non')   # voir kaggle/doubler_kaggle.py (versions_duo)
 VERSIONS_DUO_DEFAUT = 'toutes'
+# Plus de deux voix : « toutes » convertirait chaque passage dans les N voix (N fois la conversion) ; par défaut seulement
+# les passages utiles (incertains, de hauteur ambiguë, chantés ensemble ou voisins d'un changement de voix)
+VERSIONS_PLUSIEURS_DEFAUT = 'utiles'
 
 
 def versions_duo_config(conf):
@@ -850,12 +858,24 @@ def zone_de_chant(dossier, f0_parole):
 
 # Une voix par chanteur : --voix homme:NOM,femme:NOM (duo mixte) ou chanteur1:NOM,chanteur2:NOM (duo de même genre,
 # chanteurs pris dans l'ordre d'apparition). Le noyau reçoit voix_cibles (kaggle/doubler_kaggle.py, decider_chanteurs).
-CLES_VOIX = {'genre': ('homme', 'femme'), 'ordre': ('chanteur1', 'chanteur2')}
+# Jusqu'à VOIX_MAXI voix : chanteur1…chanteur6 (chant, dans l'ordre d'apparition), personne1…personne6 (chant comme
+# parole : en parole, qui parle et quand est repéré, puis chaque personne prend sa voix). homme/femme : deux voix.
+VOIX_MAXI = 6
+CLES_VOIX = {'genre': ('homme', 'femme'),
+             'ordre': tuple(f'chanteur{k}' for k in range(1, VOIX_MAXI + 1)),
+             'personnes': tuple(f'personne{k}' for k in range(1, VOIX_MAXI + 1))}
+
+
+def joindre_noms(noms):
+    """« A », « A et B », « A, B et C »."""
+    noms = list(noms)
+    return noms[0] if len(noms) == 1 else ', '.join(noms[:-1]) + ' et ' + noms[-1] if noms else ''
 
 
 def lire_spec_voix(texte):
-    """« NOM » -> (None, [(None, NOM)]) ; « homme:a,femme:b » ou « chanteur1:a,chanteur2:b » -> (mode, [(clé, nom)]),
-    rangé dans l'ordre des clés (homme puis femme, chanteur1 puis chanteur2). ValueError si la syntaxe est fausse."""
+    """« NOM » -> (None, [(None, NOM)]) ; « homme:a,femme:b », « chanteur1:a,chanteur2:b,chanteur3:c » (jusqu'à
+    chanteur6) ou « personne1:a,personne2:b,… » -> (mode, [(clé, nom)]), rangé dans l'ordre des clés ; les clés
+    chanteurN / personneN se suivent de 1 à N. ValueError si la syntaxe est fausse."""
     texte = str(texte).strip()
     if ':' not in texte and ',' not in texte:
         if not re.fullmatch(NOM_VOIX, texte):
@@ -871,8 +891,8 @@ def lire_spec_voix(texte):
         if not sep or not nom:
             raise ValueError(f'« {morceau} » : clé:voix attendu ({", ".join(f"{c}:NOM" for c in toutes)})')
         if cle not in toutes:
-            raise ValueError(f'clé inconnue « {cle} » : homme et femme (duo mixte), ou chanteur1 et chanteur2 (duo de '
-                             'même genre)')
+            raise ValueError(f'clé inconnue « {cle} » : homme et femme (duo mixte), chanteur1 à chanteur{VOIX_MAXI} '
+                             f'(chant) ou personne1 à personne{VOIX_MAXI} (chant ou parole)')
         if not re.fullmatch(NOM_VOIX, nom):
             raise ValueError(f'nom de voix invalide : « {nom} » (minuscules, chiffres, - ou _)')
         if cle in (c for c, _ in paires):
@@ -882,10 +902,14 @@ def lire_spec_voix(texte):
         raise ValueError('aucune voix')
     modes = {m for m, cles in CLES_VOIX.items() for c, _ in paires if c in cles}
     if len(modes) > 1:
-        raise ValueError('homme/femme et chanteur1/chanteur2 ne se mélangent pas : homme:…,femme:… pour un duo mixte, '
-                         'chanteur1:…,chanteur2:… pour un duo de même genre')
+        raise ValueError('homme/femme, chanteurN et personneN ne se mélangent pas : homme:…,femme:… pour un duo mixte, '
+                         'chanteur1:…,chanteur2:…,… pour des chanteurs de même genre, personne1:…,personne2:…,… pour des '
+                         'personnes (parole ou chant)')
     mode = modes.pop()
-    return mode, sorted(paires, key=lambda p: CLES_VOIX[mode].index(p[0]))
+    paires = sorted(paires, key=lambda p: CLES_VOIX[mode].index(p[0]))
+    if mode != 'genre' and [c for c, _ in paires] != list(CLES_VOIX[mode][:len(paires)]):
+        raise ValueError(f"les clés se suivent de 1 à N sans trou ({', '.join(CLES_VOIX[mode][:len(paires)])})")
+    return mode, paires
 
 
 def charger_voix_spec(texte):
@@ -903,10 +927,13 @@ def charger_voix_spec(texte):
         if mode is not None:
             dire(f'--voix {texte} : une seule voix différente ({noms[0]}) : doublage à une voix, comme --voix {noms[0]}')
         return v
+    premiere = {}   # clé de la première occurrence de chaque voix (une voix donnée à deux chanteurs ne compte qu'une fois)
+    for cle, nom in paires:
+        premiere.setdefault(nom, cle)
     membres = [charger_voix(n) for n in noms]
-    for (cle, _), m in zip(paires, membres):
-        m['cle'] = cle
-    return {'id': '+'.join(noms), 'affichage': ' et '.join(m['affichage'] for m in membres),
+    for nom, m in zip(noms, membres):
+        m['cle'] = premiere[nom]
+    return {'id': '+'.join(noms), 'affichage': joindre_noms(m['affichage'] for m in membres),
             'reference': membres[0]['reference'], 'f0': membres[0]['f0'], 'fiche': membres[0]['fiche'], 'mode': mode,
             'membres': membres, 'spec': ','.join(f'{c}:{n}' for c, n in paires)}
 
@@ -973,7 +1000,8 @@ def decrire_voix(voix):
     """« jules », ou « homme → jules, femme → marie » (plusieurs voix)."""
     if not voix.get('membres'):
         return voix['id']
-    return ', '.join(f"{m['cle'].replace('chanteur', 'chanteur ')} → {m['id']}" for m in voix['membres'])
+    return ', '.join(f"{m['cle'].replace('chanteur', 'chanteur ').replace('personne', 'personne ')} → {m['id']}"
+                     for m in voix['membres'])
 
 
 def lignes_voix_cibles(rapport):
@@ -986,10 +1014,13 @@ def lignes_voix_cibles(rapport):
         return [f"voix cibles : {vc['message']}"]
     dh = rapport.get('decision_hauteur') or {}
     lignes = []
-    if dh.get('voix') == 2:
-        lignes.append(f"voix cibles, {'duo mixte' if vc.get('mode') == 'genre' else 'duo'} ("
-                      f"{'axe du genre' if dh.get('axe') == 'genre' else 'empreintes de la chanson'}) : "
-                      + ', '.join(f"{c.get('nom')} → {c.get('voix')} ({c.get('decalage', 0):+d} dt)"
+    if (dh.get('voix') or 0) >= 2:
+        nb = dh['voix']
+        nom = ('duo mixte' if vc.get('mode') == 'genre' else 'duo') if nb == 2 else f'{nb} voix'
+        lignes.append(f"voix cibles, {nom} ("
+                      f"{'axe du genre' if dh.get('axe') == 'genre' else 'qui parle quand, empreintes de voix' if dh.get('axe') == 'diarisation' else 'empreintes de la chanson'}) : "
+                      + ', '.join(f"{c.get('nom')} → {c.get('voix')}"
+                                  + ('' if c.get('decalage') is None or dh.get('axe') == 'diarisation' else f" ({c['decalage']:+d} dt)")
                                   for c in dh.get('chanteurs') or []))
     elif dh.get('message'):
         lignes.append(f"ATTENTION : {dh['message']}" + (f" ({dh['pourquoi_une_voix']})" if dh.get('pourquoi_une_voix') else ''))
@@ -1404,7 +1435,7 @@ SURCOUT_VERSIONS_DUO = {'toutes': 1.0, 'utiles': 0.5, 'non': 0.0}
 
 
 def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=MOTEUR_DEFAUT, paroles=True, voix_cibles=1,
-                    cartes=1, versions_duo='non', voix_comparees=1):
+                    cartes=1, versions_duo='non', voix_comparees=1, personnes=False):
     """Durée probable d'une session (de l'envoi du noyau à sa fin), d'après la durée audio des vidéos et les rapports
     passés (rapports_passes : sous <sorties>/*/travail/*/, sorties pouvant être une liste de dossiers) : démarrage (file
     Kaggle comprise) + installation + chargement des modèles, le reste de la session (chargement de la séparation, fin
@@ -1537,6 +1568,8 @@ def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=
             t_n = debit_conversion(duree, True)
             t = 1.5 * t if t_n is None else t_n
         return t
+    if voix_cibles > 1 and personnes and not chant:   # parole à plusieurs voix : qui parle quand, une référence par voix
+        fixe += 20.0 * (voix_cibles - 1) + 10.0
     if voix_cibles > 1 and chant:   # une voix par chanteur : chaque référence préparée par moteur, pistes reconnues
         fixe += 20.0 * (voix_cibles - 1)
         t_sep += 0.05
@@ -1549,7 +1582,8 @@ def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=
     if comparees > 1 and chant:   # la conversion de chaque voix (une voix de plus = une conversion de plus)
         conversion *= comparees
     if voix_cibles > 1 and chant:   # les deux versions de chaque passage (versions_duo)
-        conversion *= 1 + SURCOUT_VERSIONS_DUO.get(versions_duo, 0.0)
+        # chaque autre voix est une conversion de plus : (N - 1) fois la part ajoutée en duo
+        conversion *= 1 + SURCOUT_VERSIONS_DUO.get(versions_duo, 0.0) * (voix_cibles - 1)
     # paroles : part fixe (copie locale des modèles) et transcription, traduction comprise, par seconde d'audio
     t_par = statistics.median(par) if par else 0.45
     p_fixe = statistics.median(par_fixes) if par_fixes else 25.0
@@ -3497,6 +3531,12 @@ def nom_voix_choisie(texte, voix_cibles, cles):
         return 'auto'
     if t in CHOIX_DEUX:
         return 'deux'
+    if '+' in t:   # plusieurs voix ensemble (plus de deux voix) : « jules+marie », dans l'ordre des voix du doublage
+        choisies = [nom_voix_choisie(x, voix_cibles, cles) for x in t.split('+')]
+        if any(c in ('auto', 'deux') or '+' in c for c in choisies):
+            raise ValueError(f"« {texte} » : des noms de voix seulement entre les « + »")
+        choisies = [v for v in voix_cibles if v in choisies]
+        return choisies[0] if len(choisies) == 1 else '+'.join(choisies)
     if t in voix_cibles:
         return t
     if t.replace('-', '').replace('_', '').replace(' ', '') in cles:
@@ -3632,7 +3672,7 @@ def voix_de_la_piste(aff, rec_piste, m, i, voix_cibles):
         if choix == 'deux':
             return list(range(len(voix_cibles)))
         if choix:
-            return [voix_cibles.index(choix)]
+            return [voix_cibles.index(c) for c in choix.split('+')]
     return [m[5]]
 
 
@@ -4437,7 +4477,7 @@ def session_ailleurs(nom, travaux, a, voix, kdir, titres, ancres, abandon, echec
                                         not a.sans_nettoyage, a.mode, a.moteur, a.paroles, len(voix_membres(voix)),
                                         calcul.cartes_t4_pour(c),
                                         getattr(a, 'versions_duo', 'non') if voix.get('membres') else 'non',
-                                        len(voix.get('comparees') or ()) or 1)
+                                        len(voix.get('comparees') or ()) or 1, voix.get('mode') == 'personnes')
     estimation, cout = calcul.estimer_calcul(estimation_kaggle, nom, c)
     attente_maxi = max((30 + 20 * len(travaux)) * 60, 2 * estimation + 30 * 60)
     duree_max_min = entier_config(conf, 'runpod.duree_max_min', None) or max(calcul.DUREE_MAX_RUNPOD_MIN,
@@ -4551,7 +4591,7 @@ def traiter_lot(videos, a, voix):
             estimation = estimer_noyau_s([tr['duree_audio_s'] for tr in travaux], a.pas, [a.sortie, SORTIES],
                                          not a.sans_nettoyage, a.mode, a.moteur, a.paroles, len(voix_membres(voix)), cartes,
                                          getattr(a, 'versions_duo', 'non') if voix.get('membres') else 'non',
-                                         len(voix.get('comparees') or ()) or 1)
+                                         len(voix.get('comparees') or ()) or 1, voix.get('mode') == 'personnes')
             # limite du suivi : au moins le double de l'estimation (le nettoyage allonge beaucoup une longue chanson)
             attente_maxi = max((30 + 20 * len(travaux)) * 60, 2 * estimation + 30 * 60)
             dire(f"chaîne : chant → {'voix nettoyée' if not a.sans_nettoyage else 'voix complète (sans nettoyage)'}, "
@@ -4567,8 +4607,15 @@ def traiter_lot(videos, a, voix):
                      + ', '.join(m['id'] for m in voix['comparees'])
                      + ' ; séparation, nettoyage et paroles une fois, conversion pour chaque voix')
             if voix.get('membres'):
-                dire(f"une voix par chanteur ({'duo mixte' if voix['mode'] == 'genre' else 'chanteurs dans l’ordre d’apparition'}) : "
-                     f"{decrire_voix(voix)} ; en parole, {voix['membres'][0]['id']} seule")
+                nb = len(voix['membres'])
+                if voix['mode'] == 'personnes':
+                    dire(f"{nb} voix, une par personne ({decrire_voix(voix)}) : en parole, qui parle et quand est repéré "
+                         "(empreintes de voix), chaque personne prend sa voix ; en chant, une voix par chanteur, dans "
+                         "l'ordre d'apparition")
+                else:
+                    dire(f"une voix par chanteur ({'duo mixte' if voix['mode'] == 'genre' else f'{nb} chanteurs dans l’ordre d’apparition'}) : "
+                         f"{decrire_voix(voix)} ; en parole, {voix['membres'][0]['id']} seule (personne1:…,personne2:… "
+                         'pour une voix par personne)')
 
             def noter(pousse, version):
                 # voix : la spécification de --voix (homme:a,femme:b) avec plusieurs voix, pour que --reprendre la retrouve
@@ -4841,9 +4888,11 @@ def main():
     p.add_argument('--voix', default=None, metavar='NOM',
                    help='voix cible : un dossier de <données>/voix (défaut : clé « voix » de la configuration, '
                         'sinon la seule voix présente) ; une voix par chanteur : homme:NOM,femme:NOM (duo mixte) ou '
-                        'chanteur1:NOM,chanteur2:NOM (duo de même genre, dans l\'ordre d\'apparition) : sorties « voix A et '
-                        'B », dossier travail/A+B ; une seule voix trouvée dans la chanson : tout dans la voix de sa classe, '
-                        'sinon la première')
+                        'chanteur1:NOM,chanteur2:NOM[,chanteur3:NOM…, jusqu\'à chanteur6] (chanteurs de même genre, dans '
+                        'l\'ordre d\'apparition) ; une voix par personne : personne1:NOM,personne2:NOM[,…, jusqu\'à '
+                        'personne6] (en parole, qui parle et quand est repéré ; en chant, comme chanteurN) : sorties « voix '
+                        'A et B » (« A, B et C »), dossier travail/A+B ; moins de voix trouvées dans la vidéo que données : '
+                        'seules les voix trouvées servent (une seule : tout dans la voix de sa classe, sinon la première)')
     p.add_argument('--comparer', default=None, metavar='A,B[,C…]',
                    help=f'comparer des voix : le même extrait (--debut/--duree) doublé dans chaque voix, en une seule '
                         f'session Kaggle (envoi, démarrage, séparation, nettoyage et paroles payés une fois ; seule la '
@@ -4911,14 +4960,16 @@ def main():
     p.add_argument('--autotune-gamme', type=_gamme_option, default=None, metavar='GAMME',
                    help=f'gamme de l\'auto-tune : {GAMME_AIDE}')
     p.add_argument('--versions-duo', choices=VERSIONS_DUO, default=None,
-                   help='une voix par chanteur : convertir chaque passage chanté dans les deux voix cibles, pour corriger '
+                   help='une voix par chanteur : convertir chaque passage chanté dans les autres voix cibles, pour corriger '
                         "ensuite qui chante quoi au remix (--passage, --affectation), sans Kaggle : toutes (défaut en duo : "
-                        "tous les passages), utiles (passages incertains, voisins d'un changement de voix, chantés "
-                        'ensemble : moins de GPU) ou non (comme avant). Défaut lu dans la configuration (clé « versions_duo »)')
+                        "tous les passages dans les deux voix ; avec N voix, N fois la conversion), utiles (passages "
+                        "incertains, de hauteur ambiguë, voisins d'un changement de voix, chantés ensemble : moins de GPU ; "
+                        'défaut avec plus de deux voix) ou non (comme avant). Défaut lu dans la configuration (clé '
+                        '« versions_duo »)')
     p.add_argument('--passage', action='append', default=None, metavar='N=VOIX',
                    help='avec --remix et une voix par chanteur : corriger qui chante le passage N (numéros de la frise et '
-                        'de rapport.json) : VOIX est une voix du doublage, sa clé (homme, femme, chanteur1…), deux (les '
-                        'deux ensemble) ou auto ; N-M une plage, N,M plusieurs, N/principale|choeurs|secours=VOIX une seule '
+                        'de rapport.json) : VOIX est une voix du doublage, sa clé (homme, femme, chanteur1…), deux (toutes '
+                        'ensemble), A+B (plusieurs voix ensemble) ou auto ; N-M une plage, N,M plusieurs, N/principale|choeurs|secours=VOIX une seule '
                         "piste du passage. Répétable ; s'ajoute à l'affectation gardée (travail/A+B/affectation.json)")
     p.add_argument('--affectation', default=None, metavar='FICHIER|auto',
                    help="avec --remix et une voix par chanteur : l'affectation corrigée voulue en entier (fichier JSON, "
@@ -5029,6 +5080,7 @@ def executer(p, a):
     a.transposer_donne = a.transposer is not None
     a.transposer = a.transposer if a.transposer is not None else transposer_config(conf)
     a.envoi_flac = envoi_flac_config(conf)
+    versions_explicites = a.versions_duo is not None or valeur_config(conf, 'versions_duo') is not None
     a.versions_duo = a.versions_duo or versions_duo_config(conf)
     if (a.passage or a.affectation is not None) and not a.remix:
         p.error('--passage et --affectation corrigent un doublage déjà fait : ils vont avec --remix')
@@ -5043,7 +5095,9 @@ def executer(p, a):
     else:
         if a.voix is None:
             a.voix = exiger_voix_defaut()
-        voix = charger_voix_spec(a.voix)   # une voix, ou une par chanteur (homme:a,femme:b, chanteur1:a,chanteur2:b)
+        voix = charger_voix_spec(a.voix)   # une voix, ou une par chanteur (homme:a,femme:b, chanteur1:a,chanteur2:b,…)
+        if len(voix_membres(voix)) > 2 and not versions_explicites:
+            a.versions_duo = VERSIONS_PLUSIEURS_DEFAUT   # N > 2 : « toutes » ferait N fois la conversion
     if a.remix:
         if moteur_donne or a.sans_nettoyage:
             dire('--moteur et --sans-nettoyage sont sans effet avec --remix (le mixage repart de la voix déjà convertie)')

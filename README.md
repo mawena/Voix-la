@@ -8,12 +8,10 @@ Voix-là : votre vidéo, avec une autre voix. Et voilà.
 > puis `apt upgrade` pour chaque nouvelle version) ou par le paquet `.deb` joint à chaque
 > [release](https://github.com/mawena/Voix-la/releases). Voir le [journal des modifications](CHANGELOG.md).
 
-**Installation rapide (Ubuntu 24.04 ou plus récent)** :
+**Installation en une ligne (Ubuntu 24.04 ou plus récent)**, par le [dépôt APT signé](#installation) :
 
 ```sh
-sudo curl -fsSL https://mawena.github.io/Voix-la/apt/voix-la.gpg -o /usr/share/keyrings/voix-la.gpg \
- && sudo curl -fsSL https://mawena.github.io/Voix-la/apt/voix-la.sources -o /etc/apt/sources.list.d/voix-la.sources \
- && sudo apt update && sudo apt install voix-la
+curl -fsSL https://mawena.github.io/Voix-la/installer.sh | sudo sh
 ```
 
 `doubler` prend une vidéo (chanson d'une chanteuse ou d'un chanteur, duo, rap, ou vidéo parlée) et rend la même vidéo,
@@ -176,23 +174,30 @@ sont installés sur Kaggle. L'interface graphique a ses propres prérequis (voir
 
 ### Par le dépôt APT (recommandé)
 
-Le dépôt APT signé de Voix-là est publié sur GitHub Pages (https://mawena.github.io/Voix-la/) : une fois ajouté,
-`sudo apt update && sudo apt upgrade` installe les nouvelles versions.
+Le dépôt APT signé de Voix-là est publié sur GitHub Pages ([mawena.github.io/Voix-la](https://mawena.github.io/Voix-la/)).
+En une ligne :
 
 ```sh
-sudo curl -fsSL https://mawena.github.io/Voix-la/apt/voix-la.gpg -o /usr/share/keyrings/voix-la.gpg \
- && sudo curl -fsSL https://mawena.github.io/Voix-la/apt/voix-la.sources -o /etc/apt/sources.list.d/voix-la.sources \
- && sudo apt update
-sudo apt install voix-la
+curl -fsSL https://mawena.github.io/Voix-la/installer.sh | sudo sh
 ```
 
-Le paquet remet lui-même la clé (`/usr/share/keyrings/voix-la.gpg`) et la source
-(`/etc/apt/sources.list.d/voix-la.sources`) en place : installé une fois depuis un `.deb`, il suit ensuite le dépôt.
-Clé de signature « Voix-là APT (mawena) », empreinte `20F9 E2A5 B482 09DE DBD3  9601 0604 C235 3943 6022`
-(`data/apt/LISEZMOI`). Pour publier une version : `make deb` puis `make apt` (`scripts/publier-apt.sh` ;
-`VOIXLA_APT_PUSH=0` pour essayer sans pousser).
+Le script ([`site/installer.sh`](site/installer.sh)) fait exactement ces trois étapes, à faire aussi à la main :
 
-### Paquet Debian
+```sh
+sudo curl -fsSLo /usr/share/keyrings/voix-la.gpg https://mawena.github.io/Voix-la/apt/voix-la.gpg
+sudo curl -fsSLo /etc/apt/sources.list.d/voix-la.sources https://mawena.github.io/Voix-la/apt/voix-la.sources
+sudo apt update && sudo apt install voix-la
+```
+
+**Mises à jour** : `sudo apt update && sudo apt upgrade`. Le paquet remet lui-même la clé
+(`/usr/share/keyrings/voix-la.gpg`) et la source (`/etc/apt/sources.list.d/voix-la.sources`) en place.
+
+Clé de signature « Voix-là APT (mawena) », empreinte `20F9 E2A5 B482 09DE DBD3  9601 0604 C235 3943 6022`
+(`data/apt/LISEZMOI` ; à comparer avec `gpg --show-keys --with-fingerprint /usr/share/keyrings/voix-la.gpg`). Pour
+publier une version : `make deb` puis `make apt` (`scripts/publier-apt.sh` ; `VOIXLA_APT_PUSH=0` pour essayer sans
+pousser).
+
+### Paquet Debian (en dernier recours)
 
 Sans passer par le dépôt APT : pour Ubuntu 24.04 ou plus récent (libadwaita 1.5 au moins). Le paquet
 `voix-la_<version>_all.deb` et ses sommes `SHA256SUMS` sont joints à chaque version sur GitHub (*Releases*), ou se

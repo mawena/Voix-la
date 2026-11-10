@@ -397,6 +397,17 @@ figcaption.vu{font-size:.9rem;color:var(--doux);padding:.7rem 1rem;border-top:1p
     <p class="intro">Pour Ubuntu 24.04 ou plus récent. Le dépôt APT est signé&nbsp;: une fois ajouté, les nouvelles versions arrivent avec les mises à jour du système.</p>
 
     <div class="bloc">
+      <h3>En une ligne</h3>
+      <p>Ajoute la clé et le dépôt, puis installe Voix-là (le script <a href="installer.sh">installer.sh</a> fait les étapes ci-dessous).</p>
+      <div class="commande">
+<pre id="cmd-courte">curl -fsSL https://mawena.github.io/Voix-la/installer.sh | sudo sh</pre>
+        <button type="button" data-copie="cmd-courte" aria-label="Copier la commande d'installation en une ligne">Copier</button>
+      </div>
+    </div>
+
+    <p class="intro">Ou pas à pas&nbsp;:</p>
+
+    <div class="bloc">
       <h3>1. Ajouter le dépôt</h3>
       <p>Pose la clé de signature et la source, puis met à jour la liste des paquets.</p>
       <div class="commande">

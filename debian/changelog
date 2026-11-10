@@ -1,3 +1,10 @@
+voix-la (0.17.2) unstable; urgency=medium
+
+  * Interface : plus d'erreur à l'ouverture de la page Doubler (choix du
+    calcul lu dans les préférences).
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Tue, 10 Nov 2026 19:30:00 +0000
+
 voix-la (0.17.1) unstable; urgency=medium
 
   * Dépôt APT : la source posée par le paquet déclare Architectures: amd64

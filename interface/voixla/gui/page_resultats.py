@@ -2340,6 +2340,36 @@ class PageDetail(Adw.NavigationPage):
                     self.defilement.get_vadjustment().set_value(max(0.0, point.y - 12))
                 return False
             GLib.timeout_add(3000, vers_frises)
+        if action.startswith("puis-"):
+            # après « lire » : on quitte le résultat pendant la lecture (barre « en cours de lecture ») ; « liste » :
+            # retour à la liste des résultats, sinon une autre section
+            cible = action.split("-", 1)[1]
+            GLib.timeout_add(3200, lambda: (self.fenetre.nav.pop() if cible == "liste" else self.fenetre.aller(cible),
+                                            False)[1])
+        if action == "pause":
+            GLib.timeout_add(4200, lambda: (self.mettre_en_pause(), False)[1])
+        if action == "retour":
+            # après « puis-liste » : retour au résultat qui joue, comme par un clic dans la liste (état retrouvé)
+            GLib.timeout_add(5000, lambda: (self.page.ouvrir_detail(self.res), False)[1])
+        if action == "fermer":
+            # après « lire » : la fenêtre se ferme pendant la lecture (l'application reste, la musique continue)
+            GLib.timeout_add(3000, lambda: (self.fenetre.close(), False)[1])
+        if action == "ab":
+            def lire():
+                m = self.lecteur.media()
+                if m:
+                    m.set_muted(True)
+                    m.play()
+                return False
+
+            def basculer():
+                self.bascule_ab()
+                m = self.lecteur.media()
+                if m:
+                    m.set_muted(True)
+                return False
+            GLib.timeout_add(1000, lire)
+            GLib.timeout_add(3500, basculer)
 
     # --- partager : export pour les réseaux (gui/partage.py) ---------------------------------------------------------
 
@@ -2392,37 +2422,6 @@ class PageDetail(Adw.NavigationPage):
             return False
         print(json.dumps({"touche": None, **etat()}), flush=True)
         suivante()
-        if action.startswith("puis-"):
-            # après « lire » : on quitte le résultat pendant la lecture (barre « en cours de lecture ») ; « liste » :
-            # retour à la liste des résultats, sinon une autre section
-            cible = action.split("-", 1)[1]
-            GLib.timeout_add(3200, lambda: (self.fenetre.nav.pop() if cible == "liste" else self.fenetre.aller(cible),
-                                            False)[1])
-        if action == "pause":
-            GLib.timeout_add(4200, lambda: (self.mettre_en_pause(), False)[1])
-        if action == "retour":
-            # après « puis-liste » : retour au résultat qui joue, comme par un clic dans la liste (état retrouvé)
-            GLib.timeout_add(5000, lambda: (self.page.ouvrir_detail(self.res), False)[1])
-        if action == "fermer":
-            # après « lire » : la fenêtre se ferme pendant la lecture (l'application reste, la musique continue)
-            GLib.timeout_add(3000, lambda: (self.fenetre.close(), False)[1])
-        if action == "ab":
-            def lire():
-                m = self.lecteur.media()
-                if m:
-                    m.set_muted(True)
-                    m.play()
-                return False
-
-            def basculer():
-                self.bascule_ab()
-                m = self.lecteur.media()
-                if m:
-                    m.set_muted(True)
-                return False
-            GLib.timeout_add(1000, lire)
-            GLib.timeout_add(3500, basculer)
-
     # --- actions ---------------------------------------------------------------------------------------------------
 
     def remixer(self):

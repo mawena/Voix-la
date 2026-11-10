@@ -1,3 +1,6 @@
 # Le journal debian/changelog est en français : le correcteur anglais de lintian y voit des fautes
 # (« dont », « complet »…) qui n'en sont pas.
 voix-la: spelling-error-in-changelog
+# Voulu : le paquet pose sa propre source deb822 (dépôt APT signé de Voix-là sur GitHub Pages, Signed-By sur sa clé
+# /usr/share/keyrings/voix-la.gpg), pour que apt upgrade suive les nouvelles versions, comme Chrome ou VS Code.
+voix-la: package-installs-apt-sources [etc/apt/sources.list.d/voix-la.sources]

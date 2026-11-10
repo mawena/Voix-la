@@ -2,7 +2,7 @@
 
 Voix-là : votre vidéo, avec une autre voix. Et voilà.
 
-> **Version 0.15.0** : paquet Debian `.deb` joint à chaque [release](https://github.com/mawena/Voix-la/releases). Voir le
+> **Version 0.16.0** : paquet Debian `.deb` joint à chaque [release](https://github.com/mawena/Voix-la/releases). Voir le
 > [journal des modifications](CHANGELOG.md).
 
 `doubler` prend une vidéo (chanson d'une chanteuse ou d'un chanteur, duo, rap, ou vidéo parlée) et rend la même vidéo,
@@ -30,6 +30,7 @@ l'extraction du son, le mixage et la remise sur la vidéo.
 - [Options](#options)
 - [Sorties](#sorties)
 - [Ajouter une voix](#ajouter-une-voix)
+- [Affiner sa voix](#affiner-sa-voix)
 - [Interface graphique (en cours)](#interface-graphique-en-cours)
 - [Modes : chant, parole, duo, rap](#modes--chant-parole-duo-rap)
 - [Temps de traitement](#temps-de-traitement)
@@ -161,6 +162,24 @@ sont installés sur Kaggle. L'interface graphique a ses propres prérequis (voir
 [Interface graphique](#interface-graphique-en-cours)).
 
 ## Installation
+
+### Par le dépôt APT (recommandé)
+
+Le dépôt APT signé de Voix-là est publié sur GitHub Pages (https://mawena.github.io/Voix-la/) : une fois ajouté,
+`sudo apt update && sudo apt upgrade` installe les nouvelles versions.
+
+```sh
+sudo curl -fsSL https://mawena.github.io/Voix-la/apt/voix-la.gpg -o /usr/share/keyrings/voix-la.gpg \
+ && sudo curl -fsSL https://mawena.github.io/Voix-la/apt/voix-la.sources -o /etc/apt/sources.list.d/voix-la.sources \
+ && sudo apt update
+sudo apt install voix-la
+```
+
+Le paquet remet lui-même la clé (`/usr/share/keyrings/voix-la.gpg`) et la source
+(`/etc/apt/sources.list.d/voix-la.sources`) en place : installé une fois depuis un `.deb`, il suit ensuite le dépôt.
+Clé de signature « Voix-là APT (mawena) », empreinte `20F9 E2A5 B482 09DE DBD3  9601 0604 C235 3943 6022`
+(`data/apt/LISEZMOI`). Pour publier une version : `make deb` puis `make apt` (`scripts/publier-apt.sh` ;
+`VOIXLA_APT_PUSH=0` pour essayer sans pousser).
 
 ### Paquet Debian
 
@@ -790,6 +809,31 @@ Pour le chant :
 N'enregistrez que votre voix, ou celle d'une personne d'accord pour être clonée (voir
 [Usage responsable](#usage-responsable)).
 
+## Affiner sa voix
+
+Une voix clonée à partir de 20 s de parole ne chante pas tout à fait comme la personne. `affiner` apprend son **timbre
+chanté** sur 5 à 10 minutes de son chant, par un court entraînement de Seed-VC 44,1 kHz sur le GPU gratuit de Kaggle :
+
+```sh
+affiner marie --essai      # contrôle des prises, plan et estimation, sans rien envoyer
+affiner marie              # l'affinage (1500 pas, de 30 à 60 min de GPU environ)
+affiner marie --reprendre  # finit un affinage interrompu
+```
+
+- Les prises sont celles de `voix/<nom>/chant/` : la séance d'enregistrement de l'interface (page Voix) les y range, ou
+  on les y pose à la main. Tous les formats d'un téléphone sont lus (m4a, aac, mp3, wav, ogg, opus, 3gp, amr), à
+  n'importe quelle fréquence, par ffmpeg. Il faut au moins 2 min de chant exploitable (5 à 10 conseillées).
+- Chaque prise est contrôlée sur le PC (saturation, bruit de fond, silence, niveau) ; seules les prises retenues partent,
+  dans un jeu de données privé.
+- Le résultat est rangé dans `voix/<nom>/affinage/` (`affinage.pth`, `affinage.json`…) : la voix est « affinée ».
+- Dans l'interface, le bouton **Affiner ma voix sur mon chant…** de la page Voix lance le travail dans la file, avec
+  suivi et annulation. Il reste désactivé (« en préparation ») tant que la clé `affinage_pret` de `config.json` n'est
+  pas vraie : l'essai réel n'est pas encore fait.
+- L'utilisation de la voix affinée par `doubler` (Seed-VC 44k, avec repli zéro-shot) est prévue, pas encore faite.
+
+Recherche, guide d'enregistrement, fonctionnement et plan d'intégration : [docs/affinage.md](docs/affinage.md) ; options :
+`man affiner`.
+
 ## Interface graphique (en cours)
 
 Une interface GTK 4 + libadwaita est en cours d'écriture dans `interface/`. Elle ne fait aucun calcul lourd : pour
@@ -1345,19 +1389,21 @@ docs: README complet
 ```text
 .
 ├── doubler.py               commande doubler : extraction, envoi et suivi Kaggle, reprise, mixage, vidéo, voix
+├── affiner.py               commande affiner : affinage d'une voix sur son chant (voir docs/affinage.md)
 ├── transposition.py         transposition de la musique seule (Rubber Band R3, par ctypes)
 ├── kaggle/
-│   └── doubler_kaggle.py    noyau GPU : séparation, mode, hauteur, nettoyage, conversion YingMusic-SVC et Seed-VC ;
-│                            noyau « outils »
+│   ├── doubler_kaggle.py    noyau GPU : séparation, mode, hauteur, nettoyage, conversion YingMusic-SVC et Seed-VC ;
+│   │                        noyau « outils »
+│   └── affiner_kaggle.py    noyau GPU de l'affinage : découpage, contrôle, train.py de Seed-VC, reprise
 ├── interface/               interface graphique GTK 4 + libadwaita (en cours)
 │   ├── installer.sh         installation de développement : commande voix-la, entrée du menu, icône
 │   ├── voixla/              logique sans GTK : chemins, appel de doubler, suivi, file des travaux, rapports
 │   │   └── gui/             fenêtre et pages
 │   ├── donnees/             entrée du menu et icône
 │   └── tests/               tests (unittest) et faux doubler, sans réseau
-├── bin/                     lanceurs doubler et voix-la : le code du dépôt, sinon celui de /usr/lib/voix-la
+├── bin/                     lanceurs doubler, affiner et voix-la : le code du dépôt, sinon celui de /usr/lib/voix-la
 ├── debian/                  paquet Debian (debhelper 13, 3.0 native)
-├── docs/man/                pages de manuel doubler.1 et voix-la.1
+├── docs/                    affinage.md (affinage de la voix) ; man/ : pages de manuel doubler.1, affiner.1 et voix-la.1
 ├── scripts/build-deb.sh     construction du paquet : versions, tests, paquet, SHA256SUMS, lintian
 ├── tests/                   tests du noyau et de doubler (auto-tune, paroles, secours, vidéo), sans GPU
 ├── Makefile                 make test, make deb, make clean

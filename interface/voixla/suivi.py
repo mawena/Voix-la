@@ -23,6 +23,10 @@ NOMS = [e[0] for e in ETAPES]
 LIBELLES = {e[0]: e[1] for e in ETAPES}
 PAR_VIDEO = {e[0] for e in ETAPES if e[2] == "par_video"}
 ETAPES_REMIX = ["mix", "video", "fini"]
+# Affinage de la voix sur son chant (commande affiner) : contrôle des prises sur le PC, puis la session Kaggle, sans mixage
+ETAPES_AFFINAGE = ["controle", "envoi", "attente", "kaggle", "rapatriement", "fini"]
+LIBELLES["controle"] = "Contrôle des prises de chant"
+LIBELLES_AFFINAGE = {"kaggle": "Affinage sur le GPU", "rapatriement": "Rapatriement du point de contrôle"}
 
 STATUTS_KAGGLE = {
     "queued": "en file d’attente", "new": "créé", "pending": "en préparation", "running": "en cours",
@@ -56,8 +60,11 @@ class Avancement:
     def __init__(self, nb_videos=1, estimations=None, type_travail="doublage", debut=None):
         self.nb_videos = max(1, int(nb_videos or 1))
         self.type = type_travail
-        noms = ETAPES_REMIX if type_travail == "remix" else NOMS
+        noms = ETAPES_REMIX if type_travail == "remix" else ETAPES_AFFINAGE if type_travail == "affinage" else NOMS
         self.etapes = {n: Etape(n) for n in noms}
+        if type_travail == "affinage":
+            for n, libelle in LIBELLES_AFFINAGE.items():
+                self.etapes[n].libelle = libelle
         self.ordre = list(noms)
         self.estimations = dict(estimations or {})
         self.kaggle = {}              # statut, depuis_s, estimation_s, t

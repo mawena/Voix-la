@@ -1,8 +1,13 @@
 bin/doubler usr/bin
+bin/affiner usr/bin
 bin/voix-la usr/bin
 doubler.py usr/lib/voix-la
+affiner.py usr/lib/voix-la
 transposition.py usr/lib/voix-la
 kaggle/doubler_kaggle.py usr/lib/voix-la/kaggle
+kaggle/affiner_kaggle.py usr/lib/voix-la/kaggle
 interface/voixla usr/lib/voix-la
 interface/donnees/io.mawena.VoixLa.desktop usr/share/applications
 interface/donnees/io.mawena.VoixLa.svg usr/share/icons/hicolor/scalable/apps
+data/apt/voix-la.sources etc/apt/sources.list.d
+data/apt/voix-la.gpg usr/share/keyrings

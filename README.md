@@ -2,7 +2,7 @@
 
 Voix-là : votre vidéo, avec une autre voix. Et voilà.
 
-> **Version 0.15.0** : paquet Debian `.deb` joint à chaque [release](https://github.com/mawena/Voix-la/releases). Voir le
+> **Version 0.16.0** : paquet Debian `.deb` joint à chaque [release](https://github.com/mawena/Voix-la/releases). Voir le
 > [journal des modifications](CHANGELOG.md).
 
 `doubler` prend une vidéo (chanson d'une chanteuse ou d'un chanteur, duo, rap, ou vidéo parlée) et rend la même vidéo,

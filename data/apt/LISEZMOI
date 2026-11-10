@@ -1,0 +1,10 @@
+Dépôt APT de Voix-là : https://mawena.github.io/Voix-la/apt (branche gh-pages).
+
+voix-la.gpg      clé publique de signature (format binaire, sans armure)
+voix-la.sources  source deb822 installée dans /etc/apt/sources.list.d/ (le paquet la pose lui-même)
+
+Clé de signature : « Voix-là APT (mawena) <57989130+mawena@users.noreply.github.com> »
+Empreinte : 20F9 E2A5 B482 09DE DBD3  9601 0604 C235 3943 6022
+ed25519, sans phrase de passe, créée le 10/11/2026, valable 3 ans. La clé privée reste sur le poste de publication.
+Publication : scripts/publier-apt.sh dist/voix-la_<version>_all.deb (ou make apt).
+Page d'accueil : site/index.html, publiée à la racine de gh-pages.

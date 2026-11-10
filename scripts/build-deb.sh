@@ -16,7 +16,8 @@ if [[ "$deb_version" != "$py_version" || "$deb_version" != "$cli_version" || "$d
 fi
 
 make clean >/dev/null
-make test
+# VOIXLA_SANS_TESTS=1 : seulement quand les tests viennent de passer sur le même code (reconstruction du paquet)
+[[ "${VOIXLA_SANS_TESTS:-0}" == 1 ]] || make test
 dpkg-buildpackage -us -uc -b
 make clean >/dev/null
 
@@ -27,7 +28,8 @@ rm -f "../voix-la_${deb_version}_"*.buildinfo "../voix-la_${deb_version}_"*.chan
 
 # Les fichiers de l'affinage (commande affiner, noyau Kaggle, page de manuel) doivent être dans le paquet
 contenu="$(dpkg-deb -c "dist/voix-la_${deb_version}_all.deb")"
-for f in usr/bin/affiner usr/lib/voix-la/affiner.py usr/lib/voix-la/kaggle/affiner_kaggle.py usr/share/man/man1/affiner.1.gz; do
+for f in usr/bin/affiner usr/lib/voix-la/affiner.py usr/lib/voix-la/kaggle/affiner_kaggle.py usr/share/man/man1/affiner.1.gz \
+         etc/apt/sources.list.d/voix-la.sources usr/share/keyrings/voix-la.gpg; do
   grep -q " \./${f}\$" <<<"$contenu" || { echo "Manquant dans le paquet : $f" >&2; exit 1; }
 done
 

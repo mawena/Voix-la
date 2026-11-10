@@ -1,3 +1,15 @@
+voix-la (0.16.0) unstable; urgency=medium
+
+  * Affinage de la voix sur son chant : commande affiner (prises de la
+    séance d'enregistrement, tous formats de téléphone, jeu et noyau privés
+    sur Kaggle, reprise), type de travail affinage dans l'interface, bouton
+    « Affiner ma voix sur mon chant » (désactivé tant que l'essai réel n'est
+    pas fait) et badge « affinée ».
+  * Dépôt APT signé sur GitHub Pages : le paquet pose sa source deb822 et sa
+    clé, pour que apt upgrade installe les nouvelles versions.
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Tue, 10 Nov 2026 17:00:00 +0000
+
 voix-la (0.15.0) unstable; urgency=medium
 
   * Transposition de la chanson dans la tessiture de la voix cible, par

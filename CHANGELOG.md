@@ -7,7 +7,14 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+## [0.16.0] - 2026-11-10
+
 ### Ajouté
+
+- Dépôt APT signé sur GitHub Pages (https://mawena.github.io/Voix-la/apt) : `apt upgrade` installe les nouvelles
+  versions. Clé dédiée « Voix-là APT (mawena) » (`data/apt/`), publication par `make apt` / `scripts/publier-apt.sh`
+  (index all et amd64, anciennes versions conservées), page d'accueil dans `site/`. Le paquet pose lui-même la source
+  `/etc/apt/sources.list.d/voix-la.sources` et la clé `/usr/share/keyrings/voix-la.gpg`.
 
 - **Affinage de la voix sur son chant** (commande `affiner`, pas encore essayée pour de vrai : aucune session Kaggle n'a
   encore tourné). Apprend le timbre chanté d'une voix sur 5 à 10 min de son chant, par un court entraînement de Seed-VC
@@ -695,7 +702,8 @@ Première version publique.
     `VOIXLA_DECODAGE_MATERIEL=1` remet le décodage matériel ;
   - les essais automatiques laissaient le son de l'application coupé.
 
-[Non publié]: https://github.com/mawena/Voix-la/compare/v0.15.0...HEAD
+[Non publié]: https://github.com/mawena/Voix-la/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/mawena/Voix-la/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/mawena/Voix-la/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/mawena/Voix-la/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/mawena/Voix-la/compare/v0.12.0...v0.13.0

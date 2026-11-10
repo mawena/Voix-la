@@ -1,3 +1,10 @@
+voix-la (0.17.1) unstable; urgency=medium
+
+  * Dépôt APT : la source posée par le paquet déclare Architectures: amd64
+    (plus d'avertissement i386 dans apt update).
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Tue, 10 Nov 2026 18:30:00 +0000
+
 voix-la (0.17.0) unstable; urgency=medium
 
   * Doubler ailleurs que sur Kaggle : --calcul kaggle|modal|runpod|auto

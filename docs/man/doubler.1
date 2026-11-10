@@ -143,7 +143,29 @@ Mode du doublage (défaut : auto).
 .BR \-\-octave " auto|0|\-12|+12"
 En chant, auto choisit un seul décalage par chanteur d'après la hauteur ; les
 ancres de genre, facultatives, départagent les cas ambigus et repèrent les
-duos. 0, \-12 ou +12 imposent le décalage partout.
+duos. 0, \-12 ou +12 imposent le décalage partout. La transposition de la
+chanson (\fB\-\-transposer\fR) s'y ajoute.
+.TP
+.BR \-\-transposer " auto|non|N"
+En chant, transpose la chanson ENTIÈRE, musique comprise (comme un changement
+de tonalité au karaoké), pour que la voix convertie chante près de la zone
+naturelle de la voix cible, où ses proches la reconnaissent. \fBauto\fR (défaut) :
+le noyau choisit un seul nombre entier de demi\-tons pour toute la chanson, le
+plus petit possible et au plus ±5, qui range au mieux la voix convertie dans la
+zone de la voix cible (\fItessiture.json\fR de son dossier, sinon deux fois sa
+hauteur de parole ±4 demi\-tons) ; chaque voix reçoit ce décalage plus son
+octave (\-12, 0 ou +12) ; avec une voix par chanteur, un seul décalage minimise
+l'écart total des deux voix à leur zone. \fBnon\fR : octave seule, musique
+intacte (comme avant). \fIN\fR : décalage imposé (\-3, +2\|...). La parole n'est
+jamais transposée. Sur le PC, la musique seule est transposée par Rubber Band R3
+(paquet \fBlibrubberband2\fR) avant le mixage, à durée exacte, et gardée dans
+\fItravail/instrumental_transpose_<N>.wav\fR ; le doublage et « Beat seul » sont
+sur la musique transposée, « Original » et « Voix d'origine seule » ne le sont
+jamais. Sans Rubber Band, \fBdoubler\fR avertit, ne transpose pas et la voix garde
+l'octave seule. Défaut lu dans la clé \fBtransposer\fR de la configuration.
+La décision est dans \fIrapport.json\fR (\fBtransposition\fR). Avec
+\fB\-\-remix\fR, la décision déjà prise est suivie : \fB\-\-transposer non\fR ne peut pas
+changer la voix sans reconvertir (un message le dit).
 .TP
 .BI \-\-comparer " voix,voix[,voix...]"
 Compare des voix : le même extrait (\fB\-\-debut\fR, \fB\-\-duree\fR) est doublé dans chaque voix (deux à six, de

@@ -121,17 +121,20 @@ class VoixCombinee(unittest.TestCase):
                                comparer_modeles=False, comparer_pas=None, modele_parole=None)
         travaux = [{'id': 'v1', 'entree': 'entree-x.flac', 'gain_entree': 2.0}]
         un = self.D.reglages_noyau(a, self.D.charger_voix('jules'), None, travaux)
-        # une voix : exactement les réglages d'avant (plus gpus, les cartes GPU : auto sans --gpu)
+        # une voix : exactement les réglages d'avant (plus gpus, les cartes GPU : auto sans --gpu ; plus la zone de chant de
+        # la voix et « transposer », depuis la transposition de la 0.15.0)
         attendu = {**self.D.NOYAU_REGLAGES, 'pas': 30, 'ancres': None, 'paroles': True, 'moteur_chant': 'yingmusic',
                    'nettoyage': True, 'gpus': 'auto', 'voix': {'nom': 'jules', 'fichier': 'voix-jules.wav', 'f0_parole_hz': 110.0,
-                                               'facteur_chant': 2.0},
+                                               'facteur_chant': 2.0, 'zone': self.D.charger_voix('jules')['zone']},
                    'travaux': [{'id': 'v1', 'entree': 'entree-x.flac', 'mode': 'auto', 'octave': 'auto',
-                                'comparer_modeles': False, 'comparer_pas': None, 'gain_entree': 2.0,
+                                'transposer': self.D.transposition_demandee(a), 'comparer_modeles': False, 'comparer_pas': None, 'gain_entree': 2.0,
                                 'gain_entree_db': 6.021, 'retour_flac': True}]}
         self.assertEqual(json.dumps(un), json.dumps(attendu))
         v, _ = self.charger('femme:marie,homme:jules')
         deux = self.D.reglages_noyau(a, v, None, travaux)
         self.assertEqual(deux['voix'], attendu['voix'])
+        for d in deux['voix_cibles']['voix']:
+            self.assertIn('confort', d.pop('zone'))
         self.assertEqual(deux['voix_cibles'], {'mode': 'genre', 'voix': [
             {'cle': 'homme', 'nom': 'jules', 'fichier': 'voix-jules.wav', 'f0_parole_hz': 110.0, 'facteur_chant': 2.0,
              'affichage': 'Jules'},

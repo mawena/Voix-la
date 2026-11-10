@@ -2,7 +2,7 @@
 
 Voix-là : votre vidéo, avec une autre voix. Et voilà.
 
-> **Version 0.14.0** : paquet Debian `.deb` joint à chaque [release](https://github.com/mawena/Voix-la/releases). Voir le
+> **Version 0.15.0** : paquet Debian `.deb` joint à chaque [release](https://github.com/mawena/Voix-la/releases). Voir le
 > [journal des modifications](CHANGELOG.md).
 
 `doubler` prend une vidéo (chanson d'une chanteuse ou d'un chanteur, duo, rap, ou vidéo parlée) et rend la même vidéo,
@@ -119,6 +119,8 @@ fois.
 
 - **Linux**, avec `ffmpeg` et `ffprobe`.
 - **Python 3** en `/usr/bin/python3`, avec **numpy** (utilisé par `--ajouter-voix` et par le mixage).
+- **Pour la transposition de la chanson : Rubber Band 3** (`librubberband.so.2`, paquet `librubberband2`, dépendance du
+  paquet Debian). Sans lui, `doubler` le signale et ne transpose pas : la voix garde le décalage d'octave seul.
 - **Facultatif, pour l'auto-tune : x42-autotune** (`sudo apt install x42-plugins`, recommandé par le paquet Debian).
   `doubler` le cherche dans `LV2_PATH`, puis dans `~/.lv2`, `/usr/local/lib/lv2`, `/usr/lib/lv2` et les dossiers
   multiarch. Sans lui, un auto-tune demandé est signalé et seule la version normale est faite.
@@ -260,6 +262,7 @@ doubler --config voix marie                     # choisir la voix par défaut
 | `envoi_flac` | son envoyé à Kaggle en FLAC `16` bits ou `24` bits (comme avant le 09/11/2026) | `16` |
 | `versions_duo` | avec une voix par chanteur : chaque passage converti dans les deux voix (`toutes`), seulement les passages qui comptent (`utiles`) ou pas (`non`) ; `--versions-duo` l'emporte | `toutes` |
 | `pistes_audio` | pistes audio de la vidéo doublée : `toutes` (doublage, original, beat seul, voix convertie seule, voix d'origine seule) ou `doublage` (lui seul) (`--pistes-audio` l'emporte) | `toutes` |
+| `transposer` | transposition de la chanson dans la tessiture de la voix cible : `auto` (le noyau choisit un décalage entier de −5 à +5), `non` (octave seule, musique intacte) ou un nombre entier de demi-tons (`--transposer` l'emporte) | `auto` |
 | `gpu` | cartes GPU du noyau : `auto` (les deux T4 de la machine, une seule si elle n'en a qu'une), `1` (une carte, comme avant) ou `2` (`--gpu` l'emporte) | `auto` |
 
 Le fichier ressemble à ceci :
@@ -447,6 +450,15 @@ doubler "Chanson.mp4" --octave -12    # une chanteuse doublée par une voix d'ho
 doubler "Chanson.mp4" --octave 0
 ```
 
+Transposer la chanson dans la tessiture de la voix cible (chant ; c'est le défaut) ou garder la musique intacte :
+
+```sh
+doubler "Chanson.mp4"                        # --transposer auto : un décalage entier de −5 à +5, choisi par le noyau
+doubler "Chanson.mp4" --transposer non       # octave seule, comme avant
+doubler "Chanson.mp4" --transposer -3        # chanson baissée de 3 demi-tons, imposé
+doubler --config transposer non              # le défaut, pour tous les doublages
+```
+
 Imposer le mode :
 
 ```sh
@@ -579,6 +591,7 @@ Une étape en `erreur` est suivie d'un événement `erreur`. Les étapes commune
 | `--comparer A,B[,C…]` | comparer des voix : le même extrait doublé dans chacune (deux à six), en une seule session ; une sortie par voix et `comparaison.json` ; remplace `--voix` ; avec `--remix`, refait chaque sortie (voir [Comparer plusieurs voix en une session](#comparer-plusieurs-voix-en-une-session)) | |
 | `--mode auto\|chant\|parole` | `auto` : chant s'il y a une musique sous la voix et que la voix chante, ou rappe sur un fond tonal ; sinon parole | `auto` |
 | `--octave auto\|0\|-12\|+12` | `auto` : un décalage par chanteur, choisi d'après sa hauteur et son timbre ; sinon décalage imposé partout (`12` vaut `+12`). Sans effet en parole avec le modèle 22 kHz | `auto` |
+| `--transposer auto\|non\|N` | chant : transposer la chanson entière dans la tessiture de la voix cible (voir [Transposition de la chanson](#transposition-de-la-chanson)) ; `auto`, un décalage entier de −5 à +5 choisi par le noyau ; `non`, octave seule ; `N`, décalage imposé. Parole : jamais | clé `transposer` de la configuration, sinon `auto` |
 | `--pas N` | pas de diffusion de la conversion ; 50 coûte environ 40 % de GPU de conversion en plus (au banc d'essai : aucun écart mesurable, oreille partagée) | `30` |
 | `--gpu auto\|1\|2` | cartes GPU du noyau : `auto`, les deux T4 de la machine Kaggle (une seule si elle n'en a qu'une) ; `1`, une carte, comme avant ; même son, plus vite à deux | clé `gpu` de la configuration, sinon `auto` |
 | `--moteur yingmusic\|seedvc` | moteur de conversion du chant : YingMusic-SVC ou Seed-VC 44,1 kHz ; sans effet en parole | clé `moteur` de la configuration, sinon `yingmusic` |
@@ -845,7 +858,8 @@ ambiance, musique discrète) passe donc en parole. `--mode chant` ou `--mode par
 - Voix nettoyée (voir ci-dessous), puis convertie par YingMusic-SVC, guidé par la hauteur (RMVPE). `--moteur seedvc`
   prend Seed-VC 44,1 kHz à la place, et Seed-VC prend aussi le relais si YingMusic-SVC ne se charge pas
   (`rapport.json` le dit, et `doubler` l'affiche).
-- Décalage de −12, 0 ou +12 demi-tons seulement, pour rester dans la tonalité de la musique.
+- Le décalage de la voix est un nombre **entier** de demi-tons : une octave (−12, 0 ou +12, la règle ci-dessous), plus la
+  transposition de la chanson (voir [Transposition de la chanson](#transposition-de-la-chanson)).
 - **Un même chanteur garde un seul décalage sur toute la chanson.** L'octave ne change que si la voix change vraiment
   (duo).
 - Chaque voix reçoit une classe, homme ou femme, d'après des indices pris dans cet ordre :
@@ -864,9 +878,51 @@ ambiance, musique discrète) passe donc en parole. `--mode chant` ou `--mode par
   est celui qui rapproche son centre de chant typique (homme 250 Hz, femme 420 Hz) de ce centre :
   - avec une voix cible d'homme (parole vers 110 Hz) : 0 pour un chanteur, −12 pour une chanteuse ;
   - avec une voix cible de femme (parole vers 200 Hz) : +12 pour un chanteur, 0 pour une chanteuse.
-- `--octave` imposé l'emporte toujours. La décision automatique reste écrite dans `rapport.json`, pour mémoire.
+- `--octave` imposé remplace le choix d'octave. La décision automatique reste écrite dans `rapport.json`, pour mémoire.
+  La transposition de la chanson s'ajoute à l'octave imposée (`--transposer non` pour l'éviter).
 - Le mixage ajoute une reverb synthétique de 1,6 s sous la voix (`--reverb-db`), et la voix passe à +4 dB au-dessus
   de la voix d'origine (`--voix-db`).
+
+### Transposition de la chanson
+
+Mesuré avec les proches de la voix cible : ils ne la reconnaissent que lorsque la voix convertie chante près de sa zone
+naturelle (reconnue à 174 et 219 Hz, pas reconnue de 246 à 295 Hz, pour une zone vers 190 Hz). Le moteur de conversion
+et le fantôme de la voix d'origine n'y changent rien : c'est la hauteur. Par défaut, une chanson hors de la tessiture de
+la voix cible est donc **transposée en entier, musique comprise**, comme un changement de tonalité au karaoké.
+
+- **Zone de la voix cible**, par voix : `tessiture.json` de son dossier (écrit par la séance d'enregistrement ;
+  `{"p05", "p10", "p50", "p90", "p95", "confort": [bas, haut]}` en Hz), sinon un centre de chant de deux fois sa
+  hauteur de parole médiane (`voix.json`), avec une zone de confort de ce centre ×2^(±4/12), soit ±4 demi-tons. La zone
+  part au noyau avec les autres données de la voix.
+- **La règle** (dans le noyau, d'après les mesures de `banc/realisme/`) : la décision d'octave de chaque voix reste
+  celle d'avant (−12, 0 ou +12) ; le noyau cherche ensuite **un seul nombre entier de demi-tons `musique_dt`**, de −5 à
+  +5, pour toute la chanson, qui minimise le coût de la voix convertie : 3 par demi-ton de p10 ou de p90 hors de la
+  zone de confort, 0,5 par demi-ton d'écart de la médiane au centre de la zone, 0,15 par demi-ton de transposition de la
+  musique (à coût égal, le plus petit décalage). Chaque voix reçoit `musique_dt` plus son octave. Avec une voix par
+  chanteur, un seul `musique_dt` minimise l'écart total des deux voix à leur zone.
+- **Exemples** (zone de 151 à 239 Hz, centre 190 Hz ; médiane de la voix convertie avant transposition, octave posée, p10
+  à 0,85 fois et p90 à 1,2 fois la médiane) : 262 Hz → −5 demi-tons (196 Hz) ; 246 Hz → −4 (195 Hz) ; 219 Hz → −2 (195 Hz) ;
+  215 Hz → −2 (192 Hz) ; 190 Hz → 0 ; 174 Hz → +1 (184 Hz) ; 140 Hz → +5 (187 Hz) ; 295 Hz → −5 (221 Hz, p90 encore hors
+  zone) ; 440 Hz → −5 (330 Hz, hors zone malgré la borne).
+- **Sur le PC**, la musique seule est transposée de `musique_dt` par Rubber Band R3 (`transposition.py`, par
+  `librubberband.so.2`, paquet `librubberband2`) avant le mixage, à l'échantillon près, et gardée dans
+  `travail/instrumental_transpose_<dt>.wav` (`--remix` la réutilise tant que le son d'origine ne change pas). Rubber Band
+  R3 a été mesuré nettement meilleur que R2 et que le filtre `rubberband` de ffmpeg, qui ne fait que du R2.
+- **Les cinq pistes audio de la vidéo** : le doublage est sur la musique transposée ; « Original » et « Voix d'origine
+  seule » ne sont jamais transposés ; « Beat seul » est transposé ; « Voix convertie seule » est la voix convertie.
+- **Options** : `--transposer auto|non|N` (clé `transposer` de la configuration, `auto` par défaut) ; `non` : octave
+  seule, musique intacte, comme avant ; `N` : décalage imposé, de −12 à +12. `--octave` garde son sens : il force
+  l'octave de la voix, la transposition s'y ajoute. La parole n'est jamais transposée (un rap sur un fond tonal passe en mode chant et l'est comme lui ; `--transposer non` l'évite).
+- **Rapport** : `rapport.json` a une section `transposition` (`musique_dt`, `applique`, `raison`, `zone_origine` et, par
+  voix, `zone_hz`, `avant_hz` et `apres_hz` (p10, p50, p90), `decalage_voix_dt`, `octave_dt`) ; `doubler` affiche la
+  décision à la fin, l'interface la ligne « Chanson transposée de −3 demi-tons pour ta voix ». La section `mix.transposition`
+  dit ce que le PC a fait (fichier, cache, durée).
+- **Sans Rubber Band** (`librubberband.so.2` absent) : `doubler` avertit avant l'envoi, ne transpose pas, et la voix garde
+  l'octave seule (le noyau reçoit `non`). Un `--remix` qui trouve une chanson transposée dans le rapport mais pas la
+  bibliothèque le dit : la musique d'origine reste, la voix est fausse dessus jusqu'à l'installation de `librubberband2`.
+- **`--remix`** suit la décision du rapport : la voix est déjà convertie. `--transposer non --remix` (ou un `N` différent)
+  ne peut pas changer la voix sans reconvertir : `doubler` le dit, garde la musique transposée (juste avec la voix) et
+  demande de relancer sans `--remix` pour la reconversion.
 
 ### Ancres de genre (facultatives)
 
@@ -1006,13 +1062,13 @@ doubler "Duo.mp4" --remix --voix homme:voixA,femme:voixB --affectation auto   # 
 ### Rap
 
 Le rap passe en mode `chant` quand il y a une musique tonale dessous : la voix est presque continue, même sans notes
-tenues. Le choix d'octave et le mixage sont ceux du chant. Sur un fond peu tonal, une voix presque continue reste de
+tenues. Le choix d'octave, la transposition de la chanson et le mixage sont ceux du chant. Sur un fond peu tonal, une voix presque continue reste de
 la parole.
 
 ### Parole
 
 - Modèle Seed-VC 22 kHz prévu pour la parole, sur la voix isolée complète, sans nettoyage. La voix rejoint d'elle-même
-  la hauteur de parole de la voix cible ; `--octave`, `--moteur` et `--sans-nettoyage` n'ont pas d'effet.
+  la hauteur de parole de la voix cible ; `--octave`, `--transposer`, `--moteur` et `--sans-nettoyage` n'ont pas d'effet.
 - Pas de reverb ; le fond sonore est gardé, et la voix est au niveau de la voix d'origine (`--voix-db 0`).
 
 ### Paroles
@@ -1194,6 +1250,21 @@ profite aussi. Nettoyage et chœurs compris ; en mode `auto`, il suppose du chan
   - les seuils ont été réglés sur peu de voix.
 
   `--octave` impose alors le décalage.
+- **Transposition de la chanson** :
+  - elle ne vaut que pour le chant, et seulement entre −5 et +5 demi-tons : une voix très au-dessus ou très au-dessous de
+    la zone de la voix cible (un ténor très aigu, une basse) reste hors zone malgré la borne ; au-delà, la musique
+    transposée s'entend. `--transposer N` va jusqu'à ±12 ;
+  - Rubber Band R3 garde bien la musique, mais une transposition de plusieurs demi-tons reste audible sur les
+    instruments, et sur les percussions et les attaques plus que sur les sons tenus ;
+  - la tessiture sans `tessiture.json` n'est qu'une estimation (deux fois la parole, ±4 demi-tons) : une séance
+    d'enregistrement (étape « Tessiture ») donne une zone mesurée ;
+  - un seul décalage pour toute la chanson : un duo dont les chanteurs sont très éloignés se règle en compromis, et une
+    chanson qui monte de ton en cours de route n'est pas suivie ;
+  - l'interface (karaoké, export, pistes reconstruites) lit encore `travail/instrumental.wav`, la musique seule d'origine, non
+    transposée : sur une chanson transposée, le beat qu'elle joue n'est pas celui de la vidéo ; les fichiers de la vidéo
+    (cinq pistes) sont, eux, corrects ;
+  - sans la bibliothèque, ou si la transposition échoue au mixage, la musique d'origine est gardée avec un
+    avertissement, et la voix d'une chanson déjà convertie transposée est alors fausse dessus.
 - **Une voix par chanteur** : un passage, coupé au silence, qui chevauche deux chanteurs sans pause prend une seule voix
   par piste. Un duo chanté à l'unisson, que le Roformer karaoké laisse dans la voix principale, garde une seule voix.
   Le duo de même genre se fie aux empreintes de la chanson (réglé sur sept chansons) et peut prendre un changement de
@@ -1274,6 +1345,7 @@ docs: README complet
 ```text
 .
 ├── doubler.py               commande doubler : extraction, envoi et suivi Kaggle, reprise, mixage, vidéo, voix
+├── transposition.py         transposition de la musique seule (Rubber Band R3, par ctypes)
 ├── kaggle/
 │   └── doubler_kaggle.py    noyau GPU : séparation, mode, hauteur, nettoyage, conversion YingMusic-SVC et Seed-VC ;
 │                            noyau « outils »

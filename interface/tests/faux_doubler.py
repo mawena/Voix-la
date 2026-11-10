@@ -1256,6 +1256,8 @@ def analyseur():
         p.add_argument("--sans-paroles", action="store_true",
                        help="sans transcription des paroles ni traduction (défaut : clé « paroles » de la configuration)")
         p.add_argument("--mix-v1", action="store_true", help="ancien mixage : sans suivi des nuances ni dé-esseur")
+        p.add_argument("--transposer", default=None, metavar="auto|non|N",
+                       help="chant : transposer la chanson entière dans la tessiture de la voix cible (auto, non, ou N demi-tons)")
         p.add_argument("--autotune", nargs="?", type=int, const=70, default=None, metavar="N",
                        help="auto-tune de la voix, intensité N de 0 à 100 (70 sans valeur) : version « (auto-tune) » en plus")
         p.add_argument("--sans-autotune", action="store_true", help="pas d'auto-tune ; avec --remix : version retirée")

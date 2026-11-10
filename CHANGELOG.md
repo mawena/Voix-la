@@ -7,6 +7,36 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+## [0.15.0] - 2026-11-10
+
+### Ajouté
+
+- **Transposition de la chanson dans la tessiture de la voix cible** (`--transposer auto|non|N`, clé `transposer` de la
+  configuration, `auto` par défaut). Mesuré avec les proches de la voix cible : ils ne la reconnaissent que lorsque la
+  voix convertie chante près de sa zone naturelle (reconnue à 174 et 219 Hz, pas de 246 à 295 Hz, pour une zone vers
+  190 Hz). Une chanson hors de la tessiture est donc transposée EN ENTIER, musique comprise, comme un changement de
+  tonalité au karaoké :
+  - le noyau choisit **un seul nombre entier de demi-tons `musique_dt` pour toute la chanson**, le plus petit possible,
+    de −5 à +5, qui range au mieux la voix convertie dans la zone de la voix cible (règle de `banc/realisme/`, copiée dans
+    le noyau) ; chaque voix reçoit `musique_dt` plus son octave (−12, 0 ou +12, règle d'avant inchangée) ; en duo, un
+    seul décalage minimise l'écart total des deux voix à leur zone ; parole : jamais ;
+  - la zone vient de `tessiture.json` du dossier de la voix, sinon de deux fois sa hauteur de parole, ±4 demi-tons ;
+    elle part au noyau avec les autres données de la voix (réglages `zone`) ;
+  - sur le PC, la musique seule est transposée par Rubber Band R3 (nouveau module `transposition.py`, par ctypes sur
+    `librubberband.so.2`), à l'échantillon près, avant le mixage, et gardée dans `travail/instrumental_transpose_<dt>.wav`
+    (`--remix` la réutilise). Le doublage et « Beat seul » sont sur la musique transposée ; « Original » et « Voix
+    d'origine seule » ne le sont jamais ; l'auto-tune détecte sa gamme sur la musique transposée ;
+  - sans `librubberband.so.2`, `doubler` avertit avant l'envoi, ne transpose pas, et la voix garde l'octave seule ; le paquet
+    Debian dépend de `librubberband2` et installe `transposition.py` ;
+  - la décision est dans `rapport.json` (`transposition` : `musique_dt`, décalage et octave par voix, médianes avant et
+    après, zone, raison ; `mix.transposition` : ce que le PC a fait) et `doubler` l'affiche. `--remix` suit cette décision ;
+    `--transposer non --remix` ne peut pas changer la voix sans reconvertir, et le dit sans erreur ;
+  - interface : l'interrupteur « Transposer la chanson dans ma tessiture » (allumé par défaut, avec info-bulle) sur la page
+    Doubler, la ligne « Chanson transposée de −3 demi-tons pour ta voix » dans le détail d'un résultat, `--transposer` parmi
+    les options suivies. Page de manuel, `doubler --help` et README mis à jour ; l'estimation de durée n'a pas changé.
+  - **Limites** : le Karaoké, le partage et les pistes reconstruites par l'interface lisent encore `travail/instrumental.wav`
+    (non transposé) ; un rap sur un fond tonal passe en mode chant et est transposé comme lui.
+
 ## [0.14.0] - 2026-11-09
 
 ### Ajouté
@@ -644,7 +674,8 @@ Première version publique.
     `VOIXLA_DECODAGE_MATERIEL=1` remet le décodage matériel ;
   - les essais automatiques laissaient le son de l'application coupé.
 
-[Non publié]: https://github.com/mawena/Voix-la/compare/v0.14.0...HEAD
+[Non publié]: https://github.com/mawena/Voix-la/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/mawena/Voix-la/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/mawena/Voix-la/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/mawena/Voix-la/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/mawena/Voix-la/compare/v0.11.1...v0.12.0

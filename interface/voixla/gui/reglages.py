@@ -331,7 +331,7 @@ class DialogueReglages(Adw.PreferencesDialog):
 
     def _groupe_quota(self):
         """Quota GPU de Kaggle : quota et remise à zéro de repli, seuil d'alerte, que faire d'un doublage qui ne tient
-        plus, et le secours (à venir)."""
+        plus, et le secours (Modal ou Runpod, voixla/secours.py)."""
         g = Adw.PreferencesGroup(title="Quota GPU Kaggle", description=commun.echapper(
             "Kaggle donne environ 30 h de GPU par semaine, remises à zéro chaque samedi à 00:00 UTC. Le total et la "
             "remise à zéro viennent de « kaggle quota » quand il répond ; ceux-ci servent sinon."))

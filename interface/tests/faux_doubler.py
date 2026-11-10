@@ -1267,6 +1267,11 @@ def analyseur():
         p.add_argument("--gpu", choices=list(GPU_CHOIX), default=None,
                        help="cartes GPU du noyau : auto (défaut : les deux T4 de la machine Kaggle), 1 ou 2 ; "
                             "défaut lu dans la configuration (clé « gpu »)")
+    if not SANS_GPU:   # doubler d'avant --calcul : même cas que les deux GPU (0.5.0)
+        p.add_argument("--calcul", choices=["kaggle", "modal", "runpod", "auto"], default=None,
+                       help="où tourne le GPU : kaggle (défaut), modal, runpod (payant, jamais automatique) ou auto ; "
+                            "le faux n'appelle ni Modal ni Runpod")
+        p.add_argument("--nettoyer-runpod", action="store_true", help="supprime les pods Runpod voix-la-… restants (le faux : rien)")
     p.add_argument("--debut", type=float, default=None, help="début de l'extrait (s), pour un essai")
     p.add_argument("--duree", type=float, default=None, help="durée de l'extrait (s)")
     p.add_argument("--remix", action="store_true", help="refaire seulement le mixage et la vidéo depuis travail/ (sans Kaggle)")

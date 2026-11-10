@@ -154,9 +154,9 @@ class PrisesDeLaSeance(unittest.TestCase):
             self.assertIn('wav', faits)
             (chant / 'notes.txt').write_text('pas un son')          # ce qui n'est pas audio est ignoré
             aff, doub = charger_affiner(home)
+            self.assertEqual(aff.main(['voixA', '--essai', '--donnees', str(donnees)]), 0)   # configure aussi le dossier des voix
             prises = aff.prises_de('voixA', None)
             self.assertEqual(sorted(p.suffix[1:] for p in prises), sorted(faits))
-            self.assertEqual(aff.main(['voixA', '--essai', '--donnees', str(donnees)]), 0)
             flacs = sorted((doub.ETAT / 'affinage' / 'voixA' / 'essai' / 'jeu' / 'chant').glob('prise-*.flac'))
             self.assertEqual(len(flacs), len(faits))
             for f in flacs:        # tout repart en 44,1 kHz mono, quelle que soit la source
@@ -249,12 +249,14 @@ class FausseCommandeKaggle:
 
     def __call__(self, *args):
         self.appels.append(args)
+        if len(self.appels) > 500:      # une attente qui ne finit jamais (sleep simulé) remplirait la mémoire : on l'arrête net
+            raise AssertionError('boucle sans fin sur la fausse commande kaggle')
         if args[:2] == ('datasets', 'status'):
             return (0, 'ready') if any(a[:2] == ('datasets', 'create') for a in self.appels) else (1, 'not found')
         if args[:2] == ('datasets', 'create'):
             return 0, 'Your private Dataset is being created.'
         if args[:2] == ('datasets', 'files'):
-            return 0, 'chant/prise-01.flac\nchant/prise-02.flac\nchant/prise-03.flac\nprise-01.flac prise-02.flac prise-03.flac'
+            return 0, 'chant/prise-01.flac\nchant/prise-02.flac\nchant/prise-03.flac\nprise-01.flac prise-02.flac prise-03.flac\nreprise/DiT_epoch_00003_step_00750.pth'
         if args[:2] == ('kernels', 'push'):
             return 0, 'Kernel version 3 successfully pushed.'
         if args[:2] == ('kernels', 'status'):

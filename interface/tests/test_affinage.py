@@ -96,10 +96,12 @@ class ChantReel(EssaiIsole):
     def test_evaluation_de_prises_de_telephone(self):
         chant = self.donnees / "voix" / "voixA" / "chant"
         chant.mkdir(parents=True)
-        synthese(chant / "20261109-153000-notes.m4a", "sine=frequency=220:sample_rate=48000", 12, canaux=1)
-        synthese(chant / "20261109-153100-notes.mp3", "sine=frequency=330:sample_rate=44100", 12)
-        synthese(chant / "20261109-153200-notes.wav", "sine=frequency=440:sample_rate=16000", 3, canaux=1)   # trop courte
-        synthese(chant / "20261109-153300-notes.wav", "sine=frequency=440:sample_rate=44100,volume=40", 12, canaux=1)  # saturée
+        def phrases(f, hz, gain=0.25):    # des notes tenues 2,4 s séparées de silences : le fond est très bas
+            return f"aevalsrc='clip({gain}*sin(2*PI*{f}*t),-1,1)*lt(mod(t,3),2.4)':s={hz}"
+        synthese(chant / "20261109-153000-notes.m4a", phrases(220, 48000), 12, canaux=1)
+        synthese(chant / "20261109-153100-notes.mp3", phrases(330, 44100), 12)
+        synthese(chant / "20261109-153200-notes.wav", phrases(440, 16000), 3, canaux=1)   # trop courte
+        synthese(chant / "20261109-153300-notes.wav", phrases(440, 44100, 40), 12, canaux=1)  # saturée
         prises = [(f, 0.0) for f in sorted(chant.iterdir())]
         cache = {}
         b = affinage.evaluer(prises, cache)

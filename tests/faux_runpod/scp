@@ -1,0 +1,28 @@
+#!/usr/bin/env python3
+"""Faux scp pour les essais : « root@hôte:/workspace/voixla/… » est $FAUX_POD_DIR/… ; la copie se fait ICI (cp -r).
+FAUX_SCP_ECHEC=envoi|retour : l'envoi vers le pod, ou le rapatriement, échoue."""
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+positions, i = [], 0
+while i < len(args):
+    if args[i] in ('-o', '-i', '-P'):
+        i += 2
+        continue
+    if args[i] != '-r':
+        positions.append(args[i])
+    i += 1
+pod = os.environ['FAUX_POD_DIR']
+vers_pod = positions[-1].startswith('root@')
+with open(Path(os.environ['FAUX_RUNPOD_DIR']) / 'trace.txt', 'a') as f:
+    f.write('scp ' + ' '.join(positions) + '\n')
+if os.environ.get('FAUX_SCP_ECHEC') == ('envoi' if vers_pod else 'retour'):
+    print('scp: connection lost', file=sys.stderr)
+    sys.exit(1)
+locaux = [re.sub(r'^root@[^:]+:/workspace/voixla', pod, p) for p in positions]
+Path(locaux[-1]).parent.mkdir(parents=True, exist_ok=True)
+sys.exit(subprocess.run(['cp', '-r', *locaux]).returncode)

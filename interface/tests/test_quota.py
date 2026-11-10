@@ -498,14 +498,62 @@ class EssaiEtatComplet(EssaiIsole):
 
 
 class EssaiSecours(unittest.TestCase):
-    def test_rien_de_branche(self):
-        self.assertEqual([m.cle for m in secours.MOYENS], ["ancien-pc", "runpod"])
-        self.assertEqual(secours.proposer_pour({"secours": "runpod"}), [])
-        self.assertEqual(secours.proposer_pour({}), [])
+    def setUp(self):
+        import os
+        import tempfile
+        from unittest import mock
+        self._t = tempfile.TemporaryDirectory()
+        self.addCleanup(self._t.cleanup)
+        self.maison = Path(self._t.name)   # ni client, ni jeton, ni clé : rien n'est prêt
+        env = {"HOME": self._t.name}
+        p = mock.patch.dict(os.environ, env)
+        p.start()
+        self.addCleanup(p.stop)
+        for v in ("VOIXLA_MODAL_PYTHON", "VOIXLA_RUNPODCTL", "MODAL_TOKEN_ID", "RUNPOD_API_KEY"):
+            os.environ.pop(v, None)
+        q = mock.patch.object(Path, "home", classmethod(lambda cls: self.maison))
+        q.start()
+        self.addCleanup(q.stop)
+
+    def poser(self, *chemins):
+        for c in chemins:
+            f = self.maison / c
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text("x")
+
+    def test_moyens_branches(self):
+        self.assertEqual([m.cle for m in secours.MOYENS], ["ancien-pc", "modal", "runpod"])
+        self.assertEqual([m.cle for m in secours.MOYENS if m.branche], ["modal", "runpod"])
         self.assertIs(secours.choisi({"secours": "ancien-pc"}), secours.PAR_CLE["ancien-pc"])
-        self.assertEqual(secours.PAR_CLE["runpod"].pret(), (False, "pas encore branché"))
+        self.assertEqual(secours.PAR_CLE["ancien-pc"].pret(), (False, "pas encore branché"))
         with self.assertRaises(NotImplementedError):
-            secours.preparer_demande(secours.PAR_CLE["runpod"], {"argv": ["doubler"]})
+            secours.preparer_demande(secours.PAR_CLE["ancien-pc"], {"argv": ["doubler"]})
+        self.assertTrue(secours.PAR_CLE["runpod"].payant)
+
+    def test_pret_selon_les_fichiers(self):
+        self.assertEqual(secours.proposer_pour({}), [])
+        self.assertEqual(secours.proposer_pour({"secours": "modal"}), [], "client et jeton absents")
+        self.assertIn("client modal absent", secours.PAR_CLE["modal"].pret()[1])
+        self.poser("modal-venv/bin/python")
+        self.assertIn("jeton Modal absent", secours.PAR_CLE["modal"].pret()[1])
+        self.poser(".modal.toml")
+        self.assertEqual(secours.PAR_CLE["modal"].pret(), (True, ""))
+        self.assertEqual(secours.proposer_pour({"secours": "modal"}), [secours.PAR_CLE["modal"]])
+        self.assertEqual(secours.proposer_pour({"secours": "runpod"}), [], "Runpod : jamais sans clé ni runpodctl")
+        self.poser(".local/bin/runpodctl", ".runpod/config.toml")
+        self.assertEqual(secours.proposer_pour({"secours": "runpod"}), [secours.PAR_CLE["runpod"]])
+
+    def test_demande_pour_le_moyen(self):
+        d = {"argv": ["doubler", "clip.mp4", "--calcul=auto", "--voix=jules"], "reglages": {"voix": "jules"}}
+        r = secours.preparer_demande(secours.PAR_CLE["modal"], d)
+        self.assertEqual(r["argv"], ["doubler", "clip.mp4", "--voix=jules", "--calcul=modal"])
+        self.assertEqual((r["secours"], r["reglages"]["calcul"]), ("modal", "modal"))
+        self.assertEqual(d["argv"][2], "--calcul=auto", "la demande d'origine n'est pas modifiée")
+
+    def test_calcul_choisi(self):
+        self.assertEqual(secours.calcul_choisi({}), "")
+        self.assertEqual(secours.calcul_choisi({"calcul": "auto"}), "auto")
+        self.assertEqual(secours.calcul_choisi({"calcul": "n'importe quoi"}), "")
 
 
 if __name__ == "__main__":

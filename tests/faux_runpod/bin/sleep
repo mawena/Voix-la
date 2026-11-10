@@ -1,0 +1,3 @@
+#!/bin/sh
+# Faux sleep des essais du pod (minuterie) : jamais plus d'une seconde
+exec /bin/sleep 1

@@ -1,0 +1,20 @@
+#!/usr/bin/env python3
+"""Faux ssh pour les essais : la commande s'exécute ICI, dans $FAUX_POD_DIR qui tient lieu de /workspace/voixla du pod.
+FAUX_SSH_PANNE=1 : le pod ne répond pas (code 255). Chaque commande est tracée dans $FAUX_RUNPOD_DIR/trace.txt."""
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+hote = next(i for i, a in enumerate(args) if a.startswith('root@'))
+commande = ' '.join(args[hote + 1:])
+with open(Path(os.environ['FAUX_RUNPOD_DIR']) / 'trace.txt', 'a') as f:
+    f.write('ssh ' + commande + '\n')
+if os.environ.get('FAUX_SSH_PANNE'):
+    print('ssh: connect to host: Connection timed out', file=sys.stderr)
+    sys.exit(255)
+pod = os.environ['FAUX_POD_DIR']
+env = {**os.environ, 'VOIXLA_POD': pod, 'VOIXLA_POD_SANS_INSTALL': '1', 'VOIXLA_POD_PYTHON': sys.executable,
+       'RUNPOD_POD_ID': 'pod0123456789'}
+sys.exit(subprocess.run(['sh', '-c', commande.replace('/workspace/voixla', pod)], env=env).returncode)

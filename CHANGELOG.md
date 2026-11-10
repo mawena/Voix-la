@@ -7,6 +7,38 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+## [0.17.0] - 2026-11-10
+
+### Ajouté
+
+- **Doubler ailleurs que sur Kaggle** quand Kaggle n'est pas disponible (file « queued » sans fin, quota épuisé, refus) :
+  option `--calcul kaggle|modal|runpod|auto` et clé `calcul` de la configuration (`kaggle` par défaut, donc rien ne change
+  sans demande). `--gpu` garde son sens (le nombre de cartes). Le MÊME noyau `kaggle/doubler_kaggle.py` tourne partout :
+  seuls ses chemins d'entrée et de sortie se déplacent, par `DOUBLER_ENTREES` et `DOUBLER_SORTIE` (Kaggle par défaut).
+  - **Modal** (`calcul_modal.py`, `calcul_modal_hote.py`) : application éphémère (`with app.run()`) lancée avec le client
+    installé dans `~/modal-venv` ; carte `modal.gpu` (L4 par défaut ; A10, A100-40GB, `L4:2`…) ; mêmes versions de
+    bibliothèques que le noyau Kaggle (Python 3.13, torch 2.11.0, transformers 5.20.2…) ; modèles publics seulement dans le
+    volume `voix-la-modeles` (`doubler --calcul modal --preparer-outils`, l'équivalent du noyau d'outils de Kaggle). Le son
+    et la référence de la voix passent par un volume éphémère supprimé par Modal à la fin, et sont effacés du conteneur.
+    Une session interrompue ne se reprend pas (l'application s'arrête avec le PC, rien n'est facturé) : `--reprendre` la
+    clôt proprement.
+  - **Runpod** (`calcul_runpod.py`), payant, **jamais automatique** : un pod RTX 4090 (image PyTorch officielle, SSH sur
+    22/tcp, `runpodctl` 3, `ssh` et `scp`). Le pod est toujours supprimé : `finally` côté PC (essais, vérification),
+    minuterie dans le pod posée avant tout envoi (`runpodctl` et `$RUNPOD_POD_ID` après `runpod.duree_max_min`, 90 min par
+    défaut), pods nommés `voix-la-…`, et `doubler --nettoyer-runpod` qui supprime les restes de ce nom, jamais d'autres
+    pods. `--reprendre` suit le pod, rapatrie, puis le supprime.
+  - **auto** : Kaggle d'abord, puis Modal si Kaggle n'est pas disponible (jeton absent, refus, quota épuisé, accès refusé,
+    ou « queued » au-delà de `kaggle.attente_file_min`, 20 min par défaut). En basculant, `doubler` dit que la version
+    Kaggle reste en file et donne le lien de son notebook à annuler sur le site (l'outil `kaggle` ne sait pas l'annuler,
+    et `doubler` n'appelle jamais `kaggle kernels delete`).
+  - La durée et le coût sont estimés selon la carte, en dollars (estimations, pas des mesures : à corriger après les
+    premiers essais réels) ; les rapports des sessions Modal et Runpod ne servent pas à estimer Kaggle.
+  - **Confidentialité** : la référence et l'empreinte de la voix ne sont gardées ni sur Modal (le volume des modèles ne
+    contient que des modèles publics) ni sur Runpod (le pod est supprimé) ; le dossier local envoyé est effacé.
+  - Interface : « Secours » (Réglages > Doublage) branché sur Modal et Runpod, réglage « Calcul du GPU », ligne « Calcul »
+    de la page Doubler avec la durée et le coût estimés en dollars ; un doublage sur Modal ou Runpod ne passe pas par le
+    quota de Kaggle.
+
 ## [0.16.0] - 2026-11-10
 
 ### Ajouté
@@ -702,7 +734,8 @@ Première version publique.
     `VOIXLA_DECODAGE_MATERIEL=1` remet le décodage matériel ;
   - les essais automatiques laissaient le son de l'application coupé.
 
-[Non publié]: https://github.com/mawena/Voix-la/compare/v0.16.0...HEAD
+[Non publié]: https://github.com/mawena/Voix-la/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/mawena/Voix-la/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/mawena/Voix-la/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/mawena/Voix-la/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/mawena/Voix-la/compare/v0.13.0...v0.14.0

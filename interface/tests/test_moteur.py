@@ -70,7 +70,8 @@ class EssaiCapacites(EssaiIsole):
                                                                          "--sans-paroles", "--autotune",
                                                                          "--sans-autotune", "--autotune-gamme",
                                                                          "--gpu", "--passage", "--affectation",
-                                                                         "--comparer", "--transposer"})
+                                                                         "--comparer", "--transposer", "--calcul",
+                                                                         "--nettoyer-runpod"})
         self.assertTrue(moteur.disponible())
 
     def test_doubler_introuvable(self):
@@ -148,6 +149,44 @@ class EssaiMoteurEtNettoyage(EssaiIsole):
         a = moteur.args_doublage(["/v/A.mp4"], {"voix": "jules", "moteur": ""}, "/d",
                                  caps=frozenset(moteur.OPTIONS_SUIVIES))
         self.assertFalse(any(x.startswith("--moteur") for x in a))
+
+
+class EssaiCalcul(EssaiIsole):
+    """--calcul : passé seulement si doubler l'annonce et si un moyen est choisi ; l'estimation en dollars selon la carte."""
+
+    def args(self, reglages, caps=None):
+        return moteur.args_doublage(["/v/A.mp4"], {"voix": "jules", **reglages}, "/d",
+                                    caps=frozenset(moteur.OPTIONS_SUIVIES) if caps is None else caps)
+
+    def test_moyen_choisi(self):
+        for moyen in ("kaggle", "modal", "runpod", "auto"):
+            self.assertIn(f"--calcul={moyen}", self.args({"calcul": moyen}))
+
+    def test_rien_ou_illisible(self):
+        for valeur in (None, "", "ailleurs"):
+            self.assertFalse(any(x.startswith("--calcul") for x in self.args({"calcul": valeur})), valeur)
+
+    def test_option_absente(self):
+        caps = frozenset(moteur.OPTIONS_SUIVIES) - {"--calcul"}
+        self.assertFalse(any(x.startswith("--calcul") for x in self.args({"calcul": "modal"}, caps)))
+
+    def test_calcul_par_defaut(self):
+        self.assertEqual(moteur.calcul_par_defaut({}), "kaggle")
+        self.assertEqual(moteur.calcul_par_defaut({"calcul": "auto"}), "auto")
+        self.assertEqual(moteur.calcul_par_defaut({"contenu": {"calcul": "modal"}}), "modal")
+        self.assertEqual(moteur.calcul_par_defaut({"calcul": "n'importe quoi"}), "kaggle")
+
+    def test_cout_selon_la_carte(self):
+        modal = moteur.duree_cout_calcul([1680.0], "modal", {"calcul": "modal"})
+        self.assertIsNotNone(modal, "doubler.py du dépôt se charge")
+        duree, cout = modal
+        self.assertTrue(0.1 < cout < 0.8, cout)
+        a10 = moteur.duree_cout_calcul([1680.0], "modal", {"contenu": {"modal": {"gpu": "A10"}}})
+        self.assertLess(a10[0], duree, "une A10 va plus vite qu'une L4")
+        self.assertIsNone(moteur.duree_cout_calcul([1680.0], "kaggle", {}), "Kaggle : gratuit, pas d'estimation en dollars")
+        deux = moteur.duree_cout_calcul([1680.0, 1680.0], "runpod", {})
+        un = moteur.duree_cout_calcul([1680.0], "runpod", {})
+        self.assertAlmostEqual(deux[1], 2 * un[1], delta=0.02)
 
 
 class EssaiTransposer(EssaiIsole):

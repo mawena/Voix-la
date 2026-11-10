@@ -29,6 +29,7 @@ TEXTE_PAS = ("30 par défaut ; 50 : environ 40 % de temps GPU de conversion en p
              "n’apportent rien de mesurable")
 TEXTE_PAROLES = ("Transcription des paroles (Whisper) et traduction française si la chanson n’est pas en français, "
                  "affichées sous le lecteur des résultats")
+CALCULS_LIBELLES = ["Selon la configuration", *[l for _c, l in secours.CALCULS]]
 MOTEURS =[("", "Par défaut"), ("yingmusic", "YingMusic-SVC"), ("seedvc", "Seed-VC 44 kHz")]
 # Chaîne de conversion du chant : raccourcis vers les réglages moteur / nettoyage
 CHAINES = [("defaut", "Par défaut"), ("avant", "Chaîne d’avant"), ("mesure", "Sur mesure")]
@@ -323,6 +324,15 @@ class PageDoubler(commun.Page):
         g.add(self.r_nettoyage)
         self.r_moteur.connect("notify::selected", lambda *_: self._maj())
         self.r_nettoyage.connect("notify::active", lambda *_: self._maj())
+        # où tourne le GPU : visible seulement si doubler annonce --calcul ; le défaut vient des Réglages (préférence
+        # « calcul »), sinon de la configuration de doubler
+        self.r_calcul = Adw.ComboRow(title="Calcul (GPU)", model=Gtk.StringList.new(CALCULS_LIBELLES),
+                                     subtitle="Kaggle est gratuit. Modal : crédit gratuit mensuel. Runpod : payant, le "
+                                              "pod est supprimé à la fin. Auto : Kaggle, puis Modal s’il n’est pas "
+                                              "disponible")
+        self.r_calcul.set_visible(False)
+        self.r_calcul.connect("notify::selected", lambda *_: self._maj())
+        g.add(self.r_calcul)
         # paroles : visible seulement si doubler annonce --sans-paroles ; par défaut, la clé « paroles » de sa
         # configuration (vraie si absente)
         self.r_paroles = Adw.SwitchRow(title="Paroles", active=True, visible=False, subtitle=TEXTE_PAROLES)
@@ -573,6 +583,10 @@ class PageDoubler(commun.Page):
         # options récentes de doubler : masquées tant que son aide ne les annonce pas
         self.r_chaine.set_visible("--moteur" in self.fenetre.caps and "--sans-nettoyage" in self.fenetre.caps)
         self._chaine_changee()
+        if hasattr(self, "r_calcul"):
+            self.r_calcul.set_visible("--calcul" in self.fenetre.caps)
+            cles = ["", *[c for c, _l in secours.CALCULS]]
+            self.r_calcul.set_selected(cles.index(secours.calcul_choisi(p)))
         self._verifier_kaggle()
         self._charger_modele()
 
@@ -790,6 +804,13 @@ class PageDoubler(commun.Page):
 
     # --- lancement ---------------------------------------------------------------------------------------------------
 
+    def calcul_choisi(self):
+        """Le moyen de calcul choisi dans la page (kaggle, modal, runpod, auto), ou chaîne vide : celui de la configuration
+        de doubler (la ligne est cachée si doubler ne connaît pas --calcul)."""
+        if not hasattr(self, "r_calcul") or not self.r_calcul.get_visible():
+            return ""
+        return ["", *[c for c, _l in secours.CALCULS]][self.r_calcul.get_selected()]
+
     def reglages(self):
         mode = MODES[self.r_mode.get_selected()][0]
         r = {"voix": self._voix_choisie(), "mode": mode, "octave": OCTAVES[self.r_octave.get_selected()][0],
@@ -809,6 +830,9 @@ class PageDoubler(commun.Page):
             r["sans_nettoyage"] = True
         if self.r_paroles.get_visible() and not self.r_paroles.get_active():
             r["sans_paroles"] = True
+        calcul = self.calcul_choisi()
+        if calcul:
+            r["calcul"] = calcul
         if self.r_autotune.get_visible():
             if self.r_autotune.get_sensitive() and self.r_autotune.get_enable_expansion():
                 r["autotune"] = int(round(self.at_echelle.get_value()))
@@ -829,10 +853,18 @@ class PageDoubler(commun.Page):
             self.resume.set_label("Aucune vidéo choisie")
         else:
             est = sum(sum(e.values()) for e in estimations)
-            sessions = "une seule session Kaggle" if len(groupes) == 1 else f"{len(groupes)} sessions Kaggle (une par extrait)"
+            calcul = reglages.get("calcul") or moteur.calcul_par_defaut(self._conf)
+            nom = {"modal": "Modal", "runpod": "Runpod"}.get(calcul, "Kaggle")
+            sessions = (f"une seule session {nom}" if len(groupes) == 1
+                        else f"{len(groupes)} sessions {nom} (une par extrait)")
             inconnue = any(v["duree_s"] is None and not (v.get("extrait") and v["extrait"][1]) for v in self.videos)
-            self.resume.set_markup(f"<b>{formats.pluriel(n, 'vidéo')}</b> · {sessions} · "
-                                   f"{'durée en cours de lecture' if inconnue else formats.duree_courte(est)}")
+            texte = 'durée en cours de lecture' if inconnue else formats.duree_courte(est)
+            dc = None if inconnue else moteur.duree_cout_calcul([e.get("kaggle") or 0.0 for e in estimations], calcul,
+                                                              self._conf)
+            if dc:   # Modal et Runpod : durée sur la carte réglée, et coût en dollars (estimation)
+                texte = (f"{formats.duree_courte(dc[0])} sur {nom}"
+                         + (f", environ {dc[1]:.2f} $".replace(".", ",") if dc[1] is not None else ""))
+            self.resume.set_markup(f"<b>{formats.pluriel(n, 'vidéo')}</b> · {sessions} · {texte}")
         if n and len(groupes) > 1:
             self.note.set_label("Les vidéos ont des extraits différents : doubler applique le même extrait à toutes les "
                                 "vidéos d’un appel, donc un appel (et une session Kaggle) par extrait, l’un après "
@@ -842,7 +874,8 @@ class PageDoubler(commun.Page):
         self.b_lancer.set_sensitive(bool(n) and bool(self._voix_choisie()))
         if self.comparer():
             self.r_comparees.set_subtitle(self._texte_comparees(n))
-        self._maj_quota([e.get("kaggle") or 0.0 for e in estimations])
+        sur_kaggle = (reglages.get("calcul") or moteur.calcul_par_defaut(self._conf)) not in ("modal", "runpod")
+        self._maj_quota([e.get("kaggle") or 0.0 for e in estimations] if sur_kaggle else [0.0] * len(estimations))
         if self.par_chanteur():
             a, b = self._choix_menu(self.r_voix_a), self._choix_menu(self.r_voix_b)
             self.r_duo.set_subtitle(TEXTE_PAR_CHANTEUR if not (a and b and a == b) else
@@ -916,6 +949,13 @@ class PageDoubler(commun.Page):
             demandes.append(travaux.demande_doublage(
                 [{"chemin": v["chemin"], "duree_s": v["duree_s"], "extrait": list(v["extrait"]) if v["extrait"] else None}
                  for v in vids], reglages, self.fenetre.donnees, estimations=est, extrait=extrait))
+        if (reglages.get("calcul") or moteur.calcul_par_defaut(self._conf)) in ("modal", "runpod"):
+            # ni le quota de Kaggle ni sa file ne sont en jeu : pas de jugement, et rien à ajouter au GPU promis à la file
+            for d in demandes:
+                d["estimations"] = {**d["estimations"], "kaggle_avant_calcul": d["estimations"].get("kaggle"),
+                                    "kaggle": 0.0}
+            self._mettre_dans_la_file(demandes)
+            return
         verdicts = self._verdicts([quota.besoin_s(d) for d in demandes])
         if verdicts is None or all(v.tient for v in verdicts):
             self._mettre_dans_la_file([d if v is None else quota.marquer(d, "tient", v)

@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voix-là, dépôt APT</title>
+<meta name="description" content="Voix-là remplace la voix d'une vidéo par une voix clonée. Dépôt APT signé pour l'installer et le mettre à jour avec apt.">
+<style>
+  :root{--fond:#fbfaf8;--texte:#23211f;--doux:#6b6560;--accent:#7a3fd1;--carte:#fff;--bord:#e6e1db;--code:#1f1b2b;--code-texte:#f1ecfa}
+  @media (prefers-color-scheme:dark){:root{--fond:#17151c;--texte:#ece8f2;--doux:#a39dad;--accent:#b794f4;--carte:#211e29;--bord:#352f40;--code:#0e0c13;--code-texte:#ece8f2}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--fond);color:var(--texte);font:1.05rem/1.65 system-ui,-apple-system,"Segoe UI",sans-serif}
+  header{padding:3.5rem 1.2rem 2.5rem;text-align:center;background:linear-gradient(135deg,#4b2a8f,#7a3fd1 60%,#c06bd1);color:#fff}
+  header h1{margin:0 0 .4rem;font-size:2.6rem;letter-spacing:-.02em}
+  header p{margin:0 auto;max-width:36rem;font-size:1.15rem;opacity:.95}
+  main{max-width:46rem;margin:0 auto;padding:1.5rem 1.2rem 3rem}
+  h2{margin:2.4rem 0 .6rem;font-size:1.45rem}
+  .carte{background:var(--carte);border:1px solid var(--bord);border-radius:.8rem;padding:1rem 1.2rem}
+  pre{margin:.8rem 0;padding:1rem 1.1rem;background:var(--code);color:var(--code-texte);border-radius:.7rem;overflow-x:auto;font-size:.92rem;line-height:1.55}
+  code{font-family:ui-monospace,"DejaVu Sans Mono",monospace}
+  p code,li code{background:var(--bord);padding:.1rem .35rem;border-radius:.3rem;font-size:.92em}
+  a{color:var(--accent)}
+  ul{padding-left:1.2rem}
+  .petit{color:var(--doux);font-size:.95rem}
+  footer{max-width:46rem;margin:0 auto;padding:0 1.2rem 2.5rem;color:var(--doux);font-size:.9rem}
+</style>
+</head>
+<body>
+<header>
+  <h1>Voix-là</h1>
+  <p>Remplacer la voix d'une vidéo par une voix clonée, et garder tout le reste.</p>
+</header>
+<main>
+  <h2>Ce que c'est</h2>
+  <p>Voix-là est un outil personnel de doublage. À partir d'une vidéo (une chanson, un duo, du rap ou de la parole) et
+  d'une voix de référence, il rend la même vidéo avec la voix clonée, et son audio seul. La commande <code>doubler</code>
+  et l'application graphique <strong>Voix-là</strong> (GTK 4 et libadwaita) sont dans le même paquet.</p>
+  <ul>
+    <li>Le travail lourd (séparation des voix, nettoyage, conversion de la voix) tourne sur le GPU gratuit de <em>votre</em>
+    compte Kaggle, dans un jeu de données et un noyau privés.</li>
+    <li>Le mixage (dynamique de la voix d'origine, de-esser, réverbération, limiteur) et la remise du son dans la vidéo se
+    font en local avec ffmpeg ; l'image et les sous-titres sont copiés sans réencodage.</li>
+    <li>Une version avec auto-tune, de la correction discrète à l'effet robotique, est produite en local.</li>
+  </ul>
+  <p class="petit">Il faut un compte Kaggle avec accès au GPU et son jeton d'API. Les poids YingMusic-SVC sont sous
+  licence CC BY-NC 4.0 : usage personnel et non commercial seulement.</p>
+
+  <h2>Ajouter le dépôt, en une commande</h2>
+  <p>Cette commande pose la clé de signature et la source APT, puis met la liste des paquets à jour :</p>
+<pre>sudo curl -fsSL https://mawena.github.io/Voix-la/apt/voix-la.gpg -o /usr/share/keyrings/voix-la.gpg \
+ &amp;&amp; sudo curl -fsSL https://mawena.github.io/Voix-la/apt/voix-la.sources -o /etc/apt/sources.list.d/voix-la.sources \
+ &amp;&amp; sudo apt update</pre>
+
+  <h2>Installer</h2>
+<pre>sudo apt install voix-la</pre>
+  <p>Le paquet remet lui-même la clé (<code>/usr/share/keyrings/voix-la.gpg</code>) et la source
+  (<code>/etc/apt/sources.list.d/voix-la.sources</code>) en place : elles restent à jour et disparaissent à la
+  suppression du paquet.</p>
+
+  <h2>Mettre à jour</h2>
+  <p>Une fois le dépôt ajouté, <code>apt upgrade</code> suffit pour recevoir chaque nouvelle version :</p>
+<pre>sudo apt update &amp;&amp; sudo apt upgrade</pre>
+
+  <h2>Vérifier la clé</h2>
+  <div class="carte">
+    <p style="margin:0">Voix-là APT (mawena)<br>
+    <code>20F9 E2A5 B482 09DE DBD3  9601 0604 C235 3943 6022</code></p>
+  </div>
+  <p class="petit">Dépôt signé (<code>InRelease</code> et <code>Release.gpg</code>), architectures <code>all</code> et
+  <code>amd64</code>. Les anciennes versions restent dans le dépôt. Les paquets sont aussi sur la page des
+  <a href="https://github.com/mawena/Voix-la/releases">releases GitHub</a>.</p>
+</main>
+<footer>
+  <a href="https://github.com/mawena/Voix-la">Code et documentation sur GitHub</a> · licence MIT
+</footer>
+</body>
+</html>

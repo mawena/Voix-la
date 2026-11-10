@@ -1,0 +1,28 @@
+Architectures: all amd64
+Codename: stable
+Components: main
+Date: Tue, 10 Nov 2026 17:41:12 +0000
+Description: Voix-là, doublage par voix clonée
+Label: Voix-là
+Origin: Voix-là
+Suite: stable
+MD5Sum:
+ 4501309f9fe2346b059d97a38fe96cbc             2292 main/binary-all/Packages
+ b0f7d42cfc82b280c8f4663ffbe4dd02             1303 main/binary-all/Packages.gz
+ d41d8cd98f00b204e9800998ecf8427e                0 main/binary-amd64/Packages
+ 4a4dd3598707603b3f76a2378a4504aa               20 main/binary-amd64/Packages.gz
+SHA1:
+ 286099f8360b7cebbfbfe346923a83176328cf06             2292 main/binary-all/Packages
+ afb01ac40bb891cd2ba1d61aa4de0b01419c42e1             1303 main/binary-all/Packages.gz
+ da39a3ee5e6b4b0d3255bfef95601890afd80709                0 main/binary-amd64/Packages
+ a0fddd5458378c1bf3c10dd2f5c060d1347741ed               20 main/binary-amd64/Packages.gz
+SHA256:
+ c376e6a7c5fe84d9c5d3d44c72b033bfe72bb62884936aed145a467df777867f             2292 main/binary-all/Packages
+ 1cbf282dadaf251ca29291179812ea0ea7379f9c96c6c4ff6988b2f364eb9b9c             1303 main/binary-all/Packages.gz
+ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855                0 main/binary-amd64/Packages
+ f61f27bd17de546264aa58f40f3aafaac7021e0ef69c17f6b1b4cd7664a037ec               20 main/binary-amd64/Packages.gz
+SHA512:
+ b41a1c3ff246d6a2e71d2d67fb4463c89c74acfdf5d913d19f7192c5b550b6a8bb0626409b21e74132896b8623066eafb01a51c7c8ea2b74f5206d8204015232             2292 main/binary-all/Packages
+ 073af3933bca1f95f0df4c450d6445f0096dc5ada0b4d3dc80d458d5c355eae0402cda5630e2bd2b1f8314520353d1dfc25c9fac2a2b9bc28a565d02af1dacfe             1303 main/binary-all/Packages.gz
+ cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e                0 main/binary-amd64/Packages
+ 1b46b9b08d5b338be9d732a1724795b2eab63daffde377218727c90857b79fe6a47bceed495117fcde60f7339812ef75ef4c69f82dd79fb69b6cbf8006b521f2               20 main/binary-amd64/Packages.gz

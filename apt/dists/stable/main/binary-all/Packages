@@ -1,0 +1,41 @@
+Package: voix-la
+Version: 0.17.0
+Architecture: all
+Maintainer: mawena <57989130+mawena@users.noreply.github.com>
+Installed-Size: 2337
+Depends: python3 (>= 3.10), python3-numpy, ffmpeg, librubberband2, python3-gi, python3-gi-cairo, gir1.2-gtk-4.0 (>= 4.10), gir1.2-adw-1 (>= 1.5), gir1.2-pango-1.0, gir1.2-gdkpixbuf-2.0, gir1.2-gstreamer-1.0, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-libav, libgtk-4-media-gstreamer
+Recommends: gstreamer1.0-plugins-bad, pulseaudio-utils, libnotify-bin, x42-plugins
+Suggests: python3-venv
+Filename: pool/main/voix-la_0.17.0_all.deb
+Size: 568604
+MD5sum: 7fb9d57254ebd08c45943db4519bc415
+SHA1: f350b5acdd4bb2a6c5a3a75391ea7a5d7eb7afbe
+SHA256: 9331b416887bef2374224c641394d2d841b7ffc2adcfb32f6e77078dd8361d2d
+Section: sound
+Priority: optional
+Homepage: https://github.com/mawena/Voix-la
+Description: dub videos with a cloned voice, using the free Kaggle GPU
+ Voix-là replaces the voice of a video (a song, a duet, rap or speech) with
+ a cloned voice, and gives back the same video and its audio.
+ .
+ The heavy work runs on the free GPU of the user's own Kaggle account, in a
+ private dataset and a private kernel: voice separation, voice cleaning (lead
+ and backing vocals split, original reverb removed), automatic choice between
+ singing and speech, one octave shift per singer, and conversion with
+ YingMusic-SVC or Seed-VC. Mixing (following the dynamics of the original
+ voice, de-esser, reverb, true-peak limiter) and putting the sound back on the
+ video run locally with ffmpeg and numpy; picture and subtitles are copied
+ without re-encoding. An optional auto-tune version, from subtle pitch
+ correction to a robotic effect in the key detected from the music, is made
+ locally too, with x42-autotune (recommended package x42-plugins).
+ .
+ Includes the `doubler` command and the "Voix-là" GTK 4 and libadwaita
+ application: voices (from a file or the microphone), dubbing queue, results
+ with original/dubbed playback at the same position, machine and Kaggle
+ status.
+ .
+ Needs a Kaggle account with GPU access, its API token, and the kaggle
+ command-line tool, which is not packaged: install it in a Python virtual
+ environment (see the README). The YingMusic-SVC weights are CC BY-NC 4.0:
+ personal, non-commercial use only.
+

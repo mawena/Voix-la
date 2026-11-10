@@ -2,6 +2,8 @@
 
 Voix-là : votre vidéo, avec une autre voix. Et voilà.
 
+**[Page de présentation : mawena.github.io/Voix-la](https://mawena.github.io/Voix-la/)** (captures, installation par APT, usage responsable).
+
 > **Version 0.17.1** : paquet Debian `.deb` joint à chaque [release](https://github.com/mawena/Voix-la/releases). Voir le
 > [journal des modifications](CHANGELOG.md).
 

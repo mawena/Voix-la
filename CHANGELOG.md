@@ -7,6 +7,19 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+### Ajouté
+
+- **Nouvelle page d'accueil** (`site/`, https://mawena.github.io/Voix-la/) : accroche, ce que Voix-là change et garde, schéma de
+  la chaîne de traitement, visite de l'application avec de vraies captures (données inventées), fonctions, installation
+  par APT avec boutons « Copier », mise à jour, vérification de la clé, usage responsable (« imitation par IA »), crédits et
+  licences (YingMusic et NLLB : usage non commercial). Statique, sans traqueur ni CDN, claire et sombre, adaptée au
+  téléphone ; police Bricolage Grotesque (SIL OFL) servie depuis le site.
+
+### Modifié
+
+- `scripts/publier-apt.sh` publie tout le contenu de `site/` à la racine de `gh-pages` (et non plus seulement
+  `index.html`), sans jamais toucher à `apt/`.
+
 ## [0.17.1] - 2026-11-10
 
 ### Corrigé

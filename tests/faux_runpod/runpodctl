@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""Faux runpodctl 3 pour les essais : aucun réseau, aucune clé, aucun pod. Les pods sont dans $FAUX_RUNPOD_DIR/pods.json
+(un pod « autre-pod », qui n'est pas de Voix-là, y est d'office) et chaque appel est tracé dans trace.txt.
+Variables : FAUX_RUNPOD_ECHEC_CREATION=1 (la création échoue après avoir créé le pod, comme un délai dépassé),
+FAUX_RUNPOD_SANS_ID=1 (la création échoue sans dire l'identifiant), FAUX_RUNPOD_SUPPRESSIONS_ECHOUEES=n (les n premières
+suppressions échouent ; « toujours » : toutes)."""
+import json
+import os
+import sys
+from pathlib import Path
+
+dossier = Path(os.environ['FAUX_RUNPOD_DIR'])
+etat = dossier / 'pods.json'
+args = sys.argv[1:]
+with open(dossier / 'trace.txt', 'a') as f:
+    f.write(' '.join(args) + '\n')
+pods = json.loads(etat.read_text()) if etat.exists() else [{'id': 'autrepod0001', 'name': 'mon-autre-pod'}]
+
+
+def sauver():
+    etat.write_text(json.dumps(pods))
+
+
+def option(nom):
+    return args[args.index(nom) + 1] if nom in args else None
+
+
+if args[:2] == ['pod', 'create']:
+    pod = {'id': 'pod0123456789', 'name': option('--name'), 'gpu': option('--gpu-id')}
+    pods.append(pod)
+    sauver()
+    if os.environ.get('FAUX_RUNPOD_SANS_ID'):
+        print('error: pod not ready', file=sys.stderr)
+        sys.exit(1)
+    if os.environ.get('FAUX_RUNPOD_ECHEC_CREATION'):
+        print(f'error: wait timed out; the pod is kept: {json.dumps({"id": pod["id"]})}', file=sys.stderr)
+        sys.exit(1)
+    print(json.dumps({'id': pod['id'], 'name': pod['name'], 'desiredStatus': 'RUNNING'}))
+elif args[:2] == ['ssh', 'info']:
+    print(json.dumps({'command': 'ssh root@203.0.113.5 -p 2222 -i ~/.ssh/id_rsa', 'ip': '203.0.113.5', 'port': 2222}))
+elif args[:2] == ['pod', 'list']:
+    print(json.dumps(pods))
+elif args[:2] == ['pod', 'get']:
+    pod = next((p for p in pods if p['id'] == args[2]), None)
+    if pod is None:
+        print('error: pod not found', file=sys.stderr)
+        sys.exit(1)
+    print(json.dumps(pod))
+elif args[:2] == ['pod', 'delete']:
+    compteur = dossier / 'suppressions'
+    n = int(compteur.read_text()) if compteur.exists() else 0
+    compteur.write_text(str(n + 1))
+    voulu = os.environ.get('FAUX_RUNPOD_SUPPRESSIONS_ECHOUEES', '0')
+    if voulu == 'toujours' or n < int(voulu):
+        print('error: temporary failure', file=sys.stderr)
+        sys.exit(1)
+    pods[:] = [p for p in pods if p['id'] != args[2]]
+    sauver()
+    print(json.dumps({'deleted': args[2]}))
+else:
+    print('commande inconnue : ' + ' '.join(args), file=sys.stderr)
+    sys.exit(2)

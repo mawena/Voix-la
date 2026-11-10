@@ -9,7 +9,6 @@ import json
 import os
 import signal
 import subprocess
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -89,6 +88,7 @@ def lancer(ctx, dire=print, sur_etat=None):
             _arreter(proc, dire)   # l'application éphémère s'arrête avec le client : le volume éphémère est supprimé
             raise
         finally:
+            proc.stdout.close()
             if precedent is not None:
                 signal.signal(signal.SIGTERM, precedent)
     ecrire_journal(retour, journal)

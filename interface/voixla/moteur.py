@@ -7,6 +7,8 @@ Options récentes, utilisées seulement si « doubler --help » les annonce, ave
 - --config [CLE VALEUR] : écriture de config.json. Repli : écriture directe du fichier (chemins.ecrire_cle_config) ;
 - --voix-liste --json  : liste des voix. Repli : lecture directe de voix/*/voix.json ;
 - --gpu auto|1|2       : cartes GPU du noyau, et clé « gpu » de la configuration. Sans elle : une carte, réglage grisé.
+- --calcul kaggle|modal|runpod|auto : où tourne le GPU (clé « calcul »). Sans lui : Kaggle, comme avant. --nettoyer-runpod
+  supprime les pods Runpod voix-la-… restants.
 VOIXLA_DOUBLER (essais) remplace la commande doubler, par exemple par un faux doubler. Sinon, « doubler » du PATH
 (/usr/bin/doubler avec le paquet Debian), puis doubler.py à côté du code : celui du dépôt, ou /usr/lib/voix-la.
 L'estimation de durée d'une session vient de doubler.py lui-même (estimation_noyau_s : sa fonction estimer_noyau_s,
@@ -33,7 +35,7 @@ OPTIONS_SUIVIES = ("--evenements", "--donnees", "--config", "--json", "--voix-li
                    "--debut", "--duree", "--pas", "--voix-db", "--reverb-db", "--octave", "--mode", "--sortie",
                    "--mix-v1", "--comparer-pas", "--reprendre", "--moteur", "--sans-nettoyage", "--sans-paroles",
                    "--autotune", "--sans-autotune", "--autotune-gamme", "--gpu", "--passage", "--affectation",
-                   "--comparer", "--transposer")
+                   "--comparer", "--transposer", "--calcul", "--nettoyer-runpod")
 MOTEURS = (("yingmusic", "YingMusic-SVC"), ("seedvc", "Seed-VC 44 kHz"))
 NOM_VOIX = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")   # même règle que doubler --ajouter-voix
 EXTRAIT_NOM = re.compile(r" \(extrait (\d+)m(\d+(?:,\d+)?)(?:\+(\d+)m(\d+(?:,\d+)?))?\)$")
@@ -342,6 +344,8 @@ def args_doublage(videos, reglages, donnees, extrait=None, evenements=None, caps
         a.append(f"--moteur={reglages['moteur']}")
     if reglages.get("sans_nettoyage") and "--sans-nettoyage" in caps:
         a.append("--sans-nettoyage")
+    if reglages.get("calcul") in ("kaggle", "modal", "runpod", "auto") and "--calcul" in caps:
+        a.append(f"--calcul={reglages['calcul']}")   # où tourne le GPU ; sans lui, la clé « calcul » de doubler
     if reglages.get("sans_paroles") and "--sans-paroles" in caps:
         a.append("--sans-paroles")
     a += args_autotune(reglages, caps)
@@ -637,7 +641,8 @@ def config_effective():
 
 
 CLES_CONFIG = ("donnees", "kaggle.compte", "kaggle.jeu", "kaggle.noyau", "kaggle.outils", "kaggle.machine", "moteur",
-               "paroles", "autotune", "gpu")
+               "paroles", "autotune", "gpu", "calcul", "kaggle.attente_file_min", "modal.gpu", "runpod.gpu",
+               "runpod.duree_max_min")
 CLES_BOOLEENNES = ("paroles",)      # « doubler --config paroles oui|non » ; un booléen dans config.json
 VRAI = ("oui", "vrai", "true", "1", "on", "yes")
 FAUX = ("non", "faux", "false", "0", "off", "no")
@@ -710,6 +715,38 @@ def cartes_prevues(conf, caps=None):
     if gpu == "1":
         return 1
     return 2 if gpu == "2" or machine_kaggle(conf) == MACHINE_DEFAUT else 1
+
+
+def calcul_par_defaut(conf):
+    """Moyen de calcul de la configuration de doubler (clé « calcul » : kaggle, modal, runpod, auto ; kaggle sinon)."""
+    conf = conf if isinstance(conf, dict) else {}
+    contenu = conf.get("contenu") if isinstance(conf.get("contenu"), dict) else {}
+    v = str(conf.get("calcul", contenu.get("calcul")) or "").strip().lower()
+    return v if v in ("kaggle", "modal", "runpod", "auto") else "kaggle"
+
+
+def duree_cout_calcul(estimations_kaggle_s, calcul, conf):
+    """(durée en s, coût en dollars ou None) d'une session sur Modal ou Runpod, selon la carte réglée (« modal.gpu »,
+    « runpod.gpu »), comme doubler.estimer_calcul ; la somme des sessions. None pour Kaggle et auto (gratuits à
+    l'estimation), ou si doubler.py ne se charge pas."""
+    if calcul not in ("modal", "runpod"):
+        return None
+    d = module_doubler()
+    if d is None or not hasattr(d, "charger_calcul"):
+        return None
+    conf = conf if isinstance(conf, dict) else {}
+    contenu = conf.get("contenu") if isinstance(conf.get("contenu"), dict) else conf
+    try:
+        c = d.charger_calcul()
+        carte = c.carte(d.gpu_calcul_config(contenu, calcul), calcul)
+        total, cout = 0, 0.0
+        for e in estimations_kaggle_s:
+            duree, prix = c.estimer_calcul(float(e), calcul, carte)
+            total += duree
+            cout = None if prix is None or cout is None else cout + prix
+        return total, (None if cout is None else round(cout, 2))
+    except Exception:  # noqa: BLE001 — doubler.py d'une autre version : pas d'estimation en dollars
+        return None
 
 
 def x42_autotune(conf):

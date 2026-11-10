@@ -30,6 +30,7 @@ l'extraction du son, le mixage et la remise sur la vidéo.
 - [Options](#options)
 - [Sorties](#sorties)
 - [Ajouter une voix](#ajouter-une-voix)
+- [Affiner sa voix](#affiner-sa-voix)
 - [Interface graphique (en cours)](#interface-graphique-en-cours)
 - [Modes : chant, parole, duo, rap](#modes--chant-parole-duo-rap)
 - [Temps de traitement](#temps-de-traitement)
@@ -789,6 +790,31 @@ Pour le chant :
 
 N'enregistrez que votre voix, ou celle d'une personne d'accord pour être clonée (voir
 [Usage responsable](#usage-responsable)).
+
+## Affiner sa voix
+
+Une voix clonée à partir de 20 s de parole ne chante pas tout à fait comme la personne. `affiner` apprend son **timbre
+chanté** sur 5 à 10 minutes de son chant, par un court entraînement de Seed-VC 44,1 kHz sur le GPU gratuit de Kaggle :
+
+```sh
+affiner marie --essai      # contrôle des prises, plan et estimation, sans rien envoyer
+affiner marie              # l'affinage (1500 pas, de 30 à 60 min de GPU environ)
+affiner marie --reprendre  # finit un affinage interrompu
+```
+
+- Les prises sont celles de `voix/<nom>/chant/` : la séance d'enregistrement de l'interface (page Voix) les y range, ou
+  on les y pose à la main. Tous les formats d'un téléphone sont lus (m4a, aac, mp3, wav, ogg, opus, 3gp, amr), à
+  n'importe quelle fréquence, par ffmpeg. Il faut au moins 2 min de chant exploitable (5 à 10 conseillées).
+- Chaque prise est contrôlée sur le PC (saturation, bruit de fond, silence, niveau) ; seules les prises retenues partent,
+  dans un jeu de données privé.
+- Le résultat est rangé dans `voix/<nom>/affinage/` (`affinage.pth`, `affinage.json`…) : la voix est « affinée ».
+- Dans l'interface, le bouton **Affiner ma voix sur mon chant…** de la page Voix lance le travail dans la file, avec
+  suivi et annulation. Il reste désactivé (« en préparation ») tant que la clé `affinage_pret` de `config.json` n'est
+  pas vraie : l'essai réel n'est pas encore fait.
+- L'utilisation de la voix affinée par `doubler` (Seed-VC 44k, avec repli zéro-shot) est prévue, pas encore faite.
+
+Recherche, guide d'enregistrement, fonctionnement et plan d'intégration : [docs/affinage.md](docs/affinage.md) ; options :
+`man affiner`.
 
 ## Interface graphique (en cours)
 

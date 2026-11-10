@@ -56,6 +56,20 @@ def commande():
     return ["doubler"]
 
 
+def commande_affiner():
+    """argv de affiner (affinage de la voix sur son chant) : VOIXLA_AFFINER, sinon « affiner » du PATH, sinon affiner.py à
+    côté du code (le dépôt, ou /usr/lib/voix-la une fois le paquet installé)."""
+    if os.environ.get("VOIXLA_AFFINER"):
+        return shlex.split(os.environ["VOIXLA_AFFINER"])
+    trouve = shutil.which("affiner")
+    if trouve:
+        return [trouve]
+    local = chemins.DEPOT / "affiner.py"
+    if local.exists():
+        return [sys.executable, str(local)]
+    return ["affiner"]
+
+
 def _fichier_commande(cmd):
     """Le fichier qui porte le code (pour savoir s'il a changé) : le script après l'interpréteur, sinon l'exécutable."""
     for morceau in reversed(cmd):
@@ -446,6 +460,23 @@ def args_reprendre(donnees, evenements=None, caps=None):
     caps = capacites() if caps is None else caps
     a = [*commande(), "--reprendre", *_donnees(donnees, caps)]
     if evenements and "--evenements" in caps:
+        a.append(f"--evenements={evenements}")
+    return a
+
+
+def args_affiner(voix, donnees, pas=None, budget_h=None, reprendre=False, evenements=None, essai=False):
+    """« affiner VOIX » : affine la voix sur ses prises de chant (voix/<voix>/chant/). Les options d'affiner (--donnees,
+    --evenements…) existent depuis sa première version : pas besoin d'interroger son aide."""
+    a = [*commande_affiner(), str(voix), f"--donnees={donnees}"]
+    if pas:
+        a.append(f"--pas={int(pas)}")
+    if budget_h:
+        a.append(f"--budget-h={_nombre(budget_h)}")
+    if reprendre:
+        a.append("--reprendre")
+    if essai:
+        a.append("--essai")
+    if evenements:
         a.append(f"--evenements={evenements}")
     return a
 

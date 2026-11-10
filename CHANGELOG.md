@@ -7,6 +7,27 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+### Ajouté
+
+- **Affinage de la voix sur son chant** (commande `affiner`, pas encore essayée pour de vrai : aucune session Kaggle n'a
+  encore tourné). Apprend le timbre chanté d'une voix sur 5 à 10 min de son chant, par un court entraînement de Seed-VC
+  44,1 kHz sur le GPU gratuit de Kaggle (recherche, guide d'enregistrement et plan d'intégration au doublage dans
+  `docs/affinage.md`) :
+  - `affiner [nom]` lit les prises de `voix/<nom>/chant/` (celles de la séance d'enregistrement), quels que soient leur
+    format et leur fréquence (m4a, aac, mp3, wav, ogg, opus, 3gp, amr, flac : ffmpeg les convertit), les contrôle sur le PC
+    (saturation, bruit de fond, silence, niveau ; alerte sous 16 kHz), n'envoie que les prises retenues (2 min de chant
+    exploitable au moins) dans un jeu de données privé, puis suit le noyau privé `kaggle/affiner_kaggle.py`, rapatrie et
+    range le point de contrôle dans `voix/<nom>/affinage/` ; `--essai` fait tout sauf l'envoi, `--reprendre` finit un
+    affinage interrompu, `--etat` affiche la fiche, `--evenements` suit l'avancement ;
+  - interface, page Voix : le bouton « Affiner ma voix sur mon chant… » (à partir de 2 min de chant exploitable) ajoute un
+    travail `affinage` à la file, avec suivi par étapes et annulation, comme un doublage ; il reste désactivé avec la
+    mention « en préparation : l'essai réel n'est pas encore fait » tant que la clé `affinage_pret` de `config.json` n'est
+    pas vraie ; « Reprendre l'affinage » ; badge « affinée » sur une voix qui a un point de contrôle ; nouveau module
+    `voixla/affinage.py` ;
+  - paquet Debian : `affiner`, `affiner.py`, `kaggle/affiner_kaggle.py` et la page de manuel `affiner(1)` ; `scripts/build-deb.sh`
+    vérifie la version de `affiner` et la présence de ces fichiers dans le paquet ;
+  - **Limite** : `doubler` n'utilise pas encore la voix affinée (Seed-VC 44k avec repli zéro-shot : voir `docs/affinage.md`).
+
 ## [0.15.0] - 2026-11-10
 
 ### Ajouté

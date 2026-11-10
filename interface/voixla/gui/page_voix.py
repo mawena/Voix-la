@@ -1,6 +1,8 @@
 """Page Voix : la liste des voix (durée de la référence, hauteur de parole, alertes de voix.json), écouter la
 référence, voix par défaut, ajouter (depuis un fichier ou en s'enregistrant), renommer, mettre à la corbeille ; et les
-prises de chant pour l'affinage futur du modèle (total cumulé face à l'objectif de 5 à 10 min)."""
+prises de chant pour l'affinage du modèle (total cumulé face à l'objectif de 5 à 10 min), et « Affiner ma voix sur mon
+chant… » : un travail « affinage » dans la file des travaux (commande affiner, voixla/affinage.py), activé par la clé
+« affinage_pret » de config.json ; un badge « affinée » marque une voix qui a un point de contrôle."""
 
 import json
 import os
@@ -8,7 +10,7 @@ from pathlib import Path
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
-from .. import chemins, controle, formats, moteur
+from .. import affinage, chemins, controle, formats, moteur, travaux
 from . import commun
 from .enregistreur import DialogueEnregistrement
 from .lecteur import media
@@ -23,6 +25,9 @@ class PageVoix(commun.Page):
         # préécoute d'une référence : coupe la musique en cours, et s'arrête si une autre lecture commence
         self._apercu = Apercu(self.arreter_lecture)
         self.voix_chant = None
+        self._cache_prises = {}          # évaluations des prises (affinage.evaluer_prise), tant que le fichier ne change pas
+        self._utile_s = 0.0
+        self._ecartees = 0
         menu = Gio.Menu()
         menu.append("Depuis un fichier audio ou vidéo…", "voix.fichier")
         menu.append("M’enregistrer au micro…", "voix.enregistrer")
@@ -78,11 +83,13 @@ class PageVoix(commun.Page):
         enr.connect("activated", lambda *_: self.enregistrer_chant())
         self.g_chant.add(enr)
         self.page.add(self.g_chant)
+        self._construire_affinage()    # entre « Chant pour l’affinage » et la liste des prises
         self.g_prises = Adw.PreferencesGroup(title="Prises")
         self.page.add(self.g_prises)
         self.contenu(self.page)
         self._lignes_voix, self._lignes_prises = [], []
         fenetre.ecouter("voix", self.rendre)
+        fenetre.ecouter("travaux", self._maj_affinage)    # le bouton se grise tant qu'un affinage de la voix est dans la file
         self.rendre()
 
     def montrer(self):
@@ -151,6 +158,9 @@ class PageVoix(commun.Page):
             icone = Gtk.Image(icon_name="dialog-warning-symbolic", css_classes=["warning"],
                               tooltip_text="\n".join(v["alertes"]))
             e.add_suffix(icone)
+        badge = affinage.libelle_badge(v["dossier"])
+        if badge:
+            e.add_suffix(commun.badge(*badge))
         if defaut:
             e.add_suffix(commun.badge("par défaut", "accent"))
         self._actions_voix()
@@ -163,6 +173,9 @@ class PageVoix(commun.Page):
             e.add_row(commun.ligne_valeur("Centre de chant estimé", f"{formats.nombre(2 * v['hauteur_hz'], 0)} Hz"))
         if v.get("snr_db") is not None:
             e.add_row(commun.ligne_valeur("Parole au-dessus du fond", f"{formats.nombre(v['snr_db'], 0)} dB"))
+        if affinage.est_affinee(v["dossier"]):
+            e.add_row(commun.ligne_valeur("Affinée sur votre chant", affinage.resume_fiche(v["dossier"]),
+                                          "Voix utilisée par Seed-VC 44 kHz pour doubler (repli : la référence de parole)"))
         for cle, titre in (("origine", "Origine"), ("consentement", "Consentement")):
             if v.get(cle):
                 r = Adw.ActionRow(title=titre, subtitle=commun.echapper(v[cle]), subtitle_lines=4)
@@ -389,6 +402,8 @@ class PageVoix(commun.Page):
         ident = self.voix_chant
         if not ident:
             self.r_total.set_subtitle("Choisissez une voix" if getattr(self, "_ids_chant", []) else "Aucune voix")
+            self._utile_s, self._ecartees = 0.0, 0
+            self._maj_affinage()
             return
         propre, externes = self.dossiers_prises(ident)
 
@@ -396,6 +411,7 @@ class PageVoix(commun.Page):
             if ident != self.voix_chant:
                 return
             self._afficher_prises(liste, propre)
+            self._evaluer_affinage(ident, liste)
         commun.en_fil(lambda: controle.prises_chant([propre, *externes]), fini)
 
     def _afficher_prises(self, prises, propre):
@@ -429,6 +445,118 @@ class PageVoix(commun.Page):
                                            clic=lambda f=f: self.jeter_prise(f)))
             self.g_prises.add(r)
             self._lignes_prises.append(r)
+
+    # --- affinage ----------------------------------------------------------------------------------------------------
+
+    def _construire_affinage(self):
+        self.g_affinage = Adw.PreferencesGroup(
+            title="Affiner ma voix sur mon chant",
+            description="Apprend votre timbre chanté sur 5 à 10 min de votre chant, avec un entraînement sur le GPU "
+                        "gratuit de Kaggle, pour qu’on vous reconnaisse dans vos doublages. Seules vos prises de chant "
+                        "partent, dans un jeu de données privé.")
+        self.b_affiner = commun.bouton("Affiner ma voix sur mon chant…", "emblem-favorite-symbolic",
+                                       styles=("suggested-action",), clic=self.affiner, valign=Gtk.Align.CENTER)
+        self.g_affinage.set_header_suffix(self.b_affiner)
+        self.r_affinage = Adw.ActionRow(title="Chant exploitable", subtitle_lines=3)
+        self.r_affinage.add_prefix(Gtk.Image(icon_name="audio-input-microphone-symbolic"))
+        self.badge_affinage = commun.badge("affinée", "succes")
+        self.badge_affinage.set_valign(Gtk.Align.CENTER)
+        self.badge_affinage.set_visible(False)
+        self.r_affinage.add_suffix(self.badge_affinage)
+        self.g_affinage.add(self.r_affinage)
+        self.r_affinage_pret = Adw.ActionRow(title="Affinage", subtitle=affinage.MENTION_EN_PREPARATION, subtitle_lines=3)
+        self.r_affinage_pret.add_prefix(Gtk.Image(icon_name="dialog-information-symbolic"))
+        self.g_affinage.add(self.r_affinage_pret)
+        self.r_reprendre = Adw.ActionRow(title="Reprendre l’affinage", activatable=True, subtitle_lines=3,
+                                         subtitle="Finit un affinage interrompu : rapatrie ce qu’a rendu Kaggle, ou "
+                                                  "relance depuis le dernier point de contrôle.")
+        self.r_reprendre.add_prefix(Gtk.Image(icon_name="view-refresh-symbolic"))
+        self.r_reprendre.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
+        self.r_reprendre.connect("activated", lambda *_: self.affiner(reprendre=True))
+        self.g_affinage.add(self.r_reprendre)
+        self.page.add(self.g_affinage)
+        self._maj_affinage()
+
+    def _evaluer_affinage(self, ident, prises):
+        """Chant exploitable de la voix (prises retenues, silences déduits), mesuré hors du fil de l'interface."""
+        self.r_affinage.set_subtitle("Mesure du chant exploitable…")
+        cache = self._cache_prises
+
+        def fini(bilan):
+            if ident != self.voix_chant:
+                return
+            self._utile_s, self._ecartees = bilan["utile_s"], bilan["ecartees"]
+            self._maj_affinage()
+        commun.en_fil(lambda: affinage.evaluer(prises, cache), fini)
+
+    def _maj_affinage(self):
+        """Bouton, état et badge selon la voix choisie, son chant exploitable et la clé « affinage_pret »."""
+        ident = self.voix_chant
+        v = self._voix(ident) if ident else None
+        dossier = v["dossier"] if v else None
+        pret = affinage.pret(chemins.lire_config())
+        utile = self._utile_s if ident else 0.0
+        actif = self._affinage_actif(ident) if ident else None
+        reprise = bool(dossier) and (affinage.reprise_possible(dossier) is not None
+                                     or (affinage.session_en_cours() or {}).get("voix") == ident)
+        self.b_affiner.set_visible(bool(ident) and affinage.peut_proposer(utile))
+        self.b_affiner.set_sensitive(pret and actif is None)
+        self.b_affiner.set_tooltip_text(
+            "Lance l’affinage sur Kaggle : un travail dans la file, avec suivi et annulation" if pret
+            else affinage.MENTION_EN_PREPARATION)
+        self.r_affinage_pret.set_visible(not pret)
+        self.r_reprendre.set_visible(pret and reprise and actif is None)
+        badge = affinage.libelle_badge(dossier) if dossier else None
+        self.badge_affinage.set_visible(bool(badge))
+        if badge:
+            self.badge_affinage.set_label(badge[0])
+        if not ident:
+            self.r_affinage.set_subtitle("Choisissez une voix")
+            return
+        texte = affinage.texte_etat(dossier, utile, None, affinage.session_en_cours() if reprise else None) if dossier \
+            else affinage.avis(utile)
+        if actif:
+            texte = "Un affinage de cette voix est dans la file des travaux. " + texte
+        if self._ecartees and utile:
+            n = self._ecartees
+            texte += f" {n} prise{'s' if n > 1 else ''} écartée{'s' if n > 1 else ''} (saturée, bruitée ou trop faible)."
+        self.r_affinage.set_subtitle(commun.echapper(texte))
+
+    def _affinage_actif(self, ident):
+        """Le travail d'affinage de cette voix déjà dans la file (en attente ou en cours), ou None."""
+        for t in self.fenetre.file.travaux():
+            t.actualiser()
+            if t.demande.get("type") == "affinage" and t.actif and t.demande.get("voix") == ident:
+                return t
+        return None
+
+    def affiner(self, reprendre=False):
+        """Ajoute le travail « affinage » à la file : même suivi et même annulation qu'un doublage (page Travaux)."""
+        ident = self.voix_chant
+        if not ident or not affinage.pret(chemins.lire_config()):
+            self.fenetre.toast(affinage.MENTION_EN_PREPARATION)
+            return
+        if self._affinage_actif(ident):
+            self.fenetre.toast("Un affinage de cette voix est déjà dans la file")
+            return
+        nom = self.fenetre.nom_voix(ident)
+        if reprendre:
+            corps = (f"Finit l’affinage interrompu de la voix « {nom} » : rapatrie ce que Kaggle a rendu, ou relance "
+                     "depuis le dernier point de contrôle gardé sur ce poste.")
+        else:
+            corps = (f"Les prises de chant de la voix « {nom} » ({formats.duree(self._utile_s)} exploitables) partent dans "
+                     "un jeu de données privé de votre compte Kaggle, puis un entraînement de Seed-VC 44 kHz tourne sur "
+                     f"le GPU. {affinage.texte_estimation()} Le résultat revient dans voix/{ident}/affinage/ ; le travail "
+                     "se suit et s’annule dans la page Travaux.")
+
+        def faire():
+            demande = travaux.demande_affinage(ident, nom, self.fenetre.donnees, reprendre=reprendre,
+                                               estimations=affinage.estimations_travail())
+            self.fenetre.ajouter_travaux([demande])
+            self.fenetre.toast(f"Affinage de {nom} ajouté à la file", "Travaux", lambda: self.fenetre.aller("travaux"))
+            self._maj_affinage()
+        commun.confirmer(self.fenetre, "Reprendre l’affinage ?" if reprendre else f"Affiner la voix « {nom} » ?", corps,
+                         "Reprendre" if reprendre else "Affiner", faire, destructif=False)
 
     def controler(self, f):
         self.fenetre.toast(f"Contrôle de {f.name}…", duree=2)
@@ -483,6 +611,9 @@ class PageVoix(commun.Page):
             page = self.ouvrir_seance()
             if page is not None and action.endswith("chanson"):
                 GLib.timeout_add(300, lambda: (page.scenario("chanson"), False)[1])
+        elif action == "affinage":
+            if not self.voix_chant and self.fenetre.voix:
+                self.r_voix_chant.set_selected(0)
         elif action == "deplier":
             def deplier():
                 for r in self._lignes_voix:

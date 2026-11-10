@@ -1,3 +1,28 @@
+voix-la (0.14.0) unstable; urgency=medium
+
+  * Séance d'enregistrement complète : texte à lire, sirène et gamme guides
+    réglées sur la voix, chansons du domaine public (Au clair de la lune,
+    Frère Jacques) avec accompagnement et paroles géantes synchronisées,
+    cases « Fait » et noms de fichiers reconnus à l'import.
+  * doubler accepte un fichier audio seul (mp3, wav, flac, m4a, ogg, opus).
+  * Interface : « Chanter… » dans le détail d'un doublage, « Doubler ma
+    prise… » dans le karaoké, toutes les voix d'une comparaison dans
+    Travaux, incident Kaggle évoqué dans les attentes anormales.
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Mon, 09 Nov 2026 22:15:00 +0000
+
+voix-la (0.13.0) unstable; urgency=medium
+
+  * Interface : séance d'enregistrement de la voix chantée dans la page Voix
+    (parole, tessiture, notes à tenir, chanson sur sa musique seule avec
+    paroles synchronisées et tonalité au choix), chansons conseillées pour
+    la voix et dans ses langues, import des fichiers du téléphone et
+    contrôles (durée, saturation, bruit, musique du casque).
+  * Interface : l'Écoute à l'aveugle quitte la barre latérale (menu,
+    Alt+5 et « Comparer les voix » l'ouvrent toujours).
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Mon, 09 Nov 2026 20:00:00 +0000
+
 voix-la (0.12.0) unstable; urgency=medium
 
   * Comparer plusieurs voix en une session : doubler --comparer voixA,voixB

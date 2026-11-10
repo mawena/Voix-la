@@ -246,6 +246,30 @@ class Resultat:
             morceaux.append(f"une seule voix : {d['pourquoi_une_voix']}")
         return " ; ".join(morceaux)
 
+    def resume_transposition(self):
+        """(phrase, détail) de la transposition de la chanson (rapport « transposition » du noyau, section « mix » de
+        doubler), ou None : parole, ou doublage d'avant la transposition. La phrase : « Chanson transposée de −3 demi-tons
+        pour ta voix » ; sans transposition : « Chanson non transposée ». Le détail : la raison (médianes, zone), et
+        l'avertissement si la musique n'a pas pu l'être (Rubber Band absent : la voix, elle, l'a été)."""
+        r = self.rapport or {}
+        t = r.get("transposition")
+        if not isinstance(t, dict) or t.get("mode") != "chant":
+            return None
+        try:
+            dt = int(t.get("musique_dt") or 0)
+        except (TypeError, ValueError):
+            dt = 0
+        detail = [str(t["raison"])] if t.get("raison") else []
+        if not dt:
+            return "Chanson non transposée", " ; ".join(detail)
+        unite = "demi-ton" if abs(dt) == 1 else "demi-tons"
+        phrase = f"Chanson transposée de {formats.demi_tons(dt)} {unite} pour ta voix"
+        mix = (r.get("mix") or {}).get("transposition")
+        if isinstance(mix, dict) and mix.get("applique") is False:
+            detail.append("ATTENTION : la musique n’a pas été transposée (" + str(mix.get("raison") or "Rubber Band "
+                          "indisponible") + ") ; la voix, elle, l’a été : elle est fausse sur la musique d’origine")
+        return phrase, " ; ".join(detail)
+
     def resume_hauteur(self):
         """Décision d'octave en une phrase."""
         r = self.rapport or {}

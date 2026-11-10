@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Est-ce lui ? Test d'écoute</title>
+<style>
+  :root { --fond:#f6f5f1; --carte:#fff; --texte:#1d1d1b; --doux:#6b6b66; --accent:#2f5fd0; --ok:#1f7a4d; --non:#b3372f; --nsp:#7a6a1f; --bord:#d8d6cf; }
+  @media (prefers-color-scheme: dark) { :root { --fond:#16171a; --carte:#1f2126; --texte:#ececea; --doux:#9a9a95; --accent:#7ea2ff; --bord:#34363c; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--fond); color:var(--texte); font:18px/1.45 system-ui, sans-serif; }
+  main { max-width:34rem; margin:0 auto; padding:1rem 16px 3rem; }
+  h1 { font-size:1.4rem; margin:.6rem 0; }
+  .carte { background:var(--carte); border:1px solid var(--bord); border-radius:14px; padding:1rem; margin:1rem 0; }
+  .doux { color:var(--doux); font-size:.95rem; }
+  .barre { height:8px; background:var(--bord); border-radius:4px; overflow:hidden; margin:.5rem 0 1rem; }
+  .barre > div { height:100%; background:var(--accent); width:0; transition:width .2s; }
+  audio { width:100%; margin:.5rem 0 1rem; }
+  .choix { display:grid; grid-template-columns:1fr; gap:.6rem; margin:.5rem 0 1rem; }
+  .choix.cinq { grid-template-columns:repeat(5,1fr); }
+  button, input[type=text] { font:inherit; }
+  button { min-height:3rem; border-radius:12px; border:2px solid var(--bord); background:var(--carte); color:var(--texte); padding:.5rem 1rem; cursor:pointer; }
+  button[aria-pressed=true] { border-color:var(--accent); background:var(--accent); color:#fff; }
+  button.principal { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; width:100%; }
+  button:disabled { opacity:.45; cursor:default; }
+  .ligne { display:flex; gap:.6rem; }
+  .ligne > button { flex:1; }
+  input[type=text] { width:100%; padding:.7rem; border-radius:10px; border:2px solid var(--bord); background:var(--carte); color:var(--texte); }
+  textarea { width:100%; min-height:7rem; font:.8rem monospace; background:var(--carte); color:var(--texte); border:1px solid var(--bord); border-radius:8px; }
+  .echelle { display:flex; justify-content:space-between; font-size:.85rem; color:var(--doux); margin-top:-.6rem; margin-bottom:1rem; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Est-ce lui ?</h1>
+
+  <section id="accueil" class="carte" hidden>
+    <p>Tu vas écouter <strong id="n-total"></strong> petits extraits de voix chantée (environ 10 secondes chacun, sans musique).</p>
+    <p>Pour chacun, dis si c'est bien <strong>la personne que tu connais</strong>, même si la chanson t'est inconnue.
+       Il n'y a pas de bonne ou de mauvaise réponse : c'est ton impression qui compte.</p>
+    <p class="doux">Écoute au casque ou avec un bon haut-parleur, au même volume du début à la fin. Tu peux réécouter.</p>
+    <label for="pseudo">Ton prénom (ou un pseudo)</label>
+    <input type="text" id="pseudo" autocomplete="off" maxlength="40">
+    <p></p>
+    <button class="principal" id="commencer" disabled>Commencer</button>
+  </section>
+
+  <section id="question" hidden>
+    <div class="barre"><div id="progres"></div></div>
+    <div class="doux" id="compteur"></div>
+    <div class="carte">
+      <audio id="lecteur" controls preload="auto"></audio>
+      <p><strong>Est-ce lui ?</strong></p>
+      <div class="choix" id="choix-reponse">
+        <button data-v="oui">Oui</button>
+        <button data-v="non">Non</button>
+        <button data-v="nsp">Je ne sais pas</button>
+      </div>
+      <p><strong>À quel point en es-tu sûr ?</strong></p>
+      <div class="choix cinq" id="choix-confiance">
+        <button data-v="1">1</button><button data-v="2">2</button><button data-v="3">3</button>
+        <button data-v="4">4</button><button data-v="5">5</button>
+      </div>
+      <div class="echelle"><span>pas du tout</span><span>tout à fait</span></div>
+      <div class="ligne">
+        <button id="precedent">Précédent</button>
+        <button class="principal" id="suivant" disabled>Suivant</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="fin" class="carte" hidden>
+    <h2>Merci !</h2>
+    <p>Pour finir, enregistre tes réponses dans un fichier et renvoie-le à la personne qui t'a donné ce test.</p>
+    <button class="principal" id="telecharger">Enregistrer mes réponses</button>
+    <p class="doux">Si rien ne se télécharge sur ton téléphone, copie le texte ci-dessous et envoie-le par message.</p>
+    <textarea id="texte" readonly></textarea>
+    <p><button id="copier">Copier le texte</button></p>
+    <p><button id="recommencer">Recommencer depuis le début</button></p>
+  </section>
+</main>
+
+<script>
+"use strict";
+const SESSION = "__SESSION__";
+const CLIPS = __CLIPS__;            // [{id, fichier}] dans un ordre quelconque
+const CLE = "est-ce-lui-" + SESSION;
+
+let etat = { pseudo: "", ordre: [], reponses: {}, position: 0, termine: false };
+
+function charger() {
+  try { const s = localStorage.getItem(CLE); if (s) etat = Object.assign(etat, JSON.parse(s)); } catch (e) {}
+}
+function sauver() {
+  try { localStorage.setItem(CLE, JSON.stringify(etat)); } catch (e) {}
+}
+function melanger(a) {
+  a = a.slice();
+  for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+  return a;
+}
+const $ = (id) => document.getElementById(id);
+function montrer(nom) { for (const s of ["accueil", "question", "fin"]) $(s).hidden = (s !== nom); }
+
+function accueil() {
+  $("n-total").textContent = CLIPS.length;
+  $("pseudo").value = etat.pseudo;
+  $("commencer").disabled = !etat.pseudo.trim();
+  montrer("accueil");
+}
+
+function afficher() {
+  if (etat.position >= etat.ordre.length) { fin(); return; }
+  const id = etat.ordre[etat.position];
+  const clip = CLIPS.find((c) => c.id === id);
+  const rep = etat.reponses[id] || {};
+  $("compteur").textContent = "Extrait " + (etat.position + 1) + " sur " + etat.ordre.length;
+  $("progres").style.width = (100 * etat.position / etat.ordre.length) + "%";
+  const lecteur = $("lecteur");
+  if (lecteur.dataset.id !== id) { lecteur.pause(); lecteur.src = clip.fichier; lecteur.dataset.id = id; }
+  for (const b of $("choix-reponse").children) b.setAttribute("aria-pressed", String(b.dataset.v === rep.reponse));
+  for (const b of $("choix-confiance").children) b.setAttribute("aria-pressed", String(String(b.dataset.v) === String(rep.confiance)));
+  $("suivant").disabled = !(rep.reponse && rep.confiance);
+  $("suivant").textContent = (etat.position === etat.ordre.length - 1) ? "Terminer" : "Suivant";
+  $("precedent").disabled = etat.position === 0;
+  montrer("question");
+  window.scrollTo(0, 0);
+}
+
+function reponseCourante() {
+  const id = etat.ordre[etat.position];
+  if (!etat.reponses[id]) etat.reponses[id] = { reponse: null, confiance: null, ecoutes: 0 };
+  return etat.reponses[id];
+}
+
+function fin() {
+  etat.termine = true; sauver();
+  $("progres").style.width = "100%";
+  $("texte").value = JSON.stringify(exporter(), null, 1);
+  montrer("fin");
+}
+
+function exporter() {
+  return {
+    session: SESSION,
+    participant: etat.pseudo.trim(),
+    date: new Date().toISOString(),
+    reponses: etat.ordre.map((id) => ({
+      id: id,
+      reponse: (etat.reponses[id] || {}).reponse || null,
+      confiance: (etat.reponses[id] || {}).confiance || null,
+      ecoutes: (etat.reponses[id] || {}).ecoutes || 0
+    }))
+  };
+}
+
+$("pseudo").addEventListener("input", () => { etat.pseudo = $("pseudo").value; $("commencer").disabled = !etat.pseudo.trim(); sauver(); });
+$("commencer").addEventListener("click", () => {
+  if (!etat.ordre.length) etat.ordre = melanger(CLIPS.map((c) => c.id));
+  etat.position = 0; sauver(); afficher();
+});
+$("choix-reponse").addEventListener("click", (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  reponseCourante().reponse = b.dataset.v; sauver(); afficher();
+});
+$("choix-confiance").addEventListener("click", (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  reponseCourante().confiance = Number(b.dataset.v); sauver(); afficher();
+});
+$("lecteur").addEventListener("play", () => { reponseCourante().ecoutes += 1; sauver(); });
+$("suivant").addEventListener("click", () => { etat.position += 1; sauver(); afficher(); });
+$("precedent").addEventListener("click", () => { if (etat.position > 0) { etat.position -= 1; sauver(); afficher(); } });
+$("telecharger").addEventListener("click", () => {
+  const blob = new Blob([JSON.stringify(exporter(), null, 1)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "reponses-" + (etat.pseudo.trim().replace(/[^\w-]+/g, "_") || "anonyme") + ".json";
+  document.body.appendChild(a); a.click(); a.remove();
+});
+$("copier").addEventListener("click", async () => {
+  const t = $("texte"); t.select();
+  try { await navigator.clipboard.writeText(t.value); } catch (e) { document.execCommand("copy"); }
+  $("copier").textContent = "Copié";
+});
+$("recommencer").addEventListener("click", () => {
+  if (!confirm("Effacer tes réponses et recommencer ?")) return;
+  etat = { pseudo: etat.pseudo, ordre: [], reponses: {}, position: 0, termine: false }; sauver(); accueil();
+});
+
+charger();
+if (etat.termine) fin();
+else if (etat.ordre.length && etat.position > 0) afficher();
+else accueil();
+</script>
+</body>
+</html>

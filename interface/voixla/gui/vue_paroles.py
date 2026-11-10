@@ -39,6 +39,10 @@ SANS_LIGNE = "♪"          # entre deux lignes (passage instrumental)
 TAILLES = (("petite", "Petite", 0.8), ("normale", "Normale", 1.0), ("grande", "Grande", 1.3),
            ("tres-grande", "Très grande", 1.65))
 
+# tailles hors des réglages (pas dans TAILLES : les listes de l'interface ne les montrent pas) : « géante », pour les
+# paroles de la séance d'enregistrement, lues de loin
+TAILLES_HORS_LISTE = {"geante": 2.2}
+
 DUREE_TRANSITION_S = 0.25
 IMAGES_TRANSITION_S = 30  # rythme des transitions (bref : 0,25 s)
 ECHELLE_VOISINE = 0.7     # taille de la précédente et de la suivante par rapport à la ligne en cours
@@ -64,7 +68,7 @@ CSS = b"""
 
 def facteur_taille(nom):
     """Facteur de la taille du texte des paroles (« petite » … « tres-grande ») ; 1,0 pour un nom inconnu."""
-    return next((f for n, _l, f in TAILLES if n == nom), 1.0)
+    return next((f for n, _l, f in TAILLES if n == nom), TAILLES_HORS_LISTE.get(nom, 1.0))
 
 
 def installer_css():
@@ -139,7 +143,7 @@ class Karaoke(Gtk.DrawingArea):
         super().__init__(hexpand=True, css_classes=["paroles-karaoke"])
         installer_css()
         self.style = style if style in ("page", "video") else "page"
-        self.taille = taille if any(n == taille for n, _l, _f in TAILLES) else "normale"
+        self.taille = taille if taille in TAILLES_HORS_LISTE or any(n == taille for n, _l, _f in TAILLES) else "normale"
         self.sur_clic = sur_clic
         self.precedente = bool(precedente)
         self.debut_son = debut_son
@@ -212,7 +216,7 @@ class Karaoke(Gtk.DrawingArea):
             self._maj(force=True)
 
     def regler_taille(self, nom):
-        nom = nom if any(n == nom for n, _l, _f in TAILLES) else "normale"
+        nom = nom if nom in TAILLES_HORS_LISTE or any(n == nom for n, _l, _f in TAILLES) else "normale"
         if nom == self.taille:
             return
         self.taille = nom

@@ -7,6 +7,109 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+### Ajouté
+
+- **Transposition de la chanson dans la tessiture de la voix cible** (`--transposer auto|non|N`, clé `transposer` de la
+  configuration, `auto` par défaut). Mesuré avec les proches de la voix cible : ils ne la reconnaissent que lorsque la
+  voix convertie chante près de sa zone naturelle (reconnue à 174 et 219 Hz, pas de 246 à 295 Hz, pour une zone vers
+  190 Hz). Une chanson hors de la tessiture est donc transposée EN ENTIER, musique comprise, comme un changement de
+  tonalité au karaoké :
+  - le noyau choisit **un seul nombre entier de demi-tons `musique_dt` pour toute la chanson**, le plus petit possible,
+    de −5 à +5, qui range au mieux la voix convertie dans la zone de la voix cible (règle de `banc/realisme/`, copiée dans
+    le noyau) ; chaque voix reçoit `musique_dt` plus son octave (−12, 0 ou +12, règle d'avant inchangée) ; en duo, un
+    seul décalage minimise l'écart total des deux voix à leur zone ; parole : jamais ;
+  - la zone vient de `tessiture.json` du dossier de la voix, sinon de deux fois sa hauteur de parole, ±4 demi-tons ;
+    elle part au noyau avec les autres données de la voix (réglages `zone`) ;
+  - sur le PC, la musique seule est transposée par Rubber Band R3 (nouveau module `transposition.py`, par ctypes sur
+    `librubberband.so.2`), à l'échantillon près, avant le mixage, et gardée dans `travail/instrumental_transpose_<dt>.wav`
+    (`--remix` la réutilise). Le doublage et « Beat seul » sont sur la musique transposée ; « Original » et « Voix
+    d'origine seule » ne le sont jamais ; l'auto-tune détecte sa gamme sur la musique transposée ;
+  - sans `librubberband.so.2`, `doubler` avertit avant l'envoi, ne transpose pas, et la voix garde l'octave seule ; le paquet
+    Debian dépend de `librubberband2` et installe `transposition.py` ;
+  - la décision est dans `rapport.json` (`transposition` : `musique_dt`, décalage et octave par voix, médianes avant et
+    après, zone, raison ; `mix.transposition` : ce que le PC a fait) et `doubler` l'affiche. `--remix` suit cette décision ;
+    `--transposer non --remix` ne peut pas changer la voix sans reconvertir, et le dit sans erreur ;
+  - interface : l'interrupteur « Transposer la chanson dans ma tessiture » (allumé par défaut, avec info-bulle) sur la page
+    Doubler, la ligne « Chanson transposée de −3 demi-tons pour ta voix » dans le détail d'un résultat, `--transposer` parmi
+    les options suivies. Page de manuel, `doubler --help` et README mis à jour ; l'estimation de durée n'a pas changé.
+  - **Limites** : le Karaoké, le partage et les pistes reconstruites par l'interface lisent encore `travail/instrumental.wav`
+    (non transposé) ; un rap sur un fond tonal passe en mode chant et est transposé comme lui.
+
+## [0.14.0] - 2026-11-09
+
+### Ajouté
+
+- `doubler` accepte un fichier audio seul (mp3, wav, flac, m4a, ogg, opus ; la pochette jointe à un mp3 n'est pas une
+  image) : même chaîne, sans image ni remise sur la vidéo. Sortie : `<titre> - voix <Nom>.mp3`, `.lrc`, `paroles/*.srt`
+  si les paroles sont demandées et `travail/` comme pour une vidéo (pas de vidéo, pas de pistes audio en plus ;
+  `source.json` porte `audio_seul`, l'événement `sortie` a `mp4` à `null`). `--debut` / `--duree` coupent exactement où
+  on le demande (pas d'image clé), `--remix`, `--reprendre`, `--comparer` et l'auto-tune (mp3 et `.lrc`) marchent ;
+  la bibliothèque affiche une pochette générée, la corbeille emporte les mêmes fichiers. Page de manuel et
+  `doubler --help` mis à jour ; l'estimation de durée n'a pas changé (la remise sur la vidéo y pèse peu).
+- Interface : « Chanter… » dans l'en-tête du détail d'un doublage, comme dans le menu « ⋮ » de la bibliothèque : il
+  ouvre la page Karaoké sur ce doublage ; grisé, avec la raison, sans beat seul (`travail/instrumental.wav`).
+- Interface : « Doubler ma prise… » dans la page Karaoké, sur le résultat d'une prise : choix de la voix cible, puis
+  un travail `doubler` sur le mix ta voix + beat de la prise (FLAC `<titre> - ma prise AAAA-MM-JJ HHhMM.flac` dans
+  `karaoke/`, `--mode=chant`), jugé sur le quota GPU comme la page Doubler. Le résultat arrive dans la bibliothèque.
+  Choix du mix plutôt que de la voix seule : doubler sépare la voix de la musique, calcule la musique seule pour la
+  remettre sous la voix convertie et décide chant ou parole d'après elle ; avec la voix seule (sèche, sans beat), il
+  rendrait une voix sans rien dessous et pourrait prendre le chant pour de la parole.
+- Interface, séance d'enregistrement : **tout le contenu des étapes 1, 2 et 5 est fourni**, pour que n'importe qui suive
+  les consignes sans rien chercher ailleurs. Un encadré « Comment ça marche » (5 lignes) ; chaque étape affiche sa durée
+  estimée, une case « Fait » gardée dans `voix/<nom>/seance.json` et le nom de fichier conseillé pour le téléphone
+  (`1-parole`, `2-tessiture`, `3-notes`, `4-chanson`, `5-au-clair-de-la-lune`, `5-frere-jacques`).
+  - Étape 1 : un texte de lecture affiché en grand, avec une taille réglable, puis « Parle librement (1 min) » et trois
+    sujets (`voixla/seance_textes.py`).
+  - Étape 2 : une piste guide réglée sur la voix (centre C tiré de `tessiture.json` ou de `voix.json`, sinon un choix
+    « voix grave » ou « voix aiguë ») : 4 bips, six sirènes (trois sur « aaa », trois sur « ou ») puis la gamme sur « la »
+    et sur « mi », avec le nom de la note en cours affiché en grand.
+  - Étape 5 : « Au clair de la lune » (deux couplets) et « Frère Jacques » (deux fois), du domaine public
+    (`voixla/seance_chansons.py`), transposées pour que la note médiane tombe sur le centre de la voix, à 88 battements
+    par minute, avec deux pistes (avec la mélodie au piano et accords I, IV, V ; accompagnement seul avec un léger
+    métronome) derrière 4 bips, et des paroles très grandes synchronisées, la syllabe en cours en surbrillance. La
+    chanson d'un doublage reste possible. Synthèse par numpy et ffmpeg, sans téléchargement.
+  - L'import reconnaît l'étape de chaque fichier à son nom et laisse la corriger avant d'importer.
+  - Paroles : une taille « géante » du karaoké, réservée à la séance (hors des réglages).
+- Essais : `tests/test_seance_contenu.py` (texte mot pour mot, syllabes et durées des chansons, transposition, accords,
+  sirènes, gamme, `seance.json`, reconnaissance des noms).
+
+### Modifié
+
+- Interface : la carte d'un travail de comparaison (`doubler --comparer`) dans la page Travaux montre toutes les voix
+  (« comparaison de 3 voix : A, B, C »), plus seulement la première.
+- Interface : le message d'une attente anormale d'un GPU et la phrase d'aide de la section « Sur Kaggle » disent que la
+  cause peut aussi être un incident chez Kaggle (« We are aware of an issue preventing notebooks from starting or
+  staying connected »), visible dans la bannière de la page du notebook, que le bouton « Ouvrir la page sur Kaggle »
+  ouvre.
+
+## [0.13.0] - 2026-11-09
+
+### Ajouté
+
+- Interface : **séance d'enregistrement de la voix chantée**, dans la page Voix (bouton « Enregistrer ma voix chantée… »,
+  sans onglet de plus). Cinq étapes aux grandes consignes (parole, tessiture, notes à tenir, chanson, chanson libre) et
+  le rappel des consignes (téléphone à 20 cm, casque fermé, tape dans tes mains au 4e bip, pas de WhatsApp). Les pistes
+  se préparent par ffmpeg hors du fil de l'interface, avec une progression, dans `~/.cache/voix-la/seance/` : les notes
+  (6 notes, deux tours) et, pour n'importe quel doublage de la bibliothèque, le guide avec la voix d'origine à −6 dB et
+  la musique seule derrière 4 bips à 880 Hz, dans la tonalité d'origine ou de −1 à −7 demi-tons (limiteur à 0,89). Elles
+  se jouent avec le lecteur de l'application, avec les paroles synchronisées du doublage (décalées des 5 s de bips,
+  « transcription automatique »). « Chansons conseillées pour ta voix » : les doublages classés selon l'écart entre la
+  tessiture du chanteur d'origine (`rapport.json`) et la zone de chant de la voix (deux fois la hauteur de parole, ou
+  `tessiture.json`), avec l'écart en demi-tons et la tonalité conseillée, dans les langues que parle la voix
+  (`voix.json`, clé `langues`, `["fr"]` par défaut ; langue lue dans `rapport.json`, sinon le `.lrc` ou le suffixe des
+  `.srt`), les autres étant derrière « Montrer toutes les langues ». « Importer mes enregistrements… » copie tels
+  quels des fichiers de téléphone (m4a, aac, mp3, wav, ogg, opus, 3gp, amr) dans `voix/<nom>/chant/` ou `parole/` sous un
+  nom horodaté, et les contrôle (durée, saturation, bruit de fond, musique du casque entendue dans la prise) ; la durée
+  totale de chant et de parole est comptée face à 10 et 5 min. Module `voixla/seance.py`, vue `gui/seance.py`.
+
+### Modifié
+
+- Interface : le total « Chant pour l'affinage » de la page Voix compte aussi les fichiers importés par la séance
+  d'enregistrement (formats du téléphone), pas seulement les `chant-*.wav`.
+- Interface : l'« Écoute à l'aveugle » n'a plus d'onglet dans la barre latérale (elle servait peu). La page reste dans
+  l'application : « Comparer les voix » d'un résultat l'ouvre toujours, ainsi que l'entrée « Écoute à l'aveugle (banc
+  d'essai)… » du menu principal ☰ et le raccourci Alt+5.
+
 ## [0.12.0] - 2026-11-09
 
 ### Ajouté
@@ -569,7 +672,9 @@ Première version publique.
     `VOIXLA_DECODAGE_MATERIEL=1` remet le décodage matériel ;
   - les essais automatiques laissaient le son de l'application coupé.
 
-[Non publié]: https://github.com/mawena/Voix-la/compare/v0.12.0...HEAD
+[Non publié]: https://github.com/mawena/Voix-la/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/mawena/Voix-la/compare/v0.13.0...v0.14.0
+[0.13.0]: https://github.com/mawena/Voix-la/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/mawena/Voix-la/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/mawena/Voix-la/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/mawena/Voix-la/compare/v0.10.0...v0.11.0

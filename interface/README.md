@@ -22,16 +22,16 @@ Prérequis du poste : Python 3, PyGObject avec GTK 4, libadwaita 1.5 et GStreame
 
 | Page | Ce qu'elle fait |
 |---|---|
-| **Doubler** | Choisir une ou plusieurs vidéos, par le sélecteur (il ouvre `Vidéos/` des données, sinon le dossier Téléchargements) ou par glisser-déposer. Pour chaque vidéo, un extrait facultatif se règle dans un petit lecteur (« Début ici », « Fin ici », écouter l'extrait). Réglages : voix pour tous, **Comparer plusieurs voix** (cases à cocher, deux à six voix, gardées dans `interface.json`, clé `voix_comparees` ; voir [Comparer des voix](#comparer-des-voix)) ou **une voix par chanteur** (duo mixte : Voix d'homme et Voix de femme ; duo de même genre : Chanteur 1 et Chanteur 2), gardée d'une session à l'autre dans `interface.json` (`voix_par_chanteur`, `duo_chanteurs`, `voix_chanteurs` ; une voix qui n'existe plus n'est pas présélectionnée), mode, octave, pas, niveau de la voix, reverb, ancien mixage v1, et, si `doubler` les connaît, la chaîne de conversion : « Par défaut » (voix principale et chœurs séparés, reverb retirée, YingMusic-SVC), « Chaîne d'avant » (Seed-VC, sans nettoyage, plus rapide) ou « Sur mesure » (moteur et nettoyage au choix), et l'interrupteur **Paroles** (transcription et traduction française ; éteint, il ajoute `--sans-paroles` ; allumé par défaut, d'après la clé `paroles` de la configuration de `doubler`), et l'**auto-tune** : interrupteur, intensité (1 à 100, 70 par défaut) et gamme (Auto, Chromatique ou une tonalité), d'après la clé `autotune` de `doubler` (éteint alors que la configuration l'allume, il ajoute `--sans-autotune`) ; grisé avec « installez x42-plugins » si `doubler` ne trouve pas le greffon. La durée de la session Kaggle est celle que `doubler` calcule lui-même (sa fonction `estimer_noyau_s`, appelée depuis le `doubler.py` livré avec l'interface, sur les rapports du dossier des sorties) : la même qu'il annoncera au lancement. Elle suit la chaîne, le moteur, les pas, les paroles, une voix par chanteur, le mode et les cartes GPU prévues (clé `gpu` et machine Kaggle de `doubler`) ; à deux cartes avec YingMusic-SVC, les paroles, faites sur la carte 1 pendant la conversion, comptent pour max(0,5 × P, P − Y). Sans `doubler.py` utilisable, l'interface garde son propre modèle, qui compte les paroles de la même façon. Le reste (extraction, envoi, rapatriement, mixage, vidéo) vient des doublages passés. À côté de « Lancer », la ligne du quota GPU : « Ce doublage prendra environ 18 min de GPU ; il restera 8 h 12 cette semaine », en orange s'il ne tient pas (voir [Quota GPU Kaggle](#quota-gpu-kaggle)), et une bannière quand il reste moins de 2 h. Puis le bouton « Lancer » envoie le travail dans la file. |
+| **Doubler** | Choisir une ou plusieurs vidéos, par le sélecteur (il ouvre `Vidéos/` des données, sinon le dossier Téléchargements) ou par glisser-déposer. Pour chaque vidéo, un extrait facultatif se règle dans un petit lecteur (« Début ici », « Fin ici », écouter l'extrait). Réglages : voix pour tous, **Comparer plusieurs voix** (cases à cocher, deux à six voix, gardées dans `interface.json`, clé `voix_comparees` ; voir [Comparer des voix](#comparer-des-voix)) ou **une voix par chanteur** (duo mixte : Voix d'homme et Voix de femme ; duo de même genre : Chanteur 1 et Chanteur 2), gardée d'une session à l'autre dans `interface.json` (`voix_par_chanteur`, `duo_chanteurs`, `voix_chanteurs` ; une voix qui n'existe plus n'est pas présélectionnée), mode, octave, l'interrupteur **Transposer la chanson dans ma tessiture** (visible si `doubler` annonce `--transposer`, allumé par défaut, avec une info-bulle : la chanson hors de la tessiture de la voix est transposée en entier, musique comprise, de 5 demi-tons au plus ; éteint, il ajoute `--transposer=non` ; la case n'est pas gardée d'une session à l'autre), pas, niveau de la voix, reverb, ancien mixage v1, et, si `doubler` les connaît, la chaîne de conversion : « Par défaut » (voix principale et chœurs séparés, reverb retirée, YingMusic-SVC), « Chaîne d'avant » (Seed-VC, sans nettoyage, plus rapide) ou « Sur mesure » (moteur et nettoyage au choix), et l'interrupteur **Paroles** (transcription et traduction française ; éteint, il ajoute `--sans-paroles` ; allumé par défaut, d'après la clé `paroles` de la configuration de `doubler`), et l'**auto-tune** : interrupteur, intensité (1 à 100, 70 par défaut) et gamme (Auto, Chromatique ou une tonalité), d'après la clé `autotune` de `doubler` (éteint alors que la configuration l'allume, il ajoute `--sans-autotune`) ; grisé avec « installez x42-plugins » si `doubler` ne trouve pas le greffon. La durée de la session Kaggle est celle que `doubler` calcule lui-même (sa fonction `estimer_noyau_s`, appelée depuis le `doubler.py` livré avec l'interface, sur les rapports du dossier des sorties) : la même qu'il annoncera au lancement. Elle suit la chaîne, le moteur, les pas, les paroles, une voix par chanteur, le mode et les cartes GPU prévues (clé `gpu` et machine Kaggle de `doubler`) ; à deux cartes avec YingMusic-SVC, les paroles, faites sur la carte 1 pendant la conversion, comptent pour max(0,5 × P, P − Y). Sans `doubler.py` utilisable, l'interface garde son propre modèle, qui compte les paroles de la même façon. Le reste (extraction, envoi, rapatriement, mixage, vidéo) vient des doublages passés. À côté de « Lancer », la ligne du quota GPU : « Ce doublage prendra environ 18 min de GPU ; il restera 8 h 12 cette semaine », en orange s'il ne tient pas (voir [Quota GPU Kaggle](#quota-gpu-kaggle)), et une bannière quand il reste moins de 2 h. Puis le bouton « Lancer » envoie le travail dans la file. |
 | **Travaux** | La file. Un seul `doubler` tourne à la fois. Les étapes s'affichent en direct, avec le temps écoulé et le temps restant estimé, l'état du noyau Kaggle et le journal complet dépliable. Avant le lancement, l'estimation est celle de la page Doubler ; une fois le noyau lancé, c'est celle de `doubler` (`estimation_s` de ses événements) : « durée prévue par doubler ≈ 17 min » (« au-delà de la durée prévue » si le noyau la dépasse), et le temps restant la suit. On peut annuler un travail. « Voir le résultat » ouvre le doublage fini. Un travail en attente du quota GPU porte le badge « Attend le quota », l'heure où il partira tout seul (remise à zéro), et « Lancer maintenant ». Une section « Sur Kaggle » en tête montre la file du compte (voir [File d'attente Kaggle](#file-dattente-kaggle)). Voir [Reprise et abandon d'une session Kaggle](#reprise-et-abandon-dune-session-kaggle). |
-| **Résultats** | La **bibliothèque** des doublages, en **grille** de cartes ou en **liste** triable par colonne (titre, voix, mode, durée, date) ; les deux boutons de l'en-tête (ou le menu « Trier et filtrer ») basculent de l'une à l'autre. Une carte montre une image de la vidéo doublée en 16:9 (sans vidéo, la pochette intégrée au MP3 ; sinon une pochette générée : un dégradé tiré du titre et une note), le titre sur deux lignes au plus, les voix, la durée, la date et des badges : auto-tune, duo (une voix par chanteur), extrait, langue des paroles, parole, inachevé. Le bouton de lecture (au survol, toujours visible sur écran tactile ; Espace sur la carte qui a le focus) lit le doublage dans la barre « en cours de lecture », sans ouvrir le détail ; un second clic le met en pause. Un clic sur la carte ouvre le détail, celui qui joue étant retrouvé tel quel. Les **versions d'une même chanson** (même vidéo source, voix différentes) forment une seule carte « 2 versions » : une pastille par voix ouvre sa version (« +N » au-delà de trois) ; « Regrouper les versions d'une chanson » (menu « Trier et filtrer ») les déplie. Le menu « Trier et filtrer » trie par date, titre, voix ou durée (« Ordre inverse »), et filtre par voix, chant ou parole, entier ou extrait, avec auto-tune, une voix par chanteur ; chaque filtre actif a sa puce sous l'en-tête, qui l'efface. La recherche (Ctrl+F, ou en tapant) trouve un titre, une voix, une langue ou un sous-dossier, sans accents ni casse ; le compte de l'en-tête dit « 18 doublages · 12 chansons », ou « 5 sur 18 doublages » quand on filtre. La vue, le tri et le regroupement sont gardés dans `interface.json` (clé `bibliotheque`). Chaque carte ou ligne a un menu « ⋮ » : ouvrir une version, « Partager… », « Ouvrir le dossier » et « Mettre à la corbeille… » (toutes ses versions pour une chanson) ; le mode **Sélectionner** (bouton coche de l'en-tête, ou Ctrl+A ; Échap pour en sortir) coche plusieurs cartes ou lignes d'un clic et les met à la corbeille d'un coup (bouton, ou Suppr ; voir [Corbeille](#corbeille)). Voir [Bibliothèque des résultats](#bibliothèque-des-résultats). Le détail d'un doublage montre : la lecture de la vidéo ou du MP3 et le **choix de ce qu'on écoute, à la même position** : Doublage, Original, Beat seul, Ma voix seule, Voix d'origine seule (voir [Pistes séparées](#pistes-séparées) ; touche B : doublage ⇄ original) ; la bascule **Auto-tune** (touche T) passe au doublage et à la voix seule auto-tunés, à la même position ; les **paroles** synchronisées (ci-dessous) ; la frise d'octave, où un clic va à ce moment, et, avec une voix par chanteur, la frise **Voix de chaque passage** (une couleur par voix, bandeau partagé quand les deux chantent ensemble, **corrigeable** : voir [Corriger qui chante quoi](#corriger-qui-chante-quoi)) ; les **visualisations du son** (ci-dessous) ; les informations (moteur réellement utilisé et repli éventuel sur Seed-VC, nettoyage appliqué ou sa raison avec les niveaux de la voix principale, des chœurs et de la reverb retirée, décision d'octave et sa raison, décision par chanteur avec une voix par chanteur, tonalité détectée et écart aux notes avant et après l'auto-tune) ; les pistes séparées, avec « Enregistrer le beat… » et « Enregistrer ma voix seule… » (et « Ma voix seule (auto-tune) », enregistrable aussi) ; le remix rapide, qui redonne les mêmes voix, avec l'interrupteur **Version auto-tune** (intensité et gamme comme sur la page Doubler, pré-remplies d'après `rapport.json`) : allumé, la version « (auto-tune) » est faite ou refaite (`--autotune N`, `--autotune-gamme`) ; éteint, `--sans-autotune` (une version existante va à la corbeille, et la clé `autotune` de la configuration n'en refait pas) ; grisé sans x42-plugins ; après le remix, la bascule Auto-tune (touche T) apparaît ou disparaît ; les durées par étape (nettoyage, YingMusic-SVC, estimation de doubler comprise ; à deux cartes, « GPU Kaggle (2 cartes T4) », avec le temps de GPU des deux cartes additionnés à côté des durées réelles de la session) ; l'ouverture du dossier, « Partager… » (voir [Partager un extrait](#partager-un-extrait)) et la mise à la corbeille. Si la vidéo source a changé de place, « Choisir… » l'indique à la main (`travail/source.json` n'est pas modifié) ; en attendant, l'original se lit sans image, d'après `travail/original.wav`. |
+| **Résultats** | La **bibliothèque** des doublages, en **grille** de cartes ou en **liste** triable par colonne (titre, voix, mode, durée, date) ; les deux boutons de l'en-tête (ou le menu « Trier et filtrer ») basculent de l'une à l'autre. Une carte montre une image de la vidéo doublée en 16:9 (sans vidéo, la pochette intégrée au MP3 ; sinon une pochette générée : un dégradé tiré du titre et une note), le titre sur deux lignes au plus, les voix, la durée, la date et des badges : auto-tune, duo (une voix par chanteur), extrait, langue des paroles, parole, inachevé. Le bouton de lecture (au survol, toujours visible sur écran tactile ; Espace sur la carte qui a le focus) lit le doublage dans la barre « en cours de lecture », sans ouvrir le détail ; un second clic le met en pause. Un clic sur la carte ouvre le détail, celui qui joue étant retrouvé tel quel. Les **versions d'une même chanson** (même vidéo source, voix différentes) forment une seule carte « 2 versions » : une pastille par voix ouvre sa version (« +N » au-delà de trois) ; « Regrouper les versions d'une chanson » (menu « Trier et filtrer ») les déplie. Le menu « Trier et filtrer » trie par date, titre, voix ou durée (« Ordre inverse »), et filtre par voix, chant ou parole, entier ou extrait, avec auto-tune, une voix par chanteur ; chaque filtre actif a sa puce sous l'en-tête, qui l'efface. La recherche (Ctrl+F, ou en tapant) trouve un titre, une voix, une langue ou un sous-dossier, sans accents ni casse ; le compte de l'en-tête dit « 18 doublages · 12 chansons », ou « 5 sur 18 doublages » quand on filtre. La vue, le tri et le regroupement sont gardés dans `interface.json` (clé `bibliotheque`). Chaque carte ou ligne a un menu « ⋮ » : ouvrir une version, « Partager… », « Ouvrir le dossier » et « Mettre à la corbeille… » (toutes ses versions pour une chanson) ; le mode **Sélectionner** (bouton coche de l'en-tête, ou Ctrl+A ; Échap pour en sortir) coche plusieurs cartes ou lignes d'un clic et les met à la corbeille d'un coup (bouton, ou Suppr ; voir [Corbeille](#corbeille)). Voir [Bibliothèque des résultats](#bibliothèque-des-résultats). Le détail d'un doublage montre : la lecture de la vidéo ou du MP3 et le **choix de ce qu'on écoute, à la même position** : Doublage, Original, Beat seul, Ma voix seule, Voix d'origine seule (voir [Pistes séparées](#pistes-séparées) ; touche B : doublage ⇄ original) ; la bascule **Auto-tune** (touche T) passe au doublage et à la voix seule auto-tunés, à la même position ; les **paroles** synchronisées (ci-dessous) ; la frise d'octave, où un clic va à ce moment, et, avec une voix par chanteur, la frise **Voix de chaque passage** (une couleur par voix, bandeau partagé quand les deux chantent ensemble, **corrigeable** : voir [Corriger qui chante quoi](#corriger-qui-chante-quoi)) ; les **visualisations du son** (ci-dessous) ; les informations (moteur réellement utilisé et repli éventuel sur Seed-VC, nettoyage appliqué ou sa raison avec les niveaux de la voix principale, des chœurs et de la reverb retirée, décision d'octave et sa raison, la ligne **Transposition** (« Chanson transposée de −3 demi-tons pour ta voix », avec les médianes avant et après et la zone ; « Chanson non transposée » sinon ; un avertissement si la musique n'a pas pu être transposée, faute de Rubber Band), décision par chanteur avec une voix par chanteur, tonalité détectée et écart aux notes avant et après l'auto-tune) ; les pistes séparées, avec « Enregistrer le beat… » et « Enregistrer ma voix seule… » (et « Ma voix seule (auto-tune) », enregistrable aussi) ; le remix rapide, qui redonne les mêmes voix, avec l'interrupteur **Version auto-tune** (intensité et gamme comme sur la page Doubler, pré-remplies d'après `rapport.json`) : allumé, la version « (auto-tune) » est faite ou refaite (`--autotune N`, `--autotune-gamme`) ; éteint, `--sans-autotune` (une version existante va à la corbeille, et la clé `autotune` de la configuration n'en refait pas) ; grisé sans x42-plugins ; après le remix, la bascule Auto-tune (touche T) apparaît ou disparaît ; les durées par étape (nettoyage, YingMusic-SVC, estimation de doubler comprise ; à deux cartes, « GPU Kaggle (2 cartes T4) », avec le temps de GPU des deux cartes additionnés à côté des durées réelles de la session) ; l'ouverture du dossier, « Partager… » (voir [Partager un extrait](#partager-un-extrait)) et la mise à la corbeille. Si la vidéo source a changé de place, « Choisir… » l'indique à la main (`travail/source.json` n'est pas modifié) ; en attendant, l'original se lit sans image, d'après `travail/original.wav`. |
 | **Karaoké** (Alt+7) | Chanter soi-même sur le beat seul d'un doublage, avec les paroles en karaoké : voir [Karaoké](#karaoké). |
-| **Voix** | Les voix : nom, durée de la référence, hauteur de parole, alertes. On peut écouter la référence, choisir la voix par défaut, ajouter une voix depuis un fichier (`doubler --ajouter-voix`) ou au micro (texte à lire, compte à rebours, contrôle de qualité), la renommer ou la mettre à la corbeille. La page gère aussi les prises de chant pour l'affinage, avec le total cumulé face à l'objectif de 5 à 10 min. La liste « Micro » de l'enregistrement propose aussi le **micro d'un téléphone** Android branché (voir [Enregistrer au téléphone](#enregistrer-au-téléphone)). |
-| **Écoute à l'aveugle** | Les versions A, B, C… de chaque extrait du banc d'essai (`banc/ecoute/`) : mix et voix seule. Ouverte depuis « Comparer les voix » d'un résultat, la même page écoute à l'aveugle les voix d'une comparaison (voir [Comparer des voix](#comparer-des-voix)). L'interrupteur **Voix seule** de la barre du bas (touche V) fait passer la version en cours de son mix à sa voix seule (`X_voix.mp3`) et retour, à la même position. Vous notez les versions de 1 à 5. La correspondance lettre → version n'apparaît qu'après votre vote, qui va dans `banc/ecoute/votes.json`. Vu-mètre, spectrogramme et forme d'onde de ce qui joue, si on les allume. |
+| **Voix** | Les voix : nom, durée de la référence, hauteur de parole, alertes. On peut écouter la référence, choisir la voix par défaut, ajouter une voix depuis un fichier (`doubler --ajouter-voix`) ou au micro (texte à lire, compte à rebours, contrôle de qualité), la renommer ou la mettre à la corbeille. La page gère aussi les prises de chant pour l'affinage, avec le total cumulé face à l'objectif de 5 à 10 min. Le bouton **Enregistrer ma voix chantée…** ouvre la **séance d'enregistrement** (voir [Séance d'enregistrement](#séance-denregistrement)). La liste « Micro » de l'enregistrement propose aussi le **micro d'un téléphone** Android branché (voir [Enregistrer au téléphone](#enregistrer-au-téléphone)). |
+| **Écoute à l'aveugle** (hors de la barre latérale ; Alt+5) | Pas d'entrée dans la barre latérale (le banc d'essai servait peu) : la page reste dans l'application et s'ouvre par « Comparer les voix » d'un résultat, par **Écoute à l'aveugle (banc d'essai)…** du menu principal ☰, ou par Alt+5 (aucune ligne de la barre n'est alors sélectionnée). Les versions A, B, C… de chaque extrait du banc d'essai (`banc/ecoute/`) : mix et voix seule. Ouverte depuis « Comparer les voix » d'un résultat, la même page écoute à l'aveugle les voix d'une comparaison (voir [Comparer des voix](#comparer-des-voix)). L'interrupteur **Voix seule** de la barre du bas (touche V) fait passer la version en cours de son mix à sa voix seule (`X_voix.mp3`) et retour, à la même position. Vous notez les versions de 1 à 5. La correspondance lettre → version n'apparaît qu'après votre vote, qui va dans `banc/ecoute/votes.json`. Vu-mètre, spectrogramme et forme d'onde de ce qui joue, si on les allume. |
 | **État** | Quota GPU Kaggle : heures utilisées sur le total, jauge, heures restantes, remise à zéro, travaux en attente du quota, sessions comptées sur ce poste et ce qui échappe au compte ; bannière d'alerte. Kaggle : présence du jeton (son contenu n'est jamais lu), compte, statut des noyaux connus. `doubler` : options reconnues, verrou libre ou pris (verrou commun `~/.local/state/voix-la/verrou-kaggle` et `sorties/.kaggle/verrou`). Le poste : RAM, charge, `file-attente --etat`. Kaggle se rafraîchit à la demande, ou toutes les 60 s au plus quand la page est visible. |
 | **Réglages** (menu ☰, Ctrl+,) | Dossier de données, compte et noms Kaggle, quota GPU (heures par semaine, jour et heure UTC de la remise à zéro, quand Kaggle ne répond pas ; seuil d'alerte ; doublage qui ne tient plus : Demander, Attendre la remise à zéro ou Lancer quand même ; secours, à venir), moteur du chant, paroles, auto-tune et cartes GPU (Auto, 1 ou 2) par défaut (écrits par `doubler --config`, par exemple `doubler --config paroles non`, `doubler --config autotune 50` ou `doubler --config gpu 1` ; le réglage des cartes est grisé si `doubler` ne connaît pas la clé `gpu`), voix et réglages de doublage par défaut, micro et durées d'enregistrement, autre dossier de prises de chant, visualisations et paroles. |
 
-Raccourcis : Alt+1 à Alt+7 ouvrent les pages, F5 actualise, Ctrl+, ouvre les réglages, Ctrl+? les raccourcis. Dans un
+Raccourcis : Alt+1 à Alt+7 ouvrent les pages (Alt+5 : l'écoute à l'aveugle, qui n'a plus de ligne dans la barre latérale), F5 actualise, Ctrl+, ouvre les réglages, Ctrl+? les raccourcis. Dans un
 résultat : Espace lecture / pause, flèches ±5 s, `,` et `.` une image en pause, Origine le début, 1 à 5 les pistes
 (doublage, original, beat seul, voix convertie, voix d'origine), B doublage ⇄ original, T avec ou sans auto-tune, L la
 boucle A-B, `[` et `]` la vitesse, M le son, F le plein écran (Échap pour sortir), V le mode cinéma, P le panneau
@@ -306,8 +306,9 @@ langues ; il est gardé dans `interface.json` (`paroles_langue`). L'interrupteur
 
 ## Karaoké
 
-Page « Karaoké » (Alt+7), ou « Chanter… » dans le menu « ⋮ » d'une carte de la bibliothèque (quand le doublage a son
-`travail/instrumental.wav`).
+Page « Karaoké » (Alt+7), ou « Chanter… » dans le menu « ⋮ » d'une carte de la bibliothèque et dans l'en-tête du
+détail d'un doublage (quand le doublage a son `travail/instrumental.wav` ; sans lui, le bouton du détail est grisé et
+l'infobulle dit pourquoi). Les deux appellent `fenetre.chanter(res)`, qui ouvre la page sur ce doublage.
 
 - **Préparer** : le doublage, puis le passage (chanson entière ; extrait de la ligne X à la ligne Y, ou début et fin à la
   main sans paroles ; extrait en boucle, 2 à 10 tours). Conseil affiché : mettre un casque. Micro du PC au choix (pas
@@ -330,8 +331,16 @@ Page « Karaoké » (Alt+7), ou « Chanter… » dans le menu « ⋮ » d'une ca
   `.prise-…`, effacées après un jour ; MP3 `<titre> - karaoké AAAA-MM-JJ HHhMM.mp3`), ignoré par la bibliothèque. Cache :
   `~/.cache/voix-la/karaoke/` (500 Mo). En ligne de commande : `python3 -m voixla.karaoke analyser|mp3`.
 - **Sobriété** : note et mix dans la file des analyses, sous `nice -n 10`, par `file-attente` au-delà d'une minute de son.
-- **Limites** : « Doubler ma prise » attend que `doubler` accepte un fichier audio seul ; la mesure de latence au vrai
-  micro (casque Bluetooth compris) reste à essayer.
+- **Doubler ma prise** : sur le résultat d'une prise (gardée ou non), « Doubler ma prise… » demande la voix cible, puis
+  lance un travail `doubler` sur le **mix ta voix + beat** de la prise, enregistré en FLAC dans `karaoke/` sous le nom
+  `<titre> - ma prise AAAA-MM-JJ HHhMM.flac` (`karaoke.preparer_entree_doubler` ; le mix en cache est refait s'il a
+  été purgé). Le travail est `doubler <fichier> --voix <voix> --mode=chant` ; il passe par le quota GPU comme la page
+  Doubler (sans dialogue : s'il ne tient pas, il attend la remise à zéro, sauf réglage « lancer »). Le résultat arrive
+  dans la bibliothèque, mp3 seul, sous le nom de la prise ; le fichier reste dans `karaoke/` (que la bibliothèque ne
+  lit pas) parce que `--remix` le relit. Grisé quand le mix n'est pas prêt, qu'aucune voix n'existe ou que `doubler`
+  n'annonce pas « audio seul » (`moteur.capacites()` : `son_seul`). Pourquoi le mix et pas la voix seule : voir
+  le CHANGELOG (séparation propre, beat rendu par la musique seule, mode chant sûr).
+- **Limites** : la mesure de latence au vrai micro (casque Bluetooth compris) reste à essayer.
 - **Essais** : `tests/faux_karaoke.py` (chanson inventée à mélodie connue), `test_justesse` (juste 100, un demi-ton
   faux 1, une octave plus bas 100, retard de 100 ms 100…), `test_karaoke`, et la page sous Xvfb
   (`tests/essai_karaoke_gui.py`).
@@ -452,7 +461,8 @@ fait écouter les résultats :
   `interface.json`, clé `voix_comparees`). La ligne dit combien de voix, et conseille un extrait de 20 à 40 s quand une
   vidéo est entière. L'estimation de durée et le quota GPU comptent les conversions en plus
   (`doubler.estimer_noyau_s(…, voix_comparees=N)`, sinon le repli de l'interface) ; la demande part avec
-  `--comparer A,B,C` à la place de `--voix`. Dans la file, le travail porte la première voix.
+  `--comparer A,B,C` à la place de `--voix`. Dans la file, la carte du travail (page Travaux) dit « comparaison de N
+  voix : » suivi de toutes les voix ; « Voir » ouvre le résultat de la première.
 - **Résultats** : le détail d'un doublage dont le dossier a deux voix ou plus (`comparaison.json` de `doubler --comparer`,
   ou des doublages de voix différentes du même extrait) a un groupe **Comparer les voix** : les voix et un bouton
   **Comparer**. Il prépare un banc d'écoute à l'aveugle dans le cache (`~/.cache/voix-la/comparaisons/<empreinte du
@@ -466,6 +476,93 @@ fait écouter les résultats :
   enregistre : le vote, dans `votes.json` du banc de la comparaison (jamais celui du banc d'essai), dévoile les voix.
   « Voter à nouveau » les cache de nouveau.
 - Remix : le remix rapide d'une version ne touche que cette voix ; `doubler --comparer A,B,C --remix` les refait toutes.
+
+## Séance d'enregistrement
+
+Pour être reconnue dans ses doublages, une voix a besoin de sa version **chantée** : le modèle n'a souvent que 20 s de
+parole. La page Voix a un bouton **Enregistrer ma voix chantée…** (à côté de « Chant pour l'affinage ») : il empile la
+séance par-dessus la page, sans onglet de plus dans la barre latérale. On chante dans son téléphone, casque branché sur
+le PC, sur des pistes jouées par l'interface, puis on importe ses fichiers. Le code est dans `voixla/seance.py` (sans
+GTK, testé) et `gui/seance.py` (la vue).
+
+- **Comment ça marche**, en haut, en 5 lignes : installer le téléphone ; lancer l'enregistrement sur le téléphone
+  AVANT la piste ; une étape = un fichier ; importer à la fin ; environ 20 min en tout. Les textes sont dans
+  `voixla/seance_textes.py`, adressés à la personne qui enregistre, sans prénom.
+- **Rappel des consignes**, toujours visible : téléphone à 20 cm, meilleure qualité d'enregistrement, mode avion ;
+  casque bien fermé et volume modéré (la musique ne doit pas passer dans le micro) ; taper dans ses mains sur le 4e
+  bip ; pas d'envoi par WhatsApp (le son est recompressé).
+- **Cinq étapes**, dont tout le contenu est fourni (rien à chercher ailleurs). Chacune affiche une **durée estimée**,
+  une case **Fait** (gardée dans `voix/<nom>/seance.json`, avec la taille du texte et le choix grave/aiguë ; l'étape
+  porte alors un ✓) et le **nom de fichier conseillé** à donner sur le téléphone : `1-parole`, `2-tessiture`, `3-notes`,
+  `4-chanson`, `5-au-clair-de-la-lune`, `5-frere-jacques`.
+  1. **Parole** (≈ 3 min, sans piste) : un texte français de cinq paragraphes (`seance_textes.TEXTE_PAROLE`) affiché
+     en grand, sur toute la largeur, avec la **taille du texte réglable** (− / +, de 60 % à 180 %) et le défilement de
+     la page ; puis « Parle librement (1 min) » avec trois sujets au choix.
+  2. **Tessiture** (≈ 2 min) : une piste guide **réglée sur la voix**. Le centre C de la voix vient de `tessiture.json`
+     (milieu de `confort`, sinon `p50`), sinon de 2 × `hauteur_parole_mediane_hz` de `voix.json` ; sans ces données,
+     deux boutons proposent « Voix grave » (C = 190 Hz) ou « Voix aiguë » (C = 380 Hz). La piste : 4 bips à 880 Hz
+     (1, 2, 3 et 4 s), puis 6 **sirènes guides** de 8 s (une glissade continue de C × 2^(−9/12) à C × 2^(+9/12), puis
+     retour ; fondamentale et 2 harmoniques, enveloppe douce), trois fois sur « aaa » puis trois fois sur « ou », 3 s de
+     silence entre chacune ; puis la **gamme** do ré mi fa sol la si do, montée puis descente (tonique : le demi-ton
+     entier le plus proche de C × 2^(−5/12), 1,2 s par note), sur « la » puis sur « mi ». Le nom de la note en cours
+     s'affiche en grand, synchronisé.
+  3. **Notes à tenir** (6 notes de 110 à 261,63 Hz, 5 s de son et 3 s de silence, deux tours : « aaa » puis « ou »).
+  4. **Chanson** d'un doublage (voir plus bas).
+  5. **Chanson libre** (≈ 3 min) : deux chansons du **domaine public** avec accompagnement et paroles complètes, **Au
+     clair de la lune** (deux couplets) et **Frère Jacques** (chantée deux fois) — ou n'importe quel doublage, comme à
+     l'étape 4. Les notes et les paroles (une syllabe par note) sont dans `voixla/seance_chansons.py`. Chaque chanson
+     est **transposée en demi-tons entiers** pour que la note médiane de sa mélodie tombe sur le centre C de la voix,
+     à environ 88 battements par minute. Deux pistes, chacune derrière 4 bips : **avec la mélodie** (piano doux
+     synthétisé et accords simples I, IV, V choisis d'après la mélodie, en blanches) pour s'entraîner, et
+     **accompagnement seul** (les accords et un léger métronome) pour la vraie prise. Les **paroles** sont générées
+     depuis les durées des notes, décalées des 5 s de bips, en **très grand** (taille « géante » du karaoké, une
+     ligne à la fois, la suivante en petit) : une ligne de plus de 6 syllabes est affichée en deux moitiés, et la
+     syllabe en cours se remplit (le karaoké remplit déjà mot à mot ; ici un mot est une syllabe).
+     Tout est synthétisé avec numpy et ffmpeg, sans téléchargement.
+- **Les pistes** se jouent avec le lecteur de l'application (`gui/lecteur.py` : lecture / pause, barre de position) et
+  le temps restant ; une seule lecture à la fois, comme ailleurs. Elles se préparent hors du fil de l'interface, avec une
+  barre de progression, par ffmpeg, en mp3, dans `~/.cache/voix-la/seance/<empreinte>/` (l'empreinte vient du chemin,
+  de la taille et de la date de `travail/instrumental.wav` et `voix_source.wav`) ; ce qui existe n'est pas refait. Les
+  notes sont des sinus. Une chanson : **4 bips à 880 Hz à 1, 2, 3 et 4 s, puis la chanson à 5 s** (on tape dans ses
+  mains sur le 4e bip : cela permet de recaler la prise, même avec la latence d'un casque Bluetooth), un limiteur à
+  0,89, et la tonalité d'origine ou de −1 à −7 demi-tons (`rubberband`, `pitchq=quality`, `channels=together`).
+  **Répéter avec la voix** joue le guide (la musique et la voix d'origine à −6 dB), **Prise : musique seule** la vraie
+  prise.
+- **Le doublage** vient de n'importe quel doublage de la bibliothèque qui garde son `travail/` (`instrumental.wav` et
+  `voix_source.wav`). **Chansons conseillées pour ta voix** : les doublages sont classés selon l'écart (en demi-tons)
+  entre la tessiture du chanteur d'origine (`rapport.json` : `decision_hauteur.voix_principale`, sinon le premier
+  dictionnaire qui porte `f0_p10_hz`, `f0_med_hz`, `f0_p90_hz` et `classe`) et la zone de chant de la voix : deux fois
+  `hauteur_parole_mediane_hz` de `voix.json`, ou, si `voix/<nom>/tessiture.json` existe
+  (`{"p05","p10","p50","p90","p95","confort":[bas,haut]}` en Hz), le centre de sa zone de confort. La tonalité conseillée
+  baisse la chanson de cet écart (0 à −7), jamais ne la monte ; le classement tient compte de ce qui reste d'écart après
+  la transposition. Les trois premières ont une étoile ; un doublage sans tessiture connue vient à la fin.
+  **Langues** : seules les chansons dans une langue de la voix sont proposées (`voix/<nom>/voix.json`, clé `langues`,
+  `["fr"]` par défaut ; par exemple `"langues": ["fr", "en"]`). La langue chantée d'un doublage vient de son
+  `rapport.json` (`paroles_sorties.langue_chantee.langue`, `pistes_audio.langue.paroles`), sinon de
+  `travail/<voix>/paroles.json`, du `[la:xx]` du `.lrc`, puis du suffixe des `.srt` (`.fr.srt`, `.en.srt`). Les autres
+  sont derrière l'interrupteur **Montrer toutes les langues** (la langue s'affiche alors entre crochets).
+- **Tout est dans l'interface** : aucune piste à préparer à la main, la séance fabrique les siennes dans le cache.
+- **Paroles synchronisées**, en très grand pendant la lecture : le `.lrc` du doublage, avec la vue des paroles de l'application, décalées des 5 s de bips,
+  avec la mention « transcription automatique, il peut y avoir des fautes ».
+- **Importer mes enregistrements…** : sélecteur multiple (m4a, aac, mp3, wav, ogg, opus, 3gp, amr). L'**étape de
+  chaque fichier est reconnue à son nom** (`1-parole`, `2-tessiture`, `3-notes`, `4-chanson`, `5-au-clair-de-la-lune`,
+  `5-frere-jacques` ; le numéro du début l'emporte, sinon le nom suffit) : une ligne par fichier propose l'étape
+  trouvée, à corriger avant « Importer ces fichiers » ; un nom inconnu prend l'étape de la liste « nom non reconnu ».
+  Les fichiers sont copiés **tels quels** dans `voix/<nom>/chant/` (ou `parole/` pour l'étape 1), sous un nom horodaté qui garde l'étape
+  (`20261109-153012-notes.m4a`). Ils ne sont lus que par ffmpeg (protocoles limités aux fichiers) : rien de ce qu'ils
+  contiennent n'est exécuté. Chaque fichier est contrôlé : durée, saturation (crête à 0 dBFS), niveau, bruit de fond, et
+  **musique du casque** dans la prise (ressemblance du rythme de la prise avec celui de la piste jouée, une fois les
+  phrases lentes retirées ; alerte à partir de 0,6).
+- **Durées** : le total de chant et de parole déjà enregistré pour la voix (tous les fichiers audio de `chant/` et
+  `parole/`), avec l'objectif de 10 min de chant et 5 min de parole.
+
+Pour les essais et les captures : `VOIXLA_SEANCE_ETAPE` (étape ouverte), `VOIXLA_SEANCE_CHANSON` (chanson de l'étape 5)
+et `VOIXLA_SEANCE_POSITION` (instant, en secondes, où placer les paroles).
+
+Essais : `tests/test_seance.py` (étapes, préparation des pistes sur des sons de synthèse, classement, paroles, import,
+contrôles), `tests/test_seance_contenu.py` (le texte mot pour mot, les notes, les syllabes et les durées des chansons, la
+transposition, les accords, les sirènes et la gamme, `seance.json`, la reconnaissance des noms) et `tests/test_seance_gui.py` (la fenêtre sous Xvfb : barre latérale sans l'écoute à l'aveugle, la séance
+de bout en bout).
 
 ## Enregistrer au téléphone
 
@@ -574,8 +671,10 @@ les sessions du compte restent « queued » et c'est le seul endroit où on le v
 - **Ce que Kaggle ne donne pas** : la place dans sa file, l'heure de démarrage prévue, la machine d'un notebook d'un
   autre projet, ni de quoi annuler une version (`kaggle kernels delete` supprime tout le notebook : l'interface ne
   l'appelle jamais). Le bouton de chaque ligne ouvre la page du notebook sur Kaggle, où l'on arrête la session à la
-  main. Une phrase d'aide le dit sous la liste ; quand plusieurs sessions attendent en même temps, elle ajoute que
-  Kaggle peut les faire passer une par une, ou n'avoir plus de GPU libre.
+  main. Une phrase d'aide le dit sous la liste et rappelle que, si rien ne démarre, la cause peut aussi être un incident
+  chez Kaggle (la page du notebook affiche alors une bannière d'incident) ; quand plusieurs sessions attendent en même
+  temps, elle ajoute que Kaggle peut les faire passer une par une, ou n'avoir plus de GPU libre. Le message d'une
+  attente anormale d'un travail (`travaux.texte_attente_anormale`) dit la même chose.
 - **Affichage** : une ligne par notebook (titre, état en clair, « lancé il y a 1 h 32 », badge « Voix-là » sur celui
   de doubler, reconnu par le champ `noyau` de `session-en-cours.json` et `session-precedente.json` et par le noyau de
   la configuration) ; les terminés récents en repli ; « Rien en attente ni en cours » si le compte est au repos ; un
@@ -773,6 +872,13 @@ réouverture. `VOIXLA_ESSAI_CAPTURES=DOSSIER` garde les captures.
 
 ## Limites
 
+- **Chanson transposée** : `doubler` transpose la musique seule de la vidéo (`travail/instrumental_transpose_<dt>.wav`) et
+  les cinq pistes de la vidéo sont justes. Mais le Karaoké, le partage, les pistes séparées reconstruites par l'interface et
+  « Enregistrer le beat… » lisent encore `travail/instrumental.wav`, la musique d'origine, non transposée : sur une
+  chanson transposée, ce beat n'est pas dans la tonalité de la voix doublée. Le remix rapide suit la décision déjà
+  prise : il ne peut pas la changer sans reconvertir. L'estimation de durée de la session Kaggle ne compte pas la
+  transposition de la musique, faite sur le PC après le noyau (environ 0,15 s par seconde de chanson, un seul cœur) : elle
+  change à peine.
 - **Enregistrement** : par un micro du PC (PulseAudio/PipeWire) ou par le micro d'un téléphone Android (scrcpy, Android
   11 ou plus récent pour le son). Au téléphone, pas de niveau en direct, et la prise ne commence qu'une fois le
   téléphone joint par scrcpy, juste après le compte à rebours.

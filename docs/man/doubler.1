@@ -4,7 +4,7 @@
 doubler \- remplace la voix d'une vidéo par une voix clonée (GPU gratuit de Kaggle)
 .SH SYNOPSIS
 .B doubler
-\fIvidéo\fR [\fIvidéo\fR...] [\fIoptions\fR]
+\fIvidéo\fR|\fIaudio\fR [\fIvidéo\fR|\fIaudio\fR...] [\fIoptions\fR]
 .br
 .B doubler \-\-ajouter\-voix
 \fInom\fR \fIenregistrement\fR
@@ -68,6 +68,18 @@ dit et fait la version normale seule.
 .PP
 Un extrait propre à chaque vidéo s'écrit \fIvidéo\fB@\fIdébut\fB+\fIdurée\fR
 (secondes ou m:ss) : \fB"clip.mp4@60+40"\fR démarre à 60 s et dure 40 s.
+.PP
+Un fichier audio seul (mp3, wav, flac, m4a, ogg, opus : tout fichier sans
+image ; la pochette jointe à un mp3 n'en est pas une) suit la même chaîne, sans
+image : pas de remise sur la vidéo, la sortie est \fI<titre> \- voix <Nom>.mp3\fR
+(320 kbit/s), avec \fI.lrc\fR, les \fI.srt\fR de \fIparoles/\fR si les paroles sont
+demandées et \fItravail/\fR comme pour une vidéo (son d'origine, beat seul, voix
+d'origine, voix convertie, \fIrapport.json\fR). \fB\-\-debut\fR et \fB\-\-duree\fR
+coupent exactement où on le demande (pas d'image clé), \fB\-\-remix\fR et
+\fB\-\-reprendre\fR fonctionnent comme pour une vidéo, \fB\-\-pistes\-audio\fR n'a
+pas d'objet et l'auto\-tune donne son mp3 et son \fI.lrc\fR. Le dossier de sortie
+porte le nom du fichier : un mp3 et une vidéo de même nom partageraient le même
+dossier.
 .SH OPTIONS
 .TP
 .BI \-\-voix " nom"
@@ -131,7 +143,29 @@ Mode du doublage (défaut : auto).
 .BR \-\-octave " auto|0|\-12|+12"
 En chant, auto choisit un seul décalage par chanteur d'après la hauteur ; les
 ancres de genre, facultatives, départagent les cas ambigus et repèrent les
-duos. 0, \-12 ou +12 imposent le décalage partout.
+duos. 0, \-12 ou +12 imposent le décalage partout. La transposition de la
+chanson (\fB\-\-transposer\fR) s'y ajoute.
+.TP
+.BR \-\-transposer " auto|non|N"
+En chant, transpose la chanson ENTIÈRE, musique comprise (comme un changement
+de tonalité au karaoké), pour que la voix convertie chante près de la zone
+naturelle de la voix cible, où ses proches la reconnaissent. \fBauto\fR (défaut) :
+le noyau choisit un seul nombre entier de demi\-tons pour toute la chanson, le
+plus petit possible et au plus ±5, qui range au mieux la voix convertie dans la
+zone de la voix cible (\fItessiture.json\fR de son dossier, sinon deux fois sa
+hauteur de parole ±4 demi\-tons) ; chaque voix reçoit ce décalage plus son
+octave (\-12, 0 ou +12) ; avec une voix par chanteur, un seul décalage minimise
+l'écart total des deux voix à leur zone. \fBnon\fR : octave seule, musique
+intacte (comme avant). \fIN\fR : décalage imposé (\-3, +2\|...). La parole n'est
+jamais transposée. Sur le PC, la musique seule est transposée par Rubber Band R3
+(paquet \fBlibrubberband2\fR) avant le mixage, à durée exacte, et gardée dans
+\fItravail/instrumental_transpose_<N>.wav\fR ; le doublage et « Beat seul » sont
+sur la musique transposée, « Original » et « Voix d'origine seule » ne le sont
+jamais. Sans Rubber Band, \fBdoubler\fR avertit, ne transpose pas et la voix garde
+l'octave seule. Défaut lu dans la clé \fBtransposer\fR de la configuration.
+La décision est dans \fIrapport.json\fR (\fBtransposition\fR). Avec
+\fB\-\-remix\fR, la décision déjà prise est suivie : \fB\-\-transposer non\fR ne peut pas
+changer la voix sans reconvertir (un message le dit).
 .TP
 .BI \-\-comparer " voix,voix[,voix...]"
 Compare des voix : le même extrait (\fB\-\-debut\fR, \fB\-\-duree\fR) est doublé dans chaque voix (deux à six, de

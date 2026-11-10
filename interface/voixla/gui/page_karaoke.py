@@ -25,7 +25,7 @@ import gi
 gi.require_version("Gst", "1.0")
 from gi.repository import Adw, Gdk, GLib, Gst, Gtk, Pango, PangoCairo  # noqa: E402
 
-from .. import analyse, chemins, formats, justesse, rapports  # noqa: E402
+from .. import analyse, chemins, formats, justesse, moteur, quota, rapports, travaux  # noqa: E402
 from .. import karaoke as K  # noqa: E402
 from . import commun  # noqa: E402
 from .analyses import analyses, derniere_ligne  # noqa: E402
@@ -430,6 +430,9 @@ class DialogueCalibration(Adw.Dialog):
 
 # --- La page ----------------------------------------------------------------------------------------------------------
 
+INFO_DOUBLER = "Ta voix et le beat de cette prise, doublés dans une voix clonée (travail « doubler »)"
+
+
 class PageKaraoke(commun.Page):
     def __init__(self, fenetre):
         super().__init__(fenetre, "Karaoké", "karaoke")
@@ -656,6 +659,9 @@ class PageKaraoke(commun.Page):
         boutons = Gtk.Box(spacing=8, margin_top=6)
         boutons.append(commun.bouton("Nouvelle prise", "media-record-symbolic", clic=self.nouvelle_prise))
         boutons.append(Gtk.Box(hexpand=True))
+        self.b_doubler = commun.bouton("Doubler ma prise…", "audio-input-microphone-symbolic",
+                                       clic=self.doubler_ma_prise, infobulle=INFO_DOUBLER)
+        boutons.append(self.b_doubler)
         self.b_mp3 = commun.bouton("Enregistrer en MP3", "document-save-symbolic", clic=self.exporter_mp3,
                                    infobulle="Ta voix et le beat, dans le dossier karaoke/ du doublage")
         boutons.append(self.b_mp3)
@@ -1098,6 +1104,9 @@ class PageKaraoke(commun.Page):
     def _sensibles(self, ecoute_mix, decision):
         self.t_mix.set_sensitive(ecoute_mix)
         self.b_mp3.set_sensitive(ecoute_mix)
+        raison = self._raison_doubler(ecoute_mix)
+        self.b_doubler.set_sensitive(raison == "")
+        self.b_doubler.set_tooltip_text(INFO_DOUBLER if raison == "" else raison)
         enattente = self.prise is not None and K.en_attente(self.prise)
         self.b_garder.set_sensitive(decision and enattente)
         self.b_garder.set_visible(enattente)
@@ -1392,6 +1401,75 @@ class PageKaraoke(commun.Page):
         self._passage_change()
         self._maj_gardees()
 
+    # --- doubler ma prise : la prise (ta voix + le beat) devient la source d'un doublage dans une voix clonée ----------
+
+    def _raison_doubler(self, mix_pret):
+        """Pourquoi « Doubler ma prise » est grisé (texte vide : possible)."""
+        f = self.fenetre
+        if not mix_pret:
+            return "Le mix de la prise n’est pas prêt"
+        if "son_seul" not in getattr(f, "caps", ()):
+            return "Ce doubler ne sait pas encore doubler un fichier audio seul : mettez-le à jour"
+        if not f.voix:
+            return "Aucune voix clonée : ajoutez-en une dans la page Voix"
+        return ""
+
+    def doubler_ma_prise(self):
+        """Choix de la voix cible, puis un travail « doubler » sur le mix de la prise (voix + beat)."""
+        if self.prise is None or self.chanson is None or self._raison_doubler(bool((self.resultat or {}).get("mix"))):
+            return
+        f = self.fenetre
+        voix = list(f.voix)
+        choix = Adw.ComboRow(title="Voix cible", model=Gtk.StringList.new([v["nom"] for v in voix]))
+        defaut = f.voix_defaut()
+        choix.set_selected(next((i for i, v in enumerate(voix) if v["id"] == defaut), 0))
+        liste = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, css_classes=["boxed-list"])
+        liste.append(choix)
+        d = Adw.AlertDialog(heading="Doubler ma prise",
+                            body="Ta voix et le beat de cette prise passent par « doubler » : ta voix devient la voix "
+                                 "choisie, le beat reste. Le résultat arrive dans la bibliothèque, comme un doublage "
+                                 "(quelques minutes de GPU Kaggle).")
+        d.set_extra_child(liste)
+        d.add_response("annuler", "Annuler")
+        d.add_response("lancer", "Doubler")
+        d.set_response_appearance("lancer", Adw.ResponseAppearance.SUGGESTED)
+        d.set_default_response("lancer")
+        d.set_close_response("annuler")
+        d.connect("response", lambda _d, r: r == "lancer" and self._lancer_doubler(voix[choix.get_selected()]["id"]))
+        d.present(f)
+        self._dialogue_doubler = d
+
+    def _lancer_doubler(self, voix):
+        prise, c = self.prise, self.chanson
+        dossier = Path((self.plan or {}).get("dossier") or c["dossier"])
+        titre = (self.plan or {}).get("titre") or c["titre"]
+        f = self.fenetre
+        self.b_doubler.set_sensitive(False)
+        f.toast("Préparation de ta prise…")
+
+        def prepare():
+            return K.preparer_entree_doubler(prise, titre, dossier)
+
+        def pret(r):
+            self.b_doubler.set_sensitive(True)
+            entree, duree = r
+            caps = f.caps
+            est = rapports.estimer([duree or 0], 30, None, nettoyage="--sans-nettoyage" in caps, mode="chant",
+                                   cartes=moteur.cartes_prevues({}, caps), paroles="--sans-paroles" in caps,
+                                   sorties=chemins.dossier_sorties(f.donnees))
+            demande = travaux.demande_doubler_prise(entree, duree, voix, f.donnees, estimations=est)
+            demande, attend = travaux.juger_quota(demande, f.quota, f.file.travaux(), quota.reglages(f.prefs)[4])
+            f.ajouter_travaux([demande])
+            message = ("Doublage de ta prise en attente du quota GPU : départ tout seul à la remise à zéro" if attend
+                       else "Doublage de ta prise dans la file")
+            f.toast(message, "Voir", lambda: f.aller("travaux"))
+            f.aller("travaux")
+
+        def echec(e):
+            self.b_doubler.set_sensitive(True)
+            f.toast(f"Doubler ma prise impossible : {e}")
+        commun.en_fil(prepare, pret, echec)
+
     def exporter_mp3(self):
         if self.prise is None or self.chanson is None:
             return
@@ -1494,7 +1572,7 @@ class PageKaraoke(commun.Page):
     def scenario(self, action):
         """Captures et essais (son de synthèse, aucun son joué) : « prise » (une prise au micro de synthèse, sur les
         lignes 2 à 5), « decompte » (pareil, arrêtée au décompte), « resultat » (la prise VOIXLA_KARAOKE_PRISE,
-        un WAV qui chante la chanson entière, notée comme une vraie), « calibrer ». Préfixe « chanson-<mot> » :
+        un WAV qui chante la chanson entière, notée comme une vraie), « calibrer », « doubler » (le dialogue « Doubler ma prise… » après « resultat »), « doubler-lancer ». Préfixe « chanson-<mot> » :
         choisir le doublage dont le titre contient ce mot."""
         if os.environ.get("VOIXLA_CAPTURE"):
             os.environ["VOIXLA_MICRO_ESSAI"] = "1"
@@ -1539,6 +1617,17 @@ class PageKaraoke(commun.Page):
             GLib.timeout_add(200, zoomer)
         elif a == "calibrer":
             self.calibrer()
+        elif a in ("doubler", "doubler-lancer"):
+            # « Doubler ma prise… » : le dialogue (captures), ou le travail lancé dans la première voix (essais)
+            def attendre():
+                if self.etat != "resultat":
+                    return True
+                if a == "doubler":
+                    self.doubler_ma_prise()
+                elif self.fenetre.voix:
+                    self._lancer_doubler(self.fenetre.voix[0]["id"])
+                return False
+            GLib.timeout_add(300, attendre)
 
     def _scenario_resultat(self):
         source = os.environ.get("VOIXLA_KARAOKE_PRISE")

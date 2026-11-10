@@ -1176,6 +1176,11 @@ CHANTEURS_DEFAUT = {
     'genre_z_suites': None,
     'genre_voise_min_s': 6.0,
     'genre_section_min_s': 2.5,
+    # Trois voix cibles ou plus (decider_chanteurs_n)
+    'n_temperature': 0.05,           # une différence de 0,05 de cosinus d'empreinte = 1 de log-vraisemblance (Viterbi à N états)
+    'n_section_min_s': 3.0,          # les N chanteurs sont annoncés : sections plus courtes qu'avec la règle d'octave
+    'n_part_min': 0.05,              # part minimale du temps voisé de chaque chanteur
+    'n_voise_min_s': 8.0,            # ... et temps voisé minimal
 }
 
 
@@ -1192,9 +1197,12 @@ def lire_cibles(R):
             noms.add(v['nom'])
     if len(voix) < 2:
         return None
-    mode = vc.get('mode') or ('genre' if {v.get('cle') for v in voix} <= {'homme', 'femme'} else 'ordre')
-    if mode not in ('genre', 'ordre'):
-        raise ValueError(f'voix_cibles : mode {mode!r} inconnu (genre ou ordre)')
+    mode = vc.get('mode') or ('genre' if {v.get('cle') for v in voix} <= {'homme', 'femme'} else
+                              'personnes' if all(str(v.get('cle')).startswith('personne') for v in voix) else 'ordre')
+    if mode not in ('genre', 'ordre', 'personnes'):
+        raise ValueError(f'voix_cibles : mode {mode!r} inconnu (genre, ordre ou personnes)')
+    if mode == 'genre' and len(voix) > 2:
+        raise ValueError('voix_cibles : homme et femme, deux voix au plus')
     return {'mode': mode, 'voix': voix}
 
 
@@ -1283,6 +1291,12 @@ def decider_chanteurs(morceaux, cibles, reglages=None, coupes_son=None):
     import numpy as np
     R = {**OCTAVE_DEFAUT, **CHANTEURS_DEFAUT, **(reglages or {})}
     mode, V = cibles['mode'], cibles['voix']
+    if mode == 'personnes':
+        mode = 'ordre'   # personneN : en chant, comme chanteurN
+    if len(V) >= 3:   # trois voix ou plus : N chanteurs ; moins de trois trouvés : le duo ou la voix seule, ci-dessous
+        n = decider_chanteurs_n(morceaux, cibles, reglages, coupes_son)
+        if n is not None:
+            return n
     index_cle = {v.get('cle'): j for j, v in enumerate(V)}
 
     def decalage(classe, j):
@@ -1453,6 +1467,411 @@ def decider_chanteurs(morceaux, cibles, reglages=None, coupes_son=None):
     return resultats, info, modele
 
 
+# --- De trois à six voix cibles (chant) : N chanteurs repérés par leurs empreintes ---------------------------------------
+# Avec trois voix cibles ou plus (--voix chanteur1:a,chanteur2:b,chanteur3:c…, ou personne1:…), le duo à deux groupes ne
+# suffit plus : les empreintes CAMPPlus des morceaux assez voisés sont regroupées en N groupes (k-moyennes sphériques,
+# comme l'axe des empreintes du duo), l'étiquette de chaque morceau est lissée dans le temps (Viterbi à N états : un
+# changement de chanteur coûte moins à une pause qu'en plein son ; une section trop courte rejoint la plus longue de ses
+# voisines), et les chanteurs sont pris dans l'ordre d'apparition : le premier à chanter reçoit la première voix, etc.
+# Un groupe est retenu s'il ressemble à une voix à part : silhouette suffisante (comme l'axe des empreintes du duo), et
+# chaque chanteur chante assez (part et durée minimales). Sinon N - 1 groupes sont essayés, jusqu'à 3 ; en dessous, le
+# duo ou la voix seule d'avant (decider_chanteurs, avec les deux premières voix). Les voix qu'aucun chanteur n'a reçues ne
+# servent qu'aux autres versions des passages (versions_duo) : leur décalage est celui de la classe du chanteur.
+# Reconnaissance des pistes (chœurs, voix principale, secours) : la ressemblance de l'empreinte de la piste à chacun des N
+# centres, plus la hauteur de la piste, donne la vraisemblance de chaque chanteur (reconnaitre). Limite : plus il y a de
+# chanteurs, plus leurs empreintes se rapprochent ; à cinq ou six, des voix de même genre et de même timbre se confondent.
+
+def viterbi_n(actifs, centres, pause, R):
+    """Chanteur (0 à N - 1) de chaque morceau actif. centres : matrice N x 192 des empreintes moyennes (normées) ;
+    la vraisemblance d'un chanteur est sa ressemblance (cosinus) avec l'empreinte du morceau, pondérée par le temps voisé
+    (comme viterbi). pause[j] : la frontière entre actifs[j - 1] et actifs[j] est un silence."""
+    import numpy as np
+    nv = len(centres)
+
+    def ll(s):
+        e = s.get('emb')
+        if e is None or s.get('voise_s', 0) < R['voise_hauteur_s']:
+            return np.zeros(nv)
+        return min(s['voise_s'] / 3.0, 1.0) * (centres @ np.asarray(e, np.float64)) / R['n_temperature']
+    score, retour = ll(actifs[0]), []
+    rang = np.arange(nv)
+    for j in range(1, len(actifs)):
+        c = R['cout_changement_pause'] if pause[j] else R['cout_changement']
+        changer = score.max() - c
+        retour.append(np.where(score >= changer, rang, int(np.argmax(score))))
+        score = np.maximum(score, changer) + ll(actifs[j])
+    k = int(np.argmax(score))
+    lab = [k]
+    for arr in reversed(retour):
+        k = int(arr[k])
+        lab.append(k)
+    return lab[::-1]
+
+
+def lisser_sections_n(actifs, lab, R):
+    """Une section plus courte que n_section_min_s rejoint la plus longue de ses voisines (la plus courte d'abord)."""
+    lab = list(lab)
+    while True:
+        sec = sections(actifs, lab)
+        courtes = [i for i, t in enumerate(sec) if t[3] < R['n_section_min_s']]
+        if len(sec) <= 1 or not courtes:
+            return lab
+        i = min(courtes, key=lambda x: sec[x][3])
+        d, f, _, _ = sec[i]
+        voisines = [sec[x] for x in (i - 1, i + 1) if 0 <= x < len(sec)]
+        k = max(voisines, key=lambda t: t[3])[2]
+        for j in range(d, f):
+            lab[j] = k
+
+
+def essai_n_chanteurs(morceaux, actifs_i, coupes_son, R, k):
+    """Essai de k chanteurs sur les empreintes. Rend (résultat, pourquoi, essai) ; résultat = {'lab' (rang de chaque
+    morceau actif, dans l'ordre d'apparition), 'centres' (rangés de même), 'actifs'} ou None."""
+    import numpy as np
+    elig = [i for i in actifs_i if morceaux[i].get('emb') is not None and morceaux[i]['voise_s'] >= R['voise_min_s']]
+    essai = {'k': k, 'morceaux': len(elig)}
+    if len(elig) < max(R['duo_morceaux_min'], 2 * k):
+        return None, f'{len(elig)} morceaux avec empreinte : trop peu pour {k} chanteurs', essai
+    e = np.stack([np.asarray(morceaux[i]['emb'], np.float64) for i in elig])
+    lab, c = kmeans_cos(e, k)
+    if len(set(lab.tolist())) < k:
+        return None, f'moins de {k} groupes distincts', essai
+    sil = silhouette_cos(e, lab)
+    essai['silhouette'] = round(sil, 3)
+    if sil < R['axe_silhouette_min']:
+        return None, f"groupes trop peu séparés (silhouette {sil:.2f} < {R['axe_silhouette_min']})", essai
+    pause = [False]
+    for a, b in zip(actifs_i, actifs_i[1:]):
+        en_son = coupes_son is None or any(abs(morceaux[b]['debut_s'] - x) < 0.006 for x in coupes_son)
+        pause.append(b - a > 1 or not en_son)
+    act = [morceaux[i] for i in actifs_i]
+    lab_t = lisser_sections_n(act, viterbi_n(act, c, pause, R), R)
+    voise = [sum(s['voise_s'] for s, g in zip(act, lab_t) if g == j) for j in range(k)]
+    essai['voise_s'] = [round(v, 1) for v in voise]
+    if min(voise) < max(R['n_part_min'] * sum(voise), R['n_voise_min_s']):
+        return None, f"après attribution, un chanteur chante trop peu ({min(voise):.0f} s voisées sur {sum(voise):.0f} s)", essai
+    ordre = []
+    for g in lab_t:
+        if g not in ordre:
+            ordre.append(g)
+    rang = {g: r for r, g in enumerate(ordre)}
+    return {'lab': [rang[g] for g in lab_t], 'centres': np.stack([c[g] for g in ordre]), 'actifs': act}, None, essai
+
+
+def decider_chanteurs_n(morceaux, cibles, reglages=None, coupes_son=None):
+    """decider_chanteurs pour trois voix cibles ou plus (voir plus haut). Rend (resultats, info, modele) comme lui, ou
+    None si moins de trois chanteurs sont trouvés (alors decider_chanteurs refait le duo ou la voix seule)."""
+    R = {**OCTAVE_DEFAUT, **CHANTEURS_DEFAUT, **(reglages or {})}
+    V = cibles['voix']
+    nv = len(V)
+    actifs_i = [i for i, s in enumerate(morceaux) if not s.get('muet') and s.get('voise_s', 0) > 0]
+    if not actifs_i:
+        return None
+    essais, trouve = [], None
+    for k in range(nv, 2, -1):
+        r, pourquoi, essai = essai_n_chanteurs(morceaux, actifs_i, coupes_son, R, k)
+        essai['pourquoi'] = pourquoi
+        essais.append(essai)
+        if r:
+            trouve = r
+            break
+    if trouve is None:
+        return None
+    lab, centres, act = trouve['lab'], trouve['centres'], trouve['actifs']
+    k = len(centres)
+
+    def decalage(classe, j):
+        return meilleure_octave(R[f'centre_{classe}_hz'], V[j]['centre_hz'])
+    mg = mesurer_voix([morceaux[i] for i in actifs_i], R)
+    classe_g, raison_g = classer(mg, R)
+    co_g = classe_g or (classe_hauteur(mg['f0_med_hz'], R) if mg.get('f0_med_hz') else None)
+    info = {'regle': f"v2.4, une voix cible par chanteur, jusqu'à {nv}", 'mode': 'ordre', 'demandees': nv,
+            'voix_cibles': [{'cle': v.get('cle'), 'nom': v['nom'], 'centre_chant_hz': round(v['centre_hz'], 1)} for v in V],
+            'decalage_par_voix_et_classe': {v['nom']: {c: decalage(c, j) for c in ('homme', 'femme')} for j, v in enumerate(V)},
+            'zone_ambigue_hz': [R['zone_basse_hz'], R['zone_haute_hz']], 'frontiere_hauteur_seule_hz': R['frontiere_hz'],
+            'voix_principale': {**mg, 'classe': classe_g, 'raison': raison_g}, 'essai_duo': {'n_chanteurs': essais}}
+    # classe de chaque chanteur (hauteur, empreinte de genre si des ancres, notes graves), décalage de son couple
+    mes, classes, noms, decs = [], [], [], []
+    for g in range(k):
+        m = mesurer_voix([s for s, x in zip(act, lab) if x == g], R)
+        c, r = classer(m, R, sur_seulement=True)
+        if c is None:
+            ch = classe_hauteur(m['f0_med_hz'], R) if m.get('f0_med_hz') else None
+            c, r = (ch, r + ", d'après la hauteur seule") if ch else (co_g, r + ' : comme la voix principale')
+        m.update({'classe': c, 'raison': r,
+                  'voise_attribue_s': round(sum(s['voise_s'] for s, x in zip(act, lab) if x == g), 1)})
+        mes.append(m)
+        classes.append(c)
+        noms.append(f'{c or "voix"} {g + 1}')
+        decs.append(decalage(c, g) if c else 0)
+    resultats = [None] * len(morceaux)
+    for j, i in enumerate(actifs_i):
+        g = lab[j]
+        resultats[i] = {'decalage': decs[g], 'voix': noms[g], 'k': g, 'cible': g, 'chanteur': V[g].get('cle'),
+                        'base': f"{k} voix, chanteur {g + 1} ({noms[g]}) → {V[g]['nom']}"}
+    dernier = None
+    for i in range(len(morceaux)):
+        if resultats[i] is None:
+            dernier = dernier or resultats[actifs_i[0]]
+            resultats[i] = {'decalage': dernier['decalage'], 'voix': None, 'base': muet_ou_sourd(morceaux[i]),
+                            'k': dernier['k'], 'cible': dernier['cible'], 'chanteur': dernier['chanteur']}
+        else:
+            dernier = resultats[i]
+    chanteurs = [{**mes[g], 'nom': noms[g], 'rang': g + 1, 'cible': g, 'voix': V[g]['nom'], 'cle': V[g].get('cle'),
+                  'centre_chanteur_hz': R[f'centre_{classes[g]}_hz'] if classes[g] else None,
+                  'centre_cible_hz': round(V[g]['centre_hz'], 1), 'decalage': decs[g]} for g in range(k)]
+    secs = sections(act, lab)
+    info.update({'voix': k, 'axe': 'empreintes', 'chanteurs': chanteurs,
+                 'message': f'{k} voix : ' + ', '.join(f"{c['nom']} → {c['voix']} ({c['decalage']:+d})" for c in chanteurs)
+                            + (f' ({nv - k} voix cible(s) sans chanteur)' if k < nv else ''),
+                 'changements': [{'a_s': act[d]['debut_s'], 'vers': noms[x], 'voix': V[x]['nom']} for d, _, x, _ in secs[1:]]})
+    hauteur = []
+    for g in range(k):
+        f = [(math.log2(s['f0_med']), s['voise_s']) for s, x in zip(act, lab)
+             if x == g and s.get('f0_med') and s['voise_s'] >= R['voise_hauteur_s']]
+        if f:
+            m = mediane_ponderee([a for a, _ in f], [b for _, b in f])
+            sd = math.sqrt(sum(b * (a - m) ** 2 for a, b in f) / sum(b for _, b in f))
+            hauteur.append((m, max(sd, R['sigma_hauteur_min_oct'])))
+        else:
+            hauteur.append(None)
+    modele = {'axe': 'empreintes', 'vecteur': centres, 'centres': centres, 'hauteur': hauteur, 'cible': list(range(k)),
+              'decalage': decs, 'noms': noms}
+    info['modele_pistes'] = {'axe': 'empreintes', 'chanteurs': k,
+                             'hauteur_hz': [None if h is None else round(2 ** h[0], 1) for h in hauteur],
+                             'hauteur_sigma_oct': [None if h is None else round(h[1], 3) for h in hauteur]}
+    return resultats, info, modele
+
+
+# --- Parole à plusieurs voix : qui parle et quand (diarisation par empreintes) ----------------------------------------------
+# --voix personne1:a,personne2:b,… avec une vidéo en parole (film, interview, sketch) : la voix isolée complète est
+# découpée en régions de parole (enveloppe, comme les morceaux), chaque région en fenêtres glissantes de 1,5 s (pas de
+# 0,75 s) dont l'empreinte CAMPPlus (déjà dans le noyau, pas de jeton ni de modèle de plus) est regroupée en N personnes
+# (k-moyennes sphériques ; N, N - 1… 2 essayés, retenus si les groupes sont assez séparés (silhouette) et assez présents),
+# étiquette lissée dans le temps (tour de parole d'au moins 1,5 s), changement de personne placé au creux d'énergie le
+# plus proche. Les changements tombant en pleine parole ajoutent une coupe : chaque morceau n'a qu'une personne.
+# La première personne entendue reçoit la première voix, etc. (comme les chanteurs). Limites (RAPPORT.md de
+# recherche/unisson : ce qui se sépare ou non) : deux personnes qui parlent en même temps restent un seul flux, converti
+# dans la voix de la personne dominante ; un tour de moins de 1,5 s (un « oui ») prend la voix de ses voisins ; deux voix
+# de timbre très proche (frère et sœur, deux hommes de même âge) se confondent plus qu'avec un modèle entraîné à la
+# tâche (pyannote : 17 à 20 % d'erreur sur la réunion AMI, sous conditions et jeton HF ; les empreintes seules font
+# davantage d'erreurs sur la parole entremêlée, mais restent exactes sur des tours longs et des voix différentes).
+
+DIARISATION_DEFAUT = {
+    'fenetre_s': 1.5,           # fenêtre d'empreinte
+    'pas_s': 0.75,              # pas des fenêtres
+    'trou_s': 0.3,              # un silence plus long sépare deux régions de parole
+    'region_min_s': 0.5,        # région plus courte : sans empreinte propre (étiquette de sa voisine)
+    'tour_min_s': 1.5,          # un tour de parole plus court rejoint ses voisins
+    'silhouette_min': 0.15,     # groupes d'empreintes assez séparés (la parole est plus bruitée que le chant : 0,15)
+    'part_min': 0.03,           # part minimale de chaque personne (fenêtres)
+    'parole_min_s': 3.0,        # parole minimale de chaque personne
+    'creux_s': 0.4,             # le changement est déplacé au creux d'énergie à ± ce temps
+}
+
+
+def lisser_tours(lab, pas_s, tour_min_s):
+    """Étiquettes de fenêtres lissées : un tour plus court que tour_min_s rejoint le plus long de ses voisins (le plus
+    court d'abord)."""
+    lab = list(lab)
+    n_min = max(1, int(round(tour_min_s / pas_s)))
+    while True:
+        tours, d = [], 0
+        for j in range(1, len(lab) + 1):
+            if j == len(lab) or lab[j] != lab[d]:
+                tours.append((d, j, lab[d]))
+                d = j
+        courts = [i for i, t in enumerate(tours) if t[1] - t[0] < n_min]
+        if len(tours) <= 1 or not courts:
+            return lab
+        i = min(courts, key=lambda x: tours[x][1] - tours[x][0])
+        voisins = [tours[x] for x in (i - 1, i + 1) if 0 <= x < len(tours)]
+        k = max(voisins, key=lambda t: t[1] - t[0])[2]
+        for j in range(tours[i][0], tours[i][1]):
+            lab[j] = k
+
+
+def diariser(x, lisse, seuil, nv, empreinte_fn, reglages=None):
+    """Qui parle quand (voix isolée complète x, SR ; lisse : enveloppe en dB par trame de 10 ms ; seuil de silence ;
+    nv : nombre de personnes demandées ; empreinte_fn(y 44,1 kHz) -> empreinte normée ou None). Rend {'k' (personnes
+    trouvées), 'trames' (rang de la personne à chaque trame de 10 ms, -1 sans parole ; première entendue : 0),
+    'coupes' (échantillons des changements de personne en pleine parole), 'essais', 'parts' (secondes par personne)}."""
+    import numpy as np
+    D = {**DIARISATION_DEFAUT, **(reglages or {})}
+    n_tr = len(lisse)
+    trames = np.full(n_tr, -1, np.int64)
+    parole = np.asarray(lisse) > seuil
+    # comble les silences courts : une région de parole
+    regions = []
+    for a, b in suites(parole):
+        if regions and (a - regions[-1][1]) * 0.01 <= D['trou_s']:
+            regions[-1] = (regions[-1][0], b)
+        else:
+            regions.append((a, b))
+    fen, pas = int(D['fenetre_s'] * SR), int(D['pas_s'] * SR)
+    fenetres = []   # (région, début, fin en échantillons, empreinte)
+    for r, (a, b) in enumerate(regions):
+        d0, d1 = a * PAS, min(b * PAS, len(x))
+        if (d1 - d0) / SR < D['region_min_s']:
+            continue
+        debuts = list(range(d0, max(d0, d1 - fen) + 1, pas)) or [d0]
+        for d in debuts:
+            f = min(d + fen, d1)
+            e = empreinte_fn(x[d:f]) if f - d >= SR // 2 else None
+            if e is not None:
+                fenetres.append((r, d, f, np.asarray(e, np.float64)))
+    sortie = {'k': 1, 'trames': trames, 'coupes': [], 'essais': [], 'parts': {}, 'fenetres': len(fenetres)}
+    if len(fenetres) < 4:
+        for a, b in regions:
+            trames[a:b] = 0
+        sortie['parts'] = {0: round(float(parole.sum()) * 0.01, 1)}
+        return sortie
+    E = np.stack([f[3] for f in fenetres])
+    choix = None
+    for k in range(min(nv, len(fenetres) // 2), 1, -1):
+        lab, c = kmeans_cos(E, k)
+        essai = {'k': k}
+        if len(set(lab.tolist())) < k:
+            essai['pourquoi'] = f'moins de {k} groupes distincts'
+        else:
+            sil = silhouette_cos(E, lab)
+            essai['silhouette'] = round(sil, 3)
+            parts = [(lab == g).sum() / len(lab) for g in range(k)]
+            parole_s = [(lab == g).sum() * D['pas_s'] for g in range(k)]
+            if sil < D['silhouette_min']:
+                essai['pourquoi'] = f"groupes trop peu séparés (silhouette {sil:.2f} < {D['silhouette_min']})"
+            elif min(parts) < D['part_min'] or min(parole_s) < D['parole_min_s']:
+                essai['pourquoi'] = 'une personne parle trop peu'
+            else:
+                choix = (k, lab, c)
+        sortie['essais'].append(essai)
+        if choix:
+            break
+    if choix is None:
+        for a, b in regions:
+            trames[a:b] = 0
+        sortie['parts'] = {0: round(float(parole.sum()) * 0.01, 1)}
+        return sortie
+    k, lab, c = choix
+    # étiquettes lissées par région (un tour trop court rejoint ses voisins), rangées par ordre d'apparition
+    lab = list(lab)
+    par_region = {}
+    for j, f in enumerate(fenetres):
+        par_region.setdefault(f[0], []).append(j)
+    for js in par_region.values():
+        lissees = lisser_tours([lab[j] for j in js], D['pas_s'], D['tour_min_s'])
+        for j, v in zip(js, lissees):
+            lab[j] = v
+    ordre = []
+    for g in lab:
+        if g not in ordre:
+            ordre.append(g)
+    rang = {g: i for i, g in enumerate(ordre)}
+    k_reel = len(ordre)
+    coupes, extremes = [], {}
+    for r, (a, b) in enumerate(regions):
+        js = par_region.get(r)
+        if not js:
+            continue
+        centres = [(fenetres[j][1] + fenetres[j][2]) / 2 for j in js]
+        marques = [rang[lab[j]] for j in js]
+        # frontières : milieu entre deux centres de fenêtres d'étiquettes différentes, au creux d'énergie le plus proche
+        bornes = [a * PAS]
+        for j in range(1, len(js)):
+            if marques[j] != marques[j - 1]:
+                t = (centres[j - 1] + centres[j]) / 2
+                k0 = int(t // PAS)
+                fenetre_k = int(D['creux_s'] / 0.01)
+                lo, hi = max(a, k0 - fenetre_k), min(b - 1, k0 + fenetre_k)
+                k_c = lo + int(np.argmin(np.asarray(lisse[lo:hi + 1]))) if hi >= lo else k0
+                bornes.append(k_c * PAS)
+                coupes.append(k_c * PAS)
+        bornes.append(b * PAS)
+        for i, g in enumerate(marques[:1] + [m for m, p in zip(marques[1:], marques) if m != p]):
+            trames[bornes[i] // PAS:bornes[i + 1] // PAS] = g
+        extremes[r] = (marques[0], marques[-1])
+    # changement de personne d'une région à la suivante (à travers un silence) : coupe au milieu du silence
+    pour_regions = sorted(extremes)
+    for r0, r1 in zip(pour_regions, pour_regions[1:]):
+        if extremes[r0][1] != extremes[r1][0]:
+            coupes.append(((regions[r0][1] + regions[r1][0]) // 2) * PAS)
+    # les régions trop courtes pour une empreinte prennent la personne de la trame parlée précédente
+    dernier = 0
+    for t in range(n_tr):
+        if trames[t] >= 0:
+            dernier = trames[t]
+        elif parole[t]:
+            trames[t] = dernier
+    parts = {g: round(float((trames == g).sum()) * 0.01, 1) for g in range(k_reel)}
+    sortie.update({'k': k_reel, 'coupes': sorted(set(int(c_) for c_ in coupes)), 'parts': parts,
+                   'silhouette': next((e_['silhouette'] for e_ in sortie['essais'] if e_['k'] == k), None)})
+    return sortie
+
+
+def fusionner_coupes(coupes, tours, n, ecart_min_s=0.5):
+    """Coupes du découpage aux silences plus les changements de personne (échantillons) ; un changement à moins de
+    ecart_min_s d'une coupe existante est ignoré (le morceau voisin garde sa personne dominante)."""
+    sortie = list(coupes)
+    for t in sorted(tours):
+        if all(abs(t - c) >= ecart_min_s * SR for c in sortie) and 0 < t < n:
+            sortie.append(t)
+    return sorted(sortie)
+
+
+def decider_personnes(segs, diar, cibles, reglages=None):
+    """Parole à plusieurs voix : la personne de chaque morceau (celle qui occupe le plus de trames du morceau), la voix
+    cible de cette personne (la première entendue : première voix…), le décalage de hauteur (pour la variante à f0 ;
+    Seed-VC 22 kHz suit la voix cible de lui-même). Rend l'info du rapport (decision_hauteur), format de celle du chant."""
+    import numpy as np
+    V = cibles['voix']
+    k = min(diar['k'], len(V))
+    trames = diar['trames']
+    for s in segs:
+        if s['muet']:
+            s['decalage'], s['base'] = 0.0, 'muet'
+            continue
+        t = trames[s['debut'] // PAS:max(s['fin'] // PAS, s['debut'] // PAS + 1)]
+        t = t[t >= 0]
+        g = int(np.bincount(t).argmax()) if len(t) else None
+        s['personne'] = g
+    dernier = 0
+    for s in segs:   # morceau sans parole repérée : la personne précédente
+        if s['muet']:
+            continue
+        if s['personne'] is None:
+            s['personne'] = dernier
+        dernier = s['personne'] = min(s['personne'], k - 1)
+    for s in segs:
+        if s['muet']:
+            continue
+        g = s['personne']
+        j = g   # première personne entendue : première voix cible
+        f0_c = float(V[j].get('f0_parole') or 0)
+        if f0_c > 0 and s.get('f0_med'):
+            s['decalage'] = float(np.clip(np.round(24 * np.log2(f0_c / s['f0_med'])) / 2, -24, 24))
+        else:
+            s['decalage'] = 0.0
+        s.update({'cible': j, 'voix': g + 1, 'k': g, 'base': f'personne {g + 1} → {V[j]["nom"]}'})
+    parts = diar['parts']
+    chanteurs = [{'nom': f'personne {g + 1}', 'rang': g + 1, 'cible': g, 'voix': V[g]['nom'], 'cle': V[g].get('cle'),
+                  'parole_s': parts.get(g, 0.0)} for g in range(k)]
+    actifs = [s for s in segs if not s['muet']]
+    changements = [{'a_s': b['debut_s'], 'vers': f"personne {b['personne'] + 1}", 'voix': V[b['personne']]['nom']}
+                   for a, b in zip(actifs, actifs[1:]) if a['personne'] != b['personne']]
+    if k >= 2:
+        msg = (f'{k} personnes repérées : ' + ', '.join(f"{c['nom']} → {c['voix']}" for c in chanteurs)
+               + (f' ({len(V) - k} voix cible(s) sans personne)' if k < len(V) else ''))
+    else:
+        msg = f"une seule personne repérée : tout prend la voix {V[0]['nom']}"
+    return {'regle': 'parole, une voix par personne (empreintes CAMPPlus, fenêtres glissantes)', 'mode': 'personnes',
+            'voix': k, 'axe': 'diarisation', 'demandees': len(V), 'chanteurs': chanteurs, 'message': msg,
+            'changements': changements,
+            'diarisation': {'personnes': diar['k'], 'fenetres': diar.get('fenetres'), 'essais': diar['essais'],
+                            'parole_par_personne_s': {str(g + 1): s for g, s in parts.items()},
+                            'silhouette': diar.get('silhouette'), 'changements_de_personne_en_pleine_parole': len(diar['coupes'])},
+            'voix_seule': None}
+
+
 def decider_chant_cibles(segs, R, cibles, coupes_son=None):
     """decider_chant avec plusieurs voix cibles : genre_score (ancres) comme decider_chant, puis decider_chanteurs ;
     chaque morceau reçoit decalage, base, voix (chanteur), cible, voix_cible et chanteur (clé). Rend (info, modele), le
@@ -1487,6 +1906,23 @@ def vraisemblances(m, modele, R):
     """Log-vraisemblance de chaque chanteur (0, 1) pour une piste mesurée sur un morceau : score sur l'axe du duo
     (empreinte de la piste) et hauteur médiane, chacun pondéré par le temps voisé (comme viterbi). Rend ([l0, l1], indices
     utilisés)."""
+    if modele.get('centres') is not None:   # N chanteurs (decider_chanteurs_n) : empreinte = cosinus avec chaque centre
+        nk = len(modele['centres'])
+        l, indices = [0.0] * nk, []
+        if m.get('voise_s', 0) < R['voise_hauteur_s']:
+            return l, indices
+        w = min(m.get('voise_s', 0) / 3.0, 1.0)
+        if m.get('score') is not None:
+            indices.append('empreinte')
+            for k in range(nk):
+                l[k] += w * m['score'][k] / R['n_temperature']
+        if m.get('f0_med') and any(h is not None for h in modele['hauteur']):
+            indices.append('hauteur')
+            lf = math.log2(m['f0_med'])
+            for k, h in enumerate(modele['hauteur']):
+                if h is not None:
+                    l[k] += -w * (lf - h[0]) ** 2 / (2 * h[1] ** 2) - w * math.log(h[1])
+        return l, indices
     l, indices = [0.0, 0.0], []
     w = min(m.get('voise_s', 0) / 3.0, 1.0)
     if m.get('voise_s', 0) < R['voise_hauteur_s']:
@@ -1520,7 +1956,7 @@ def reconnaitre(m, modele, k_morceau, R):
     l, indices = vraisemblances(m, modele, R)
     if not indices:
         return k_morceau, 'sans_indice', 'trop peu voisée pour être reconnue : chanteur du morceau', None
-    autre = 1 - k_morceau
+    autre = max((x for x in range(len(l)) if x != k_morceau), key=lambda x: l[x])   # deux chanteurs : l'autre
     marge = l[autre] - l[k_morceau]
     par = ' et '.join(indices)
     if marge >= R['marge_reconnaissance']:
@@ -1554,7 +1990,9 @@ def mesurer_piste(xp, f0p, x, morceaux, empreinte_fn=None, vecteur=None, porte_g
             float(np.sqrt(np.mean(np.asarray(yx, np.float64) ** 2))) if len(yx) else 0.0
         m['niveau_db'] = round(20 * math.log10(ep / ex), 1) if ep > 1e-9 and ex > 1e-9 else (-120.0 if ex > 1e-9 else None)
         if empreinte_fn is not None and vecteur is not None and len(yp) >= SR // 2 and m['voise_s'] > 0:
-            m['score'] = round(float(np.asarray(empreinte_fn(np.ascontiguousarray(yp, np.float32)), np.float64) @ vecteur), 3)
+            sc = np.asarray(empreinte_fn(np.ascontiguousarray(yp, np.float32)), np.float64) @ (
+                vecteur if np.ndim(vecteur) == 1 else np.asarray(vecteur).T)
+            m['score'] = round(float(sc), 3) if np.ndim(vecteur) == 1 else [round(float(x), 3) for x in sc]
         out[i] = m
     return out
 
@@ -1768,7 +2206,9 @@ def affecter_pistes(segs, noms_pistes, mesures, modele, cibles, octave_imposee=N
             i, k_m = s['i'], s.get('k')
             m = (mesures.get(nom) or {}).get(i)
             if modele is None:
-                k, etat, raison, marge = None, 'voix_seule', 'une seule voix trouvée : voix du morceau', None
+                k, etat, raison, marge = None, 'voix_seule', (
+                    'parole : voix de la personne du passage' if s.get('personne') is not None
+                    else 'une seule voix trouvée : voix du morceau'), None
                 j, d = s['cible'], s['decalage']
             elif nom == 'voix':
                 k, etat, raison, marge = k_m, 'voix_complete', 'voix complète : chanteur du morceau', None
@@ -4205,6 +4645,7 @@ def main():
         for v, rv in zip(cibles['voix'], refs_cibles['chant44k']):
             f0_v = float(v.get('f0_parole_hz') or rv['f0_mediane'])
             v['centre_hz'] = float(v.get('facteur_chant') or R['voix']['facteur_chant']) * f0_v
+            v['f0_parole'] = f0_v
             session['voix_cibles']['voix'].append({k: v.get(k) for k in ('cle', 'nom', 'affichage', 'fichier', 'f0_parole_hz')}
                                                   | {'f0_rmvpe_reference_hz': round(rv['f0_mediane'], 1),
                                                      'duree_reference_s': round(rv['duree'], 2),
@@ -4350,12 +4791,23 @@ def main():
             'x', 'n', 'f0_tout', 'env', 'lisse', 'seuil', 'm', 'mode', 'raisons'))
         rapport.update({'mesures_musique': m, 'mode': mode, 'mode_raisons': raisons, 'mode_force': tr['mode'] in ('chant', 'parole')})
         log(f"[{tr['id']}] MODE {mode} ({'imposé' if rapport['mode_force'] else 'détecté'}) : {json.dumps(m, ensure_ascii=False)}")
-        plusieurs = bool(cibles) and mode == 'chant'   # plusieurs voix cibles (en parole : la première seule)
+        # plusieurs voix cibles : en chant (une par chanteur) ; en parole seulement avec personne1:…, personne2:… (qui parle
+        # quand est repéré) ; avec chanteurN en parole : la première voix seule, comme avant
+        personnes_parole = bool(cibles) and mode != 'chant' and cibles['mode'] == 'personnes'
+        plusieurs = bool(cibles) and (mode == 'chant' or personnes_parole)
         # un morceau doit tenir, avec la référence, dans la fenêtre de 30 s du modèle : la plus longue des références
         place = SR // 512 * 30 - (max(r['mel2'].size(2) for r in refs_cibles['chant44k']) if plusieurs
                                   else ctx['mel_len'])
         coeur_max = place * 512 - 2 * pad - int(0.1 * SR)
         coupes = decouper(lisse, n, coeur_max, min(int(2 * SR), coeur_max // 2), seuil)
+        diar = None
+        if personnes_parole:   # qui parle quand : les changements de personne en pleine parole deviennent des coupes
+            t_d = time.time()
+            diar = diariser(x, lisse, seuil, len(cibles['voix']), lambda y: (empreinte(en16(y)) if len(y) >= SR // 2 else None))
+            coupes = fusionner_coupes(coupes, diar['coupes'], n)
+            rapport['temps']['diarisation_s'] = round(time.time() - t_d, 1)
+            log(f"[{tr['id']}] DIARISATION en {time.time() - t_d:.1f} s : {diar['k']} personne(s) pour {len(cibles['voix'])} "
+                f"voix, {len(diar['coupes'])} changement(s) en pleine parole, essais {json.dumps(diar['essais'], ensure_ascii=False)}")
         segs = []
         for i, (a, b) in enumerate(zip(coupes[:-1], coupes[1:])):
             s = {'i': i, 'debut': a, 'fin': b, 'debut_s': round(a / SR, 3), 'fin_s': round(b / SR, 3),
@@ -4368,7 +4820,11 @@ def main():
                 s['emb'] = empreinte(en16(x[a:b])) if b - a >= SR // 2 else None
             segs.append(s)
         chanteurs = None
-        if plusieurs:
+        if personnes_parole:
+            info = decider_personnes(segs, diar, cibles)
+            rapport['voix_cibles'] = session['voix_cibles']
+            log(f"[{tr['id']}] VOIX CIBLES (personnes, parole) : {info['message']}")
+        elif plusieurs:
             info, chanteurs = decider_chant_cibles(segs, R, cibles, [round(c / SR, 3) for c in coupes[1:-1]
                                                                      if lisse[c // PAS] >= seuil])
             rapport['voix_cibles'] = session['voix_cibles']
@@ -4790,6 +5246,10 @@ def main():
         seule (choisie par le 7e élément du morceau)."""
         if e.get('plusieurs') and nom in refs_cibles:
             return refs_cibles[nom]
+        if e.get('plusieurs'):   # parole à plusieurs voix (Seed-VC 22 kHz) : la référence de chaque voix, préparée une fois
+            refs_cibles[nom] = [refs[nom] if v['chemin'] == ref_chemin else preparer_ref(modeles[nom], v['chemin'])
+                                for v in cibles['voix']]
+            return refs_cibles[nom]
         if comparees:
             if nom not in refs_comp:
                 refs_comp[nom] = [refs[nom] if v['chemin'] == ref_chemin else preparer_ref(modeles[nom], v['chemin'])
@@ -5173,7 +5633,7 @@ def main():
                 for p in e['pistes']:
                     p['affectation'] = {s['i']: (s['cible'], s['decalage']) for s in e['segs'] if not s['muet']}
                 e['rapport']['affectation'] = {'erreur': repr(ex)[:300], 'message': 'chaque piste prend la voix du morceau'}
-        if e.get('plusieurs') and versions_mode != 'non':
+        if e.get('plusieurs') and versions_mode != 'non' and e['mode'] == 'chant':   # parole : pas de versions (N conversions)
             try:
                 preparer_versions(e)
             except Exception as ex:  # noqa: BLE001 — sans deux versions : le doublage automatique, comme avant

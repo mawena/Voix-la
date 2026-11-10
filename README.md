@@ -4,7 +4,7 @@ Voix-là : votre vidéo, avec une autre voix. Et voilà.
 
 **[Page de présentation : mawena.github.io/Voix-la](https://mawena.github.io/Voix-la/)** (captures, installation par APT, usage responsable).
 
-> **Version 0.17.2** : s'installe par le [dépôt APT signé](#par-le-dépôt-apt-recommandé) (`sudo apt install voix-la`,
+> **Version 0.18.0** : s'installe par le [dépôt APT signé](#par-le-dépôt-apt-recommandé) (`sudo apt install voix-la`,
 > puis `apt upgrade` pour chaque nouvelle version) ou par le paquet `.deb` joint à chaque
 > [release](https://github.com/mawena/Voix-la/releases). Voir le [journal des modifications](CHANGELOG.md).
 
@@ -712,7 +712,7 @@ Une étape en `erreur` est suivie d'un événement `erreur`. Les étapes commune
 | `--pistes-audio toutes\|doublage` | pistes audio de la vidéo doublée : les cinq (voir [Sorties](#sorties)) ou le doublage seul ; avec `--remix`, la vidéo refaite ainsi | clé `pistes_audio` de la configuration, sinon `toutes` |
 | `--debut S` | début de l'extrait (s), calé sur l'image clé qui précède | début de la vidéo |
 | `--duree S` | durée de l'extrait (s) | jusqu'à la fin |
-| `--versions-duo toutes\|utiles\|non` | avec une voix par chanteur : convertir chaque passage chanté dans les deux voix cibles, pour pouvoir corriger ensuite qui chante quoi (voir [Corriger à la main qui chante quoi](#corriger-à-la-main-qui-chante-quoi)) | clé `versions_duo`, sinon `toutes` |
+| `--versions-duo toutes\|utiles\|non` | avec une voix par chanteur : convertir chaque passage chanté dans les autres voix cibles, pour pouvoir corriger ensuite qui chante quoi (voir [Corriger à la main qui chante quoi](#corriger-à-la-main-qui-chante-quoi)) | clé `versions_duo`, sinon `toutes` en duo, `utiles` au-delà de deux voix |
 | `--passage N=VOIX` | avec `--remix` et une voix par chanteur : la voix du passage `N` (`N-M`, `N,M`, `N/choeurs=VOIX` pour une seule piste ; `VOIX` : une voix du doublage, sa clé `homme`/`femme`/`chanteur1`…, `deux` ou `auto`) ; répétable | |
 | `--affectation FICHIER\|auto` | avec `--remix` et une voix par chanteur : l'affectation corrigée en entier (JSON), ou `auto` pour revenir à l'automatique | |
 | `--remix` | refaire seulement le mixage et la vidéo depuis `travail/`, sans Kaggle (avec une voix par chanteur : l'affectation corrigée à la main) | |
@@ -1030,7 +1030,7 @@ la voix cible est donc **transposée en entier, musique comprise**, comme un cha
   +5, pour toute la chanson, qui minimise le coût de la voix convertie : 3 par demi-ton de p10 ou de p90 hors de la
   zone de confort, 0,5 par demi-ton d'écart de la médiane au centre de la zone, 0,15 par demi-ton de transposition de la
   musique (à coût égal, le plus petit décalage). Chaque voix reçoit `musique_dt` plus son octave. Avec une voix par
-  chanteur, un seul `musique_dt` minimise l'écart total des deux voix à leur zone.
+  chanteur, un seul `musique_dt` minimise l'écart total des voix (deux, ou jusqu'à six) à leur zone.
 - **Exemples** (zone de 151 à 239 Hz, centre 190 Hz ; médiane de la voix convertie avant transposition, octave posée, p10
   à 0,85 fois et p90 à 1,2 fois la médiane) : 262 Hz → −5 demi-tons (196 Hz) ; 246 Hz → −4 (195 Hz) ; 219 Hz → −2 (195 Hz) ;
   215 Hz → −2 (192 Hz) ; 190 Hz → 0 ; 174 Hz → +1 (184 Hz) ; 140 Hz → +5 (187 Hz) ; 295 Hz → −5 (221 Hz, p90 encore hors
@@ -1138,7 +1138,53 @@ Le nettoyage coûte du GPU : trois passes de Roformer de plus, environ 2,3 min d
 ```sh
 doubler "Duo.mp4" --voix homme:jules,femme:marie            # duo mixte : le chanteur en jules, la chanteuse en marie
 doubler "Duo.mp4" --voix chanteur1:jules,chanteur2:marie    # duo de même genre, dans l'ordre d'apparition
+doubler "Groupe.mp4" --voix chanteur1:voixA,chanteur2:voixB,chanteur3:voixC,chanteur4:voixD   # jusqu'à 6 voix
+doubler "Interview.mp4" --voix personne1:voixA,personne2:voixB,personne3:voixC               # parole : qui parle quand
 ```
+
+#### De deux à six voix
+
+- **Syntaxe** : `chanteur1:…` à `chanteur6:…` (chant), `personne1:…` à `personne6:…` (chant comme parole) ; les numéros se
+  suivent sans trou, `homme:`/`femme:` restent réservés au duo mixte (deux voix). Pas de `auto:a,b,c` : le nombre de voix
+  données est le nombre maximal, et si la vidéo en a moins, seules les voix trouvées servent (le rapport et `doubler` le
+  disent). **Chanteur 1 (ou personne 1) est le premier qu'on entend dans la vidéo, 2 le suivant, etc.** ; les passages mal
+  attribués se corrigent ensuite sans repasser sur le GPU.
+- **Chant, N ≥ 3** : les empreintes CAMPPlus des morceaux assez voisés sont regroupées en N groupes (k-moyennes sphériques),
+  l'étiquette de chaque morceau est lissée dans le temps (changement de chanteur moins coûteux à une pause qu'en plein son,
+  section de moins de 3 s rejointe à la plus longue de ses voisines). Un groupe n'est retenu que s'il est assez séparé
+  (silhouette 0,27, comme l'axe des empreintes du duo) et assez présent (5 % du temps voisé, 8 s) ; sinon N − 1 groupes,
+  jusqu'à 3, puis le duo ou la voix seule d'avant. Chaque chanteur a sa classe (homme ou femme, d'après la hauteur et
+  l'empreinte de genre) et son octave pour sa voix cible ; la transposition de la chanson est un seul `musique_dt` pour
+  toutes les voix (celui qui minimise l'écart total). Les passages chantés ensemble gardent voix principale et chœurs,
+  chaque piste reconnue chanteur par chanteur (ressemblance de son empreinte aux N centres, plus sa hauteur) ; limite :
+  à cinq ou six chanteurs, des timbres proches se confondent (la correction à la main sert à ça).
+- **Parole** (`personne1:…`) : le noyau repère qui parle et quand, puis convertit chaque personne avec sa voix (Seed-VC
+  22 kHz). Choix du modèle de diarisation, justifié :
+  - pyannote 3.1 / community-1 : meilleure qualité (environ 17 à 20 % d'erreur de diarisation sur la réunion AMI, chiffres du
+    fournisseur), code MIT, poids CC-BY-4.0, mais **poids à accès conditionné** sur Hugging Face (conditions à accepter,
+    jeton à mettre dans les secrets du noyau Kaggle) : écarté, car cela casse « sans jeton ni condition » ;
+  - NeMo Sortformer : quatre locuteurs au plus et licence non commerciale, gros paquet à installer ; NeMo MSDD :
+    paquet lourd, conflits avec le torch de Kaggle ;
+  - WeSpeaker / 3D-Speaker : licence Apache-2.0, poids publics, mais une chaîne de plus à installer ;
+  - **retenu : empreintes CAMPPlus (3D-Speaker, Apache-2.0), déjà dans le noyau**, sur fenêtres glissantes de 1,5 s (pas de
+    0,75 s) à l'intérieur des régions de parole de l'enveloppe, regroupées en N personnes (k-moyennes sphériques, N, N − 1…
+    jusqu'à 2 ; silhouette 0,15 au moins, 3 % et 3 s de parole par personne), tours de moins de 1,5 s rejoints à leurs
+    voisins, changement de personne placé au creux d'énergie le plus proche et ajouté aux coupes du morceau (un morceau n'a
+    qu'une personne). Coût : quelques secondes de GPU (une empreinte toutes les 0,75 s de parole), aucun poids à télécharger,
+    aucune dépendance de plus. Qualité non mesurée sur de la vraie parole (aucune session réelle dans ce travail) : à
+    juger à l'essai ; elle sera moins bonne que pyannote sur de la parole entremêlée.
+  - **Limites** : deux personnes qui parlent en même temps ne font qu'un flux, converti dans la voix de la personne dominante
+    (pas de séparation de l'unisson : voir `recherche/unisson/RAPPORT.md`) ; un tour de moins de 1,5 s (un « oui ») prend la
+    voix de ses voisins ; deux timbres très proches se confondent ; une voix de plus que de personnes trouvées ne sert pas.
+    En parole, pas de seconde version des passages (N conversions) : la correction à la main ne concerne que le chant.
+- **Versions pour la correction** : `--versions-duo` vaut `toutes` en duo (chaque passage dans les deux voix) et **`utiles`
+  par défaut au-delà de deux voix**, car `toutes` convertit chaque passage dans N voix : N fois la conversion. Mesuré en
+  duo (extrait de 55 s, deux T4) : +107 % de conversion pour l'autre voix, soit environ 3 min de GPU de plus ; estimé :
+  chaque voix de plus ajoute autant (4 voix : conversion ×4 en `toutes`, environ ×2,5 en `utiles`, qui ne reprend que les
+  passages incertains, de hauteur ambiguë, chantés ensemble ou voisins d'un changement de voix). `doubler` estime la durée
+  avec N (`estimer_noyau_s`).
+- **Correction** : `--passage 12=voixC`, `--passage 12-15=chanteur3`, `--passage 20=voixA+voixB` (plusieurs voix ensemble,
+  à puissance égale), `--passage 9=deux` (toutes ensemble).
 
 - **`homme:` / `femme:`** : les deux chanteurs sont cherchés sur l'axe homme – femme des
   [ancres de genre](#ancres-de-genre-facultatives). Comme le duo est annoncé, ils peuvent se répondre phrase à phrase
@@ -1153,7 +1199,8 @@ doubler "Duo.mp4" --voix chanteur1:jules,chanteur2:marie    # duo de même genre
 - **L'octave** se décide pour chaque couple chanteur → voix cible, avec la règle d'une voix seule et le centre de chant
   de sa voix : un chanteur doublé par une voix de femme monte d'une octave.
 - **Une seule voix trouvée** : tout prend la voix de sa classe (`homme:`/`femme:`), sinon la première, avec un message.
-  En parole, seule la première voix sert.
+  En parole, seule la première voix sert avec `homme:`/`femme:` et `chanteurN:` ; `personneN:` repère qui parle (voir
+  ci-dessous).
 - Sorties : `<titre> - voix Jules et Marie.<ext>` et `.mp3`, dossier `travail/jules+marie/`, les mêmes quel que soit
   l'ordre donné ; `--remix` les retrouve avec la même `--voix`. Toutes les références partent dans le jeu privé.
 - Sans ancres de genre, `homme:`/`femme:` ne trouve aucun duo (tout dans la voix de la classe d'après la hauteur) ;
@@ -1200,6 +1247,9 @@ la parole.
 
 - Modèle Seed-VC 22 kHz prévu pour la parole, sur la voix isolée complète, sans nettoyage. La voix rejoint d'elle-même
   la hauteur de parole de la voix cible ; `--octave`, `--transposer`, `--moteur` et `--sans-nettoyage` n'ont pas d'effet.
+- **Plusieurs personnes** : `--voix personne1:voixA,personne2:voixB,…` (jusqu'à six) ; qui parle et quand est repéré par
+  les empreintes de voix, chaque personne prend sa voix dans l'ordre où on l'entend (voir
+  [De deux à six voix](#de-deux-à-six-voix)).
 - Pas de reverb ; le fond sonore est gardé, et la voix est au niveau de la voix d'origine (`--voix-db 0`).
 
 ### Paroles

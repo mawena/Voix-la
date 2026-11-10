@@ -88,8 +88,21 @@ dossier.
 Voix cible : un dossier de \fI<données>/voix\fR. Par défaut, la clé \fBvoix\fR
 de la configuration, sinon la seule voix présente.
 .TP
-.BI \-\-voix " homme:nom,femme:nom" "\fR, " "\-\-voix " "chanteur1:nom,chanteur2:nom"
-Une voix par chanteur. \fBhomme:\fR et \fBfemme:\fR pour un duo mixte : le
+.BI \-\-voix " homme:nom,femme:nom" "\fR, " "\-\-voix " "chanteur1:nom,chanteur2:nom[,\&...,chanteur6:nom]" "\fR, " "\-\-voix " "personne1:nom,personne2:nom[,\&...,personne6:nom]"
+Une voix par chanteur, ou par personne (de deux à six voix). Les clés
+\fBchanteur1\fR à \fBchanteur6\fR (chant) et \fBpersonne1\fR à \fBpersonne6\fR
+(chant comme parole) se suivent sans trou ; le premier qu'on entend dans la
+vidéo prend la voix 1, le suivant la voix 2, etc. Avec trois voix ou plus, les
+empreintes des passages sont regroupées en autant de chanteurs (le duo ou la
+voix seule d'avant si moins sont trouvés ; seules les voix trouvées servent).
+En parole, avec \fBpersonne\fIN\fB:\fR, le noyau repère qui parle et quand
+(empreintes de voix sur fenêtres glissantes, regroupées en personnes) et chaque
+personne prend sa voix (Seed\-VC 22 kHz) ; deux personnes qui parlent en même
+temps restent un seul flux, converti dans la voix de la dominante. Sorties :
+\fI<titre> \- voix A, B et C\fR. Avec plus de deux voix, \fB\-\-versions\-duo\fR
+vaut \fButiles\fR par défaut.
+.PP
+\fBhomme:\fR et \fBfemme:\fR pour un duo mixte : le
 chanteur et la chanteuse sont trouvés comme pour l'octave, et chacun prend la
 voix de sa classe. \fBchanteur1:\fR et \fBchanteur2:\fR pour un duo de même
 genre : les deux chanteurs sont départagés par leur empreinte, le chanteur 1
@@ -110,8 +123,9 @@ Avec une voix par chanteur : convertit chaque passage chanté dans les deux voix
 cibles (voix principale, chœurs et piste de secours compris) et rapatrie les deux
 versions dans \fItravail/<a>+<b>/versions/\fR, pour corriger ensuite qui chante
 quoi au remix, sans Kaggle. Le doublage automatique est identique, au bit près.
-\fBtoutes\fR (défaut, clé \fBversions_duo\fR) : tous les passages, environ deux
-fois le temps de GPU de la conversion ; \fButiles\fR : seulement les passages
+\fBtoutes\fR (défaut en duo, clé \fBversions_duo\fR) : tous les passages, environ
+deux fois le temps de GPU de la conversion (N fois avec N voix) ; \fButiles\fR
+(défaut avec plus de deux voix) : seulement les passages
 incertains, de hauteur ambiguë, chantés ensemble ou voisins d'un changement de
 voix (tous si une seule voix est trouvée) ; \fBnon\fR : comme avant (rien à
 corriger après coup). Sans effet avec une seule voix.
@@ -120,8 +134,9 @@ corriger après coup). Sans effet avec une seule voix.
 Avec \fB\-\-remix\fR et une voix par chanteur : corrige qui chante le passage
 \fIN\fR (les numéros de la frise « Voix de chaque passage » de l'interface et de
 \fIrapport.json\fR, \fImorceaux[].i\fR). \fIvoix\fR : une voix du doublage, sa clé
-(\fBhomme\fR, \fBfemme\fR, \fBchanteur1\fR\&...), \fBdeux\fR (les deux ensemble, à
-puissance égale) ou \fBauto\fR (revenir à l'automatique pour ce passage).
+(\fBhomme\fR, \fBfemme\fR, \fBchanteur1\fR\&..., \fBpersonne1\fR\&...), \fBdeux\fR
+(toutes ensemble, à puissance égale), \fIa\fB+\fIb\fR (plusieurs voix ensemble) ou
+\fBauto\fR (revenir à l'automatique pour ce passage).
 \fIN\-M\fR : une plage ; \fIN,M\fR : plusieurs ; \fIN\fB/\fIpiste\fB=\fIvoix\fR : une
 seule piste du passage (\fBprincipale\fR, \fBchoeurs\fR, \fBsecours\fR ou \fBvoix\fR).
 Répétable. Ex. : \fB\-\-remix \-\-passage 12\-15=marie \-\-passage 20/choeurs=jules\fR.

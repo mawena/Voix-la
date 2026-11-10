@@ -6,6 +6,14 @@ import time
 MOINS = "−"   # vrai signe moins
 
 
+def joindre(noms):
+    """« A », « A et B », « A, B et C » (les noms de plusieurs voix, comme doubler)."""
+    noms = [str(n) for n in noms]
+    if len(noms) <= 1:
+        return noms[0] if noms else ""
+    return ", ".join(noms[:-1]) + " et " + noms[-1]
+
+
 def nombre(x, decimales=1):
     """1.5 → « 1,5 » ; -3 → « −3 » ; les zéros inutiles sont retirés."""
     if x is None:

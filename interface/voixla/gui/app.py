@@ -17,7 +17,7 @@ import traceback
 
 from gi.repository import Adw, Gio, GLib, Gtk  # versions fixées dans gui/__init__.py
 
-from .. import APP_ID, NOM, __version__, chemins, moteur, quota, travaux
+from .. import APP_ID, NOM, __version__, chemins, formats, moteur, quota, travaux
 from .. import lecture as regles
 from .. import preparation
 from . import commun
@@ -452,7 +452,7 @@ class Fenetre(Adw.ApplicationWindow):
         """Nom affiché d'une voix ; « Jules et Marie » pour une voix par chanteur (« a+b » ou « homme:a,femme:b »)."""
         membres = moteur.membres_voix(moteur.id_voix(ident)) if ident else []
         if len(membres) > 1:
-            return " et ".join(self.nom_voix(m) for m in membres)
+            return formats.joindre(self.nom_voix(m) for m in membres)
         return next((v["nom"] for v in self.voix if v["id"] == ident), ident.capitalize() if ident else "")
 
     def changer_donnees(self):

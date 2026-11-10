@@ -1,3 +1,12 @@
+voix-la (0.17.0) unstable; urgency=medium
+
+  * Doubler ailleurs que sur Kaggle : --calcul kaggle|modal|runpod|auto
+    (Kaggle par défaut). En auto, Kaggle puis Modal si Kaggle n'est pas
+    disponible ; Runpod (payant) seulement sur demande, pod toujours
+    supprimé, doubler --nettoyer-runpod. Coût estimé en dollars.
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Tue, 10 Nov 2026 18:00:00 +0000
+
 voix-la (0.16.0) unstable; urgency=medium
 
   * Affinage de la voix sur son chant : commande affiner (prises de la

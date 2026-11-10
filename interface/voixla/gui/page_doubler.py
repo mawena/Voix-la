@@ -586,7 +586,7 @@ class PageDoubler(commun.Page):
         if hasattr(self, "r_calcul"):
             self.r_calcul.set_visible("--calcul" in self.fenetre.caps)
             cles = ["", *[c for c, _l in secours.CALCULS]]
-            self.r_calcul.set_selected(cles.index(secours.calcul_choisi(p)))
+            self.r_calcul.set_selected(cles.index(secours.calcul_choisi(self.fenetre.prefs)))
         self._verifier_kaggle()
         self._charger_modele()
 

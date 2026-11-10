@@ -1433,6 +1433,8 @@ def estimer_noyau_s(durees_s, pas, sorties, nettoyage=True, mode='auto', moteur=
             r = json.loads(p.read_text())
             d, tps = float(r['duree_s']), r.get('temps', {})
             tl = r.get('temps_local', {})
+            if tl.get('calcul', 'kaggle') != 'kaggle':
+                continue   # session Modal ou Runpod : d'autres cartes, d'autres temps ; l'estimation est celle de Kaggle
             sk = tl.get('session_kaggle', {})
             v = r.get('variantes', {}).get('voix_convertie.flac', {})
             nettoyee = bool((r.get('nettoyage') or {}).get('applique'))
@@ -4231,9 +4233,9 @@ def finir_travaux(travaux, a, voix, session, temps, envoi_s, estimation):
     attente = round(session['debut_epoch'] - temps['pousse_epoch'], 1) if session.get('debut_epoch') else None
     g = session.get('gpus') or {}
     if g:
-        dire(f"GPU Kaggle : {g.get('visibles')} carte(s) ({', '.join(g.get('noms') or []) or '?'}), {g.get('utilisees')} "
+        dire(f"GPU {NOMS_CALCUL[temps.get('calcul', 'kaggle')]} : {g.get('visibles')} carte(s) ({', '.join(g.get('noms') or []) or '?'}), {g.get('utilisees')} "
              'utilisée(s)' + (f" ; {g['repli']}" if g.get('repli') else ''))
-    dire(f"GPU Kaggle : {temps['noyau_depuis_envoi_s'] / 60:.1f} min depuis l'envoi (démarrage {attente} s, installation "
+    dire(f"GPU {NOMS_CALCUL[temps.get('calcul', 'kaggle')]} : {temps['noyau_depuis_envoi_s'] / 60:.1f} min depuis l'envoi (démarrage {attente} s, installation "
          f"{st.get('installation_s', 0):.0f} s, séparation {st.get('separation_totale_s', 0):.0f} s, modèles "
          f"{st.get('chargement_modeles_s', 0):.0f} s, noyau {st.get('total_s', 0) / 60:.1f} min ; estimé "
          f"{(estimation or 0) / 60:.1f} min) ; rapatriement {temps['rapatriement_s']:.0f} s")
@@ -4271,6 +4273,9 @@ def finir_une(tr, a, voix, session, temps, envoi_s, estimation, st, attente, n_v
                        'rapatriement_s': temps['rapatriement_s'], 'decodage_retour_s': tr.get('decodage_retour_s'),
                        'session_kaggle': st, 'videos_dans_la_session': n_videos,
                        'gpus': (session.get('gpus') or {}).get('utilisees', 1)}
+        if temps.get('calcul') and temps['calcul'] != 'kaggle':   # Modal ou Runpod : l'estimation Kaggle ne s'en sert pas
+            temps_local.update({'calcul': temps['calcul'], 'gpu_calcul': temps.get('gpu_calcul'),
+                                'cout_estime_usd': temps.get('cout_estime_usd')})
         if n_voix > 1:
             temps_local['voix_comparees'] = n_voix   # la session a converti ces voix : l'estimation ne s'en sert pas
         if temps.get('reprise'):
@@ -4367,6 +4372,128 @@ def fiche_outils(sortie):
     return None
 
 
+class _Abandon(Exception):
+    """Une session ailleurs que sur Kaggle qui ne peut pas aller plus loin : le message dit pourquoi."""
+
+
+def plan_calcul(a):
+    """Les moyens à essayer, dans l'ordre : [choix] ; avec auto, Kaggle puis Modal (Modal seul si Kaggle n'est pas prêt :
+    pas de jeton ou d'outil). Runpod, payant, n'est jamais dans un plan automatique."""
+    choix = getattr(a, 'calcul', None) or CALCUL_DEFAUT
+    if choix != 'auto':
+        return [choix]
+    ok, raison = moyen_pret('kaggle')
+    if not ok:
+        dire(f'calcul auto : Kaggle n\'est pas disponible ({raison}) : Modal')
+        return ['modal']
+    return ['kaggle', 'modal']
+
+
+def basculer(motif, suivant):
+    """Kaggle n'est pas disponible (calcul auto) : on le dit, et si un noyau y est resté en file, on donne le lien de son
+    notebook à annuler sur le site (l'outil kaggle ne sait pas l'annuler ; jamais « kaggle kernels delete »)."""
+    dire(f'calcul auto : Kaggle n\'est pas disponible ({motif}) : bascule sur {NOMS_CALCUL[suivant]}')
+    if SESSION.exists():
+        lien = charger_calcul().lien_noyau_kaggle(NOYAU)
+        dire('La version Kaggle reste en file : elle peut encore démarrer et consommer du quota. L\'annuler sur le site, '
+             f'dans la page du notebook : {lien} (l\'outil kaggle ne sait pas l\'annuler)')
+        clore_session('basculée')
+
+
+def session_ailleurs(nom, travaux, a, voix, kdir, titres, ancres, abandon, echecs):
+    """La session sur Modal ou sur Runpod : le même noyau (kaggle/doubler_kaggle.py, chemins déplacés par
+    DOUBLER_ENTREES et DOUBLER_SORTIE), le son et les références dans le conteneur ou le pod, les sorties rapatriées
+    dans le même dossier retour que celui de Kaggle. Rend (session, temps, envoi_s, estimation) ; _Abandon sinon.
+    La référence de la voix et le son ne sont gardés nulle part : effacés à la fin (volume éphémère, pod supprimé), et
+    le dossier « jeu » local est effacé aussi."""
+    calcul = charger_calcul()
+    module = charger_calcul('calcul_' + nom)
+    Nom = NOMS_CALCUL[nom]
+    ok, raison = module.pret()
+    if not ok:
+        raise _Abandon(f'{Nom} n\'est pas disponible : {raison}')
+    conf = lire_config()
+    gpu = gpu_calcul_config(conf, nom)
+    c = calcul.carte(gpu, nom)
+    debut = time.time()
+    try:
+        with Etape('envoi', titres, f'son de {len(travaux)} vidéo(s) en FLAC pour {Nom}'):
+            jeu, taille, taille_wav = preparer_jeu(travaux, voix, kdir, getattr(a, 'envoi_flac', 16))
+    except Exception as e:  # noqa: BLE001
+        raise _Abandon(f'de la préparation du son : {e}') from e
+    envoi_s = round(time.time() - debut, 1)
+    reglages = reglages_noyau(a, voix, ancres, travaux)
+    estimation_kaggle = estimer_noyau_s([tr['duree_audio_s'] for tr in travaux], a.pas, [a.sortie, SORTIES],
+                                        not a.sans_nettoyage, a.mode, a.moteur, a.paroles, len(voix_membres(voix)),
+                                        calcul.cartes_t4_pour(c),
+                                        getattr(a, 'versions_duo', 'non') if voix.get('membres') else 'non',
+                                        len(voix.get('comparees') or ()) or 1)
+    estimation, cout = calcul.estimer_calcul(estimation_kaggle, nom, c)
+    attente_maxi = max((30 + 20 * len(travaux)) * 60, 2 * estimation + 30 * 60)
+    duree_max_min = entier_config(conf, 'runpod.duree_max_min', None) or max(calcul.DUREE_MAX_RUNPOD_MIN,
+                                                                             int(2.5 * estimation / 60) + 1)
+    dire(f"chaîne : chant → {'voix nettoyée' if not a.sans_nettoyage else 'voix complète (sans nettoyage)'}, "
+         f"{'YingMusic-SVC' if a.moteur == 'yingmusic' else 'Seed-VC 44 kHz'} ; parole → Seed-VC 22 kHz ; "
+         f"paroles → {'Whisper large-v3 et traduction française' if a.paroles else 'non'}")
+    dire(f"{Nom} : carte {c['nom']}{' x ' + str(c['cartes']) if c['cartes'] > 1 else ''}, session estimée à "
+         f"{estimation / 60:.0f} min, coût estimé {calcul.dollars(cout)}"
+         + ('' if c['connue'] else ' (carte inconnue de la table des prix)')
+         + (f' ; pod supprimé seul après {duree_max_min} min au plus' if nom == 'runpod' else ''))
+    if nom == 'modal':
+        dire('outils : ceux du volume Modal « voix-la-modeles » s\'ils y sont (doubler --calcul modal --preparer-outils, '
+             'une fois), sinon tout est téléchargé, environ 4 min de plus')
+    script = kdir / f'noyau-{nom}.py'
+    script.write_text(construire_script(reglages))
+    retour = kdir / 'retour'
+    shutil.rmtree(retour, ignore_errors=True)
+    pousse = time.time()
+
+    def noter(extra=None):
+        ecrire_session({'calcul': nom, 'noyau': None, 'jeu': None, 'version_noyau': None, 'pousse_epoch': pousse,
+                        'poussee_le': datetime.datetime.fromtimestamp(pousse).astimezone().isoformat(timespec='seconds'),
+                        'voix': voix.get('spec') or voix['id'], 'sortie': str(Path(a.sortie).expanduser().resolve()),
+                        **({'comparer': [m['id'] for m in voix['comparees']]} if voix.get('comparees') else {}),
+                        'envoi_s': envoi_s, 'estimation_s': estimation, 'attente_maxi_s': attente_maxi, 'pas': a.pas,
+                        'moteur': a.moteur, 'nettoyage': not a.sans_nettoyage, 'paroles': bool(a.paroles),
+                        'gpu': getattr(a, 'gpu', 'auto'), 'machine': None, 'gpu_calcul': gpu, 'cout_estime_usd': cout,
+                        **(extra or {}), 'travaux': [{k: tr.get(k) for k in CHAMPS_SESSION} for tr in travaux]})
+
+    def sur_etat(mot):
+        for v in titres:
+            EV('kaggle', v, statut=mot, depuis_s=round(time.time() - pousse), estimation_s=estimation,
+               cout_estime_usd=cout, calcul=nom)
+    noter()
+    etape = Etape('kaggle', titres, f'{Nom}, carte {c["nom"]}, environ {estimation / 60:.0f} min, '
+                                    f'{calcul.dollars(cout)}').__enter__()
+    ctx = {'script': script, 'jeu': jeu, 'retour': retour, 'gpu': gpu, 'cartes': c['cartes'], 'timeout_s': attente_maxi,
+           'mode': 'doublage', 'duree_max_min': duree_max_min}
+    try:
+        res = (module.lancer(ctx, dire, sur_etat) if nom == 'modal'
+               else module.lancer(ctx, dire, sur_etat, apres_creation=noter))
+    except BaseException as e:
+        etape.finir(e)
+        shutil.rmtree(jeu, ignore_errors=True)
+        clore_session('interrompue' if isinstance(e, KeyboardInterrupt) else 'échec')
+        if isinstance(e, Exception):
+            raise _Abandon(f'de la session {Nom} : {e}') from e
+        raise
+    fin = time.time()
+    shutil.rmtree(jeu, ignore_errors=True)
+    erreur = erreur_sortie(retour, 'COMPLETE' if res['code'] == 0 else 'ERROR', 'session.json', Nom)
+    if erreur:
+        etape.finir(str(erreur).splitlines()[0])
+        clore_session('échec')
+        raise _Abandon(str(erreur))
+    etape.finir()
+    session = json.loads((retour / 'session.json').read_text())
+    ranger_retour(travaux, retour, kdir, voix)
+    clore_session('rapatriée')
+    script.unlink(missing_ok=True)
+    temps = {'pousse_epoch': pousse, 'version_noyau': None, 'noyau_depuis_envoi_s': round(fin - pousse, 1),
+             'rapatriement_s': 0.0, 'calcul': nom, 'cout_estime_usd': cout, 'gpu_calcul': gpu}
+    return session, temps, envoi_s, estimation
+
+
 def traiter_lot(videos, a, voix):
     """Toutes les vidéos dans une seule session Kaggle, puis le mixage de chacune sur le PC."""
     if SESSION.exists():   # vérifié de nouveau sous le verrou ; ici, pour ne pas extraire le son pour rien
@@ -4390,70 +4517,150 @@ def traiter_lot(videos, a, voix):
             # un nouveau noyau effacerait la sortie de la session précédente, peut-être finie sur Kaggle sans le PC
             return abandon(f'une session Kaggle précédente n\'est pas finie ({SESSION}) : « doubler --reprendre » la '
                            'termine (sans repasser sur le GPU) ; effacer ce fichier pour l\'abandonner')
-        debut = time.time()
-        try:
-            with Etape('envoi', titres, f'son de {len(travaux)} vidéo(s) en FLAC vers le jeu privé {JEU}'):
-                envoyer_jeu(travaux, voix, kdir, getattr(a, 'envoi_flac', 16))
-        except Exception as e:  # noqa: BLE001
-            return abandon(f'de l\'envoi sur Kaggle : {e}')
-        envoi_s = round(time.time() - debut, 1)
-        # réglages du noyau (reglages_noyau) ; voix_cibles seulement avec plusieurs voix (sinon ceux d'avant, tels quels)
-        reglages = reglages_noyau(a, voix, ancres, travaux)
-        retour = kdir / 'retour'
-        outils = fiche_outils(a.sortie)
-        sources = [OUTILS] if outils else []
-        cartes = cartes_prevues(getattr(a, 'gpu', 'auto'), MACHINE)
-        # historique : les rapports de ce dossier de sortie, et ceux du dossier par défaut (un dossier neuf n'en a pas)
-        estimation = estimer_noyau_s([tr['duree_audio_s'] for tr in travaux], a.pas, [a.sortie, SORTIES],
-                                     not a.sans_nettoyage, a.mode, a.moteur, a.paroles, len(voix_membres(voix)), cartes,
-                                     getattr(a, 'versions_duo', 'non') if voix.get('membres') else 'non',
-                                     len(voix.get('comparees') or ()) or 1)
-        # limite du suivi : au moins le double de l'estimation (le nettoyage allonge beaucoup une longue chanson)
-        attente_maxi = max((30 + 20 * len(travaux)) * 60, 2 * estimation + 30 * 60)
-        dire(f"chaîne : chant → {'voix nettoyée' if not a.sans_nettoyage else 'voix complète (sans nettoyage)'}, "
-             f"{'YingMusic-SVC' if a.moteur == 'yingmusic' else 'Seed-VC 44 kHz'} ; parole → Seed-VC 22 kHz ; "
-             f"paroles → {'Whisper large-v3 et traduction française' if a.paroles else 'non'} ; "
-             f"{'deux cartes T4' if cartes == 2 else 'une carte'} (machine {MACHINE}) ; "
-             f"session estimée à {estimation / 60:.0f} min")
-        if not outils:
-            dire('outils non préparés sur Kaggle : la session télécharge paquets et modèles, environ 4 min de plus '
-                 '(doubler --preparer-outils, une fois)')
-        if voix.get('comparees'):
-            dire(f"comparaison de {len(voix['comparees'])} voix en une session : "
-                 + ', '.join(m['id'] for m in voix['comparees'])
-                 + ' ; séparation, nettoyage et paroles une fois, conversion pour chaque voix')
-        if voix.get('membres'):
-            dire(f"une voix par chanteur ({'duo mixte' if voix['mode'] == 'genre' else 'chanteurs dans l’ordre d’apparition'}) : "
-                 f"{decrire_voix(voix)} ; en parole, {voix['membres'][0]['id']} seule")
+        plan = plan_calcul(a)
+        auto = len(plan) > 1   # Kaggle d'abord ; son indisponibilité (KaggleIndisponible) fait passer à Modal
 
-        def noter(pousse, version):
-            # voix : la spécification de --voix (homme:a,femme:b) avec plusieurs voix, pour que --reprendre la retrouve
-            ecrire_session({'noyau': NOYAU, 'jeu': JEU, 'version_noyau': version, 'pousse_epoch': pousse,
-                            'poussee_le': datetime.datetime.fromtimestamp(pousse).astimezone().isoformat(timespec='seconds'),
-                            'voix': voix.get('spec') or voix['id'], 'sortie': str(Path(a.sortie).expanduser().resolve()),
-                            **({'comparer': [m['id'] for m in voix['comparees']]} if voix.get('comparees') else {}),
-                            'envoi_s': envoi_s,
-                            'estimation_s': estimation, 'attente_maxi_s': attente_maxi, 'pas': a.pas,
-                            'moteur': a.moteur, 'nettoyage': not a.sans_nettoyage, 'paroles': bool(a.paroles),
-                            'gpu': getattr(a, 'gpu', 'auto'), 'machine': MACHINE,
-                            'travaux': [{k: tr.get(k) for k in CHAMPS_SESSION} for tr in travaux]})
-        etapes = {}
+        def session_kaggle():
+            """La session sur Kaggle : rend (session, temps, envoi_s, estimation), ou la liste des échecs (abandon)."""
+            debut = time.time()
+            try:
+                with Etape('envoi', titres, f'son de {len(travaux)} vidéo(s) en FLAC vers le jeu privé {JEU}'):
+                    envoyer_jeu(travaux, voix, kdir, getattr(a, 'envoi_flac', 16))
+            except Exception as e:  # noqa: BLE001
+                if auto and isinstance(e, KaggleIndisponible):
+                    raise
+                return abandon(f'de l\'envoi sur Kaggle : {e}')
+            envoi_s = round(time.time() - debut, 1)
+            # réglages du noyau (reglages_noyau) ; voix_cibles seulement avec plusieurs voix (sinon ceux d'avant, tels quels)
+            reglages = reglages_noyau(a, voix, ancres, travaux)
+            retour = kdir / 'retour'
+            outils = fiche_outils(a.sortie)
+            sources = [OUTILS] if outils else []
+            cartes = cartes_prevues(getattr(a, 'gpu', 'auto'), MACHINE)
+            # historique : les rapports de ce dossier de sortie, et ceux du dossier par défaut (un dossier neuf n'en a pas)
+            estimation = estimer_noyau_s([tr['duree_audio_s'] for tr in travaux], a.pas, [a.sortie, SORTIES],
+                                         not a.sans_nettoyage, a.mode, a.moteur, a.paroles, len(voix_membres(voix)), cartes,
+                                         getattr(a, 'versions_duo', 'non') if voix.get('membres') else 'non',
+                                         len(voix.get('comparees') or ()) or 1)
+            # limite du suivi : au moins le double de l'estimation (le nettoyage allonge beaucoup une longue chanson)
+            attente_maxi = max((30 + 20 * len(travaux)) * 60, 2 * estimation + 30 * 60)
+            dire(f"chaîne : chant → {'voix nettoyée' if not a.sans_nettoyage else 'voix complète (sans nettoyage)'}, "
+                 f"{'YingMusic-SVC' if a.moteur == 'yingmusic' else 'Seed-VC 44 kHz'} ; parole → Seed-VC 22 kHz ; "
+                 f"paroles → {'Whisper large-v3 et traduction française' if a.paroles else 'non'} ; "
+                 f"{'deux cartes T4' if cartes == 2 else 'une carte'} (machine {MACHINE}) ; "
+                 f"session estimée à {estimation / 60:.0f} min")
+            if not outils:
+                dire('outils non préparés sur Kaggle : la session télécharge paquets et modèles, environ 4 min de plus '
+                     '(doubler --preparer-outils, une fois)')
+            if voix.get('comparees'):
+                dire(f"comparaison de {len(voix['comparees'])} voix en une session : "
+                     + ', '.join(m['id'] for m in voix['comparees'])
+                     + ' ; séparation, nettoyage et paroles une fois, conversion pour chaque voix')
+            if voix.get('membres'):
+                dire(f"une voix par chanteur ({'duo mixte' if voix['mode'] == 'genre' else 'chanteurs dans l’ordre d’apparition'}) : "
+                     f"{decrire_voix(voix)} ; en parole, {voix['membres'][0]['id']} seule")
+
+            def noter(pousse, version):
+                # voix : la spécification de --voix (homme:a,femme:b) avec plusieurs voix, pour que --reprendre la retrouve
+                ecrire_session({'calcul': 'kaggle', 'noyau': NOYAU, 'jeu': JEU, 'version_noyau': version, 'pousse_epoch': pousse,
+                                'poussee_le': datetime.datetime.fromtimestamp(pousse).astimezone().isoformat(timespec='seconds'),
+                                'voix': voix.get('spec') or voix['id'], 'sortie': str(Path(a.sortie).expanduser().resolve()),
+                                **({'comparer': [m['id'] for m in voix['comparees']]} if voix.get('comparees') else {}),
+                                'envoi_s': envoi_s,
+                                'estimation_s': estimation, 'attente_maxi_s': attente_maxi, 'pas': a.pas,
+                                'moteur': a.moteur, 'nettoyage': not a.sans_nettoyage, 'paroles': bool(a.paroles),
+                                'gpu': getattr(a, 'gpu', 'auto'), 'machine': MACHINE,
+                                'travaux': [{k: tr.get(k) for k in CHAMPS_SESSION} for tr in travaux]})
+            etapes = {}
+            try:
+                temps = lancer_noyau(reglages, kdir, retour, attente_maxi, sources=sources, videos=titres,
+                                     estimation_s=estimation, etapes=etapes, apres_poussee=noter,
+                                     **({'file_maxi_s': entier_config(lire_config(), 'kaggle.attente_file_min',
+                                                                      ATTENTE_FILE_MIN_DEFAUT) * 60} if auto else {}))
+            except Exception as e:  # noqa: BLE001
+                if auto and isinstance(e, KaggleIndisponible):
+                    raise
+                if SESSION.exists() and not DEFINITIF.search(str(e)):
+                    # noyau poussé : il a pu continuer (ou finir) sur Kaggle ; --reprendre le retrouvera
+                    return abandon(f'de la session Kaggle : {e}' + ('' if 'reprendre' in str(e) else
+                                   ' ; le noyau continue peut-être sur Kaggle : « doubler --reprendre » le finira'))
+                clore_session('échec')
+                return abandon(f'de la session Kaggle : {e}')
+            session = json.loads((retour / 'session.json').read_text())
+            ranger_retour(travaux, retour, kdir, voix)
+            clore_session('rapatriée')
+            if etapes.get('rapatriement'):
+                etapes['rapatriement'].finir()
+            return session, temps, envoi_s, estimation
+
+        resultat = None
+        for rang, nom in enumerate(plan):
+            try:
+                resultat = session_kaggle() if nom == 'kaggle' else session_ailleurs(
+                    nom, travaux, a, voix, kdir, titres, ancres, abandon, echecs)
+            except KaggleIndisponible as e:
+                # rang 0 seulement (auto) : la version Kaggle peut rester en file ; son notebook est à annuler à la main
+                if rang + 1 >= len(plan):
+                    return abandon(str(e))
+                basculer(e, plan[rang + 1])
+                continue
+            except _Abandon as e:
+                return abandon(str(e))
+            break
+        if isinstance(resultat, list):   # abandon() : la liste des échecs
+            return resultat
+        if resultat is None:
+            return abandon(f"{' puis '.join(NOMS_CALCUL[p] for p in plan)} : aucun moyen de calcul disponible")
+    session, temps, envoi_s, estimation = resultat
+    return echecs + finir_travaux(travaux, a, voix, session, temps, envoi_s, estimation)
+
+
+def reprendre_ailleurs(a, s, travaux, titres, voix, kdir):
+    """--reprendre d'une session Modal ou Runpod. Modal : l'application éphémère s'arrête avec le PC, donc le calcul et
+    le son envoyé aussi (rien ne reste ouvert ni facturé) : la session est close et il faut refaire le doublage.
+    Runpod : le pod vit encore tant que sa minuterie n'a pas sonné : on le suit, rapatrie ses sorties, puis on le
+    supprime ; s'il n'existe plus, ou si la session n'a pas noté de pod, les pods « voix-la-… » restants sont supprimés
+    et la session close."""
+    nom = s['calcul']
+    Nom = NOMS_CALCUL.get(nom, nom)
+    if nom == 'modal':
+        clore_session('perdue')
+        raise SystemExit('session Modal interrompue : son application éphémère s\'est arrêtée avec le PC (rien ne reste '
+                         'ouvert ni facturé, le son envoyé est effacé). La session est close : refaire le doublage.')
+    module = charger_calcul('calcul_runpod')
+    if not s.get('pod_id'):
+        module.nettoyer(dire)
+        clore_session('perdue')
+        raise SystemExit('session Runpod sans pod noté (interrompue avant sa création) : les pods voix-la-… restants '
+                         'ont été supprimés, la session est close : refaire le doublage.')
+    with Verrou(kdir, titres):
+        if not SESSION.exists():
+            raise SystemExit('la session a été finie par un autre doubler pendant l\'attente')
+        dire(f"reprise de la session du {s.get('poussee_le')} : pod Runpod {s['pod_id']}, {len(travaux)} vidéo(s) : "
+             f"{', '.join(titres)}")
+        retour = kdir / 'retour'
+        etape = Etape('kaggle', titres, f'{Nom}, reprise du pod {s["pod_id"]}').__enter__()
         try:
-            temps = lancer_noyau(reglages, kdir, retour, attente_maxi, sources=sources, videos=titres,
-                                 estimation_s=estimation, etapes=etapes, apres_poussee=noter)
+            res = module.reprendre({k: s[k] for k in ('pod_id', 'hote', 'port', 'duree_max_s', 'cree_epoch')}, retour, dire)
         except Exception as e:  # noqa: BLE001
-            if SESSION.exists() and not DEFINITIF.search(str(e)):
-                # noyau poussé : il a pu continuer (ou finir) sur Kaggle ; --reprendre le retrouvera
-                return abandon(f'de la session Kaggle : {e}' + ('' if 'reprendre' in str(e) else
-                               ' ; le noyau continue peut-être sur Kaggle : « doubler --reprendre » le finira'))
+            etape.finir(e)
+            module.nettoyer(dire)   # le pod est déjà supprimé ou l'a été ; les restes de ce nom aussi
             clore_session('échec')
-            return abandon(f'de la session Kaggle : {e}')
+            raise SystemExit(f'{Nom} : {e}') from e
+        fin = time.time()
+        erreur = erreur_sortie(retour, 'COMPLETE' if res['code'] == 0 else 'ERROR', 'session.json', Nom)
+        if erreur:
+            etape.finir(str(erreur).splitlines()[0])
+            clore_session('échec')
+            raise SystemExit(str(erreur))
+        etape.finir()
         session = json.loads((retour / 'session.json').read_text())
         ranger_retour(travaux, retour, kdir, voix)
-        clore_session('rapatriée')
-        if etapes.get('rapatriement'):
-            etapes['rapatriement'].finir()
-    return echecs + finir_travaux(travaux, a, voix, session, temps, envoi_s, estimation)
+        clore_session('reprise')
+    temps = {'pousse_epoch': s['pousse_epoch'], 'version_noyau': None, 'calcul': nom, 'gpu_calcul': s.get('gpu_calcul'),
+             'cout_estime_usd': s.get('cout_estime_usd'), 'noyau_depuis_envoi_s': round(fin - s['pousse_epoch'], 1),
+             'rapatriement_s': 0.0, 'reprise': datetime.datetime.now().astimezone().isoformat(timespec='seconds')}
+    return finir_travaux(travaux, a, voix, session, temps, s.get('envoi_s'), s.get('estimation_s'))
 
 
 def reprendre(a):
@@ -4475,6 +4682,8 @@ def reprendre(a):
     voix = charger_voix_comparees(','.join(s['comparer'])) if s.get('comparer') else charger_voix_spec(s['voix'])
     kdir = Path(s['sortie']) / '.kaggle'
     kdir.mkdir(parents=True, exist_ok=True)
+    if s.get('calcul', 'kaggle') != 'kaggle':
+        return reprendre_ailleurs(a, s, travaux, titres, voix, kdir)
     noyau = s['noyau']
     with Verrou(kdir, titres):
         if not SESSION.exists():

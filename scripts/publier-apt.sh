@@ -2,6 +2,7 @@
 # Publie un ou plusieurs .deb dans le dépôt APT signé de Voix-là (branche gh-pages,
 # https://mawena.github.io/Voix-la/apt). Idempotent ; les anciennes versions restent dans pool/.
 # Usage : scripts/publier-apt.sh dist/voix-la_<version>_all.deb...
+# La page de présentation (site/) est publiée à la racine de la même branche.
 # Variables : VOIXLA_APT_CLE (empreinte de la clé, défaut ci-dessous), VOIXLA_APT_PUSH=0 (ne pas pousser).
 set -euo pipefail
 
@@ -33,7 +34,10 @@ touch "$WT/.nojekyll"
 cp "${DEBS[@]}" "$APT/pool/main/"
 cp "$RACINE/data/apt/voix-la.gpg" "$APT/voix-la.gpg"
 cp "$RACINE/data/apt/voix-la.sources" "$APT/voix-la.sources"
-cp "$RACINE/site/index.html" "$WT/index.html"
+# La page de présentation : tout le contenu de site/ à la racine de gh-pages, sans jamais toucher à apt/.
+# Les fichiers retirés de site/ disparaissent aussi de la branche (seuls apt/, .nojekyll et .git sont gardés).
+find "$WT" -mindepth 1 -maxdepth 1 ! -name apt ! -name .git ! -name .nojekyll -exec rm -rf {} +
+cp -a "$RACINE/site/." "$WT/"
 
 # Idempotence : rien de nouveau (paquets, clé, source, page) -> on ne régénère pas les index (Date change à chaque fois)
 git -C "$WT" add -A

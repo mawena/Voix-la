@@ -85,6 +85,7 @@ import base64
 import datetime
 import fcntl
 import hashlib
+import importlib
 import json
 import math
 import os
@@ -120,21 +121,33 @@ GPU_CHOIX = ('auto', '1', '2')   # cartes utilisées par le noyau ; auto : toute
 # la voix convertie seule et la voix d'origine seule) ou doublage (lui seul, comme avant le 05/11/2026)
 PISTES_AUDIO = ('toutes', 'doublage')
 PISTES_AUDIO_DEFAUT = 'toutes'
-CLES_CONFIG = {'autotune': 'intensité de l\'auto-tune à chaque doublage, de 0 (désactivé, défaut) à 100',
+CALCULS = ('kaggle', 'modal', 'runpod', 'auto')   # où tourne le noyau GPU (calcul.py) ; défaut : Kaggle, comme avant
+CALCUL_DEFAUT = 'kaggle'
+ATTENTE_FILE_MIN_DEFAUT = 20   # calcul auto : file « queued » de Kaggle tolérée avant de passer à Modal
+NOMS_CALCUL = {'kaggle': 'Kaggle', 'modal': 'Modal', 'runpod': 'Runpod'}
+CLES_CONFIG = {'autotune':'intensité de l\'auto-tune à chaque doublage, de 0 (désactivé, défaut) à 100',
+               'calcul': 'où tourne le GPU : kaggle (défaut), modal, runpod (payant, jamais automatique) ou auto (Kaggle '
+                         'd\'abord, puis Modal si Kaggle n\'est pas disponible)',
                'donnees': 'dossier des données (voix/, sorties/)',
                'envoi_flac': 'son envoyé à Kaggle en FLAC 16 bits (défaut) ou 24 bits (comme avant le 06/11/2026)',
                'gpu': 'cartes GPU utilisées par le noyau : auto (défaut : les deux T4 de la machine, une seule si elle '
                       'n\'en a qu\'une), 1 (une carte, comme avant) ou 2',
                'kaggle.compte': 'compte Kaggle (nom d\'utilisateur)',
+               'kaggle.attente_file_min': 'calcul auto : minutes de file « queued » sur Kaggle avant de passer à Modal '
+                                          '(défaut : 20)',
                'kaggle.jeu': 'jeu de données privé des entrées',
                'kaggle.machine': f'machine Kaggle demandée à l\'envoi du noyau (défaut : {MACHINE_DEFAUT}, GPU T4 x2)',
                'kaggle.noyau': 'noyau GPU privé du doublage',
                'kaggle.outils': 'noyau privé des outils préparés',
+               'modal.gpu': 'carte GPU de Modal : L4 (défaut, environ 0,80 $/h), A10, A100-40GB, ou « L4:2 » pour deux cartes',
                'moteur': 'moteur de conversion du chant : yingmusic (défaut) ou seedvc',
                'paroles': 'paroles à chaque doublage (transcription, traduction française, sous-titres) : oui (défaut) '
                           'ou non',
                'pistes_audio': 'pistes audio de la vidéo doublée : toutes (défaut : doublage, original, beat seul, voix '
                                'convertie seule, voix d\'origine seule ; le doublage par défaut) ou doublage (lui seul)',
+               'runpod.duree_max_min': 'minuterie du pod Runpod : minutes avant qu\'il se supprime seul (défaut : 90, '
+                                       'relevée si la session estimée est plus longue)',
+               'runpod.gpu': 'identifiant de la carte du pod Runpod (défaut : « NVIDIA GeForce RTX 4090 »)',
                'versions_duo': 'une voix par chanteur : chaque passage converti dans les deux voix pour corriger qui chante '
                                "quoi au remix : toutes (défaut), utiles (passages incertains, voisins d'un changement de "
                                'voix, chantés ensemble) ou non',
@@ -227,6 +240,23 @@ def ecrire_config(cle, valeur):
         valeur = str(valeur).strip().lower()
         if valeur not in GPU_CHOIX:
             raise SystemExit(f'gpu : auto, 1 ou 2 attendu (reçu : {valeur})')
+    if cle == 'calcul':
+        valeur = str(valeur).strip().lower()
+        if valeur not in CALCULS:
+            raise SystemExit(f'calcul : {", ".join(CALCULS)} attendu (reçu : {valeur})')
+    if cle in ('modal.gpu', 'runpod.gpu'):
+        try:
+            charger_calcul().lire_gpu(valeur, cle.split('.')[0])
+        except ValueError as e:
+            raise SystemExit(f'{cle} : {e}') from None
+        valeur = str(valeur).strip()
+    if cle in ('kaggle.attente_file_min', 'runpod.duree_max_min'):
+        try:
+            valeur = int(str(valeur).strip())
+            if not 1 <= valeur <= 24 * 60:
+                raise ValueError
+        except ValueError:
+            raise SystemExit(f'{cle} : un nombre entier de minutes (1 à 1440) attendu (reçu : {valeur})') from None
     if cle == 'pistes_audio':
         valeur = str(valeur).strip().lower()
         if valeur not in PISTES_AUDIO:
@@ -322,6 +352,56 @@ def pistes_audio_config(conf):
     return v
 
 
+def charger_calcul(nom='calcul'):
+    """Un module des moyens de calcul (calcul, calcul_modal, calcul_runpod), à côté de ce fichier : importé à la demande,
+    sans rien lancer (l'interface charge ce fichier sans le mettre dans sys.path)."""
+    if str(DEPOT) not in sys.path:
+        sys.path.insert(0, str(DEPOT))
+    return importlib.import_module(nom)
+
+
+def calcul_config(conf):
+    """Clé « calcul » : kaggle (défaut), modal, runpod ou auto ; une valeur illisible compte comme kaggle, avec un avis."""
+    v = valeur_config(conf, 'calcul')
+    if v is None:
+        return CALCUL_DEFAUT
+    v = str(v).strip().lower()
+    if v not in CALCULS:
+        dire(f'attention : « calcul » de {CONFIG} illisible ({v!r}) : {CALCUL_DEFAUT} (doubler --config calcul '
+             f'{"|".join(CALCULS)})')
+        return CALCUL_DEFAUT
+    return v
+
+
+def entier_config(conf, cle, defaut, mini=1, maxi=24 * 60):
+    v = valeur_config(conf, cle)
+    if v is None:
+        return defaut
+    try:
+        n = int(str(v).strip())
+        if mini <= n <= maxi:
+            return n
+    except ValueError:
+        pass
+    dire(f'attention : « {cle} » de {CONFIG} illisible ({v!r}) : {defaut}')
+    return defaut
+
+
+def gpu_calcul_config(conf, calcul_nom):
+    """Carte demandée pour Modal (« modal.gpu ») ou Runpod (« runpod.gpu »), avec son défaut."""
+    c = charger_calcul()
+    defaut = c.GPU_MODAL_DEFAUT if calcul_nom == 'modal' else c.GPU_RUNPOD_DEFAUT
+    v = valeur_config(conf, f'{calcul_nom}.gpu')
+    if v is None or not str(v).strip():
+        return defaut
+    try:
+        c.lire_gpu(v, calcul_nom)
+    except ValueError:
+        dire(f'attention : « {calcul_nom}.gpu » de {CONFIG} illisible ({v!r}) : {defaut}')
+        return defaut
+    return str(v).strip()
+
+
 # Transposition de la chanson : auto (défaut), non, ou N demi-tons entiers imposés (au plus ±12 ; la règle auto reste dans ±5)
 TRANSPOSER_MAX = 12
 
@@ -364,6 +444,15 @@ def _option_transposer(texte):
         return lire_transposer(texte)
     except ValueError as e:
         raise argparse.ArgumentTypeError(str(e)) from None
+
+
+def moyen_pret(nom):
+    """(prêt, raison) d'un moyen de calcul : kaggle (outil et jeton présents), modal, runpod (voir leurs modules)."""
+    if nom == 'kaggle':
+        if not KAGGLE.exists() or not JETON.exists():
+            return False, f'commande ({KAGGLE}) ou clé (~/.kaggle/access_token) absente'
+        return True, ''
+    return charger_calcul('calcul_' + nom).pret()
 
 
 def cartes_prevues(gpu, machine):
@@ -471,6 +560,11 @@ def afficher_config(a, en_json=False):
                 'sorties': a.sortie, 'voix_defaut': VOIX_DEFAUT, 'source_voix_defaut': VOIX_DEFAUT_SOURCE,
                 'moteur': moteur, 'paroles': paroles, 'autotune': autotune, 'gpu': gpu, 'pistes_audio': pistes_audio,
                 'envoi_flac': envoi, 'versions_duo': versions_duo_config(conf), 'transposer': transposer_config(conf),
+                'calcul': calcul_config(conf),
+                'attente_file_min': entier_config(conf, 'kaggle.attente_file_min', ATTENTE_FILE_MIN_DEFAUT),
+                'modal': {'gpu': gpu_calcul_config(conf, 'modal'), 'pret': moyen_pret('modal')[0]},
+                'runpod': {'gpu': gpu_calcul_config(conf, 'runpod'), 'pret': moyen_pret('runpod')[0],
+                           'duree_max_min': entier_config(conf, 'runpod.duree_max_min', None)},
                 'rubberband': transposition_disponible()[0],
                 'x42_autotune': str(fat1) if fat1 else None,
                 'kaggle': {'compte': valeur_config(conf, 'kaggle.compte'), **noms, 'machine': MACHINE},
@@ -502,6 +596,12 @@ def afficher_config(a, en_json=False):
           " : chanson transposée dans la tessiture de la voix cible (auto, non, ou N demi-tons) ; "
           f"Rubber Band {'présent' if transposition_disponible()[0] else 'ABSENT (sudo apt install librubberband2)'}")
     print(f"  envoi FLAC     {envoi} bits{'' if valeur_config(conf, 'envoi_flac') is not None else '  (défaut)'}")
+    print(f"  calcul         {effectif['calcul']}{'' if valeur_config(conf, 'calcul') is not None else '  (défaut)'}"
+          f" : kaggle, modal, runpod (payant, jamais automatique) ou auto (Kaggle, puis Modal après "
+          f"{effectif['attente_file_min']} min de file ou un refus)")
+    for nom_c in ('modal', 'runpod'):
+        pret_c, raison_c = moyen_pret(nom_c)
+        print(f"  {nom_c + '.gpu':14s} {effectif[nom_c]['gpu']}  ({'prêt' if pret_c else 'pas prêt : ' + raison_c})")
     for n in KAGGLE_DEFAUTS:
         print(f"  kaggle.{n:8s} {noms[n] or '— (kaggle.compte manque : doubler --config kaggle.compte <nom>)'}")
     print(f"  kaggle.machine {MACHINE}{'' if valeur_config(conf, 'kaggle.machine') else '  (défaut : GPU T4 x2)'}")
@@ -1200,10 +1300,16 @@ def preparer_source(video, info, debut, duree, travail):
 
 # --- Kaggle ----------------------------------------------------------------------------------------------------------
 
-def envoyer_jeu(travaux, voix, dossier, bits=16):
-    """Une version du jeu de données privé par session : la référence de la voix choisie (de chaque voix, avec une voix
-    par chanteur) et le son des vidéos seulement, en FLAC 16 bits (bits=24 : clé envoi_flac ; gain de chaque vidéo noté
-    dans tr['gain_entree'], à transmettre au noyau)."""
+class KaggleIndisponible(RuntimeError):
+    """Kaggle ne peut pas prendre la session (refus, quota épuisé, accès refusé, file « queued » trop longue) : avec
+    --calcul auto, doubler passe alors à Modal."""
+
+
+def preparer_jeu(travaux, voix, dossier, bits=16):
+    """Le dossier « jeu » d'une session : la référence de la voix choisie (de chaque voix, avec une voix par chanteur) et le
+    son des vidéos seulement, en FLAC 16 bits (bits=24 : clé envoi_flac ; gain de chaque vidéo noté dans tr['gain_entree'],
+    à transmettre au noyau). Rend (dossier, octets envoyés, octets en WAV). Kaggle l'envoie en jeu de données, Modal et
+    Runpod le portent dans leur conteneur ; il n'est jamais gardé après la session."""
     jeu = dossier / 'jeu'
     shutil.rmtree(jeu, ignore_errors=True)
     jeu.mkdir(parents=True)
@@ -1216,6 +1322,14 @@ def envoyer_jeu(travaux, voix, dossier, bits=16):
         tr['taille_envoi'] = (jeu / tr['entree']).stat().st_size
         taille += tr['taille_envoi']
         taille_wav += (tr['travail'] / 'original.wav').stat().st_size
+    return jeu, taille, taille_wav
+
+
+def envoyer_jeu(travaux, voix, dossier, bits=16):
+    """Une version du jeu de données privé par session : la référence de la voix choisie (de chaque voix, avec une voix
+    par chanteur) et le son des vidéos seulement, en FLAC 16 bits (bits=24 : clé envoi_flac ; gain de chaque vidéo noté
+    dans tr['gain_entree'], à transmettre au noyau)."""
+    jeu, taille, taille_wav = preparer_jeu(travaux, voix, dossier, bits)
     with open(jeu / 'dataset-metadata.json', 'w') as f:
         json.dump({'title': JEU.split('/')[1], 'id': JEU, 'licenses': [{'name': 'unknown'}]}, f)
     existe = kaggle('datasets', 'status', JEU)[0] == 0
@@ -1226,7 +1340,7 @@ def envoyer_jeu(travaux, voix, dossier, bits=16):
     code, texte = (kaggle('datasets', 'version', '-p', str(jeu), '-m', f"{len(travaux)} video(s), voix {voix['id']}") if existe
                    else kaggle('datasets', 'create', '-p', str(jeu)))
     if code or re.search(r'error|fail|invalid', texte, re.I):
-        raise RuntimeError('Kaggle : jeu de données refusé : ' + texte.strip()[-500:])
+        raise KaggleIndisponible('Kaggle : jeu de données refusé : ' + texte.strip()[-500:])
     debut = time.time()
     while True:
         _, fichiers = kaggle('datasets', 'files', JEU)
@@ -1470,13 +1584,9 @@ def metadonnees_noyau(noyau, jeux, sources, machine):
             'competition_sources': [], 'kernel_sources': list(sources), 'model_sources': []}
 
 
-def pousser_noyau(reglages, dossier, attente_maxi, noyau, jeux, sources=(), videos=()):
-    """Écrit et pousse le noyau (GPU + internet, machine MACHINE : deux T4 par défaut) ; attend une place si les sessions
-    GPU du compte sont prises. Une autre machine (kaggle.machine) refusée par Kaggle : nouvel essai sur MACHINE_DEFAUT (le
-    noyau s'adapte au nombre de cartes qu'il trouve). Rend (heure de la poussée, numéro de version Kaggle ou None)."""
-    envoi = dossier / f"envoi-{noyau.split('/')[1]}"
-    shutil.rmtree(envoi, ignore_errors=True)
-    envoi.mkdir(parents=True)
+def construire_script(reglages):
+    """Le noyau prêt à partir : __REGLAGES__ remplacé (JSON en base64) et SOURCE (sa propre source) ; le même texte pour
+    Kaggle, Modal et Runpod."""
     script = SCRIPT_NOYAU.read_text().replace(
         '__REGLAGES__', base64.b64encode(json.dumps(reglages).encode()).decode())
     # Kaggle exécute le script en carnet, sans fichier : il reçoit sa propre source, pour ses étapes à part (nettoyage,
@@ -1484,8 +1594,17 @@ def pousser_noyau(reglages, dossier, attente_maxi, noyau, jeux, sources=(), vide
     marque = "SOURCE = '__SOURCE__'"
     if script.count(marque) != 1:
         raise RuntimeError(f'kaggle/doubler_kaggle.py : « {marque} » attendu une fois')
-    script = script.replace(marque, f"SOURCE = '{base64.b64encode(script.encode()).decode()}'")
-    (envoi / 'doubler_kaggle.py').write_text(script)
+    return script.replace(marque, f"SOURCE = '{base64.b64encode(script.encode()).decode()}'")
+
+
+def pousser_noyau(reglages, dossier, attente_maxi, noyau, jeux, sources=(), videos=()):
+    """Écrit et pousse le noyau (GPU + internet, machine MACHINE : deux T4 par défaut) ; attend une place si les sessions
+    GPU du compte sont prises. Une autre machine (kaggle.machine) refusée par Kaggle : nouvel essai sur MACHINE_DEFAUT (le
+    noyau s'adapte au nombre de cartes qu'il trouve). Rend (heure de la poussée, numéro de version Kaggle ou None)."""
+    envoi = dossier / f"envoi-{noyau.split('/')[1]}"
+    shutil.rmtree(envoi, ignore_errors=True)
+    envoi.mkdir(parents=True)
+    (envoi / 'doubler_kaggle.py').write_text(construire_script(reglages))
     machine = MACHINE
 
     def ecrire_metadonnees():
@@ -1506,7 +1625,7 @@ def pousser_noyau(reglages, dossier, attente_maxi, noyau, jeux, sources=(), vide
                 ecrire_metadonnees()
                 continue
             if not re.search(r'GPU session count|concurrent|too many', texte, re.I) or time.time() - debut > attente_maxi:
-                raise RuntimeError('Kaggle : noyau refusé : ' + texte.strip()[-500:])
+                raise KaggleIndisponible('Kaggle : noyau refusé : ' + texte.strip()[-500:])
             if attente is None:
                 dire('Kaggle : sessions GPU toutes prises, attente d\'une place')
                 attente = Etape('attente', videos, 'sessions GPU Kaggle toutes prises : attente d\'une place').__enter__()
@@ -1521,12 +1640,14 @@ def pousser_noyau(reglages, dossier, attente_maxi, noyau, jeux, sources=(), vide
     return time.time(), (int(m.group(1)) if m else None)
 
 
-def suivre_noyau(noyau, pousse, attente_maxi, videos=(), estimation_s=None, origine_limite=None):
+def suivre_noyau(noyau, pousse, attente_maxi, videos=(), estimation_s=None, origine_limite=None, file_maxi_s=None):
     """Suit l'état du noyau jusqu'à la fin ; rend l'état final (COMPLETE, ERROR…). Une coupure réseau n'arrête pas le
     suivi : on réessaie à intervalles croissants (20 s à 5 min) jusqu'à PANNE_MAXI_S de coupure continue ; le noyau
-    continue sur Kaggle et « doubler --reprendre » le retrouve. La limite attente_maxi ne compte pas les coupures."""
+    continue sur Kaggle et « doubler --reprendre » le retrouve. La limite attente_maxi ne compte pas les coupures.
+    file_maxi_s (calcul auto) : un noyau toujours en file (QUEUED) sans avoir jamais tourné au-delà de cette durée
+    lève KaggleIndisponible : doubler passe à Modal."""
     origine = pousse if origine_limite is None else origine_limite
-    etat, dit, vu, pannes = '', '', False, 0
+    etat, dit, vu, pannes, roule = '', '', False, 0, False
     panne_depuis, panne_totale, pause = None, 0.0, 20.0
     etape = Etape('kaggle', videos, f"noyau {noyau}" + (f', environ {estimation_s / 60:.0f} min' if estimation_s else '')).__enter__()
     try:
@@ -1566,6 +1687,11 @@ def suivre_noyau(noyau, pousse, attente_maxi, videos=(), estimation_s=None, orig
                 dit = etat
             en_cours = bool(re.search(r'QUEUED|RUNNING|NEW|PENDING', etat))
             vu = vu or en_cours
+            roule = roule or 'RUNNING' in etat
+            if file_maxi_s and not roule and re.search(r'QUEUED|NEW|PENDING', etat) \
+                    and maintenant - pousse - panne_totale > file_maxi_s:
+                raise KaggleIndisponible(f'Kaggle : noyau toujours en file ({etat.lower()}) après '
+                                         f'{(maintenant - pousse - panne_totale) / 60:.0f} min, sans GPU')
             if not en_cours and (vu or maintenant - pousse - panne_totale > 300):
                 break
             if maintenant - origine - panne_totale > attente_maxi:
@@ -1576,6 +1702,31 @@ def suivre_noyau(noyau, pousse, attente_maxi, videos=(), estimation_s=None, orig
     # un échec du noyau est signalé ici, mais son journal est rapatrié quand même (message d'erreur plus bas)
     etape.finir(None if etat == 'COMPLETE' else f'noyau terminé en {etat.lower()}')
     return etat
+
+
+def lire_journal(retour):
+    """Lignes des journaux *.log du noyau rapatriés dans retour (liste JSON de {data}, comme ceux de Kaggle)."""
+    lignes = []
+    for f in Path(retour).glob('*.log'):
+        try:
+            lignes += [l.get('data', '').rstrip() for l in json.loads(f.read_text())]
+        except ValueError:
+            pass
+    return [l for l in '\n'.join(lignes).splitlines() if l.strip()]
+
+
+def erreur_sortie(retour, etat, attendu, moyen):
+    """L'exception d'une sortie de noyau inutilisable (accès ou fichier refusé, noyau fini sans résultat), ou None. Chez
+    Kaggle, un accès refusé (GPU ou internet absents du noyau) est KaggleIndisponible ; ailleurs, une vraie erreur."""
+    journal = lire_journal(retour)
+    refus = next((l for l in journal if 'ACCÈS REFUSÉ' in l or 'FICHIER ABSENT' in l), None)
+    if refus:
+        return (KaggleIndisponible if moyen == 'Kaggle' and 'ACCÈS REFUSÉ' in refus else RuntimeError)(f'{moyen} : {refus}')
+    if etat != 'COMPLETE' or not (Path(retour) / attendu).exists():
+        utiles = [l for l in journal if not re.search(r'Warning|warn\(|NbConvert|it/s\]|s/it\]', l)]
+        return RuntimeError(f'{moyen} : noyau terminé en {etat.lower()} sans résultat ; fin du journal :\n'
+                            + '\n'.join(utiles[-25:]))
+    return None
 
 
 def rapatrier_noyau(noyau, retour, etat, motif=None, attendu='session.json', videos=(), etapes=None):
@@ -1606,21 +1757,10 @@ def rapatrier_noyau(noyau, retour, etat, motif=None, attendu='session.json', vid
         rapatriement.finir(e)
         raise
     duree = round(time.time() - debut, 1)
-    lignes = []
-    for f in retour.glob('*.log'):
-        try:
-            lignes += [l.get('data', '').rstrip() for l in json.loads(f.read_text())]
-        except ValueError:
-            pass
-    journal = [l for l in '\n'.join(lignes).splitlines() if l.strip()]
-    refus = next((l for l in journal if 'ACCÈS REFUSÉ' in l or 'FICHIER ABSENT' in l), None)
-    if refus:
-        rapatriement.finir(refus)
-        raise RuntimeError('Kaggle : ' + refus)
-    if etat != 'COMPLETE' or not (retour / attendu).exists():
-        utiles = [l for l in journal if not re.search(r'Warning|warn\(|NbConvert|it/s\]|s/it\]', l)]
-        rapatriement.finir(f'noyau terminé en {etat.lower()} sans résultat')
-        raise RuntimeError(f'Kaggle : noyau terminé en {etat.lower()} sans résultat ; fin du journal :\n' + '\n'.join(utiles[-25:]))
+    erreur = erreur_sortie(retour, etat, attendu, 'Kaggle')
+    if erreur:
+        rapatriement.finir(str(erreur).splitlines()[0])
+        raise erreur
     if etapes is None:
         rapatriement.finir()
     else:
@@ -1629,7 +1769,7 @@ def rapatrier_noyau(noyau, retour, etat, motif=None, attendu='session.json', vid
 
 
 def lancer_noyau(reglages, dossier, retour, attente_maxi, noyau=None, jeux=None, sources=(), motif=None,
-                 attendu='session.json', videos=(), estimation_s=None, etapes=None, apres_poussee=None):
+                 attendu='session.json', videos=(), estimation_s=None, etapes=None, apres_poussee=None, file_maxi_s=None):
     """Pousse le noyau, suit son état, rapatrie ses sorties dans retour. apres_poussee(heure, version) est appelé dès
     que Kaggle a accepté le noyau (fichier de session pour --reprendre)."""
     noyau = noyau or NOYAU
@@ -1637,7 +1777,7 @@ def lancer_noyau(reglages, dossier, retour, attente_maxi, noyau=None, jeux=None,
     pousse, version = pousser_noyau(reglages, dossier, attente_maxi, noyau, jeux, sources, videos)
     if apres_poussee:
         apres_poussee(pousse, version)
-    etat = suivre_noyau(noyau, pousse, attente_maxi, videos, estimation_s)
+    etat = suivre_noyau(noyau, pousse, attente_maxi, videos, estimation_s, file_maxi_s=file_maxi_s)
     fin = time.time()
     rapatriement_s = rapatrier_noyau(noyau, retour, etat, motif, attendu, videos, etapes)
     return {'pousse_epoch': pousse, 'version_noyau': version, 'noyau_depuis_envoi_s': round(fin - pousse, 1),

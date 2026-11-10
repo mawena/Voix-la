@@ -4,8 +4,17 @@ Voix-là : votre vidéo, avec une autre voix. Et voilà.
 
 **[Page de présentation : mawena.github.io/Voix-la](https://mawena.github.io/Voix-la/)** (captures, installation par APT, usage responsable).
 
-> **Version 0.17.1** : paquet Debian `.deb` joint à chaque [release](https://github.com/mawena/Voix-la/releases). Voir le
-> [journal des modifications](CHANGELOG.md).
+> **Version 0.17.1** : s'installe par le [dépôt APT signé](#par-le-dépôt-apt-recommandé) (`sudo apt install voix-la`,
+> puis `apt upgrade` pour chaque nouvelle version) ou par le paquet `.deb` joint à chaque
+> [release](https://github.com/mawena/Voix-la/releases). Voir le [journal des modifications](CHANGELOG.md).
+
+**Installation rapide (Ubuntu 24.04 ou plus récent)** :
+
+```sh
+sudo curl -fsSL https://mawena.github.io/Voix-la/apt/voix-la.gpg -o /usr/share/keyrings/voix-la.gpg \
+ && sudo curl -fsSL https://mawena.github.io/Voix-la/apt/voix-la.sources -o /etc/apt/sources.list.d/voix-la.sources \
+ && sudo apt update && sudo apt install voix-la
+```
 
 `doubler` prend une vidéo (chanson d'une chanteuse ou d'un chanteur, duo, rap, ou vidéo parlée) et rend la même vidéo,
 avec son audio, où la voix est remplacée par une voix clonée. La mélodie, le phrasé et l'interprétation restent ceux de
@@ -185,13 +194,14 @@ Clé de signature « Voix-là APT (mawena) », empreinte `20F9 E2A5 B482 09DE DB
 
 ### Paquet Debian
 
-Pour Ubuntu 24.04 ou plus récent (libadwaita 1.5 au moins). Le paquet `voix-la_<version>_all.deb` et ses sommes
-`SHA256SUMS` sont joints à chaque version sur GitHub (*Releases*), ou se construisent depuis le dépôt (voir
-[Construire le paquet](#construire-le-paquet)).
+Sans passer par le dépôt APT : pour Ubuntu 24.04 ou plus récent (libadwaita 1.5 au moins). Le paquet
+`voix-la_<version>_all.deb` et ses sommes `SHA256SUMS` sont joints à chaque version sur GitHub (*Releases*), ou se
+construisent depuis le dépôt (voir [Construire le paquet](#construire-le-paquet)). Installé une fois ainsi, le paquet
+pose lui-même la source et la clé du dépôt APT : les versions suivantes arrivent ensuite par `sudo apt upgrade`.
 
 ```sh
 sha256sum -c SHA256SUMS
-sudo apt install ./voix-la_0.2.0_all.deb
+sudo apt install ./voix-la_<version>_all.deb
 doubler --version
 ```
 

@@ -4185,7 +4185,7 @@ def reglages_noyau(a, voix, ancres, travaux):
                 'moteur_chant': a.moteur, 'nettoyage': not a.sans_nettoyage,
                 'gpus': 'auto' if getattr(a, 'gpu', None) in (None, 'auto') else int(a.gpu),
                 'voix': {'nom': v0['id'], 'fichier': f"voix-{v0['id']}.wav", 'f0_parole_hz': v0['f0'],
-                         'facteur_chant': FACTEUR_CHANT, 'zone': v0['zone']},
+                         'facteur_chant': FACTEUR_CHANT, 'zone': v0.get('zone')},
                 'travaux': [{'id': tr['id'], 'entree': tr['entree'], 'mode': a.mode,
                              'octave': a.octave if a.octave == 'auto' else int(a.octave),
                              'transposer': transposition_demandee(a),
@@ -4196,11 +4196,11 @@ def reglages_noyau(a, voix, ancres, travaux):
         reglages['versions_duo'] = getattr(a, 'versions_duo', None) or VERSIONS_DUO_DEFAUT   # absent pour une seule voix
         reglages['voix_cibles'] = {'mode': voix['mode'], 'voix': [
             {'cle': m['cle'], 'nom': m['id'], 'fichier': f"voix-{m['id']}.wav", 'f0_parole_hz': m['f0'],
-             'facteur_chant': FACTEUR_CHANT, 'affichage': m['affichage'], 'zone': m['zone']} for m in voix['membres']]}
+             'facteur_chant': FACTEUR_CHANT, 'affichage': m['affichage'], 'zone': m.get('zone')} for m in voix['membres']]}
     if voix.get('comparees'):   # le même extrait dans chaque voix (la première est « voix » : analyse)
         reglages['comparer'] = {'voix': [
             {'nom': m['id'], 'fichier': f"voix-{m['id']}.wav", 'f0_parole_hz': m['f0'], 'facteur_chant': FACTEUR_CHANT,
-             'affichage': m['affichage'], 'zone': m['zone']} for m in voix['comparees']]}
+             'affichage': m['affichage'], 'zone': m.get('zone')} for m in voix['comparees']]}
     if a.modele_parole:
         reglages['modele_parole'] = a.modele_parole
     return reglages

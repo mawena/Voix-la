@@ -1371,19 +1371,21 @@ docs: README complet
 ```text
 .
 ├── doubler.py               commande doubler : extraction, envoi et suivi Kaggle, reprise, mixage, vidéo, voix
+├── affiner.py               commande affiner : affinage d'une voix sur son chant (voir docs/affinage.md)
 ├── transposition.py         transposition de la musique seule (Rubber Band R3, par ctypes)
 ├── kaggle/
-│   └── doubler_kaggle.py    noyau GPU : séparation, mode, hauteur, nettoyage, conversion YingMusic-SVC et Seed-VC ;
-│                            noyau « outils »
+│   ├── doubler_kaggle.py    noyau GPU : séparation, mode, hauteur, nettoyage, conversion YingMusic-SVC et Seed-VC ;
+│   │                        noyau « outils »
+│   └── affiner_kaggle.py    noyau GPU de l'affinage : découpage, contrôle, train.py de Seed-VC, reprise
 ├── interface/               interface graphique GTK 4 + libadwaita (en cours)
 │   ├── installer.sh         installation de développement : commande voix-la, entrée du menu, icône
 │   ├── voixla/              logique sans GTK : chemins, appel de doubler, suivi, file des travaux, rapports
 │   │   └── gui/             fenêtre et pages
 │   ├── donnees/             entrée du menu et icône
 │   └── tests/               tests (unittest) et faux doubler, sans réseau
-├── bin/                     lanceurs doubler et voix-la : le code du dépôt, sinon celui de /usr/lib/voix-la
+├── bin/                     lanceurs doubler, affiner et voix-la : le code du dépôt, sinon celui de /usr/lib/voix-la
 ├── debian/                  paquet Debian (debhelper 13, 3.0 native)
-├── docs/man/                pages de manuel doubler.1 et voix-la.1
+├── docs/                    affinage.md (affinage de la voix) ; man/ : pages de manuel doubler.1, affiner.1 et voix-la.1
 ├── scripts/build-deb.sh     construction du paquet : versions, tests, paquet, SHA256SUMS, lintian
 ├── tests/                   tests du noyau et de doubler (auto-tune, paroles, secours, vidéo), sans GPU
 ├── Makefile                 make test, make deb, make clean

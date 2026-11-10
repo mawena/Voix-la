@@ -590,7 +590,7 @@ est `affiner` (voir [docs/affinage.md](../docs/affinage.md)).
   `voix/<nom>/affinage/affinage.json` existe avec son point de contrôle ; le détail de la voix montre la date, les pas, la
   durée de chant et la taille.
 
-Pour la capture : `VOIXLA_PAGE=voix`, `VOIXLA_SCENARIO=affinage`, et `VOIXLA_CONFIG` avec `{"affinage_pret": true}` pour voir
+Pour la capture : `VOIXLA_SCENARIO=voix:affinage` (la page Voix, voix de chant choisie), et `VOIXLA_CONFIG` avec `{"affinage_pret": true}` pour voir
 le bouton actif.
 
 ## Enregistrer au téléphone

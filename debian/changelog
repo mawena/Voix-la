@@ -1,3 +1,14 @@
+voix-la (0.15.0) unstable; urgency=medium
+
+  * Transposition de la chanson dans la tessiture de la voix cible, par
+    défaut (--transposer auto|non|N) : la musique seule est transposée par
+    Rubber Band R3 et la voix convertie chante dans sa zone naturelle, pour
+    qu'on reconnaisse la voix ; décision écrite dans rapport.json.
+  * Interface : interrupteur « Transposer la chanson dans ma tessiture » et
+    ligne de la transposition dans le détail d'un résultat.
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Tue, 10 Nov 2026 09:00:00 +0000
+
 voix-la (0.14.0) unstable; urgency=medium
 
   * Séance d'enregistrement complète : texte à lire, sirène et gamme guides

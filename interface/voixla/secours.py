@@ -2,7 +2,7 @@
 
 Deux moyens sont branchés, les mêmes que l'option « --calcul » de doubler (voir calcul.py du dépôt) :
 - « modal » : Modal, crédit gratuit mensuel, application éphémère ;
-- « runpod » : un pod Runpod RTX 4090, PAYANT, toujours supprimé à la fin. Jamais lancé sans que Charles l'ait choisi
+- « runpod » : un pod Runpod RTX 4090, PAYANT, toujours supprimé à la fin. Jamais lancé sans que l'utilisateur l'ait choisi
   (Réglages > Doublage > Secours, ou le bouton du dialogue « ne tient plus dans le quota »).
 « ancien-pc » (la partie GPU sur un ancien PC du réseau, par SSH) n'est pas branché.
 

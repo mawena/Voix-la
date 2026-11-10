@@ -9,6 +9,21 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [0.17.2] - 2026-11-10
 
+### Ajouté
+
+- **Nouvelle page d'accueil** (`site/`, https://mawena.github.io/Voix-la/) : accroche, ce que Voix-là change et garde, schéma de
+  la chaîne de traitement, visite de l'application avec de vraies captures (données inventées), fonctions, installation
+  par APT avec boutons « Copier », mise à jour, vérification de la clé, usage responsable (« imitation par IA »), crédits et
+  licences (YingMusic et NLLB : usage non commercial). Statique, sans traqueur ni CDN, claire et sombre, adaptée au
+  téléphone ; police Bricolage Grotesque (SIL OFL) servie depuis le site.
+- Installation en une ligne : `curl -fsSL https://mawena.github.io/Voix-la/installer.sh | sudo sh` (`site/installer.sh` :
+  clé, dépôt, installation). README réorganisé : une ligne, pas à pas, mises à jour, `.deb` en dernier recours.
+
+### Modifié
+
+- `scripts/publier-apt.sh` publie tout le contenu de `site/` à la racine de `gh-pages` (et non plus seulement
+  `index.html`), sans jamais toucher à `apt/`.
+
 ### Corrigé
 
 - Interface : la page Doubler levait une erreur (`NameError`) à chaque ouverture de l'application depuis la 0.17.0,

@@ -3,75 +3,531 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Voix-là, dépôt APT</title>
-<meta name="description" content="Voix-là remplace la voix d'une vidéo par une voix clonée. Dépôt APT signé pour l'installer et le mettre à jour avec apt.">
+<title>Voix-là : votre vidéo, avec une autre voix</title>
+<meta name="description" content="Voix-là remplace la voix d'une vidéo ou d'une chanson par une voix clonée, la vôtre ou celle d'une personne d'accord. Application libre pour Ubuntu, installable par APT.">
+<meta name="color-scheme" content="light dark">
+<meta property="og:title" content="Voix-là : votre vidéo, avec une autre voix">
+<meta property="og:description" content="Doublage par voix clonée pour Ubuntu : la mélodie, le phrasé et la musique restent, seul le timbre change.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://mawena.github.io/Voix-la/">
+<meta property="og:image" content="https://mawena.github.io/Voix-la/images/bibliotheque.webp">
+<meta property="og:locale" content="fr_FR">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preload" href="polices/bricolage-grotesque.woff2" as="font" type="font/woff2" crossorigin>
 <style>
-  :root{--fond:#fbfaf8;--texte:#23211f;--doux:#6b6560;--accent:#7a3fd1;--carte:#fff;--bord:#e6e1db;--code:#1f1b2b;--code-texte:#f1ecfa}
-  @media (prefers-color-scheme:dark){:root{--fond:#17151c;--texte:#ece8f2;--doux:#a39dad;--accent:#b794f4;--carte:#211e29;--bord:#352f40;--code:#0e0c13;--code-texte:#ece8f2}}
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--fond);color:var(--texte);font:1.05rem/1.65 system-ui,-apple-system,"Segoe UI",sans-serif}
-  header{padding:3.5rem 1.2rem 2.5rem;text-align:center;background:linear-gradient(135deg,#4b2a8f,#7a3fd1 60%,#c06bd1);color:#fff}
-  header h1{margin:0 0 .4rem;font-size:2.6rem;letter-spacing:-.02em}
-  header p{margin:0 auto;max-width:36rem;font-size:1.15rem;opacity:.95}
-  main{max-width:46rem;margin:0 auto;padding:1.5rem 1.2rem 3rem}
-  h2{margin:2.4rem 0 .6rem;font-size:1.45rem}
-  .carte{background:var(--carte);border:1px solid var(--bord);border-radius:.8rem;padding:1rem 1.2rem}
-  pre{margin:.8rem 0;padding:1rem 1.1rem;background:var(--code);color:var(--code-texte);border-radius:.7rem;overflow-x:auto;font-size:.92rem;line-height:1.55}
-  code{font-family:ui-monospace,"DejaVu Sans Mono",monospace}
-  p code,li code{background:var(--bord);padding:.1rem .35rem;border-radius:.3rem;font-size:.92em}
-  a{color:var(--accent)}
-  ul{padding-left:1.2rem}
-  .petit{color:var(--doux);font-size:.95rem}
-  footer{max-width:46rem;margin:0 auto;padding:0 1.2rem 2.5rem;color:var(--doux);font-size:.9rem}
+@font-face{
+  font-family:"Bricolage Grotesque";
+  src:url("polices/bricolage-grotesque.woff2") format("woff2");
+  font-weight:200 800;font-style:normal;font-display:swap;
+}
+:root{
+  --fond:#F4F3F9;--surface:#FFFFFF;--texte:#17172B;--doux:#54546C;--ligne:#D9D7E6;
+  --origine:#8F5200;--origine-trait:#E39A1D;--clone:#6A3AD0;--clone-trait:#7C4DFF;
+  --voile-clone:#ECE6FB;--focus:#6A3AD0;
+  --nuit:#0D0E1B;--nuit-2:#16172E;--nuit-texte:#ECEBF6;--nuit-doux:#A9A8C2;--nuit-ligne:#2C2D4A;--nuit-clone:#B39CFF;--nuit-origine:#F2B04C;
+  --police:"Bricolage Grotesque",system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,"DejaVu Sans Mono","Cascadia Code",Menlo,Consolas,monospace;
+  --large:72rem;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --fond:#0D0E1B;--surface:#16172E;--texte:#ECEBF6;--doux:#A9A8C2;--ligne:#2C2D4A;
+    --origine:#F2B04C;--origine-trait:#F2B04C;--clone:#B39CFF;--clone-trait:#A98BFF;
+    --voile-clone:#1E1B3D;--focus:#B39CFF;
+  }
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{margin:0;background:var(--fond);color:var(--texte);font:400 1.0625rem/1.65 var(--police);overflow-wrap:break-word}
+img{display:block;max-width:100%;height:auto}
+a{color:var(--clone);text-underline-offset:.18em;text-decoration-thickness:.08em}
+a:hover{text-decoration-thickness:.16em}
+:focus-visible{outline:3px solid var(--focus);outline-offset:3px;border-radius:4px}
+code,kbd,pre{font-family:var(--mono)}
+h1,h2,h3{font-weight:760;line-height:1.05;letter-spacing:-.025em;margin:0}
+p{margin:0}
+.cadre{max-width:var(--large);margin-inline:auto;padding-inline:1.25rem}
+.lien-evitement{position:absolute;left:1rem;top:-4rem;background:var(--texte);color:var(--fond);padding:.6rem 1rem;border-radius:.5rem;z-index:20}
+.lien-evitement:focus{top:1rem}
+
+/* En-tête */
+.entete{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding-block:1.2rem;flex-wrap:wrap}
+.marque{font-weight:800;font-size:1.45rem;letter-spacing:-.03em;color:var(--texte);text-decoration:none}
+.marque span{color:var(--clone)}
+.entete nav{display:flex;gap:1.4rem;flex-wrap:wrap;font-size:.98rem}
+.entete nav a{color:var(--texte);text-decoration:none;padding-block:.25rem}
+.entete nav a:hover{text-decoration:underline;text-underline-offset:.3em}
+@media (max-width:40rem){.entete nav .secondaire{display:none}.entete nav{gap:1.1rem}}
+
+/* Accroche */
+.accroche{padding-block:clamp(2rem,6vw,4.5rem) 0}
+.accroche h1{font-size:clamp(2.9rem,9.2vw,7.2rem);font-weight:800;line-height:.93;letter-spacing:-.04em;max-width:13ch}
+.contour{margin:clamp(1.5rem,4vw,2.6rem) 0 0;position:relative}
+.contour svg{display:block;width:100%;height:auto;overflow:visible}
+.contour .note-origine{fill:none;stroke:var(--origine-trait);stroke-width:3;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:2 9;opacity:.95}
+.contour .note-clone{fill:none;stroke:var(--clone-trait);stroke-width:9;stroke-linecap:round;stroke-linejoin:round}
+.contour .grille{stroke:var(--ligne);stroke-width:1}
+.legende{display:flex;gap:1.6rem;flex-wrap:wrap;font-size:.95rem;color:var(--doux);margin-top:.4rem}
+.legende span{display:inline-flex;align-items:center;gap:.55rem}
+.legende i{display:inline-block;width:1.7rem;height:0;border-top:3px dotted var(--origine-trait)}
+.legende i.c{border-top:7px solid var(--clone-trait);border-radius:4px}
+@media (prefers-reduced-motion:no-preference){
+  .contour .note-clone{stroke-dasharray:1;stroke-dashoffset:1;animation:tracer 3.2s .35s cubic-bezier(.5,.1,.2,1) forwards}
+  @keyframes tracer{to{stroke-dashoffset:0}}
+}
+.accroche-bas{display:grid;gap:1.6rem 3rem;grid-template-columns:1.25fr 1fr;align-items:end;margin-top:clamp(1.6rem,4vw,2.6rem)}
+.accroche-bas p{font-size:clamp(1.15rem,2.2vw,1.45rem);line-height:1.45;max-width:34ch}
+.actions{display:flex;gap:.8rem;flex-wrap:wrap;justify-content:flex-end}
+@media (max-width:52rem){.accroche-bas{grid-template-columns:1fr}.actions{justify-content:flex-start}}
+.bouton{display:inline-flex;align-items:center;min-height:3rem;padding:.65rem 1.4rem;border-radius:.7rem;font-weight:650;text-decoration:none;font-size:1.02rem;border:2px solid var(--texte);color:var(--texte);background:transparent}
+.bouton.plein{background:var(--clone);border-color:var(--clone);color:#fff}
+@media (prefers-color-scheme:dark){.bouton.plein{color:#14102A}}
+.bouton:hover{text-decoration:none;filter:brightness(1.1)}
+
+/* Fenêtre */
+.fenetre{margin:0;border-radius:.9rem;overflow:hidden;background:var(--surface);box-shadow:0 0 0 1px var(--ligne),0 1.5rem 3rem -1.2rem rgb(20 10 60/.35)}
+.fenetre img{width:100%}
+.hero-capture{margin-top:clamp(2.2rem,6vw,3.8rem)}
+
+/* Sections */
+section{padding-block:clamp(3.2rem,8vw,6.5rem) 0}
+.titre{font-size:clamp(1.9rem,4.6vw,3.2rem);max-width:22ch;text-wrap:balance}
+.intro{margin-top:1rem;max-width:44rem;color:var(--doux);font-size:1.15rem;line-height:1.55}
+
+/* Ce qui change */
+.deux{display:grid;grid-template-columns:1fr 1fr;gap:0;margin-top:2.4rem;border-block:2px solid var(--texte)}
+.deux>div{padding:1.6rem 0}
+.deux>div+div{padding-left:2rem;border-left:1px solid var(--ligne)}
+.deux h3{font-size:1.5rem;display:flex;align-items:center;gap:.7rem;margin-bottom:.9rem}
+.deux h3::before{content:"";width:2.2rem;border-top:3px dotted var(--origine-trait)}
+.deux>div+div h3::before{border-top:7px solid var(--clone-trait);border-radius:4px}
+.deux ul{margin:0;padding:0;list-style:none;display:grid;gap:.5rem}
+.deux li{padding-left:1.1rem;position:relative}
+.deux li::before{content:"";position:absolute;left:0;top:.8em;width:.45rem;height:2px;background:var(--doux)}
+@media (max-width:44rem){.deux{grid-template-columns:1fr}.deux>div+div{padding-left:0;border-left:0;border-top:1px solid var(--ligne)}}
+
+/* Chaîne */
+.chaine{margin:2.6rem 0 0;padding:0;list-style:none;display:grid;grid-template-columns:1fr 1.7fr 1fr;gap:1.2rem;align-items:stretch;counter-reset:etape}
+.voie{position:relative;border:2px solid var(--texte);border-radius:1rem;padding:1.2rem 1.2rem 1.4rem;background:var(--surface);display:flex;flex-direction:column;gap:1rem}
+.voie.gpu{border-color:var(--clone);background:var(--voile-clone)}
+.voie>h3{font-size:1.1rem;letter-spacing:-.01em;line-height:1.25;font-weight:700}
+.voie>h3 small{display:block;font-weight:450;color:var(--doux);font-size:.92rem;letter-spacing:0;margin-top:.15rem}
+.voie ol{margin:0;padding:0;list-style:none;display:grid;gap:.9rem}
+.voie li{counter-increment:etape;display:grid;grid-template-columns:2rem 1fr;gap:.7rem;align-items:start}
+.voie li::before{content:counter(etape);display:grid;place-items:center;width:2rem;height:2rem;border-radius:50%;background:var(--texte);color:var(--fond);font-weight:700;font-size:.95rem}
+.voie.gpu li::before{background:var(--clone);color:#fff}
+@media (prefers-color-scheme:dark){.voie.gpu li::before{color:#14102A}}
+.voie li strong{display:block;line-height:1.3;font-weight:680}
+.voie li span{display:block;color:var(--doux);font-size:.96rem;line-height:1.45;margin-top:.1rem}
+.voie.gpu .sous{display:grid;grid-template-columns:1fr 1fr;gap:.6rem}
+.voie .moteur{border:1px solid var(--clone);border-radius:.6rem;padding:.55rem .7rem;font-size:.92rem;line-height:1.35;background:var(--surface)}
+.voie .moteur b{display:block;font-weight:700}
+.voie .es{margin-top:auto;font-size:.95rem;color:var(--doux);border-top:1px dashed var(--doux);padding-top:.8rem;line-height:1.45}
+.voie .es b{color:var(--texte);font-weight:680}
+.voie .parallele{font-size:.95rem;color:var(--doux);border-top:1px dashed var(--clone);padding-top:.8rem;line-height:1.45}
+.voie:not(:last-child)::after{content:"";position:absolute;right:-1.2rem;top:50%;width:1.2rem;border-top:3px solid var(--texte)}
+.voie:not(:last-child)::before{content:"";position:absolute;right:-1.2rem;top:calc(50% - 5px);width:0;height:0;border-left:8px solid var(--texte);border-block:6.5px solid transparent;transform:translateY(0)}
+@media (max-width:56rem){
+  .chaine{grid-template-columns:1fr;gap:1.6rem}
+  .voie:not(:last-child)::after{right:auto;left:2.2rem;top:100%;width:0;height:1.6rem;border-top:0;border-left:3px solid var(--texte)}
+  .voie:not(:last-child)::before{right:auto;left:calc(2.2rem - 5.5px);top:calc(100% + 1.6rem - 8px);border-left:7px solid transparent;border-right:7px solid transparent;border-block:0;border-top:9px solid var(--texte)}
+}
+@media (max-width:30rem){.voie.gpu .sous{grid-template-columns:1fr}}
+.note-chaine{margin-top:1.4rem;color:var(--doux);max-width:48rem}
+
+/* Visite de l'application */
+.visite{display:grid;gap:clamp(2.6rem,6vw,4.5rem);margin-top:2.6rem}
+.scene{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2.2fr);gap:1.4rem 2.6rem;align-items:center}
+.scene:nth-child(even){grid-template-columns:minmax(0,2.2fr) minmax(0,1fr)}
+.scene:nth-child(even) .texte{order:2}
+.scene h3{font-size:clamp(1.4rem,2.6vw,1.9rem);margin-bottom:.7rem}
+.scene .texte p{color:var(--doux)}
+.scene .texte p+p{margin-top:.7rem}
+.scene .fenetre+.fenetre{margin-top:1rem}
+@media (max-width:52rem){.scene,.scene:nth-child(even){grid-template-columns:1fr}.scene:nth-child(even) .texte{order:0}}
+figcaption.vu{font-size:.9rem;color:var(--doux);padding:.7rem 1rem;border-top:1px solid var(--ligne);background:var(--surface)}
+
+/* Fonctions */
+.fonctions{margin:2.4rem 0 0;padding:0;list-style:none;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:3rem;border-top:2px solid var(--texte)}
+.fonctions li{padding:1.2rem 0;border-bottom:1px solid var(--ligne)}
+.fonctions h3{font-size:1.22rem;letter-spacing:-.015em;margin-bottom:.3rem;line-height:1.2}
+.fonctions p{color:var(--doux);font-size:1rem;line-height:1.55}
+@media (max-width:46rem){.fonctions{grid-template-columns:1fr}}
+
+/* Installation */
+.installer{margin-top:clamp(3.2rem,8vw,6.5rem);padding-block:clamp(3rem,7vw,5.5rem);background:var(--nuit);color:var(--nuit-texte)}
+.installer .titre{color:var(--nuit-texte)}
+.installer .intro{color:var(--nuit-doux)}
+.installer a{color:var(--nuit-clone)}
+.installer :focus-visible{outline-color:var(--nuit-clone)}
+.bloc{margin-top:2rem}
+.bloc>h3{font-size:1.15rem;margin-bottom:.2rem;color:var(--nuit-texte)}
+.bloc>p{color:var(--nuit-doux);font-size:1rem;margin-bottom:.7rem;max-width:46rem}
+.commande{display:flex;align-items:stretch;border:1px solid var(--nuit-ligne);border-radius:.8rem;background:var(--nuit-2);overflow:hidden}
+.commande pre{flex:1;margin:0;padding:1rem 1.1rem;overflow-x:auto;font-size:.9rem;line-height:1.6;color:var(--nuit-texte);white-space:pre-wrap;overflow-wrap:anywhere}
+.commande pre .inv{color:var(--nuit-doux);user-select:none}
+.commande button{flex:none;border:0;border-left:1px solid var(--nuit-ligne);background:transparent;color:var(--nuit-clone);font:650 .95rem var(--police);padding:0 1.2rem;min-width:6.6rem;cursor:pointer}
+.commande button:hover{background:#1f2042}
+.commande button[data-ok]{color:#8fe3b0}
+@media (max-width:34rem){.commande{flex-direction:column}.commande button{border-left:0;border-top:1px solid var(--nuit-ligne);min-height:3rem}}
+.cle{font-family:var(--mono);font-size:clamp(.95rem,2.6vw,1.2rem);letter-spacing:.03em;word-spacing:.35em}
+.prerequis{margin:2.2rem 0 0;padding:1.2rem 1.4rem;border-left:4px solid var(--nuit-origine);background:var(--nuit-2);border-radius:0 .8rem .8rem 0;color:var(--nuit-doux);max-width:50rem}
+.prerequis strong{color:var(--nuit-texte)}
+
+/* Usage responsable */
+.regle{margin-top:2rem;display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:2rem 3.5rem;align-items:start}
+.regle .phrase{font-size:clamp(1.5rem,3.6vw,2.4rem);line-height:1.18;font-weight:700;letter-spacing:-.02em}
+.regle ul{margin:0;padding:0;list-style:none;display:grid;gap:1rem}
+.regle li{padding-left:1.4rem;position:relative;color:var(--doux)}
+.regle li::before{content:"";position:absolute;left:0;top:.7em;width:.6rem;height:.6rem;border-radius:50%;background:var(--clone-trait)}
+.regle li strong{color:var(--texte);font-weight:650}
+@media (max-width:52rem){.regle{grid-template-columns:1fr}}
+.etiquette{margin-top:2.2rem;display:flex;gap:1rem;align-items:center;flex-wrap:wrap;padding:1rem 1.2rem;border:2px dashed var(--origine-trait);border-radius:.9rem;max-width:44rem}
+.etiquette q{font-weight:700;font-size:1.2rem;quotes:"« " " »"}
+.etiquette span{color:var(--doux)}
+
+/* Crédits */
+.credits{margin-top:2.2rem;width:100%;border-collapse:collapse;font-size:.98rem}
+.credits caption{text-align:left;color:var(--doux);padding-bottom:.8rem;max-width:46rem}
+.credits th,.credits td{text-align:left;vertical-align:top;padding:.8rem 1rem .8rem 0;border-top:1px solid var(--ligne)}
+.credits thead th{border-top:2px solid var(--texte);font-weight:650}
+.credits td:first-child{font-weight:620;white-space:nowrap}
+.nc{display:inline-block;background:var(--origine);color:var(--fond);font-weight:700;font-size:.82rem;padding:.05rem .5rem;border-radius:.4rem;margin-right:.3rem;white-space:nowrap}
+@media (prefers-color-scheme:dark){.nc{color:#241600}}
+@media (max-width:46rem){
+  .credits,.credits tbody,.credits tr,.credits td{display:block}
+  .credits caption{display:block;width:100%}
+  .credits thead{position:absolute;left:-9999px}
+  .credits tr{padding:.9rem 0;border-top:1px solid var(--ligne)}
+  .credits td{border:0;padding:.1rem 0}
+  .credits td:first-child{white-space:normal;font-size:1.05rem}
+}
+
+/* Pied */
+.pied{margin-top:clamp(3.2rem,8vw,6rem);border-top:2px solid var(--texte);padding-block:2rem 3rem;display:flex;gap:1rem 2.5rem;flex-wrap:wrap;justify-content:space-between;color:var(--doux);font-size:.97rem}
+.pied nav{display:flex;gap:1.4rem;flex-wrap:wrap}
+.pied a{color:var(--texte)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 </style>
 </head>
 <body>
-<header>
-  <h1>Voix-là</h1>
-  <p>Remplacer la voix d'une vidéo par une voix clonée, et garder tout le reste.</p>
-</header>
-<main>
-  <h2>Ce que c'est</h2>
-  <p>Voix-là est un outil personnel de doublage. À partir d'une vidéo (une chanson, un duo, du rap ou de la parole) et
-  d'une voix de référence, il rend la même vidéo avec la voix clonée, et son audio seul. La commande <code>doubler</code>
-  et l'application graphique <strong>Voix-là</strong> (GTK 4 et libadwaita) sont dans le même paquet.</p>
-  <ul>
-    <li>Le travail lourd (séparation des voix, nettoyage, conversion de la voix) tourne sur le GPU gratuit de <em>votre</em>
-    compte Kaggle, dans un jeu de données et un noyau privés.</li>
-    <li>Le mixage (dynamique de la voix d'origine, de-esser, réverbération, limiteur) et la remise du son dans la vidéo se
-    font en local avec ffmpeg ; l'image et les sous-titres sont copiés sans réencodage.</li>
-    <li>Une version avec auto-tune, de la correction discrète à l'effet robotique, est produite en local.</li>
-  </ul>
-  <p class="petit">Il faut un compte Kaggle avec accès au GPU et son jeton d'API. Les poids YingMusic-SVC sont sous
-  licence CC BY-NC 4.0 : usage personnel et non commercial seulement.</p>
+<a class="lien-evitement" href="#contenu">Aller au contenu</a>
 
-  <h2>Ajouter le dépôt, en une commande</h2>
-  <p>Cette commande pose la clé de signature et la source APT, puis met la liste des paquets à jour :</p>
-<pre>sudo curl -fsSL https://mawena.github.io/Voix-la/apt/voix-la.gpg -o /usr/share/keyrings/voix-la.gpg \
+<header class="cadre entete">
+  <a class="marque" href="#" aria-label="Voix-là, haut de la page">Voix<span>-là</span></a>
+  <nav aria-label="Navigation de la page">
+    <a class="secondaire" href="#fonctionnement">Fonctionnement</a>
+    <a class="secondaire" href="#application">Application</a>
+    <a class="secondaire" href="#responsable">Usage responsable</a>
+    <a href="#installer">Installer</a>
+    <a href="https://github.com/mawena/Voix-la">GitHub</a>
+  </nav>
+</header>
+
+<main id="contenu">
+<div class="cadre accroche">
+  <h1>Votre vidéo, avec une autre voix.</h1>
+
+  <div class="contour">
+    <svg viewBox="0 0 1200 190" role="img" aria-labelledby="t-contour d-contour" preserveAspectRatio="xMidYMid meet">
+      <title id="t-contour">La mélodie reste, le timbre change</title>
+      <desc id="d-contour">Une courbe de notes en pointillés ambre, la voix d'origine, et par-dessus la même courbe en trait violet épais, la voix clonée&nbsp;: même mélodie, autre voix.</desc>
+      <g aria-hidden="true">
+        <line class="grille" x1="0" x2="1200" y1="52" y2="52"/>
+        <line class="grille" x1="0" x2="1200" y1="100" y2="100"/>
+        <line class="grille" x1="0" x2="1200" y1="148" y2="148"/>
+      </g>
+      <path class="note-clone" pathLength="1" d="M40 150 H130 C140 150 140 112 150 112 H230 C240 112 240 72 250 72 H310 C320 72 320 108 330 108 H410 C420 108 420 60 430 60 H480 C490 60 490 122 500 122 H610 C620 122 620 92 630 92 H690 C700 92 700 142 710 142 H810 C820 142 820 100 830 100 H910 C920 100 920 52 930 52 H1010 C1020 52 1020 96 1030 96 H1100 C1110 96 1110 132 1120 132 H1170"/>
+    <path class="note-origine" d="M40 150 H130 C140 150 140 112 150 112 H230 C240 112 240 72 250 72 H310 C320 72 320 108 330 108 H410 C420 108 420 60 430 60 H480 C490 60 490 122 500 122 H610 C620 122 620 92 630 92 H690 C700 92 700 142 710 142 H810 C820 142 820 100 830 100 H910 C920 100 920 52 930 52 H1010 C1020 52 1020 96 1030 96 H1100 C1110 96 1110 132 1120 132 H1170"/>
+      </svg>
+    <div class="legende" aria-hidden="true"><span><i></i>la voix de la vidéo</span><span><i class="c"></i>la voix choisie, sur la même mélodie</span></div>
+  </div>
+
+  <div class="accroche-bas">
+    <p>Voix-là remplace la voix d'une vidéo ou d'une chanson par une voix clonée, la vôtre ou celle d'une personne d'accord. La mélodie, le phrasé, la musique et l'image restent. Seul le timbre change.</p>
+    <div class="actions">
+      <a class="bouton plein" href="#installer">Installer sur Ubuntu</a>
+      <a class="bouton" href="https://github.com/mawena/Voix-la">Voir le code</a>
+    </div>
+  </div>
+
+  <figure class="fenetre hero-capture">
+    <img src="images/bibliotheque.webp" width="1260" height="610" fetchpriority="high"
+      alt="Fenêtre de Voix-là, page Résultats : une grille de quatorze doublages avec leurs miniatures, la langue, la durée et le nom de la voix, par exemple « Lumière d'été » avec les voix Jules et Marie.">
+  </figure>
+</div>
+
+<section id="fonctionnement" class="cadre" aria-labelledby="h-reste">
+  <h2 class="titre" id="h-reste">La mélodie reste, le timbre change</h2>
+  <p class="intro">On part d'une vidéo (une chanson, un duo, du rap ou de la parole) et d'une voix de référence. On récupère la même vidéo, avec la voix remplacée, et son audio seul.</p>
+  <div class="deux">
+    <div>
+      <h3>Ce qui reste</h3>
+      <ul>
+        <li>La mélodie, le phrasé et l'interprétation</li>
+        <li>La musique, les bruits et l'ambiance</li>
+        <li>L'image et les sous-titres, copiés sans réencodage</li>
+        <li>Les nuances de la voix d'origine, suivies de près</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Ce qui change</h3>
+      <ul>
+        <li>Le timbre&nbsp;: celui de la voix que vous avez choisie</li>
+        <li>La hauteur de la chanson, si la voix en demande une autre (facultatif)</li>
+        <li>Les paroles, si vous voulez les voir traduites en français</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="cadre" aria-labelledby="h-chaine">
+  <h2 class="titre" id="h-chaine">Six étapes, de la vidéo à la vidéo</h2>
+  <p class="intro">Votre PC prépare et finit le travail. Le calcul lourd part sur un GPU gratuit, celui de votre compte Kaggle.</p>
+  <div class="chaine" role="group" aria-label="Schéma de la chaîne de traitement">
+    <div class="voie">
+      <h3>Sur votre PC<small>avant le calcul</small></h3>
+      <ol>
+        <li><div><strong>Extraire le son</strong><span>Mp4, mkv, webm ou mov. Le son part en FLAC, avec la voix de référence.</span></div></li>
+      </ol>
+      <p class="es"><b>Vous donnez</b> une vidéo, et une voix de référence.</p>
+    </div>
+    <div class="voie gpu">
+      <h3>Sur un GPU gratuit<small>noyau privé de votre compte Kaggle, ou Modal, ou Runpod</small></h3>
+      <ol>
+        <li><div><strong>Séparer la voix et la musique</strong><span>Le chant est isolé, puis les chœurs sont écartés de la voix principale.</span></div></li>
+        <li><div><strong>Nettoyer la voix</strong><span>La reverb d'origine est retirée&nbsp;: la voix reste sèche pour le clonage.</span></div></li>
+        <li><div><strong>Convertir la voix</strong><span>Sans entraînement, à partir de quelques secondes de la voix choisie.</span>
+          <div class="sous" style="margin-top:.6rem">
+            <div class="moteur"><b>Chant</b>YingMusic-SVC</div>
+            <div class="moteur"><b>Parole</b>Seed-VC</div>
+          </div></div></li>
+      </ol>
+      <p class="parallele">En parallèle, les paroles sont transcrites mot à mot, minutées, et traduites en français.</p>
+    </div>
+    <div class="voie">
+      <h3>Sur votre PC<small>après le calcul</small></h3>
+      <ol>
+        <li><div><strong>Mixer</strong><span>Nuances, dé-esseur, reverb, limiteur à −1 dBTP.</span></div></li>
+        <li><div><strong>Remettre dans la vidéo</strong><span>Image et sous-titres copiés tels quels.</span></div></li>
+      </ol>
+      <p class="es"><b>Vous recevez</b> la vidéo doublée, et son audio seul en MP3.</p>
+    </div>
+  </div>
+  <p class="note-chaine">Vos fichiers ne vont que dans un jeu de données et un noyau privés de votre compte. Rien n'est envoyé ailleurs.</p>
+</section>
+
+<section id="application" class="cadre" aria-labelledby="h-app">
+  <h2 class="titre" id="h-app">Une vraie application, pas seulement une commande</h2>
+  <p class="intro">Voix-là a une interface GTK 4 et libadwaita, qui s'intègre au bureau Ubuntu, en clair comme en sombre. La commande <code>doubler</code> est dans le même paquet.</p>
+  <div class="visite">
+
+    <div class="scene">
+      <div class="texte">
+        <h3>Écouter le doublage, comparer à l'original</h3>
+        <p>Le lecteur bascule d'une piste à l'autre au même instant&nbsp;: doublage, original, beat seul, voix convertie, voix d'origine. Les paroles défilent dans la langue chantée et en français.</p>
+        <p>La frise d'octave montre quelle voix chante chaque passage d'un duo. Un clic corrige à la main.</p>
+      </div>
+      <div>
+        <figure class="fenetre">
+          <img src="images/lecteur.webp" width="1260" height="840" loading="lazy"
+            alt="Page de détail d'un doublage : lecteur vidéo, boutons Doublage, Original, Beat seul, Ma voix seule et Voix d'origine seule, et paroles en espagnol avec leur traduction française.">
+        </figure>
+        <figure class="fenetre">
+          <img src="images/frise.webp" width="930" height="160" loading="lazy"
+            alt="Frise d'octave : une suite de passages, bleus pour une voix d'homme et violets pour une voix de femme, chacun avec son décalage en demi-tons.">
+        </figure>
+      </div>
+    </div>
+
+    <div class="scene">
+      <div class="texte">
+        <h3>Plein écran, paroles sur l'image</h3>
+        <p>Le mot chanté se remplit à mesure que la voix avance. Les commandes disparaissent avec le pointeur, et toutes les touches restent actives&nbsp;: Espace, F, V pour le mode cinéma, L pour la boucle A-B.</p>
+      </div>
+      <figure class="fenetre">
+        <img src="images/plein-ecran.webp" width="1250" height="700" loading="lazy"
+          alt="Lecteur en plein écran, thème sombre : l'image en fond, et en bas deux lignes de paroles, « Camino despacio bajo la luz » et sa traduction « Je marche lentement sous la lumière ».">
+      </figure>
+    </div>
+
+    <div class="scene">
+      <div class="texte">
+        <h3>Karaoké, avec une note de justesse</h3>
+        <p>Chantez sur le beat du doublage. Voix-là trace votre voix contre la mélodie de l'original, ligne par ligne, et vous donne une note sur 100. Les passages faux sont en rouge, un clic les fait réécouter.</p>
+      </div>
+      <figure class="fenetre">
+        <img src="images/karaoke.webp" width="1160" height="830" loading="lazy"
+          alt="Page Karaoké, thème sombre : la note 88 sur 100, la courbe de la voix contre les notes de l'original avec une ligne en rouge, et la liste des lignes avec leur note.">
+      </figure>
+    </div>
+
+    <div class="scene">
+      <div class="texte">
+        <h3>Une séance guidée pour enregistrer sa voix</h3>
+        <p>Cinq étapes, environ vingt minutes, avec un téléphone&nbsp;: parole, tessiture, notes à tenir, une chanson, une chanson libre. L'étape de chaque fichier est reconnue à son nom.</p>
+        <p>Les prises servent ensuite à affiner la voix sur son propre chant.</p>
+      </div>
+      <figure class="fenetre">
+        <img src="images/seance.webp" width="1160" height="830" loading="lazy"
+          alt="Page de séance d'enregistrement : le mode d'emploi en cinq points, les précautions avant de commencer, et les cinq étapes Parole, Tessiture, Notes à tenir, Chanson et Chanson libre.">
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section class="cadre" aria-labelledby="h-fonctions">
+  <h2 class="titre" id="h-fonctions">Ce qu'il sait faire</h2>
+  <ul class="fonctions">
+    <li><h3>Garder la chanson dans votre voix</h3><p>La chanson est transposée dans la tessiture de la voix choisie, de −5 à +5 demi-tons, pour qu'on reconnaisse la personne.</p></li>
+    <li><h3>Une voix par chanteur dans un duo</h3><p>Voix d'homme et voix de femme sont reconnues, chaque passage reçoit la sienne, et vous corrigez à la main.</p></li>
+    <li><h3>Chant, parole, rap</h3><p>Le mode est détecté. YingMusic-SVC convertit le chant, Seed-VC la parole, avec l'auto-tune en option.</p></li>
+    <li><h3>Cinq pistes dans la vidéo</h3><p>Doublage, original, beat seul, voix convertie et voix d'origine&nbsp;: on choisit la piste dans n'importe quel lecteur.</p></li>
+    <li><h3>Paroles synchronisées et traduites</h3><p>Transcrites mot à mot avec Whisper, traduites en français, affichées sur l'image et dans un fichier de sous-titres.</p></li>
+    <li><h3>Comparer des voix à l'aveugle</h3><p>Plusieurs voix sur le même extrait, mélangées sous des lettres. On note chacune avant de voir les noms.</p></li>
+    <li><h3>Affiner sa voix sur son chant</h3><p>À partir de quelques minutes de chant enregistrées, la voix est affinée sur le GPU, puis rangée avec ses autres voix.</p></li>
+    <li><h3>Le calcul où vous voulez</h3><p>GPU gratuit de Kaggle par défaut, Modal ou Runpod si Kaggle n'est pas disponible. Le quota de Kaggle est suivi dans l'application.</p></li>
+  </ul>
+</section>
+
+<div class="installer" id="installer">
+  <div class="cadre">
+    <h2 class="titre">Installer en une commande</h2>
+    <p class="intro">Pour Ubuntu 24.04 ou plus récent. Le dépôt APT est signé&nbsp;: une fois ajouté, les nouvelles versions arrivent avec les mises à jour du système.</p>
+
+    <div class="bloc">
+      <h3>En une ligne</h3>
+      <p>Ajoute la clé et le dépôt, puis installe Voix-là (le script <a href="installer.sh">installer.sh</a> fait les étapes ci-dessous).</p>
+      <div class="commande">
+<pre id="cmd-courte">curl -fsSL https://mawena.github.io/Voix-la/installer.sh | sudo sh</pre>
+        <button type="button" data-copie="cmd-courte" aria-label="Copier la commande d'installation en une ligne">Copier</button>
+      </div>
+    </div>
+
+    <p class="intro">Ou pas à pas&nbsp;:</p>
+
+    <div class="bloc">
+      <h3>1. Ajouter le dépôt</h3>
+      <p>Pose la clé de signature et la source, puis met à jour la liste des paquets.</p>
+      <div class="commande">
+<pre id="cmd-depot">sudo curl -fsSL https://mawena.github.io/Voix-la/apt/voix-la.gpg -o /usr/share/keyrings/voix-la.gpg \
  &amp;&amp; sudo curl -fsSL https://mawena.github.io/Voix-la/apt/voix-la.sources -o /etc/apt/sources.list.d/voix-la.sources \
  &amp;&amp; sudo apt update</pre>
+        <button type="button" data-copie="cmd-depot" aria-label="Copier la commande qui ajoute le dépôt">Copier</button>
+      </div>
+    </div>
 
-  <h2>Installer</h2>
-<pre>sudo apt install voix-la</pre>
-  <p>Le paquet remet lui-même la clé (<code>/usr/share/keyrings/voix-la.gpg</code>) et la source
-  (<code>/etc/apt/sources.list.d/voix-la.sources</code>) en place : elles restent à jour et disparaissent à la
-  suppression du paquet.</p>
+    <div class="bloc">
+      <h3>2. Installer Voix-là</h3>
+      <div class="commande">
+<pre id="cmd-installer">sudo apt install voix-la</pre>
+        <button type="button" data-copie="cmd-installer" aria-label="Copier la commande d'installation">Copier</button>
+      </div>
+    </div>
 
-  <h2>Mettre à jour</h2>
-  <p>Une fois le dépôt ajouté, <code>apt upgrade</code> suffit pour recevoir chaque nouvelle version :</p>
-<pre>sudo apt update &amp;&amp; sudo apt upgrade</pre>
+    <div class="bloc">
+      <h3>3. Se mettre à jour, plus tard</h3>
+      <p>Le paquet garde lui-même la clé et la source en place. <code>apt upgrade</code> suffit pour chaque nouvelle version.</p>
+      <div class="commande">
+<pre id="cmd-maj">sudo apt update &amp;&amp; sudo apt upgrade</pre>
+        <button type="button" data-copie="cmd-maj" aria-label="Copier la commande de mise à jour">Copier</button>
+      </div>
+    </div>
 
-  <h2>Vérifier la clé</h2>
-  <div class="carte">
-    <p style="margin:0">Voix-là APT (mawena)<br>
-    <code>20F9 E2A5 B482 09DE DBD3  9601 0604 C235 3943 6022</code></p>
+    <div class="bloc">
+      <h3>Vérifier la clé de signature</h3>
+      <p>Clé «&nbsp;Voix-là APT (mawena)&nbsp;». Comparez cette empreinte avec celle du fichier <a href="https://github.com/mawena/Voix-la/blob/main/data/apt/LISEZMOI">data/apt/LISEZMOI</a> du dépôt, puis avec ce qu'affiche cette commande.</p>
+      <div class="commande">
+<pre id="cmd-cle"><span class="inv"># empreinte attendue&nbsp;: </span><span class="cle">20F9 E2A5 B482 09DE DBD3  9601 0604 C235 3943 6022</span>
+gpg --show-keys --with-fingerprint /usr/share/keyrings/voix-la.gpg</pre>
+        <button type="button" data-copie-ligne="cmd-cle" aria-label="Copier la commande de vérification de la clé">Copier</button>
+      </div>
+    </div>
+
+    <p class="prerequis"><strong>Il vous faut aussi un compte Kaggle</strong> avec le GPU activé (vérification du numéro de téléphone) et son jeton d'API&nbsp;: le calcul tourne sur votre compte. Le guide complet est dans le <a href="https://github.com/mawena/Voix-la#prérequis">README</a>. Les paquets <code>.deb</code> sont aussi joints à chaque <a href="https://github.com/mawena/Voix-la/releases">release</a>, avec leurs sommes de contrôle.</p>
+    <p class="sr" role="status" aria-live="polite" id="etat-copie"></p>
   </div>
-  <p class="petit">Dépôt signé (<code>InRelease</code> et <code>Release.gpg</code>), architectures <code>all</code> et
-  <code>amd64</code>. Les anciennes versions restent dans le dépôt. Les paquets sont aussi sur la page des
-  <a href="https://github.com/mawena/Voix-la/releases">releases GitHub</a>.</p>
+</div>
+
+<section id="responsable" class="cadre" aria-labelledby="h-resp">
+  <h2 class="titre" id="h-resp">Usage responsable</h2>
+  <div class="regle">
+    <p class="phrase">Ne clonez que votre propre voix, ou celle d'une personne qui vous a donné son accord.</p>
+    <ul>
+      <li><strong>Un rappel de consentement</strong> est gardé avec chaque voix enregistrée.</li>
+      <li><strong>Usage personnel&nbsp;:</strong> s'amuser, s'entraîner, tester sa voix sur des chansons. Pas d'usage commercial avec le moteur de chant par défaut.</li>
+      <li><strong>Les chansons et les vidéos restent à leurs auteurs.</strong> Ne diffusez pas un doublage sans en avoir les droits.</li>
+      <li><strong>Vos données restent chez vous</strong> et sur votre compte Kaggle privé.</li>
+    </ul>
+  </div>
+  <p class="etiquette"><q>Voix&nbsp;: imitation par IA</q><span>Si vous montrez un doublage à d'autres, dites-le&nbsp;: une voix clonée ne doit jamais passer pour la vraie.</span></p>
+</section>
+
+<section id="credits" class="cadre" aria-labelledby="h-credits">
+  <h2 class="titre" id="h-credits">Crédits et licences</h2>
+  <p class="intro">Voix-là assemble des outils libres, téléchargés sur le GPU à l'exécution. Aucun de leurs codes ni de leurs poids n'est dans le dépôt&nbsp;: chacun garde sa licence. Le code de Voix-là est sous licence MIT.</p>
+  <table class="credits">
+    <caption>Les principaux outils, leur rôle et leur licence. La liste complète est dans le <a href="https://github.com/mawena/Voix-la#crédits">README</a>.</caption>
+    <thead><tr><th scope="col">Outil</th><th scope="col">Rôle</th><th scope="col">Licence</th></tr></thead>
+    <tbody>
+      <tr><td><a href="https://github.com/GiantAILab/YingMusic-SVC">YingMusic-SVC</a></td><td>Conversion de la voix chantée, moteur du chant par défaut</td><td>Code MIT. Poids&nbsp;: <span class="nc">CC BY-NC 4.0</span> usage non commercial seulement</td></tr>
+      <tr><td><a href="https://github.com/Plachtaa/seed-vc">Seed-VC</a></td><td>Conversion de la voix parlée, et du chant en option</td><td>GPL-3.0</td></tr>
+      <tr><td><a href="https://huggingface.co/facebook/nllb-200-distilled-600M">NLLB-200 distillé 600M</a> (Meta)</td><td>Traduction des paroles en français</td><td>Poids&nbsp;: <span class="nc">CC BY-NC 4.0</span> usage non commercial seulement</td></tr>
+      <tr><td><a href="https://huggingface.co/openai/whisper-large-v3">Whisper large-v3</a> (OpenAI)</td><td>Transcription des paroles, mot à mot</td><td>Apache-2.0</td></tr>
+      <tr><td><a href="https://github.com/nomadkaraoke/python-audio-separator">audio-separator</a> et modèles MelBand-Roformer</td><td>Séparation voix et musique, nettoyage de la voix</td><td>MIT, GPL-3.0 ou voir la page de chaque modèle</td></tr>
+      <tr><td><a href="https://ffmpeg.org">FFmpeg</a></td><td>Extraction, mixage et remise du son sur la vidéo</td><td>LGPL / GPL</td></tr>
+      <tr><td>GTK 4, libadwaita, GStreamer</td><td>Interface graphique et lecteur</td><td>LGPL</td></tr>
+      <tr><td><a href="https://github.com/ateliertriay/bricolage">Bricolage Grotesque</a></td><td>La police de cette page, servie depuis ce site</td><td>SIL Open Font License 1.1</td></tr>
+    </tbody>
+  </table>
+  <p class="intro" style="margin-top:1.4rem">Les deux poids sous <span class="nc">CC BY-NC 4.0</span> interdisent tout usage commercial&nbsp;: Voix-là reste un outil personnel.</p>
+</section>
 </main>
-<footer>
-  <a href="https://github.com/mawena/Voix-la">Code et documentation sur GitHub</a> · licence MIT
+
+<footer class="cadre pied">
+  <p>Voix-là, code sous licence MIT. Cette page n'utilise ni traqueur ni service extérieur.</p>
+  <nav aria-label="Liens du projet">
+    <a href="https://github.com/mawena/Voix-la">Dépôt GitHub</a>
+    <a href="https://github.com/mawena/Voix-la/releases">Releases</a>
+    <a href="https://github.com/mawena/Voix-la/blob/main/CHANGELOG.md">Journal des modifications</a>
+    <a href="https://github.com/mawena/Voix-la/issues">Signaler un problème</a>
+  </nav>
 </footer>
+
+<script>
+(function(){
+  var etat=document.getElementById('etat-copie');
+  function texte(id,ligne){
+    var pre=document.getElementById(id);
+    if(!pre)return '';
+    var t=pre.textContent;
+    if(ligne){t=t.split('\n').filter(function(l){return l.charAt(0)!=='#'}).join('\n')}
+    return t.trim();
+  }
+  function copier(t){
+    if(navigator.clipboard&&window.isSecureContext){return navigator.clipboard.writeText(t)}
+    return new Promise(function(ok,ko){
+      var z=document.createElement('textarea');z.value=t;z.setAttribute('readonly','');z.style.position='fixed';z.style.opacity='0';
+      document.body.appendChild(z);z.select();
+      try{document.execCommand('copy')?ok():ko()}catch(e){ko()}
+      document.body.removeChild(z);
+    });
+  }
+  document.querySelectorAll('button[data-copie],button[data-copie-ligne]').forEach(function(b){
+    b.addEventListener('click',function(){
+      var id=b.dataset.copie||b.dataset.copieLigne;
+      copier(texte(id,!!b.dataset.copieLigne)).then(function(){
+        b.textContent='Copié';b.setAttribute('data-ok','');
+        if(etat)etat.textContent='Commande copiée dans le presse-papiers.';
+      },function(){
+        b.textContent='Sélectionnez à la main';
+        if(etat)etat.textContent='La copie a échoué : sélectionnez la commande à la main.';
+      });
+      setTimeout(function(){b.textContent='Copier';b.removeAttribute('data-ok')},2200);
+    });
+  });
+})();
+</script>
 </body>
 </html>

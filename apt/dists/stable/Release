@@ -1,28 +1,28 @@
 Architectures: all amd64
 Codename: stable
 Components: main
-Date: Tue, 10 Nov 2026 17:45:54 +0000
+Date: Tue, 10 Nov 2026 18:17:14 +0000
 Description: Voix-là, doublage par voix clonée
 Label: Voix-là
 Origin: Voix-là
 Suite: stable
 MD5Sum:
- 77c803de31027808a5f556114fc7f289             4584 main/binary-all/Packages
- ff051a6b3f6d75aedbc91ebc692469ca             1453 main/binary-all/Packages.gz
+ dcad1592013010b540e1c9d7c40c059b             6876 main/binary-all/Packages
+ 5aebfaa6d8e06f02d5cb2af517f28531             1593 main/binary-all/Packages.gz
  d41d8cd98f00b204e9800998ecf8427e                0 main/binary-amd64/Packages
  4a4dd3598707603b3f76a2378a4504aa               20 main/binary-amd64/Packages.gz
 SHA1:
- 35174bf7455013c3cc6b796def8a7abe40a93093             4584 main/binary-all/Packages
- 561d34636c334c915c5d70a1bd5371868350f660             1453 main/binary-all/Packages.gz
+ d94f22d64a8ce53e56e86b75325a79d9aa2d1edd             6876 main/binary-all/Packages
+ 3e222236408ae9edf7b37d6fa475bfb126d4ba13             1593 main/binary-all/Packages.gz
  da39a3ee5e6b4b0d3255bfef95601890afd80709                0 main/binary-amd64/Packages
  a0fddd5458378c1bf3c10dd2f5c060d1347741ed               20 main/binary-amd64/Packages.gz
 SHA256:
- d253ddf3e5eaa124b21f17e0b2d815ad9257bc46e66221f117adc812455c49cb             4584 main/binary-all/Packages
- f2febf7529b7e84435ac96c366459f38eea2844e9f66b230fbea6facf83b1589             1453 main/binary-all/Packages.gz
+ fa856fb169e2634c5f8331eaf649dce832547e7ddb63ce12f5203915c6a857e8             6876 main/binary-all/Packages
+ 024a6419868085e2a0d80fccdf8a33daae40857cbfd979bc06f02f180d763033             1593 main/binary-all/Packages.gz
  e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855                0 main/binary-amd64/Packages
  f61f27bd17de546264aa58f40f3aafaac7021e0ef69c17f6b1b4cd7664a037ec               20 main/binary-amd64/Packages.gz
 SHA512:
- 56353f826d67d68933ac11a013763d49d81d65a10807a02d0628091841b0054d5187b972ff150b27ec5222d012e0942b1c2464e78e6fde97982d71e067ddf2e9             4584 main/binary-all/Packages
- 19eca6460006208222671a1268d59b3dd0986d92fab2160442b62916e59f3c70ebc6eaa25bc769b84788af78bc070052f0c9c091a456a1090283b761d78ea96d             1453 main/binary-all/Packages.gz
+ d20a9f029f3e6c00aed23d1229ab4a42e2ccc50b9b26d4ab59b731c7cf2e017cd24afd549eca8ff5588fb7c08362ac1412ad4af9cd41dc77010aef701d96eaf3             6876 main/binary-all/Packages
+ d574691c12c5ae4c55bbbc9cc7d18845993c06c13a31b5fe4d6e4611405968b782d6cbeeaece39e6f5719445e771d389029b9ccf6ac6dda14f1303d6069e2e57             1593 main/binary-all/Packages.gz
  cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e                0 main/binary-amd64/Packages
  1b46b9b08d5b338be9d732a1724795b2eab63daffde377218727c90857b79fe6a47bceed495117fcde60f7339812ef75ef4c69f82dd79fb69b6cbf8006b521f2               20 main/binary-amd64/Packages.gz

@@ -7,6 +7,11 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+### Corrigé
+
+- Dépôt APT : la source posée par le paquet déclare `Architectures: amd64`, pour qu'`apt update` ne signale plus
+  l'absence de paquets i386 sur un système qui accepte aussi le 32 bits (le paquet, en `all`, est toujours trouvé).
+
 ## [0.17.0] - 2026-11-10
 
 ### Ajouté

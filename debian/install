@@ -4,6 +4,10 @@ bin/voix-la usr/bin
 doubler.py usr/lib/voix-la
 affiner.py usr/lib/voix-la
 transposition.py usr/lib/voix-la
+calcul.py usr/lib/voix-la
+calcul_modal.py usr/lib/voix-la
+calcul_modal_hote.py usr/lib/voix-la
+calcul_runpod.py usr/lib/voix-la
 kaggle/doubler_kaggle.py usr/lib/voix-la/kaggle
 kaggle/affiner_kaggle.py usr/lib/voix-la/kaggle
 interface/voixla usr/lib/voix-la

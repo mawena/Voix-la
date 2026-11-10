@@ -17,6 +17,8 @@ doubler \- remplace la voix d'une vidéo par une voix clonée (GPU gratuit de Ka
 .br
 .B doubler \-\-reprendre
 .br
+.B doubler \-\-nettoyer\-runpod
+.br
 .B doubler \-\-preparer\-outils
 .SH DESCRIPTION
 .B doubler
@@ -199,6 +201,26 @@ la vidéo dure environ cinq fois plus longtemps (une piste encodée après
 l'autre : une minute environ pour une chanson de 4 min). Avec
 \fB\-\-remix\fR : la vidéo est refaite ainsi.
 .TP
+.BR \-\-calcul " kaggle|modal|runpod|auto"
+Où tourne le GPU (clé \fBcalcul\fR de la configuration, \fBkaggle\fR par défaut).
+Le même noyau tourne partout. \fBmodal\fR : Modal (crédit gratuit mensuel),
+application éphémère, carte \fBmodal.gpu\fR (\fBL4\fR par défaut), modèles
+publics dans le volume \fBvoix\-la\-modeles\fR (\fBdoubler \-\-calcul modal
+\-\-preparer\-outils\fR) ; le client modal est celui de \fI~/modal\-venv\fR, le
+jeton celui de \fBmodal setup\fR. \fBrunpod\fR : un pod RTX 4090 PAYANT
+(\fBrunpod.gpu\fR), seulement sur demande explicite, jamais automatique ; le pod
+\fBvoix\-la\-\fR… est toujours supprimé (\fBfinally\fR, minuterie dans le pod
+\fBrunpod.duree_max_min\fR, \fB\-\-nettoyer\-runpod\fR). \fBauto\fR : Kaggle
+d'abord, puis Modal si Kaggle n'est pas disponible (jeton absent, refus, quota
+épuisé, ou « queued » au\-delà de \fBkaggle.attente_file_min\fR minutes, 20 par
+défaut) ; la version Kaggle restée en file est à annuler sur le site, dont
+\fBdoubler\fR donne le lien. La référence de la voix et le son ne sont gardés ni
+sur Modal ni sur Runpod. Sans rapport avec \fB\-\-gpu\fR, qui compte les cartes.
+.TP
+.B \-\-nettoyer\-runpod
+Supprime les pods Runpod dont le nom commence par \fBvoix\-la\-\fR (jamais les
+autres), puis quitte.
+.TP
 .BR \-\-gpu " auto|1|2"
 Cartes GPU du noyau. La machine Kaggle demandée (\fBNvidiaTeslaT4\fR, « GPU T4
 x2 ») a deux cartes T4 : le nettoyage (karaoké sur une carte, dereverb de la
@@ -258,7 +280,9 @@ avant le 05/11/2026, en avance sur la vidéo doublée, y sont recalés ; les \fB
 .TP
 .B \-\-reprendre
 Finit la dernière session Kaggle interrompue (coupure réseau, PC éteint) :
-suivi, rapatriement, mixage et vidéo, sans repasser sur le GPU.
+suivi, rapatriement, mixage et vidéo, sans repasser sur le GPU. Une session
+Runpod se reprend de même (le pod est suivi, rapatrié puis supprimé) ; une session
+Modal interrompue est perdue (l'application éphémère s'arrête avec le PC) et close.
 .TP
 .BI \-\-donnees " dossier"
 Dossier des données \fIvoix/\fR et \fIsorties/\fR.

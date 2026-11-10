@@ -249,6 +249,17 @@ class DialogueReglages(Adw.PreferencesDialog):
             r_ch.set_selected(next((i for i, c in enumerate(choix) if c[0] == actuelle), 0))
             r_ch.connect("notify::selected", lambda w, _p: self._pref("chaine", choix[w.get_selected()][0]))
             g.add(r_ch)
+        if "--calcul" in caps:
+            cles_calcul = [""] + [c for c, _l in secours.CALCULS]
+            r_calcul = Adw.ComboRow(
+                title="Calcul du GPU",
+                subtitle="Où tourne le doublage. Selon la configuration : la clé « calcul » de doubler (Kaggle par "
+                         "défaut). Auto : Kaggle, puis Modal si Kaggle n’est pas disponible (jamais Runpod, payant). "
+                         "Modifiable avant chaque lancement dans la page Doubler",
+                model=Gtk.StringList.new(["Selon la configuration"] + [l for _c, l in secours.CALCULS]))
+            r_calcul.set_selected(cles_calcul.index(secours.calcul_choisi(self.prefs)))
+            r_calcul.connect("notify::selected", lambda r, _p: self._pref("calcul", cles_calcul[r.get_selected()]))
+            g.add(r_calcul)
         if "--sans-paroles" in caps:
             self.r_paroles = Adw.SwitchRow(title="Paroles (configuration de doubler)", active=True,
                                            subtitle="Clé « paroles » de config.json : transcription des paroles et "
@@ -320,7 +331,7 @@ class DialogueReglages(Adw.PreferencesDialog):
 
     def _groupe_quota(self):
         """Quota GPU de Kaggle : quota et remise à zéro de repli, seuil d'alerte, que faire d'un doublage qui ne tient
-        plus, et le secours (à venir)."""
+        plus, et le secours (Modal ou Runpod, voixla/secours.py)."""
         g = Adw.PreferencesGroup(title="Quota GPU Kaggle", description=commun.echapper(
             "Kaggle donne environ 30 h de GPU par semaine, remises à zéro chaque samedi à 00:00 UTC. Le total et la "
             "remise à zéro viennent de « kaggle quota » quand il répond ; ceux-ci servent sinon."))
@@ -356,12 +367,25 @@ class DialogueReglages(Adw.PreferencesDialog):
         r_dep.set_selected(cles.index(depassement))
         r_dep.connect("notify::selected", lambda r, _p: self._pref("quota_depassement", cles[r.get_selected()]))
         g.add(r_dep)
-        r_secours = Adw.ComboRow(title="Secours",
-                                 subtitle="Doubler ailleurs quand le quota ne suffit plus : à venir",
-                                 model=Gtk.StringList.new(["Aucun"] + [f"{m.nom} (à venir)" for m in secours.MOYENS]))
-        r_secours.set_sensitive(False)
+        branches = [m for m in secours.MOYENS if m.branche]
+        cles_secours = [""] + [m.cle for m in branches]
+        r_secours = Adw.ComboRow(
+            title="Secours",
+            subtitle="Doubler ailleurs quand le quota ne suffit plus : le dialogue propose un bouton « Doubler sur… ». "
+                     "Modal : crédit gratuit mensuel. Runpod : payant, le pod est supprimé à la fin",
+            model=Gtk.StringList.new(["Aucun"] + [m.nom + (" (payant)" if m.payant else "") + self._etat_moyen(m)
+                                                  for m in branches]))
+        actuel = str(self.prefs.get("secours") or "")
+        r_secours.set_selected(cles_secours.index(actuel) if actuel in cles_secours else 0)
+        r_secours.connect("notify::selected", lambda r, _p: self._pref("secours", cles_secours[r.get_selected()]))
         g.add(r_secours)
         return g
+
+    @staticmethod
+    def _etat_moyen(moyen):
+        """« » si le moyen est prêt, sinon « — raison » (client ou jeton absent : voir le README)."""
+        ok, raison = moyen.pret()
+        return "" if ok else f" — {raison}"
 
     def choisir_externes(self):
         d = Gtk.FileDialog(title="Dossier de prises de chant", modal=True)

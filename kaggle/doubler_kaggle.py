@@ -62,6 +62,8 @@ Entrée de chaque vidéo (jeu de données) : WAV flottant (doubler.py jusqu'au 0
 FLAC est en entiers, doubler.py ramène donc la crête à -1 dBFS avant l'encodage et inscrit ce gain dans les réglages
 (gain_entree) : le noyau le retire à la lecture, tout le reste travaille au niveau d'origine. soundfile lit les deux
 FLAC en flottant : rien ne change dans le noyau.
+Entrées dans /kaggle/input et sorties dans /kaggle/working ; Modal et Runpod les déplacent par DOUBLER_ENTREES et
+DOUBLER_SORTIE (le même script, sans autre changement).
 Sorties dans /kaggle/working/<id>/ pour chaque vidéo :
   voix_source.wav            voix isolée (44,1 kHz stéréo flottant, même longueur que l'entrée) ; si les réglages
                              demandent retour_flac : voix_source.flac (24 bits, crête à -1 dBFS) et
@@ -102,7 +104,10 @@ COMMIT = '51383efd921027683c89e5348211d93ff12ac2a8'   # main au 20/04/2025, dern
 SEEDVC = '/tmp/seed-vc'
 SOUCHES = '/tmp/souches'
 PAQUETS = ['audio-separator[cpu]==0.48.0', 'munch']
-SORTIE = '/kaggle/working'
+# Chemins d'entrée et de sortie : ceux de Kaggle par défaut ; Modal et Runpod les déplacent par ces variables
+# d'environnement (DOUBLER_ENTREES : jeu de données et outils montés ; DOUBLER_SORTIE : dossier des sorties)
+ENTREES = os.environ.get('DOUBLER_ENTREES') or '/kaggle/input'
+SORTIE = os.environ.get('DOUBLER_SORTIE') or '/kaggle/working'
 SR = 44100
 PAS = 441   # 10 ms à 44,1 kHz (trames d'enveloppe et de F0 RMVPE)
 DEBUT = float(os.environ.get('DOUBLER_DEBUT') or time.time())   # une étape à part garde l'horloge du noyau
@@ -375,7 +380,7 @@ def cloner(outils=None):
 
 def trouver_outils():
     """Le dossier du noyau « outils » monté par kernel_sources (repéré par outils.json), sinon None."""
-    fiches = glob.glob('/kaggle/input/**/outils.json', recursive=True)
+    fiches = glob.glob(f'{ENTREES}/**/outils.json', recursive=True)
     return os.path.dirname(fiches[0]) if fiches else None
 
 
@@ -578,10 +583,10 @@ def preparer_paroles_outils(w):
 
 
 def trouver(nom):
-    chemins = glob.glob(f'/kaggle/input/**/{nom}', recursive=True)
+    chemins = glob.glob(f'{ENTREES}/**/{nom}', recursive=True)
     if not chemins:
         log(f'FICHIER ABSENT du jeu de données : {nom} (présents : '
-            f"{sorted(os.path.basename(p) for p in glob.glob('/kaggle/input/**/*.*', recursive=True))})")
+            f"{sorted(os.path.basename(p) for p in glob.glob(f'{ENTREES}/**/*.*', recursive=True))})")
         sys.exit(4)
     return chemins[0]
 

@@ -89,6 +89,9 @@ class Reglages(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             v = self.D.charger_voix_comparees('voixb,voixa,voixc')
         r = self.D.reglages_noyau(self.a, v, None, self.travaux)
+        # chaque voix porte sa zone de chant (transposition, 0.15.0) : vérifiée à part, puis retirée pour comparer le reste
+        for d in [r['voix'], *r['comparer']['voix']]:
+            self.assertIn('confort', d.pop('zone'))
         self.assertEqual(r['voix'], {'nom': 'voixb', 'fichier': 'voix-voixb.wav', 'f0_parole_hz': 210.0, 'facteur_chant': 2.0})
         self.assertEqual(r['comparer'], {'voix': [
             {'nom': 'voixb', 'fichier': 'voix-voixb.wav', 'f0_parole_hz': 210.0, 'facteur_chant': 2.0, 'affichage': 'Voix B'},

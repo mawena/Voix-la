@@ -203,7 +203,7 @@ class Nettoyage(Base):
         (self.etat / 'pods.json').write_text(json.dumps([
             {'id': 'autrepod0001', 'name': 'mon-autre-pod'}, {'id': 'resteun0001', 'name': 'voix-la-20261110-101010-ab12'},
             {'id': 'restedeux002', 'name': 'voix-la-20261109-090909-cd34'}, {'id': 'autrepod0003', 'name': 'voix-la'}]))
-        self.assertEqual(sorted(R.nettoyer(self.dit.append)), ['resteun0001', 'restedeux002'])
+        self.assertEqual(sorted(R.nettoyer(self.dit.append)), ['restedeux002', 'resteun0001'])
         self.assertEqual([p['id'] for p in self.pods()], ['autrepod0001', 'autrepod0003'])
 
     def test_rien_a_nettoyer(self):

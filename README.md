@@ -264,6 +264,11 @@ doubler --config voix marie                     # choisir la voix par défaut
 | `pistes_audio` | pistes audio de la vidéo doublée : `toutes` (doublage, original, beat seul, voix convertie seule, voix d'origine seule) ou `doublage` (lui seul) (`--pistes-audio` l'emporte) | `toutes` |
 | `transposer` | transposition de la chanson dans la tessiture de la voix cible : `auto` (le noyau choisit un décalage entier de −5 à +5), `non` (octave seule, musique intacte) ou un nombre entier de demi-tons (`--transposer` l'emporte) | `auto` |
 | `gpu` | cartes GPU du noyau : `auto` (les deux T4 de la machine, une seule si elle n'en a qu'une), `1` (une carte, comme avant) ou `2` (`--gpu` l'emporte) | `auto` |
+| `calcul` | où tourne le GPU : `kaggle`, `modal`, `runpod` (payant, jamais automatique) ou `auto` (Kaggle, puis Modal si Kaggle n'est pas disponible) (`--calcul` l'emporte) | `kaggle` |
+| `kaggle.attente_file_min` | calcul `auto` : minutes de file `queued` sur Kaggle avant de passer à Modal | `20` |
+| `modal.gpu` | carte de Modal : `L4`, `A10`, `A100-40GB`, `L4:2`… | `L4` |
+| `runpod.gpu` | identifiant de la carte du pod Runpod (`runpodctl gpu list`) | `NVIDIA GeForce RTX 4090` |
+| `runpod.duree_max_min` | minuterie du pod Runpod : minutes avant qu'il se supprime seul | `90`, relevée si la session estimée est plus longue |
 
 Le fichier ressemble à ceci :
 
@@ -530,6 +535,69 @@ l'utilisez pas) ; ouvrez la page `https://www.kaggle.com/code/<compte>/<noyau>` 
 Un noyau refusé, ou terminé sans résultat, ferme la session : il n'y
 a rien à reprendre, relancez le doublage.
 
+### Calcul ailleurs que sur Kaggle (Modal et Runpod)
+
+Quand Kaggle n'est pas disponible (file « queued » sans fin, quota épuisé, refus), le même noyau
+(`kaggle/doubler_kaggle.py`, sans fork : seuls ses chemins d'entrée et de sortie se déplacent, par `DOUBLER_ENTREES` et
+`DOUBLER_SORTIE`, Kaggle par défaut) tourne ailleurs. Le choix : `--calcul kaggle|modal|runpod|auto`, ou une fois pour
+toutes `doubler --config calcul auto` (défaut : `kaggle`, rien ne change sans demande).
+
+| Moyen | Coût | Carte (réglable) | Quand |
+|---|---|---|---|
+| `kaggle` | gratuit (quota hebdomadaire) | deux T4 | défaut |
+| `modal` | crédit gratuit mensuel de Modal | `modal.gpu` : `L4` (défaut, environ 0,80 $/h), `A10`, `A100-40GB`, `L4:2`… | sur demande, ou en `auto` |
+| `runpod` | payant (environ 0,69 $/h), tant que le pod existe | `runpod.gpu` : `NVIDIA GeForce RTX 4090` | seulement sur demande explicite, jamais en `auto` |
+| `auto` | | | Kaggle d'abord, puis Modal |
+
+**`auto`** : Kaggle d'abord. Modal prend le relais si Kaggle n'est pas disponible : pas de jeton, refus du jeu de données
+ou du noyau (quota épuisé, sessions prises), accès refusé, ou noyau toujours en file (`queued`) sans avoir jamais
+tourné au-delà de `kaggle.attente_file_min` minutes (20 par défaut ; `doubler --config kaggle.attente_file_min 30`). En
+basculant, `doubler` écrit que la version Kaggle reste en file (elle peut encore démarrer et consommer du quota) et donne
+le lien de son notebook, `https://www.kaggle.com/code/<compte>/<noyau>`, à annuler sur le site : l'outil `kaggle` ne
+sait pas l'annuler, et `doubler` n'appelle jamais `kaggle kernels delete`. Une vraie erreur du noyau (il a tourné puis
+échoué) ne fait pas basculer.
+
+**Modal.** Client dans son propre environnement : `python3 -m venv ~/modal-venv && ~/modal-venv/bin/pip install modal`
+(ou `$VOIXLA_MODAL_PYTHON`), puis `~/modal-venv/bin/modal setup` (jeton dans `~/.modal.toml`, dont `doubler` ne lit
+jamais le contenu). L'application est éphémère (`with app.run()`) : elle s'arrête avec `doubler`, donc rien ne reste ouvert
+ni facturé. L'image reprend les versions de bibliothèques du noyau Kaggle (Python 3.13, torch 2.11.0, numpy 2.1.3, librosa
+0.11.0, transformers 5.20.2, huggingface_hub 1.33.0, soundfile 0.14.0 ; liste dans `calcul.py`). Le volume persistant
+`voix-la-modeles` ne contient que des modèles publics : `doubler --calcul modal --preparer-outils` (une fois, environ 15 min
+de carte) y prépare ce que prépare le noyau d'outils de Kaggle (paquets, Seed-VC, YingMusic-SVC, poids) ; sans lui, chaque
+session les télécharge (environ 4 min de plus). `doubler --config modal.gpu A10` change de carte.
+
+**Runpod.** `runpodctl` 3 dans `~/.local/bin` (ou `$VOIXLA_RUNPODCTL`), clé enregistrée par `runpodctl doctor`
+(`~/.runpod/config.toml`, jamais lue par `doubler`), clé SSH `~/.ssh/id_rsa` et `id_rsa.pub`. `doubler` crée un pod
+`voix-la-<date>-<hasard>` (image `runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404`, SSH sur 22/tcp), y envoie le noyau et le
+son par `scp`, installe les mêmes versions de bibliothèques, suit le noyau par `ssh`, rapatrie les sorties par `scp`, puis
+supprime le pod. **Le pod est toujours supprimé** :
+
+1. côté PC, un `finally` supprime le pod créé quoi qu'il arrive (erreur, `Ctrl-C`, SIGTERM de l'interface), avec quatre
+   essais puis une vérification dans `runpodctl pod list --all` ; si la suppression échoue, `doubler` le dit en clair
+   (« IL COÛTE TANT QU'IL EXISTE ») avec la commande à lancer ;
+2. une minuterie dans le pod, posée avant tout envoi, le supprime après `runpod.duree_max_min` minutes (90 par défaut,
+   relevées si la session estimée est plus longue) par `runpodctl` et `$RUNPOD_POD_ID`, même si le PC est éteint ;
+3. `doubler --nettoyer-runpod` supprime les restes : seuls les pods dont le nom commence par `voix-la-`.
+
+**Confidentialité.** La référence de la voix et l'empreinte ne sont gardées ni sur Modal ni sur Runpod : envoyées pour le
+calcul, effacées à la fin. Sur Modal, elles passent par un volume éphémère supprimé par Modal à la sortie (et sont
+effacées du conteneur) ; le volume `voix-la-modeles` ne contient que des modèles publics. Sur Runpod, le son et la
+référence sont effacés du pod puis le pod est supprimé. Le dossier local `jeu` est effacé. Rien sur GitHub.
+
+**Reprendre.** `doubler --reprendre` reconnaît la session : Runpod, le pod est suivi (ou déjà fini), les sorties
+rapatriées, le pod supprimé, puis mixage et vidéo ; si le pod n'existe plus (minuterie), la session est close avec les
+restes `voix-la-…` supprimés. Modal : l'application éphémère s'est arrêtée avec le PC, le calcul est perdu (et rien n'est
+facturé) : la session est close proprement, il faut refaire le doublage.
+
+**Estimation.** `doubler` annonce la durée et le coût (en dollars pour Modal et Runpod) selon la carte. Pour une chanson de
+4 min, environ 28 min de session sur une T4 à Kaggle, et sur l'estimation actuelle (rapport de vitesse à une T4 supposé,
+PAS mesuré, à corriger après les premiers essais réels) : L4 environ 25 min et 0,33 $, A10 environ 17 min et 0,31 $,
+A100-40GB environ 11 min et 0,39 $, RTX 4090 sur Runpod environ 19 min et 0,22 $ (le démarrage du pod, 7 min, est
+facturé). Les rapports des sessions Modal et Runpod ne servent pas à estimer Kaggle.
+
+Dans l'interface : Réglages > Doublage > « Calcul du GPU » et « Secours » (le dialogue « le quota ne suffit plus » propose
+« Doubler sur Modal » ou « sur Runpod ») ; la page Doubler a une ligne « Calcul » et montre la durée et le coût.
+
 ### Suivre l'avancement (pour les scripts et l'interface)
 
 ```sh
@@ -594,6 +662,8 @@ Une étape en `erreur` est suivie d'un événement `erreur`. Les étapes commune
 | `--transposer auto\|non\|N` | chant : transposer la chanson entière dans la tessiture de la voix cible (voir [Transposition de la chanson](#transposition-de-la-chanson)) ; `auto`, un décalage entier de −5 à +5 choisi par le noyau ; `non`, octave seule ; `N`, décalage imposé. Parole : jamais | clé `transposer` de la configuration, sinon `auto` |
 | `--pas N` | pas de diffusion de la conversion ; 50 coûte environ 40 % de GPU de conversion en plus (au banc d'essai : aucun écart mesurable, oreille partagée) | `30` |
 | `--gpu auto\|1\|2` | cartes GPU du noyau : `auto`, les deux T4 de la machine Kaggle (une seule si elle n'en a qu'une) ; `1`, une carte, comme avant ; même son, plus vite à deux | clé `gpu` de la configuration, sinon `auto` |
+| `--calcul kaggle\|modal\|runpod\|auto` | où tourne le GPU (voir [Calcul ailleurs que sur Kaggle](#calcul-ailleurs-que-sur-kaggle-modal-et-runpod)) ; `auto` : Kaggle d'abord, puis Modal s'il n'est pas disponible ; `runpod` est payant et jamais automatique. Sans rapport avec `--gpu`, qui compte les cartes | clé `calcul` de la configuration, sinon `kaggle` |
+| `--nettoyer-runpod` | supprime les pods Runpod `voix-la-…` restants (jamais les autres), puis quitte | |
 | `--moteur yingmusic\|seedvc` | moteur de conversion du chant : YingMusic-SVC ou Seed-VC 44,1 kHz ; sans effet en parole | clé `moteur` de la configuration, sinon `yingmusic` |
 | `--sans-nettoyage` | en chant, convertir la voix isolée complète sans séparer voix principale et chœurs ni retirer la reverb : la chaîne d'avant, plus rapide | nettoyage |
 | `--sans-paroles` | ni transcription ni traduction des paroles, ni pistes de sous-titres, `.srt` ou `.lrc` ; avec `--remix`, la vidéo est refaite sans les paroles | clé `paroles` de la configuration, sinon oui |
@@ -1346,6 +1416,9 @@ docs: README complet
 .
 ├── doubler.py               commande doubler : extraction, envoi et suivi Kaggle, reprise, mixage, vidéo, voix
 ├── transposition.py         transposition de la musique seule (Rubber Band R3, par ctypes)
+├── calcul.py                moyens de calcul (kaggle, modal, runpod, auto) : cartes, prix, estimation en dollars, versions
+├── calcul_modal.py          Modal côté PC (lance le client modal) ; calcul_modal_hote.py : l'application éphémère
+├── calcul_runpod.py         Runpod : pod, minuterie, suppression, nettoyage (runpodctl, ssh, scp)
 ├── kaggle/
 │   └── doubler_kaggle.py    noyau GPU : séparation, mode, hauteur, nettoyage, conversion YingMusic-SVC et Seed-VC ;
 │                            noyau « outils »

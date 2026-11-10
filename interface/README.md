@@ -620,6 +620,25 @@ annule d'abord les travaux de reprise actifs par la marque « annuler » habitue
 `tests/test_abandon_session.py` ; capture : `outils/capturer.sh /tmp/a.png clair "travaux:abandon"` (dialogue), avec
 `VOIXLA_ETAT_DOUBLER` vers un dossier d'essai contenant un `session-en-cours.json` inventé.
 
+## Calcul ailleurs que sur Kaggle (Modal, Runpod)
+
+`voixla/secours.py` branche les deux moyens de `doubler --calcul` (voir le README du dépôt) :
+
+- **Réglages > Doublage > « Calcul du GPU »** (préférence `calcul` : selon la configuration, Kaggle, Modal, Runpod ou
+  auto) : visible si `doubler --help` annonce `--calcul` ; `moteur.args_doublage` ajoute alors `--calcul=<moyen>`. Auto :
+  Kaggle, puis Modal ; Runpod, payant, n'est jamais choisi par auto.
+- **Réglages > Quota GPU Kaggle > « Secours »** (préférence `secours` : aucun, Modal, Runpod) : le dialogue « Le quota GPU
+  ne suffit plus » propose « Doubler sur Modal » ou « sur Runpod » quand le moyen est prêt (`secours.proposer_pour`) ;
+  `secours.preparer_demande` reprend l'argv de la demande avec `--calcul=<moyen>`, la page Travaux montre « secours :
+  modal ». « Prêt » ne regarde que la présence des fichiers : client `~/modal-venv/bin/python` et `~/.modal.toml` pour
+  Modal, `~/.local/bin/runpodctl` et `~/.runpod/config.toml` pour Runpod (jamais leur contenu). Le sous-titre de la ligne
+  dit ce qui manque.
+- **Page Doubler** : une ligne « Calcul (GPU) » (par défaut la préférence), et le résumé montre la durée sur la carte
+  réglée et le coût estimé en dollars (`moteur.duree_cout_calcul`, d'après `doubler.estimer_calcul`) ; un doublage sur
+  Modal ou Runpod ne passe pas par le quota de Kaggle (il n'ajoute rien au GPU promis à la file).
+- **Reprise** : `doubler --reprendre` reconnaît une session Runpod (pod suivi puis supprimé) ou Modal (perdue, close
+  proprement) ; la bannière de la page Travaux est la même.
+
 ## Quota GPU Kaggle
 
 Kaggle donne environ 30 h de GPU par semaine et par compte, remises à zéro chaque samedi à 00:00 UTC (fenêtre fixe).

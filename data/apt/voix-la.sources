@@ -1,0 +1,5 @@
+Types: deb
+URIs: https://mawena.github.io/Voix-la/apt
+Suites: stable
+Components: main
+Signed-By: /usr/share/keyrings/voix-la.gpg

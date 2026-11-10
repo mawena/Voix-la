@@ -1,0 +1,107 @@
+.TH AFFINER 1 "novembre 2026" "Voix-là" "Commandes utilisateur"
+.nh
+.SH NOM
+affiner \- affine une voix sur son chant, pour de meilleurs doublages (GPU gratuit de Kaggle)
+.SH SYNOPSIS
+.B affiner
+[\fInom\fR] [\fB\-\-prises\fR \fIfichier\fR...] [\fB\-\-pas\fR \fIN\fR] [\fB\-\-budget\-h\fR \fIH\fR]
+[\fB\-\-donnees\fR \fIdossier\fR] [\fB\-\-evenements\fR \fIfichier\fR]
+.br
+.B affiner
+[\fInom\fR] \fB\-\-essai\fR
+.br
+.B affiner
+[\fInom\fR] \fB\-\-reprendre\fR
+.br
+.B affiner
+[\fInom\fR] \fB\-\-etat\fR
+.SH DESCRIPTION
+.B affiner
+apprend le timbre chanté d'une voix sur 5 à 10 minutes de son chant, par un court
+entraînement de Seed\-VC 44,1 kHz sur le GPU gratuit de Kaggle, pour qu'on la
+reconnaisse dans les doublages. Une voix est un dossier \fIvoix/nom/\fR des données
+(voir \fBdoubler\fR(1)) ; ses prises de chant sont dans \fIvoix/nom/chant/\fR :
+celles que la séance d'enregistrement de l'interface (page Voix) y range, ou des
+fichiers posés à la main. Tous les formats d'un téléphone sont lus, quelles que
+soient leur fréquence et leur nombre de canaux : m4a, aac, mp3, wav, ogg, opus,
+3gp, amr (et flac), convertis par \fBffmpeg\fR(1).
+.PP
+Sans \fInom\fR : la voix par défaut (clé \fBvoix\fR de la configuration de
+\fBdoubler\fR), sinon la seule voix présente.
+.IP 1. 4
+Sur le PC, chaque prise est contrôlée : durée, saturation, bruit de fond,
+silence, niveau. Une prise saturée, bruitée ou trop faible n'est pas envoyée.
+Il faut au moins 2 minutes de chant exploitable (5 à 10 minutes conseillées).
+.IP 2. 4
+Les prises retenues partent en FLAC 16 bits mono dans un jeu de données privé,
+avec un noyau privé (\fIkaggle/affiner_kaggle.py\fR), sur le compte et la machine
+de \fBdoubler\fR. Les fonctions d'envoi, de suivi et de rapatriement sont celles de
+\fBdoubler\fR ; un seul travail Kaggle à la fois sur le poste.
+.IP 3. 4
+Le noyau découpe, nettoie, contrôle, entraîne (\fItrain.py\fR de Seed\-VC, avec
+sauvegardes intermédiaires) et rend un point de contrôle compact et son rapport,
+rangés dans \fIvoix/nom/affinage/\fR : \fIaffinage.pth\fR, \fIaffinage.yml\fR,
+\fIaffinage.json\fR (la fiche, qui fait la voix « affinée ») et \fIrapport.json\fR.
+.PP
+Interrompu (budget de temps, panne) : le dernier point est gardé dans
+\fIaffinage/reprise/\fR et \fB\-\-reprendre\fR finit la session.
+.SH OPTIONS
+.TP
+.I nom
+Voix à affiner.
+.TP
+.BI \-\-prises " fichier" ...
+Ces fichiers audio au lieu du dossier \fIchant/\fR.
+.TP
+.BI \-\-pas " N"
+Étapes d'entraînement, de 100 à 20000 (défaut 1500, soit 30 à 60 minutes de GPU).
+.TP
+.BI \-\-budget\-h " H"
+Durée maximale de la session Kaggle, de 0,5 à 9 heures (défaut 2).
+.TP
+.BI \-\-donnees " dossier"
+Dossier des données (voir \fBdoubler\fR(1)).
+.TP
+.BI \-\-evenements " fichier"
+Événements JSON, un par ligne, suivis par l'interface (étapes controle, envoi,
+attente, kaggle, rapatriement ; événements erreur et fin).
+.TP
+.BR \-\-essai ", " \-\-simulation
+Fait tout sauf l'envoi : contrôle des prises, jeu de données et noyau écrits dans
+\fI~/.local/state/voix\-la/affinage/nom/essai/\fR, plan et estimation de durée
+affichés. Rien ne part sur Kaggle et aucune session ne tourne.
+.TP
+.B \-\-reprendre
+Finit la session notée (rapatriement), ou relance un affinage inachevé depuis son
+dernier point de contrôle.
+.TP
+.B \-\-etat
+Affiche la fiche du dernier affinage de la voix.
+.TP
+.B \-\-version
+Affiche la version et quitte.
+.SH CODE DE SORTIE
+0 si l'affinage est terminé (ou l'essai écrit), 1 sinon, 130 si interrompu.
+.SH FICHIERS
+.TP
+.I voix/nom/chant/
+Les prises de chant.
+.TP
+.I voix/nom/affinage/
+Le résultat : \fIaffinage.pth\fR, \fIaffinage.yml\fR, \fIaffinage.json\fR,
+\fIrapport.json\fR, et \fIreprise/\fR pour un affinage inachevé.
+.TP
+.I ~/.local/state/voix\-la/affinage\-en\-cours.json
+La session Kaggle en cours (pour \fB\-\-reprendre\fR).
+.TP
+.I /usr/lib/voix\-la/
+Code installé : affiner.py (qui utilise doubler.py) et le noyau
+\fIkaggle/affiner_kaggle.py\fR.
+.SH NOTES
+Seed\-VC est sous licence GPL\-3.0. N'enregistrez que votre voix, ou celle d'une
+personne d'accord. Le point de contrôle affiné ne se charge que dans Seed\-VC
+44 kHz, pas dans YingMusic\-SVC.
+.SH VOIR AUSSI
+.BR doubler (1),
+.BR voix\-la (1),
+.BR ffmpeg (1)

@@ -17,4 +17,4 @@ override_dh_install:
 # du bit exécutable dans /usr/lib, qu'il garde dans le dépôt.
 override_dh_fixperms:
 	dh_fixperms
-	chmod 644 debian/voix-la/usr/lib/voix-la/doubler.py
+	chmod 644 debian/voix-la/usr/lib/voix-la/doubler.py debian/voix-la/usr/lib/voix-la/affiner.py

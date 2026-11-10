@@ -4,8 +4,8 @@
   affiner [NOM] [--prises FICHIER…] [--pas 1500] [--budget-h 2] [--donnees DIR] [--evenements FICHIER]
           [--essai | --simulation] [--reprendre] [--etat]
 
-Une voix = un dossier <données>/voix/<nom>/. Ses prises de chant (chant-*.wav, enregistrées dans l'interface, page Voix, ou
-posées dans voix/<nom>/chant/) servent à un court entraînement sur le GPU de Kaggle, qui apprend son timbre chanté : de 5 à
+Une voix = un dossier <données>/voix/<nom>/. Ses prises de chant (enregistrées ou importées dans l'interface, page Voix, ou
+posées dans voix/<nom>/chant/ : m4a, aac, mp3, wav, ogg, opus, 3gp, amr, flac, convertis par ffmpeg) servent à un court entraînement sur le GPU de Kaggle, qui apprend son timbre chanté : de 5 à
 10 min de chant a cappella, une heure de GPU environ sur les 30 h hebdomadaires. Sans NOM : la voix par défaut (clé « voix »
 de la configuration de doubler), sinon la seule voix présente. --prises : ces fichiers audio au lieu du dossier chant/.
   1. sur le PC, chaque prise est contrôlée (durée, saturation, bruit de fond, silence, niveau) ; une prise saturée, bruitée
@@ -55,7 +55,10 @@ SILENCE_MAX_PCT = 40.0
 INSTALLATION_S = 420.0
 SECONDES_PAR_PAS = (0.8, 2.0)
 RENDU_S = 120.0
-EXTENSIONS = ('.wav', '.flac', '.mp3', '.m4a', '.ogg', '.opus')
+# Formats des prises : ceux que la séance d'enregistrement de l'interface range dans voix/<nom>/chant/ (fichiers de téléphone),
+# plus FLAC ; tous sont décodés et rééchantillonnés à 44,1 kHz mono par ffmpeg, quelle que soit leur fréquence d'origine
+EXTENSIONS = ('.wav', '.flac', '.m4a', '.aac', '.mp3', '.ogg', '.opus', '.3gp', '.amr')
+BANDE_MIN_HZ = 16000      # en dessous (amr à 8 kHz, appel téléphonique…), le timbre aigu manque : alerte, prise gardée
 
 
 def dire(*a):
@@ -106,6 +109,16 @@ def enveloppe_db(x, pas=441, fenetre=4):
     return 10 * np.log10(np.maximum(p, 1e-12))
 
 
+def frequence_source(fichier):
+    """Fréquence d'échantillonnage du fichier d'origine (Hz) d'après ffprobe, None si on ne la lit pas."""
+    try:
+        r = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=sample_rate',
+                            '-of', 'csv=p=0', str(fichier)], capture_output=True, text=True, timeout=30)
+        return int(r.stdout.strip().split(',')[0])
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return None
+
+
 def controler_prise(fichier):
     """Mesures et alertes d'une prise : durée, crête, saturation, bruit de fond, rapport chant/fond, silence, niveau actif.
     'retenue' est faux pour une prise que le noyau refuserait (saturée, bruitée, trop faible, illisible)."""
@@ -132,6 +145,12 @@ def controler_prise(fichier):
     p = x[:len(env) * 441].reshape(len(env), 441) ** 2
     res['niveau_actif_dbfs'] = round(float(10 * np.log10(max(p[actif].mean(), 1e-12))), 1) if actif.any() else None
     a = res['alertes']
+    hz = frequence_source(fichier)
+    if hz:
+        res['frequence_hz'] = hz
+        if hz < BANDE_MIN_HZ:
+            a.append(f'enregistrée à {hz / 1000:g} kHz seulement : la voix manquera d\'aigus ; réglez le téléphone sur la '
+                     'meilleure qualité (m4a ou wav)')
     if res['saturation_pct'] > 100 * SATURATION_MAX or res['crete_dbfs'] > -0.5:
         a.append(f"saturée (crête {res['crete_dbfs']} dBFS) : baissez le niveau d'entrée ou reculez du micro")
         res['retenue'] = False
@@ -171,14 +190,14 @@ def estimer_s(pas):
 
 
 def prises_de(nom, fichiers):
-    """Prises à envoyer : les fichiers donnés, sinon chant-*.wav de voix/<nom>/chant/."""
+    """Prises à envoyer : les fichiers donnés, sinon les fichiers audio de voix/<nom>/chant/ (tous les formats de EXTENSIONS)."""
     if fichiers:
         manque = [f for f in fichiers if not Path(f).is_file()]
         if manque:
             raise SystemExit('fichier introuvable : ' + ', '.join(manque))
         return [Path(f) for f in fichiers]
     d = dossier_voix(nom) / 'chant'
-    prises = sorted(d.glob('chant-*.wav'))
+    prises = sorted(f for f in d.iterdir() if f.is_file() and f.suffix.lower() in EXTENSIONS) if d.is_dir() else []
     if not prises:
         raise SystemExit(f'aucune prise de chant dans {d} : en enregistrer dans l\'interface (page Voix, « Chant pour '
                          "l'affinage »), ou donner des fichiers avec --prises")
@@ -359,7 +378,6 @@ def affiner(a):
     jeu, noyau, outils = identifiants(conf, essai)
     videos = [f'affinage {nom}']
     kdir = doubler.ETAT / 'affinage' / nom / ('essai' if essai else '.kaggle')
-    doubler.EV.ouvrir(a.evenements)
     # --reprendre : une session notée, suivie jusqu'au bout ; sinon un point de contrôle gardé, relancé
     if a.reprendre and session_en_cours().exists():
         s = json.loads(session_en_cours().read_text())
@@ -435,7 +453,7 @@ def lire_arguments(argv=None):
                                 formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__.split('\n', 1)[1])
     p.add_argument('voix', nargs='?', default=None, help='voix à affiner (dossier de <données>/voix ; défaut : la voix par défaut)')
     p.add_argument('--prises', nargs='+', default=None, metavar='FICHIER',
-                   help='fichiers audio de chant, au lieu de voix/<nom>/chant/chant-*.wav')
+                   help='fichiers audio de chant, au lieu de voix/<nom>/chant/ (m4a, aac, mp3, wav, ogg, opus, 3gp, amr, flac)')
     p.add_argument('--pas', type=int, default=PAS_DEFAUT, help=f"étapes d'entraînement (défaut {PAS_DEFAUT})")
     p.add_argument('--budget-h', type=float, default=BUDGET_H_DEFAUT, metavar='H',
                    help=f'durée maximale de la session Kaggle, en heures (défaut {BUDGET_H_DEFAUT:g})')
@@ -457,14 +475,28 @@ def lire_arguments(argv=None):
 
 def main(argv=None):
     a = lire_arguments(argv)
+    code = 1
+    if a.evenements and not a.etat:
+        doubler.EV.ouvrir(a.evenements)     # ouvert avant tout : même un refus précoce est suivi par l'interface
     try:
-        return afficher_etat(a) if a.etat else affiner(a)
+        code = afficher_etat(a) if a.etat else affiner(a)
+        return code
     except RuntimeError as e:
+        doubler.EV('erreur', None, message=str(e))
         print(f'affiner : {e}', file=sys.stderr)
         return 1
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+        if not isinstance(e.code, (int, type(None))):
+            doubler.EV('erreur', None, message=str(e.code))
+        raise
     except KeyboardInterrupt:
+        doubler.EV('erreur', None, message='interrompu')
         print('affiner : interrompu', file=sys.stderr)
         return 130
+    finally:
+        if a.evenements and not a.etat:
+            doubler.EV('fin', None, code=code)
 
 
 if __name__ == '__main__':

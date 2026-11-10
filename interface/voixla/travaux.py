@@ -497,6 +497,19 @@ def demande_reprise(donnees):
             "donnees": str(donnees), "sorties": [], "reprise": True}
 
 
+def demande_affinage(voix, nom_voix, donnees, pas=None, budget_h=None, reprendre=False, estimations=None, essai=False):
+    """Demande « Affiner ma voix sur mon chant » : la commande affiner dans la file, comme un doublage (suivi par
+    événements, annulation, journal). Un seul affinage est lancé, sans vidéo ; la session Kaggle se compte dans le quota.
+    estimations : secondes par étape (« kaggle » surtout) pour le temps restant."""
+    avec_ev = True
+    argv = moteur.args_affiner(voix, donnees, pas=pas, budget_h=budget_h, reprendre=reprendre,
+                               evenements="{evenements}" if avec_ev else None, essai=essai)
+    return {"type": "affinage", "titre": f"Affinage de la voix {nom_voix}" + (" (reprise)" if reprendre else ""),
+            "argv": argv, "env": moteur.environnement(donnees, frozenset({"--donnees"})), "cwd": str(Path.home()),
+            "evenements": True, "videos": [], "reglages": {"voix": voix, "pas": pas, "budget_h": budget_h},
+            "estimations": estimations or {}, "donnees": str(donnees), "sorties": [], "voix": voix}
+
+
 def lire_json_sur(chemin):
     try:
         return json.loads(Path(chemin).read_text())

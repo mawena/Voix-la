@@ -5,6 +5,7 @@ import base64
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -121,6 +122,76 @@ class Essai(unittest.TestCase):
             for args in (['--pas', '5'], ['--budget-h', '20']):
                 with self.assertRaises(SystemExit), mock.patch('sys.stderr'):
                     aff.lire_arguments(args)
+
+
+# format -> (options d'encodage, fréquence d'échantillonnage) : ce qu'un téléphone peut produire
+FORMATS_TELEPHONE = {'m4a': (['-c:a', 'aac'], 48000), 'aac': (['-c:a', 'aac'], 44100), 'mp3': (['-c:a', 'libmp3lame'], 44100),
+                     'wav': (['-c:a', 'pcm_s16le'], 16000), 'ogg': (['-c:a', 'libvorbis'], 48000),
+                     'opus': (['-c:a', 'libopus'], 48000), '3gp': (['-c:a', 'aac'], 32000),
+                     'amr': (['-c:a', 'libopencore_amrnb', '-b:a', '12.2k'], 8000)}
+
+
+@unittest.skipUnless(FFMPEG, 'ffmpeg absent')
+class PrisesDeLaSeance(unittest.TestCase):
+    """Les prises que la séance range dans voix/<nom>/chant/ (noms horodatés, formats et fréquences de téléphone)."""
+
+    def convertir(self, source, sortie, options, hz):
+        r = subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i', str(source), '-ar', str(hz), '-ac', '1', *options, str(sortie)],
+                           capture_output=True)
+        return r.returncode == 0 and sortie.is_file()
+
+    def test_tous_les_formats_du_telephone(self):
+        with Dossier() as d:
+            home, donnees = monter(d, nb=0)
+            chant = donnees / 'voix' / 'voixA' / 'chant'
+            prise(d / 'source.wav', 70.0)
+            faits = []
+            for i, (ext, (options, hz)) in enumerate(FORMATS_TELEPHONE.items()):
+                sortie = chant / f'20261109-1530{i:02d}-notes.{ext}'
+                if self.convertir(d / 'source.wav', sortie, options, hz):
+                    faits.append(ext)
+            self.assertIn('m4a', faits)
+            self.assertIn('wav', faits)
+            (chant / 'notes.txt').write_text('pas un son')          # ce qui n'est pas audio est ignoré
+            aff, doub = charger_affiner(home)
+            prises = aff.prises_de('voixA', None)
+            self.assertEqual(sorted(p.suffix[1:] for p in prises), sorted(faits))
+            self.assertEqual(aff.main(['voixA', '--essai', '--donnees', str(donnees)]), 0)
+            flacs = sorted((doub.ETAT / 'affinage' / 'voixA' / 'essai' / 'jeu' / 'chant').glob('prise-*.flac'))
+            self.assertEqual(len(flacs), len(faits))
+            for f in flacs:        # tout repart en 44,1 kHz mono, quelle que soit la source
+                r = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'stream=sample_rate,channels', '-of', 'csv=p=0', str(f)],
+                                   capture_output=True, text=True)
+                self.assertEqual(r.stdout.strip(), '44100,1', f.name)
+
+    def test_basse_frequence_alertee_sans_etre_ecartee(self):
+        with Dossier() as d:
+            home, _ = monter(d, nb=0)
+            prise(d / 'source.wav', 40.0)
+            sortie = d / 'basse.wav'
+            self.assertTrue(self.convertir(d / 'source.wav', sortie, ['-c:a', 'pcm_s16le'], 8000))
+            aff, _ = charger_affiner(home)
+            c = aff.controler_prise(sortie)
+            self.assertTrue(c['retenue'], c['alertes'])
+            self.assertEqual(c['frequence_hz'], 8000)
+            self.assertTrue(any('kHz' in a for a in c['alertes']), c['alertes'])
+
+    def test_evenements_et_fin(self):
+        with Dossier() as d:
+            home, donnees = monter(d)
+            aff, _ = charger_affiner(home)
+            ev = d / 'ev.jsonl'
+            self.assertEqual(aff.main(['voixA', '--essai', '--donnees', str(donnees), '--evenements', str(ev)]), 0)
+            evs = [json.loads(l) for l in ev.read_text().splitlines()]
+            self.assertEqual(evs[-1]['type'], 'fin')
+            self.assertEqual(evs[-1]['code'], 0)
+            self.assertIn('controle', [e.get('etape') for e in evs])
+            ev2 = d / 'ev2.jsonl'
+            with self.assertRaises(SystemExit):
+                aff.main(['inconnue', '--essai', '--donnees', str(donnees), '--evenements', str(ev2)])
+            evs = [json.loads(l) for l in ev2.read_text().splitlines()]
+            self.assertEqual([e['type'] for e in evs], ['erreur', 'fin'])
+            self.assertEqual(evs[-1]['code'], 1)
 
 
 @unittest.skipUnless(FFMPEG, 'ffmpeg absent')

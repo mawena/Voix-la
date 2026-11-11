@@ -5,7 +5,7 @@
                               | --voix personne1:NOM,…,personne6:NOM]
           [--comparer NOM,NOM[,NOM…]]
           [--mode auto|chant|parole] [--octave auto|0|-12|+12] [--transposer auto|non|N] [--pas 30]
-          [--moteur yingmusic|seedvc] [--sans-nettoyage] [--sans-paroles] [--gpu auto|1|2] [--voix-db 4] [--reverb-db -13]
+          [--moteur yingmusic|seedvc] [--affinee auto|oui|non] [--sans-nettoyage] [--sans-paroles] [--gpu auto|1|2] [--voix-db 4] [--reverb-db -13]
           [--mix-v1] [--pistes-audio toutes|doublage]
           [--autotune [N]] [--autotune-gamme auto|chromatique|la-mineur…] [--sans-autotune]
           [--debut S --duree S] [--remix] [--sortie DIR] [--comparer-pas 50] [--donnees DIR] [--evenements FICHIER]
@@ -144,6 +144,10 @@ CLES_CONFIG = {'autotune':'intensité de l\'auto-tune à chaque doublage, de 0 (
                'calcul': 'où tourne le GPU : kaggle (défaut), modal, runpod (payant, jamais automatique) ou auto (Kaggle '
                          'd\'abord, puis Modal si Kaggle n\'est pas disponible)',
                'donnees': 'dossier des données (voix/, sorties/)',
+               'affinee': 'voix affinée sur le chant (voir affiner) : auto (défaut : seulement si « affinage_pret » est vrai), '
+                          'oui (toujours, pour une voix qui en a une) ou non',
+               'affinage_pret': 'oui quand l\'affinage a été jugé bon à l\'écoute (active la voix affinée en mode auto et le '
+                                'bouton de l\'interface) ; non par défaut',
                'envoi_flac': 'son envoyé à Kaggle en FLAC 16 bits (défaut) ou 24 bits (comme avant le 06/11/2026)',
                'gpu': 'cartes GPU utilisées par le noyau : auto (défaut : les deux T4 de la machine, une seule si elle '
                       'n\'en a qu\'une), 1 (une carte, comme avant) ou 2',
@@ -173,6 +177,8 @@ OUI = {'oui', 'o', 'yes', 'y', 'true', 'vrai', '1', 'on'}
 NON = {'non', 'n', 'no', 'false', 'faux', '0', 'off'}
 NOM_VOIX = r'[a-z0-9][a-z0-9_-]{0,39}'   # nom d'une voix : celui de son dossier
 MOTEURS = ('yingmusic', 'seedvc')   # chant ; la parole passe toujours par Seed-VC 22 kHz
+AFFINEES = ('auto', 'oui', 'non')   # voix affinée sur le chant (affiner) : auto = seulement si « affinage_pret » est vrai
+AFFINEE_DEFAUT = 'auto'
 MOTEUR_DEFAUT = 'yingmusic'         # gagnant du banc d'essai du 04/11/2026 (mesures et écoute à l'aveugle)
 # Fixés par configurer() et configurer_kaggle() au lancement, d'après les options, l'environnement et CONFIG
 DONNEES = DONNEES_DEFAUT
@@ -286,6 +292,15 @@ def ecrire_config(cle, valeur):
         if valeur not in ENVOI_FLAC:
             raise SystemExit(f'envoi_flac : 16 ou 24 attendu (reçu : {valeur})')
         valeur = int(valeur)
+    if cle == 'affinee':
+        valeur = str(valeur).strip().lower()
+        if valeur not in AFFINEES:
+            raise SystemExit(f'affinee : {", ".join(AFFINEES)} attendu (reçu : {valeur})')
+    if cle == 'affinage_pret':
+        booleen = oui_non(valeur)
+        if booleen is None:
+            raise SystemExit(f'affinage_pret : oui ou non attendu (reçu : {valeur})')
+        valeur = booleen
     if cle == 'transposer':
         try:
             valeur = lire_transposer(valeur)
@@ -462,6 +477,22 @@ def _option_transposer(texte):
         raise argparse.ArgumentTypeError(str(e)) from None
 
 
+def affinee_config(conf):
+    """Clé « affinee » de la configuration : auto (défaut), oui ou non ; une valeur illisible compte comme auto, avec un avis."""
+    v = valeur_config(conf, 'affinee')
+    if v is None:
+        return AFFINEE_DEFAUT
+    if str(v).strip().lower() in AFFINEES:
+        return str(v).strip().lower()
+    dire(f'attention : « affinee » de {CONFIG} illisible ({v!r}) : auto (doubler --config affinee auto|oui|non)')
+    return AFFINEE_DEFAUT
+
+
+def affinage_pret_config(conf):
+    """Clé « affinage_pret » : vrai seulement si elle est vraie (l'affinage a été jugé bon) ; faux par défaut."""
+    return oui_non(valeur_config(conf, 'affinage_pret')) is True
+
+
 def moyen_pret(nom):
     """(prêt, raison) d'un moyen de calcul : kaggle (outil et jeton présents), modal, runpod (voir leurs modules)."""
     if nom == 'kaggle':
@@ -576,7 +607,7 @@ def afficher_config(a, en_json=False):
                 'sorties': a.sortie, 'voix_defaut': VOIX_DEFAUT, 'source_voix_defaut': VOIX_DEFAUT_SOURCE,
                 'moteur': moteur, 'paroles': paroles, 'autotune': autotune, 'gpu': gpu, 'pistes_audio': pistes_audio,
                 'envoi_flac': envoi, 'versions_duo': versions_duo_config(conf), 'transposer': transposer_config(conf),
-                'calcul': calcul_config(conf),
+                'calcul': calcul_config(conf), 'affinee': affinee_config(conf), 'affinage_pret': affinage_pret_config(conf),
                 'attente_file_min': entier_config(conf, 'kaggle.attente_file_min', ATTENTE_FILE_MIN_DEFAUT),
                 'modal': {'gpu': gpu_calcul_config(conf, 'modal'), 'pret': moyen_pret('modal')[0]},
                 'runpod': {'gpu': gpu_calcul_config(conf, 'runpod'), 'pret': moyen_pret('runpod')[0],
@@ -611,6 +642,8 @@ def afficher_config(a, en_json=False):
     print(f"  transposer     {transposer_config(conf)}{'' if valeur_config(conf, 'transposer') is not None else '  (défaut)'}"
           " : chanson transposée dans la tessiture de la voix cible (auto, non, ou N demi-tons) ; "
           f"Rubber Band {'présent' if transposition_disponible()[0] else 'ABSENT (sudo apt install librubberband2)'}")
+    print(f"  voix affinée   {effectif['affinee']}{'' if valeur_config(conf, 'affinee') is not None else '  (défaut)'}"
+          f" : affinage jugé bon (affinage_pret) : {'oui' if effectif['affinage_pret'] else 'non'}")
     print(f"  envoi FLAC     {envoi} bits{'' if valeur_config(conf, 'envoi_flac') is not None else '  (défaut)'}")
     print(f"  calcul         {effectif['calcul']}{'' if valeur_config(conf, 'calcul') is not None else '  (défaut)'}"
           f" : kaggle, modal, runpod (payant, jamais automatique) ou auto (Kaggle, puis Modal après "
@@ -997,12 +1030,118 @@ def voix_membres(voix):
     return voix.get('membres') or [voix]
 
 
+def sha256_fichier(chemin):
+    h = hashlib.sha256()
+    with open(chemin, 'rb') as f:
+        for bloc in iter(lambda: f.read(1 << 20), b''):
+            h.update(bloc)
+    return h.hexdigest()
+
+
+def lire_affinage(nom):
+    """L'affinage de la voix <nom> (voix/<nom>/affinage/, rangé par affiner), ou (None, raison) : sa fiche, son point de
+    contrôle présent et sa somme SHA-256 conforme à la fiche (un point corrompu ou changé ne part jamais). Rend
+    ({'fichier', 'config', 'sha256', 'pas', 'complet', 'taille_mo', 'chemin', 'chemin_config'}, None) si tout va bien."""
+    d = VOIX / nom / 'affinage'
+    try:
+        fiche = json.loads((d / 'affinage.json').read_text())
+        point = d / fiche.get('point', 'affinage.pth')
+    except (OSError, ValueError, AttributeError):
+        return None, 'pas d\'affinage'
+    if not point.is_file():
+        return None, 'point de contrôle absent'
+    somme = fiche.get('sha256')
+    if somme and sha256_fichier(point) != somme:
+        return None, 'point de contrôle différent de la fiche (somme SHA-256) : refaire l\'affinage'
+    cfg = d / fiche['config'] if fiche.get('config') else None
+    return {'fichier': f'affinage-{nom}.pth', 'config': f'affinage-{nom}.yml' if cfg and cfg.is_file() else None,
+            'sha256': somme or sha256_fichier(point), 'pas': fiche.get('pas'), 'complet': bool(fiche.get('complet')),
+            'taille_mo': fiche.get('taille_mo'), 'chemin': point,
+            'chemin_config': cfg if cfg and cfg.is_file() else None}, None
+
+
+def choisir_affinage(a, conf, voix):
+    """Quelle voix prend son modèle Seed-VC 44 kHz affiné (affiner) : pose voix['affinage'] (ou celui de chaque membre)
+    pour celles qui le prennent, et rend {id de la voix : affinage}, vide sinon. --affinee (clé « affinee ») :
+    non : jamais ; auto (défaut) : une voix qui a un affinage, SEULEMENT si « affinage_pret » est vrai dans la
+    configuration (l'affinage doit d'abord avoir été jugé bon) ; oui : toute voix qui a un affinage, prêt ou non.
+    Kaggle seulement pour l'instant (Modal et Runpod : refus avec oui, sans effet en auto) ; pas avec --comparer. Chaque
+    voix d'un duo choisit seule : une voix sans affinage garde les poids de base. Une voix affinée convertit son chant
+    par Seed-VC 44 kHz affiné (YingMusic-SVC n'en prend pas) : a.moteur passe à seedvc."""
+    choix = getattr(a, 'affinee', None) or AFFINEE_DEFAUT
+    membres = [] if voix.get('comparees') else voix_membres(voix)
+    for m in voix_membres(voix):
+        m.pop('affinage', None)
+    if choix == 'non':
+        return {}
+    if voix.get('comparees'):
+        if choix == 'oui':
+            raise SystemExit('--affinee oui ne va pas avec --comparer (la comparaison utilise les poids de base)')
+        return {}
+    trouves, raisons = {}, {}
+    for m in membres:
+        info, raison = lire_affinage(m['id'])
+        if info:
+            trouves[m['id']] = info
+        else:
+            raisons[m['id']] = raison
+    if choix == 'oui':
+        if not trouves:
+            raise SystemExit('--affinee oui : aucune des voix choisies n\'a d\'affinage utilisable ('
+                             + ', '.join(f'{k} : {r}' for k, r in raisons.items()) + ' ; voir « affiner »)')
+        for k, r in raisons.items():
+            if r != 'pas d\'affinage' or len(membres) > 1:
+                dire(f'voix affinée : {k} garde les poids de base ({r})')
+    else:   # auto
+        if not trouves:
+            return {}
+        if not affinage_pret_config(conf):
+            dire('voix affinée : ' + ', '.join(trouves) + ' a un affinage, mais « affinage_pret » n\'est pas vrai (il doit '
+                 'd\'abord être jugé bon à l\'écoute) : poids de base, comme avant. --affinee oui l\'essaie, '
+                 'doubler --config affinage_pret oui l\'active')
+            return {}
+    if getattr(a, 'calcul', None) in ('modal', 'runpod'):
+        if choix == 'oui':
+            raise SystemExit('voix affinée : Kaggle seulement pour l\'instant (--calcul kaggle, ou --affinee non)')
+        dire('voix affinée : Kaggle seulement pour l\'instant : poids de base sur ' + NOMS_CALCUL[a.calcul])
+        return {}
+    for m in membres:
+        if m['id'] in trouves:
+            m['affinage'] = trouves[m['id']]
+    dire('voix affinée : ' + ', '.join(f"{k} (Seed-VC 44 kHz affiné, {i['pas'] or '?'} pas)" for k, i in trouves.items())
+         + ('' if len(trouves) == len(membres) else ' ; les autres voix gardent les poids de base'))
+    if a.moteur != 'seedvc':
+        dire('moteur du chant : Seed-VC 44 kHz (YingMusic-SVC ne prend pas de voix affinée)'
+             + ('' if len(membres) == 1 else ' pour toutes les voix de ce doublage'))
+        a.moteur = 'seedvc'
+    return trouves
+
+
+def reglage_affinage(m, kaggle=True):
+    """Réglage « affinage » envoyé au noyau pour une voix (ses fichiers sont dans le jeu de données), ou None."""
+    i = m.get('affinage') if kaggle else None
+    if not i:
+        return None
+    return {'fichier': i['fichier'], 'config': i['config'], 'sha256': i['sha256'], 'pas': i['pas'], 'complet': i['complet']}
+
+
 def decrire_voix(voix):
     """« jules », ou « homme → jules, femme → marie » (plusieurs voix)."""
     if not voix.get('membres'):
         return voix['id']
     return ', '.join(f"{m['cle'].replace('chanteur', 'chanteur ').replace('personne', 'personne ')} → {m['id']}"
                      for m in voix['membres'])
+
+
+def lignes_affinage(rapport):
+    """Quelle voix a utilisé quel modèle (rapport['affinage'] du noyau : voix affinée) ; [] sans voix affinée."""
+    lignes = []
+    for nom, i in (rapport.get('affinage') or {}).items():
+        if i.get('utilise'):
+            lignes.append(f"voix {nom} : Seed-VC 44 kHz affiné ({i.get('pas') or '?'} pas)")
+        else:
+            lignes.append(f"voix {nom} : poids de base de Seed-VC 44 kHz, l'affinage n'a pas servi ({i.get('raison')})")
+    return lignes
 
 
 def lignes_voix_cibles(rapport):
@@ -1415,11 +1554,28 @@ def preparer_jeu(travaux, voix, dossier, bits=16):
     return jeu, taille, taille_wav
 
 
+def joindre_affinages(jeu, voix):
+    """Voix affinées (choisir_affinage) : le point de contrôle compact et sa config de chaque voix qui en prend un, dans
+    le jeu de données privé de la session, avec la référence (Kaggle seulement : jamais sur Modal ni Runpod). Rend la
+    taille envoyée, en octets."""
+    taille = 0
+    for m in voix_membres(voix):
+        i = m.get('affinage')
+        if not i:
+            continue
+        shutil.copy2(i['chemin'], jeu / i['fichier'])
+        taille += (jeu / i['fichier']).stat().st_size
+        if i.get('chemin_config'):
+            shutil.copy2(i['chemin_config'], jeu / i['config'])
+    return taille
+
+
 def envoyer_jeu(travaux, voix, dossier, bits=16):
     """Une version du jeu de données privé par session : la référence de la voix choisie (de chaque voix, avec une voix
     par chanteur) et le son des vidéos seulement, en FLAC 16 bits (bits=24 : clé envoi_flac ; gain de chaque vidéo noté
     dans tr['gain_entree'], à transmettre au noyau)."""
     jeu, taille, taille_wav = preparer_jeu(travaux, voix, dossier, bits)
+    joindre_affinages(jeu, voix)
     with open(jeu / 'dataset-metadata.json', 'w') as f:
         json.dump({'title': JEU.split('/')[1], 'id': JEU, 'licenses': [{'name': 'unknown'}]}, f)
     existe = kaggle('datasets', 'status', JEU)[0] == 0
@@ -4155,6 +4311,8 @@ def finir(tr, a, voix, temps_local=None):
         else:
             voix_txt = f"voix complète ({net.get('raison')})"
         dire(f'moteur {nom_moteur} ; {voix_txt}')
+        for ligne in lignes_affinage(rapport):
+            dire(ligne)
         if principale.get('repli'):
             dire(f"ATTENTION : YingMusic-SVC indisponible, repli sur Seed-VC 44 kHz ({principale['repli']})")
     sec = rapport.get('secours') or {}
@@ -4480,7 +4638,7 @@ def lire_ancres():
     return {'homme': h, 'femme': f}
 
 
-def reglages_noyau(a, voix, ancres, travaux):
+def reglages_noyau(a, voix, ancres, travaux, kaggle=True):
     """Réglages du noyau (doubler_kaggle.py, REGLAGES) pour ces vidéos et cette voix. Une voix : ceux d'avant, tels quels.
     Plusieurs voix (voix combinée de charger_voix_spec) : « voix » est la première (analyse, parole), et voix_cibles les
     donne toutes, avec leur clé (homme, femme, chanteur1, chanteur2) et le mode (genre, ordre).
@@ -4510,6 +4668,15 @@ def reglages_noyau(a, voix, ancres, travaux):
         reglages['comparer'] = {'voix': [
             {'nom': m['id'], 'fichier': f"voix-{m['id']}.wav", 'f0_parole_hz': m['f0'], 'facteur_chant': FACTEUR_CHANT,
              'affichage': m['affichage'], 'zone': m.get('zone')} for m in voix['comparees']]}
+    # voix affinée (choisir_affinage) : le point de contrôle de la voix est dans le jeu de données (Kaggle seulement)
+    if any(m.get('affinage') for m in voix_membres(voix)) and not voix.get('comparees'):
+        reglages['affinee'] = getattr(a, 'affinee', None) or AFFINEE_DEFAUT
+        if kaggle:
+            if reglage_affinage(v0):
+                reglages['voix']['affinage'] = reglage_affinage(v0)
+            for e, m in zip(reglages.get('voix_cibles', {}).get('voix', []), voix.get('membres') or []):
+                if reglage_affinage(m):
+                    e['affinage'] = reglage_affinage(m)
     if a.modele_parole:
         reglages['modele_parole'] = a.modele_parole
     return reglages
@@ -4586,7 +4753,9 @@ def session_ailleurs(nom, travaux, a, voix, kdir, titres, ancres, abandon, echec
     except Exception as e:  # noqa: BLE001
         raise _Abandon(f'de la préparation du son : {e}') from e
     envoi_s = round(time.time() - debut, 1)
-    reglages = reglages_noyau(a, voix, ancres, travaux)
+    if any(m.get('affinage') for m in voix_membres(voix)):   # calcul auto : Kaggle n'a pas pu servir, le point ne part pas
+        dire(f'voix affinée : Kaggle seulement pour l\'instant : poids de base sur {Nom}')
+    reglages = reglages_noyau(a, voix, ancres, travaux, kaggle=False)
     estimation_kaggle = estimer_noyau_s([tr['duree_audio_s'] for tr in travaux], a.pas, [a.sortie, SORTIES],
                                         not a.sans_nettoyage, a.mode, a.moteur, a.paroles, len(voix_membres(voix)),
                                         calcul.cartes_t4_pour(c),
@@ -5057,6 +5226,12 @@ def main():
     p.add_argument('--moteur', choices=list(MOTEURS), default=None,
                    help='moteur de conversion du chant : yingmusic (YingMusic-SVC, défaut) ou seedvc (Seed-VC 44 kHz) ; '
                         'défaut lu dans la configuration (clé « moteur »). La parole passe toujours par Seed-VC 22 kHz')
+    p.add_argument('--affinee', choices=list(AFFINEES), default=None,
+                   help="voix affinée sur le chant (commande affiner) : le chant de la voix qui a un affinage passe par "
+                        "Seed-VC 44 kHz chargé avec son point de contrôle affiné, à la place des poids de base (Kaggle "
+                        "seulement). auto (défaut) : seulement si « affinage_pret » est vrai dans la configuration, c'est-à-dire "
+                        "si l'affinage a été jugé bon ; oui : toute voix qui en a un, prêt ou non ; non : poids de base. "
+                        "Avec plusieurs voix, chaque voix choisit seule. Défaut lu dans la configuration (clé « affinee »)")
     p.add_argument('--sans-nettoyage', action='store_true',
                    help='chant : convertir la voix isolée complète, sans séparer voix principale et chœurs ni retirer la '
                         'reverb (chaîne d\'avant, plus rapide)')
@@ -5216,6 +5391,7 @@ def executer(p, a):
     moteur_donne = a.moteur is not None
     a.moteur = a.moteur or moteur_conf or MOTEUR_DEFAUT
     a.gpu = a.gpu or gpu_config(conf)
+    a.affinee = a.affinee or affinee_config(conf)
     a.transposer_donne = a.transposer is not None
     a.transposer = a.transposer if a.transposer is not None else transposer_config(conf)
     a.envoi_flac = envoi_flac_config(conf)
@@ -5277,6 +5453,7 @@ def executer(p, a):
         if not ok_c:
             sys.exit(f'{NOMS_CALCUL[a.calcul]} : {raison_c}')
         configurer_kaggle_si_possible(conf, a.calcul != 'kaggle')
+        choisir_affinage(a, conf, voix)
         echecs = traiter_lot(a.videos, a, voix)
     if echecs:
         sys.exit(f"{len(echecs)} vidéo(s) en échec : {', '.join(map(str, echecs))}")

@@ -3161,7 +3161,8 @@ def phrases_ambigues(phrases, langues, choisies, tops=None, reglages=None):
     out, total = [], 0.0
     for t in trouvees:
         d = phrases[t[0]][1] - phrases[t[0]][0]
-        if len(out) >= R['bilingue_max_phrases'] or total + d > plafond_s:
+        # la plus douteuse passe toujours : sur un court extrait, 20 % de la durée chantée tient moins d'une phrase
+        if len(out) >= R['bilingue_max_phrases'] or (out and total + d > plafond_s):
             continue
         out.append(t)
         total += d

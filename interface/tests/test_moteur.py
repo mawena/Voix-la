@@ -73,7 +73,7 @@ class EssaiCapacites(EssaiIsole):
                                                                          "--gpu", "--passage", "--affectation",
                                                                          "--comparer", "--transposer", "--calcul",
                                                                          "--nettoyer-runpod", "--sans-quota",
-                                                                         "--affinee"})
+                                                                         "--affinee", "--voix-depuis"})
         self.assertTrue(moteur.disponible())
 
     def test_doubler_introuvable(self):
@@ -370,6 +370,37 @@ class EssaiCommandes(EssaiIsole):
         ok, message, _ = moteur.ajouter_voix("Marie!", f, self.donnees)
         self.assertFalse(ok)
         self.assertIn("nom de voix", message)
+
+
+    def test_voix_depuis(self):
+        """Voix des vidéos : la commande, le choix du chanteur, les garde-fous de la fiche, le refus sans --chanteur."""
+        self.assertIn("--voix-depuis", moteur.capacites())
+        dossier = self.tmp / "sorties" / "Clip - essai"
+        tv = dossier / "travail" / "voix_a+voix_b"
+        tv.mkdir(parents=True)
+        (dossier / "travail" / "voix_source.wav").write_bytes(b"RIFF")
+        morceaux = [{"i": 0, "debut_s": 0, "fin_s": 6, "muet": False, "voise_s": 5.0, "f0_med": 200, "chanteur": "homme"},
+                    {"i": 1, "debut_s": 6, "fin_s": 14, "muet": False, "voise_s": 7.0, "f0_med": 300, "chanteur": "femme"},
+                    {"i": 2, "debut_s": 14, "fin_s": 16, "muet": True, "voise_s": 0.0, "f0_med": None, "chanteur": "femme"}]
+        (tv / "rapport.json").write_text(json.dumps({"mode": "chant", "morceaux": morceaux}), encoding="utf-8")
+        self.assertEqual(moteur.chanteurs_gardables({"morceaux": morceaux}),
+                         [{"n": 1, "cle": "homme", "secondes": 6.0}, {"n": 2, "cle": "femme", "secondes": 8.0}])
+        self.assertEqual(moteur.chanteurs_gardables({"morceaux": morceaux[:1]})[0]["cle"], "homme")
+        self.assertEqual(moteur.chanteurs_gardables(None), [])
+        self.assertEqual(moteur.args_voix_depuis(dossier, "voix-b", 2, self.donnees, caps=self.caps),
+                         [*self.cmd, "--voix-depuis", str(dossier), "voix-b", "--chanteur", "2", "--donnees", str(self.donnees)])
+        self.assertNotIn("--chanteur", moteur.args_voix_depuis(dossier, "voix-b", None, self.donnees, caps=self.caps))
+        ok, message, _ = moteur.voix_depuis(dossier, "voix-b", None, self.donnees)
+        self.assertFalse(ok)
+        self.assertIn("--chanteur", message)
+        ok, message, alertes = moteur.voix_depuis(dossier, "voix-b", 2, self.donnees)
+        self.assertTrue(ok, message)
+        self.assertTrue(message.startswith("voix voix-b gardée"), message)
+        voix = {v["id"]: v for v in moteur.lister_voix(self.donnees)}["voix-b"]
+        self.assertTrue(voix["imitation_ia"])
+        self.assertEqual(voix["fiche"]["origine"], "video")
+        self.assertEqual(voix["fiche"]["mention"], "voix d'artiste, usage privé")
+        self.assertIn("femme", voix["origine"])
 
 
 class EssaiExtraits(unittest.TestCase):

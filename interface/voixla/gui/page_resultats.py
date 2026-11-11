@@ -260,6 +260,9 @@ class PageDetail(Adw.NavigationPage):
         self.g_comparer = self._groupe_comparer()   # plusieurs voix du même extrait : les écouter côte à côte
         if self.g_comparer is not None:
             corps.append(self.g_comparer)
+        self.g_garder = self._groupe_garder_voix()   # garder la voix d'un chanteur de la vidéo comme voix cible
+        if self.g_garder is not None:
+            corps.append(self.g_garder)
         self.g_pistes = self._groupe_pistes()
         corps.append(self.g_pistes)
         self.g_remix = self._groupe_remix()
@@ -1929,6 +1932,75 @@ class PageDetail(Adw.NavigationPage):
                                            clic=lambda r=r: self.page.ouvrir_detail(r)))
             g.add(l)
         return g
+
+    def _groupe_garder_voix(self):
+        """« Garder cette voix » : une ligne par chanteur du doublage (une seule voix, un duo ou N voix), pour garder ses
+        meilleurs passages de chant seul comme voix cible (doubler --voix-depuis, sans GPU). None sans voix d'origine
+        isolée (travail/voix_source.wav) ou sans passage chanté."""
+        r = self.res
+        chanteurs = moteur.chanteurs_gardables(r.rapport)
+        if not chanteurs or not (Path(r.dossier) / "travail" / "voix_source.wav").is_file():
+            return None
+        g = Adw.PreferencesGroup(
+            title="Voix de la vidéo",
+            description="Garder la voix d’un chanteur d’origine comme voix cible, pour doubler d’autres vidéos : ses "
+                        "meilleurs passages de chant seul (15 à 30 s), sans calcul sur GPU. Voix d’artiste : imitation "
+                        "par IA, pour un usage privé seulement.")
+        seul = len(chanteurs) == 1
+        for c in chanteurs:
+            qui = "cette voix" if seul else f"la voix du chanteur {c['n']}"
+            ligne = commun.ligne(f"Garder {qui}", f"{c['cle']} · {formats.nombre(c['secondes'], 0)} s chantées", None)
+            ligne.add_suffix(commun.bouton("Garder cette voix", "avatar-default-symbolic", valign=Gtk.Align.CENTER,
+                                           clic=lambda c=c: self.garder_voix(c, seul)))
+            g.add(ligne)
+        return g
+
+    def garder_voix(self, chanteur, seul=False):
+        """Demande le nom de la nouvelle voix puis lance doubler --voix-depuis."""
+        boite = commun.boite(espace=8)
+        entree = Gtk.Entry(placeholder_text="ex. chanteur-b, voix-2", activates_default=True)
+        accord = Gtk.CheckButton(label="Voix d’artiste : imitation par IA, pour mon usage privé seulement")
+        boite.append(entree)
+        boite.append(accord)
+        boite.append(commun.legende("Minuscules, chiffres, - ou _. Les doublages faits avec cette voix portent « imitation "
+                                    "par IA » dans leurs fichiers."))
+        d = Adw.AlertDialog(heading="Garder cette voix", body=f"{self.res.voix_nom or self.res.voix or 'Doublage'} · "
+                            f"{'voix' if seul else 'chanteur ' + str(chanteur['n'])} ({chanteur['cle']})",
+                            extra_child=boite)
+        d.add_response("annuler", "Annuler")
+        d.add_response("ok", "Garder")
+        d.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
+        d.set_default_response("ok")
+        d.set_response_enabled("ok", False)
+
+        def valider(*_):
+            nom = entree.get_text().strip()
+            existe = (chemins.dossier_voix(self.fenetre.donnees) / nom / "voix.json").exists()
+            d.set_response_enabled("ok", bool(moteur.NOM_VOIX.fullmatch(nom)) and not existe and accord.get_active())
+        entree.connect("changed", valider)
+        accord.connect("toggled", valider)
+
+        def reponse(_d, rep):
+            if rep == "ok":
+                self._lancer_garder_voix(entree.get_text().strip(), chanteur, seul)
+        d.connect("response", reponse)
+        d.present(self.fenetre)
+
+    def _lancer_garder_voix(self, nom, chanteur, seul):
+        self.fenetre.toast(f"Voix {nom} : choix des passages…")
+        donnees, dossier = self.fenetre.donnees, self.res.dossier
+
+        def fini(r):
+            ok, message, alertes = r
+            if not ok:
+                commun.informer(self.fenetre, "La voix n’a pas pu être gardée", message)
+                return
+            self.fenetre.recharger_voix()
+            if alertes:
+                commun.informer(self.fenetre, f"Voix {nom} gardée, avec des alertes", "\n".join(alertes))
+            else:
+                self.fenetre.toast(f"Voix {nom} gardée (imitation par IA, usage privé)")
+        commun.en_fil(lambda: moteur.voix_depuis(dossier, nom, None if seul else chanteur["n"], donnees), fini)
 
     def comparer_voix(self, apres=None):
         """Prépare le banc d'écoute à l'aveugle des voix de ce dossier (liens, voix seules et original en mp3 : quelques

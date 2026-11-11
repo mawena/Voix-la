@@ -7,6 +7,12 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+### Corrigé
+
+- La frise d'octave montre chaque chanteur d'un doublage à trois voix cibles ou plus sous son nom (« Chanteur 3 → voix
+  cible ») et dans sa propre couleur, la même que dans la frise « Voix de chaque passage », au lieu de « Voix inconnue » en
+  ambre ; l'infobulle, la légende et l'indication de lecture suivent.
+
 ## [0.18.0] - 2026-11-10
 
 ### Ajouté

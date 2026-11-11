@@ -2997,6 +2997,14 @@ PAROLES_DEFAUT = {
     'coupe_memoire_min_s': 4.0,  # morceau à court de mémoire GPU : coupé en deux, tant que chaque moitié fait 4 s ou plus
     'memoire_min_mo': 8000,   # mémoire libre voulue sur la carte avant de charger Whisper (allégé : 7,3 Gio au pire)
     'attente_memoire_max_s': 60.0,  # attente au plus de cette mémoire (une étape qui vient de finir rend encore la sienne)
+    'bilingue': True,         # phrase ambiguë (refrain mêlant deux langues) : essayée dans ses deux langues, la plus sûre gagne
+    'bilingue_proba_sure': 0.8,  # langue détectée moins sûre que cela : phrase ambiguë (comme une langue isolée ou lissée)
+    'bilingue_alt_proba_min': 0.1,  # seconde langue essayée si Whisper lui donne au moins cela (sauf langue des voisines)
+    'bilingue_duree_min_s': 0.8,  # phrase plus courte : pas essayée (trop peu de son pour départager)
+    'bilingue_max_phrases': 12,   # plafond : au plus ce nombre de phrases essayées par vidéo…
+    'bilingue_max_part': 0.2,     # … et au plus cette part de la durée chantée (surcoût GPU : 2 passes courtes par phrase)
+    'bilingue_marge': 0.15,       # l'autre langue doit gagner d'au moins 0,15 (log-probabilité par jeton) pour l'emporter
+    'bilingue_penalite': 0.25,    # points retirés par point de taux de compression au-delà de compression_max (boucles)
 }
 # Mémoire du GPU de Whisper en horodatage par mot (calculée d'après le code de transformers 5.20). Le pipeline cherche en
 # faisceau (num_beams=5 par défaut : la configuration de large-v3 n'en fixe pas) et le mot à mot lui fait garder tous les
@@ -3115,6 +3123,78 @@ def grouper_morceaux(phrases, langues, reglages=None):
                 continue
         out.append((a, b, lg, [i]))
     return out
+
+
+def phrases_ambigues(phrases, langues, choisies, tops=None, reglages=None):
+    """Phrases dont la langue retenue est douteuse (refrain mêlant deux langues), à essayer dans une seconde langue :
+    langue détectée peu sûre (moins de bilingue_proba_sure), langue changée par le lissage (lisser_langues), ou langue
+    retenue seule contre ses deux voisines qui partagent une autre. langues : [(code, proba, durée)] ; choisies : langues
+    retenues ; tops : trois langues les plus probables de chaque phrase ([[code, proba]…] ou None). Rend
+    [(indice, langue retenue, autre langue, doute)] du plus douteux au moins douteux, dans le plafond
+    (bilingue_max_phrases, bilingue_max_part de la durée chantée) ; [] si bilingue est à False."""
+    R = {**PAROLES_DEFAUT, **(reglages or {})}
+    if not R['bilingue']:
+        return []
+    tops = tops or [None] * len(phrases)
+    trouvees = []
+    for i, ((a, b), (c, p, d), lg) in enumerate(zip(phrases, langues, choisies)):
+        if not lg or b - a < R['bilingue_duree_min_s']:
+            continue
+        proba = {code: q for code, q in (tops[i] or [])}
+        sure_lg = p if c == lg else proba.get(lg, 0.0)
+        voisines = {choisies[j] for j in (i - 1, i + 1) if 0 <= j < len(choisies)}
+        seule = len(voisines) == 1 and i > 0 and i + 1 < len(choisies) and next(iter(voisines)) not in (lg, None)
+        if sure_lg >= R['bilingue_proba_sure'] and not seule:
+            continue
+        alt = next(iter(voisines)) if seule else None
+        if alt is None:
+            for code, q in sorted(proba.items(), key=lambda t: -t[1]):
+                if code != lg and q >= R['bilingue_alt_proba_min']:
+                    alt = code
+                    break
+        if alt is None and c and c != lg:
+            alt = c
+        if alt:
+            trouvees.append((i, lg, alt, round(1.0 - sure_lg + (0.5 if seule else 0.0), 3)))
+    trouvees.sort(key=lambda t: (-t[3], t[0]))
+    plafond_s = R['bilingue_max_part'] * sum(b - a for a, b in phrases)
+    out, total = [], 0.0
+    for t in trouvees:
+        d = phrases[t[0]][1] - phrases[t[0]][0]
+        # la plus douteuse passe toujours : sur un court extrait, 20 % de la durée chantée tient moins d'une phrase
+        if len(out) >= R['bilingue_max_phrases'] or (out and total + d > plafond_s):
+            continue
+        out.append(t)
+        total += d
+    return out
+
+
+def note_transcription(texte, logprob, reglages=None):
+    """Sûreté d'une transcription : log-probabilité moyenne par jeton (comme avg_logprob de Whisper), moins une pénalité
+    pour le taux de compression au-delà de compression_max (texte répétitif, boucle). Texte vide ou sans mesure :
+    -inf (jamais retenue)."""
+    R = {**PAROLES_DEFAUT, **(reglages or {})}
+    if not (texte or '').strip() or logprob is None:
+        return float('-inf')
+    return logprob - R['bilingue_penalite'] * max(0.0, taux_compression(texte) - R['compression_max'])
+
+
+def departager_langue(audio, lg, alt, transcrire_phrase, noter, reglages=None):
+    """Une phrase ambiguë transcrite dans sa langue retenue (lg) puis dans l'autre (alt) : transcrire_phrase(audio,
+    langue) -> texte ; noter(audio, langue, texte) -> log-probabilité moyenne par jeton. L'autre langue l'emporte si sa
+    note dépasse celle de lg de bilingue_marge. Rend (langue gagnante, note lg, note alt, texte gagnant) ; un essai qui
+    échoue (exception, texte vide) ne gagne jamais."""
+    R = {**PAROLES_DEFAUT, **(reglages or {})}
+    notes, textes = {}, {}
+    for code in (lg, alt):
+        try:
+            textes[code] = transcrire_phrase(audio, code) or ''
+            notes[code] = note_transcription(textes[code], noter(audio, code, textes[code]), R)
+        except Exception:  # noqa: BLE001
+            textes[code], notes[code] = '', float('-inf')
+    if notes[alt] > notes[lg] + R['bilingue_marge']:
+        return alt, notes[lg], notes[alt], textes[alt]
+    return lg, notes[lg], notes[alt], textes[lg]
 
 
 def manque_de_memoire(e):
@@ -4279,6 +4359,26 @@ def etape_paroles(travail):
         return (codes[ordre[0]].strip('<|>'), float(p[ordre[0]]),
                 [[codes[j].strip('<|>'), round(float(p[j]), 3)] for j in ordre])
 
+    @torch.no_grad()
+    def noter(audio, lg, texte):
+        """Log-probabilité moyenne par jeton du texte sous Whisper, langue imposée (décodage forcé : un seul passage du
+        décodeur, sans génération) ; None si le texte n'a pas de jeton."""
+        tok = proc.tokenizer
+        # jetons de tête construits ici : set_prefix_tokens changerait le tokeniseur partagé avec le pipeline
+        prefixe = tok.convert_tokens_to_ids(['<|startoftranscript|>', f'<|{lg}|>', '<|transcribe|>', '<|notimestamps|>'])
+        if tok.unk_token_id is not None and tok.unk_token_id in prefixe:
+            return None   # langue inconnue du tokeniseur : pas de note, la langue retenue reste
+        ids = tok.encode(texte.strip(), add_special_tokens=False)[:200]
+        if not ids:
+            return None
+        feats = proc.feature_extractor(audio, sampling_rate=16000, return_tensors='pt').input_features
+        feats = feats.to(modele.device, modele.dtype)
+        dec = torch.tensor([prefixe + ids], device=modele.device)
+        logits = modele(input_features=feats, decoder_input_ids=dec).logits[0].float()
+        lp = torch.log_softmax(logits[len(prefixe) - 1:-1], -1)
+        cible = torch.tensor(ids, device=lp.device)
+        return float(lp.gather(1, cible[:, None]).mean())
+
     pics, pic_reserve = [], [0]   # mémoire du GPU au plus fort de chaque passe réussie (Mo) ; réservée, sur l'étape
 
     def pic_a_zero():
@@ -4329,7 +4429,9 @@ def etape_paroles(travail):
         r = res['videos'][v['id']] = {}
         pics.clear()
         try:
-            textes[v['id']] = transcrire_video(v, seize_khz(v['audio']), langue, transcrire, r)
+            textes[v['id']] = transcrire_video(v, seize_khz(v['audio']), langue, transcrire, r,
+                                               noter if travail.get('bilingue', True) else None,
+                                               {'bilingue': bool(travail.get('bilingue', True))})
             if pics:
                 r['memoire_max_mo'], r['memoire_passes_mo'] = max(pics), list(pics)
             log(f"PAROLES {v['id']} : {r['lignes']} lignes, langue {r['langue']} {r['langues_s']}, modes {r['modes']}, "
@@ -4384,14 +4486,18 @@ def etape_paroles(travail):
     ecrire_json(chemin, res)
 
 
-def transcrire_video(v, x16, detecter, transcrire_morceau, r):
+def transcrire_video(v, x16, detecter, transcrire_morceau, r, noter=None, reglages=None):
     """Paroles d'une vidéo (sans torch : les modèles sont passés en fonctions). v : {phrases, chant, piste} ; x16 : sa
     piste à 16 kHz ; detecter(audio) -> (langue, probabilité) ; transcrire_morceau(audio, langue) -> (sortie du pipeline
     {text, chunks: [{text, timestamp}]}, mode, erreurs), mode 'mémoire' si le mot à mot a manqué de mémoire GPU : le
     morceau est alors coupé en deux (couper_morceau), ou, trop court, redemandé sans horodatage par mot
     (transcrire_morceau(audio, langue, False)). Langue de chaque phrase, morceaux de même langue (hors des phrases :
-    muet), mots horodatés, garde-fous, lignes. Remplit r (mesures) et rend les lignes."""
+    muet), mots horodatés, garde-fous, lignes. Remplit r (mesures) et rend les lignes. noter(audio, langue, texte) ->
+    log-probabilité moyenne par jeton : avec lui (et bilingue), les phrases à la langue douteuse (phrases_ambigues) sont
+    transcrites dans leurs deux langues et gardent la plus sûre (departager_langue) avant les morceaux ; sans lui, rien
+    ne change."""
     import numpy as np
+    R = {**PAROLES_DEFAUT, **(reglages or {})}
     t1 = time.time()
     r.update({'piste': v.get('piste'), 'phrases': len(v['phrases']),
               'secondes_transcrites': round(sum(b - a for a, b in v['phrases']), 1), 'modes': {},
@@ -4403,6 +4509,24 @@ def transcrire_video(v, x16, detecter, transcrire_morceau, r):
         langues.append((d[0], d[1], b - a))
         tops.append(d[2] if len(d) > 2 else None)   # les trois langues les plus probables, pour mémoire
     choisies = lisser_langues(langues)
+    if noter is not None and R['bilingue']:
+        t2 = time.time()
+        essais = phrases_ambigues(v['phrases'], langues, choisies, tops, R)
+
+        def transcrire_phrase(audio, lg):
+            sortie, _, _ = transcrire_morceau(audio, lg, False)
+            return (sortie or {}).get('text') or ''
+        details = []
+        for i, lg, alt, doute in essais:
+            a, b = v['phrases'][i]
+            seg = x16[int(a * 16000):int(b * 16000)]
+            gagnante, n1, n2, _ = departager_langue(seg, lg, alt, transcrire_phrase, noter, R)
+            choisies[i] = gagnante
+            details.append([a, b, lg, alt, gagnante, round(n1, 3) if n1 > float('-inf') else None,
+                            round(n2, 3) if n2 > float('-inf') else None])
+        r['bilingue'] = {'essayees': len(essais), 'changees': sum(1 for d in details if d[4] != d[2]),
+                         'secondes': round(sum(d[1] - d[0] for d in details), 1), 'duree_s': round(time.time() - t2, 1),
+                         'details': details}
     r['langues_phrases'] = [[a, b, c, round(p, 2), lg] + ([top] if top else [])
                             for (a, b), (c, p, _), lg, top in zip(v['phrases'], langues, choisies, tops)]
     r['temps_langue_s'] = round(time.time() - t1, 1)
@@ -5453,7 +5577,8 @@ def main():
         if copie_paroles.get('erreur'):
             log(f"PAROLES copie locale des modèles impossible ({copie_paroles['erreur']}) : lus sur le montage")
         travail = {'whisper': chemins.get('whisper'), 'traducteur': chemins.get('traducteur'), 'cache': '/tmp/hf_paroles',
-                   'resultat': '/tmp/paroles/resultat.json', 'videos': []}
+                   'resultat': '/tmp/paroles/resultat.json', 'videos': [],
+                   'bilingue': bool(REGLAGES.get('paroles_bilingue', True))}
         for e in etats_v:
             p = next((q for q in e['pistes'] if q['nom'] == 'lead_sec'), None) or piste_voix(e)
             phrases, chant = zones_a_transcrire(p['lisse'], p['seuil'], e['f0_tout'])

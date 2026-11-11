@@ -18,6 +18,17 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
   La version la plus sûre est celle qui a la meilleure log-probabilité moyenne par jeton, avec une pénalité si le texte
   tourne en boucle. Plafond : 12 phrases et 20 % de la durée chantée, mais la phrase la plus douteuse passe toujours. La
   traduction française, les `.srt` et les `.lrc` suivent. Réglage `paroles_bilingue`, désactivable.
+- **Voix affinée dans le doublage** : `doubler --affinee auto|oui|non` (clé `affinee`). Le chant d'une voix affinée par
+  `affiner` passe par Seed-VC 44 kHz chargé avec son propre point de contrôle, au lieu des poids de base. Le point de
+  contrôle est vérifié par sa somme SHA-256, puis envoyé dans le jeu de données privé de la session, sur Kaggle seulement.
+  - `auto` (défaut) ne s'en sert que si `affinage_pret` est vrai (`doubler --config affinage_pret oui`), une fois
+    l'affinage jugé bon à l'écoute. `oui` force l'essai, `non` s'en passe.
+  - Avec plusieurs voix, chaque voix décide seule. Si le point de contrôle est absent ou abîmé, ou si son chargement est
+    refusé, les poids de base servent, sans échec.
+  - Le rapport (clé `affinage` par voix) et la sortie disent quelle voix a pris quel modèle.
+  - Avec `--calcul modal` ou `runpod`, `oui` est refusé (« Kaggle seulement pour l'instant ») et `auto` garde les poids
+    de base.
+  - Interface : la page Doubler propose « Utiliser ma voix affinée » quand la voix choisie en a une.
 
 ## [0.19.0] - 2026-11-11
 

@@ -35,7 +35,7 @@ OPTIONS_SUIVIES = ("--evenements", "--donnees", "--config", "--json", "--voix-li
                    "--debut", "--duree", "--pas", "--voix-db", "--reverb-db", "--octave", "--mode", "--sortie",
                    "--mix-v1", "--comparer-pas", "--reprendre", "--moteur", "--sans-nettoyage", "--sans-paroles",
                    "--autotune", "--sans-autotune", "--autotune-gamme", "--gpu", "--passage", "--affectation",
-                   "--comparer", "--transposer", "--calcul", "--nettoyer-runpod")
+                   "--comparer", "--transposer", "--calcul", "--nettoyer-runpod", "--sans-quota")
 MOTEURS = (("yingmusic", "YingMusic-SVC"), ("seedvc", "Seed-VC 44 kHz"))
 NOM_VOIX = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")   # même règle que doubler --ajouter-voix
 EXTRAIT_NOM = re.compile(r" \(extrait (\d+)m(\d+(?:,\d+)?)(?:\+(\d+)m(\d+(?:,\d+)?))?\)$")

@@ -1296,6 +1296,8 @@ def analyseur():
                        help="où tourne le GPU : kaggle (défaut), modal, runpod (payant, jamais automatique) ou auto ; "
                             "le faux n'appelle ni Modal ni Runpod")
         p.add_argument("--nettoyer-runpod", action="store_true", help="supprime les pods Runpod voix-la-… restants (le faux : rien)")
+        p.add_argument("--sans-quota", action="store_true",
+                       help="avec --calcul auto : ne pas passer à Modal à cause du quota Kaggle (le faux : sans effet)")
     p.add_argument("--debut", type=float, default=None, help="début de l'extrait (s), pour un essai")
     p.add_argument("--duree", type=float, default=None, help="durée de l'extrait (s)")
     p.add_argument("--remix", action="store_true", help="refaire seulement le mixage et la vidéo depuis travail/ (sans Kaggle)")

@@ -193,6 +193,27 @@ class EssaiVoixEtFrise(unittest.TestCase):
         self.assertIsNone(segs[0]["f0"])
         self.assertEqual(segs[1]["base"], "voix seule")
 
+    def test_segments_a_trois_chanteurs(self):
+        def m(debut, fin, k, voix, cible):
+            return {**morceau(debut, fin, voix), "k": k, "cible": k, "voix_cible": cible, "chanteur": f"chanteur{k + 1}"}
+        r = {"mode": "chant", "voix_cibles": {"voix": [{"nom": "voix_a"}, {"nom": "voix_b"}, {"nom": "voix_c"}]},
+             "decision_hauteur": {"chanteurs": [{"cible": 0}, {"cible": 1}, {"cible": 2}]},
+             "morceaux": [m(0, 5, 0, "homme 1", "voix_a"), m(5, 10, 1, "voix 2", "voix_b"), m(10, 15, 2, "femme 3", "voix_c"),
+                          morceau(15, 20, None, muet=True)]}
+        segs = rapports.segments_frise(r)
+        self.assertEqual([(s["classe"], s["voix"], s.get("rang"), s.get("voix_cible")) for s in segs], [
+            ("chanteur", "chanteur 1", 1, "voix_a"), ("chanteur", "chanteur 2", 2, "voix_b"),
+            ("chanteur", "chanteur 3", 3, "voix_c"), ("muet", "muet", None, None)])
+        self.assertEqual(rapports.nom_segment(segs[2]), "Chanteur 3 → voix_c")
+        self.assertEqual(len(rapports.fusionner_segments(segs)), 4)
+
+    def test_duo_inchange_avec_deux_voix_cibles(self):
+        r = {"mode": "chant", "decision_hauteur": {"chanteurs": [{"cible": 0}, {"cible": 1}]},
+             "morceaux": [{**morceau(0, 5, "homme 1"), "k": 0, "cible": 0, "voix_cible": "voix_a"},
+                          {**morceau(5, 10, "femme 2"), "k": 1, "cible": 1, "voix_cible": "voix_b"}]}
+        self.assertEqual([(s["classe"], s["voix"]) for s in rapports.segments_frise(r)],
+                         [("homme", "homme 1"), ("femme", "femme 2")])
+
     def test_voix_seule_de_genre_connu(self):
         r = {"mode": "chant", "decision_hauteur": {"voix_seule": "femme"},
              "morceaux": [morceau(0, 5, None), morceau(5, 10, "?"), morceau(10, 15, None, muet=True), morceau(15, 20, "homme")]}

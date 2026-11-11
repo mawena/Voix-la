@@ -7,6 +7,30 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+## [0.19.0] - 2026-11-11
+
+### Ajouté
+
+- **Journal durable des sessions GPU** : doubler et affiner écrivent chaque session dans
+  `~/.local/state/voix-la/sessions-gpu.jsonl`. Ce fichier est en ajout seul : une ligne au départ, une à la fin. Chaque
+  ligne note le fournisseur (Kaggle, Modal ou Runpod), le noyau, le début, la fin, la durée, les cartes ou la machine, le
+  statut (réussie, échouée, annulée, abandonnée) et la commande. Aucun chemin ni nom de vidéo. Si l'écriture échoue, le
+  doublage continue.
+- **Quota de la semaine** : l'interface lit ce journal en plus des rapports, des travaux et des fichiers de session, sans
+  compter deux fois la même session. Le compte survit au ménage des dossiers.
+- **Quota Kaggle lu avant de pousser un noyau** (doubler, affiner) : une ligne l'annonce, par exemple « Kaggle : 20 h de
+  GPU restantes cette semaine, remise samedi… ». Un avertissement s'affiche si le quota est épuisé ou trop bas pour la
+  session estimée.
+  - En `--calcul auto`, doubler passe à Modal avant même d'envoyer le son ; `--sans-quota` l'en empêche.
+  - « Lancer quand même » dans l'interface passe `--sans-quota`, pour que le doublage parte bien sur Kaggle.
+  - Si la lecture échoue, le doublage continue avec un avertissement.
+
+### Corrigé
+
+- La frise d'octave montre chaque chanteur d'un doublage à trois voix cibles ou plus sous son nom (« Chanteur 3 → voix
+  cible ») et dans sa propre couleur, la même que dans la frise « Voix de chaque passage », au lieu de « Voix inconnue » en
+  ambre ; l'infobulle, la légende et l'indication de lecture suivent.
+
 ## [0.18.0] - 2026-11-10
 
 ### Ajouté
@@ -788,7 +812,8 @@ Première version publique.
     `VOIXLA_DECODAGE_MATERIEL=1` remet le décodage matériel ;
   - les essais automatiques laissaient le son de l'application coupé.
 
-[Non publié]: https://github.com/mawena/Voix-la/compare/v0.18.0...HEAD
+[Non publié]: https://github.com/mawena/Voix-la/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/mawena/Voix-la/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/mawena/Voix-la/compare/v0.17.2...v0.18.0
 [0.17.2]: https://github.com/mawena/Voix-la/compare/v0.17.1...v0.17.2
 [0.17.1]: https://github.com/mawena/Voix-la/compare/v0.17.0...v0.17.1

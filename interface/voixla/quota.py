@@ -759,8 +759,22 @@ def mettre_en_attente(demande, remise, verdict=None):
 
 
 def marquer(demande, decision, verdict=None):
-    """La demande, avec la décision prise sur le quota (« tient » ou « lancer » : lancée quand même)."""
-    return {**demande, "quota": {"decision": decision, **_chiffres(verdict)}}
+    """La demande, avec la décision prise sur le quota (« tient » ou « lancer » : lancée quand même). « lancer » ajoute
+    --sans-quota : doubler lit lui aussi le quota avant de pousser le noyau, et en --calcul auto il passerait sinon sur
+    Modal, contre le choix fait ici de lancer sur Kaggle quand même."""
+    d = {**demande, "quota": {"decision": decision, **_chiffres(verdict)}}
+    return sans_bascule(d) if decision == "lancer" else d
+
+
+def sans_bascule(demande):
+    """La demande avec --sans-quota en fin d'argv, si elle a un argv et que doubler connaît l'option ; sinon telle quelle."""
+    argv = demande.get("argv")
+    if not isinstance(argv, list) or "--sans-quota" in argv:
+        return demande
+    from . import moteur
+    if "--sans-quota" not in moteur.capacites():
+        return demande
+    return {**demande, "argv": [*argv, "--sans-quota"]}
 
 
 def _chiffres(v):

@@ -72,7 +72,7 @@ class EssaiCapacites(EssaiIsole):
                                                                          "--sans-autotune", "--autotune-gamme",
                                                                          "--gpu", "--passage", "--affectation",
                                                                          "--comparer", "--transposer", "--calcul",
-                                                                         "--nettoyer-runpod"})
+                                                                         "--nettoyer-runpod", "--sans-quota"})
         self.assertTrue(moteur.disponible())
 
     def test_doubler_introuvable(self):

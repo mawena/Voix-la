@@ -488,6 +488,23 @@ class EssaiVerdict(unittest.TestCase):
         self.assertEqual(d["quota"]["besoin_s"], 1380)
         self.assertEqual(quota.marquer({"a": 1}, "lancer", v)["quota"]["decision"], "lancer")
 
+    def test_lancer_quand_meme_sans_bascule(self):
+        """« Lancer quand même » : --sans-quota (doubler ne passe pas sur Modal à cause du quota), une seule fois ;
+        rien pour « tient », ni sans argv, ni avec un doubler qui ne connaît pas l'option."""
+        from unittest import mock
+        from voixla import moteur
+        v = quota.juger(self.etat(0.2), 23 * 60)
+        d = {"argv": ["doubler", "a.mp4", "--calcul=auto"]}
+        with mock.patch.object(moteur, "capacites", return_value={"--calcul", "--sans-quota"}):
+            m = quota.marquer(d, "lancer", v)
+            self.assertEqual(m["argv"], ["doubler", "a.mp4", "--calcul=auto", "--sans-quota"])
+            self.assertEqual(quota.marquer(m, "lancer", v)["argv"].count("--sans-quota"), 1)
+            self.assertEqual(quota.marquer(d, "tient", v)["argv"], d["argv"])
+            self.assertNotIn("argv", quota.marquer({"a": 1}, "lancer", v))
+        with mock.patch.object(moteur, "capacites", return_value={"--calcul"}):
+            self.assertEqual(quota.marquer(d, "lancer", v)["argv"], d["argv"])
+        self.assertEqual(d["argv"], ["doubler", "a.mp4", "--calcul=auto"])   # la demande d'origine n'est pas touchée
+
 
 class EssaiAttenteDansLaFile(EssaiIsole):
     """Un travail en attente du quota : il ne part qu'à la remise à zéro (ou sur « Lancer maintenant »), les travaux

@@ -1,3 +1,15 @@
+voix-la (0.19.0) unstable; urgency=medium
+
+  * Journal durable des sessions GPU (sessions-gpu.jsonl), lu par l'interface
+    pour le quota de la semaine.
+  * Quota Kaggle lu et annoncé avant de pousser un noyau ; en --calcul auto,
+    bascule sur Modal si le quota ne suffit pas (--sans-quota l'empêche,
+    « Lancer quand même » le passe).
+  * Frise d'octave : à trois voix ou plus, chaque chanteur sous son nom et sa
+    couleur au lieu de « Voix inconnue ».
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Wed, 11 Nov 2026 15:30:00 +0000
+
 voix-la (0.18.0) unstable; urgency=medium
 
   * De deux à six voix par vidéo : --voix chanteur1:a,...,chanteur6:f en chant,

@@ -1346,6 +1346,54 @@ class KaggleIndisponible(RuntimeError):
     --calcul auto, doubler passe alors à Modal."""
 
 
+def charger_quota():
+    """Le module voixla.quota de l'interface (sans GTK) : lecture de « kaggle quota » et son cache, déjà utilisés par
+    l'interface ; à côté de ce fichier une fois le paquet installé (/usr/lib/voix-la/voixla), dans interface/ du dépôt.
+    None s'il est introuvable. Rien n'est lancé à l'import ; voixla n'importe jamais doubler.py au chargement."""
+    for base in (DEPOT, DEPOT / 'interface'):
+        if (base / 'voixla' / 'quota.py').is_file():
+            if str(base) not in sys.path:
+                sys.path.insert(0, str(base))
+            return importlib.import_module('voixla.quota')
+    return None
+
+
+def quota_kaggle_avant_poussee(estimation_s, auto=False, sans_quota=False):
+    """Lit le quota de GPU Kaggle (la même lecture, et le même cache, que l'interface) avant de pousser un noyau et le
+    dit en une ligne. Quota épuisé ou trop bas pour l'estimation (avec la marge de l'interface) : un avertissement ;
+    avec --calcul auto, KaggleIndisponible, donc la bascule sur Modal (sans_quota : --sans-quota, pas de bascule).
+    Lecture impossible (pas de réseau, commande absente, module introuvable) : un avertissement, le doublage continue.
+    Rend la lecture {utilise_s, total_s, remise, lu_le}, ou None."""
+    try:
+        q = charger_quota()
+        if q is None:
+            raise RuntimeError('module du quota introuvable')
+        lecture, raison = q.lecture_kaggle(commande=KAGGLE)
+    except Exception as e:  # noqa: BLE001
+        lecture, raison = None, str(e) or type(e).__name__
+    if not lecture:
+        dire(f'Kaggle : quota non lu ({raison}) : la session continue sans lecture du quota')
+        return None
+    # une lecture gardée avant la remise à zéro n'est plus vraie : la semaine repart de zéro
+    if lecture['remise'] <= time.time():
+        dire('Kaggle : la remise à zéro du quota est passée depuis la dernière lecture : quota entier supposé')
+        return lecture
+    reste = max(0.0, lecture['total_s'] - lecture['utilise_s'])
+    dire(f"Kaggle : {q.heures(reste)} de GPU restantes cette semaine, remise {q.jour_heure(lecture['remise'])}"
+         + (f' (dernière lecture, Kaggle ne répond pas : {raison})' if raison else ''))
+    besoin = estimation_s * (1 + q.MARGE)
+    if reste > 0 and besoin <= reste:
+        return lecture
+    motif = ('quota épuisé' if reste <= 0 else
+             f'la session estimée à {q.heures(estimation_s)} ({q.heures(besoin)} avec la marge) ne tient pas dans '
+             f'les {q.heures(reste)} restantes')
+    if auto and not sans_quota:
+        raise KaggleIndisponible(f'Kaggle : {motif}')
+    dire(f'attention : {motif} ; Kaggle laisse parfois finir une session commencée, sinon elle sera arrêtée. '
+         'Attendre la remise, ou --calcul auto (Modal en secours)')
+    return lecture
+
+
 def preparer_jeu(travaux, voix, dossier, bits=16):
     """Le dossier « jeu » d'une session : la référence de la voix choisie (de chaque voix, avec une voix par chanteur) et le
     son des vidéos seulement, en FLAC 16 bits (bits=24 : clé envoi_flac ; gain de chaque vidéo noté dans tr['gain_entree'],
@@ -1815,16 +1863,25 @@ def rapatrier_noyau(noyau, retour, etat, motif=None, attendu='session.json', vid
 
 
 def lancer_noyau(reglages, dossier, retour, attente_maxi, noyau=None, jeux=None, sources=(), motif=None,
-                 attendu='session.json', videos=(), estimation_s=None, etapes=None, apres_poussee=None, file_maxi_s=None):
+                 attendu='session.json', videos=(), estimation_s=None, etapes=None, apres_poussee=None, file_maxi_s=None,
+                 commande='doubler', cartes=None):
     """Pousse le noyau, suit son état, rapatrie ses sorties dans retour. apres_poussee(heure, version) est appelé dès
-    que Kaggle a accepté le noyau (fichier de session pour --reprendre)."""
+    que Kaggle a accepté le noyau (fichier de session pour --reprendre). La session GPU est inscrite au journal durable
+    (sessions-gpu.jsonl) dès la poussée, et close dès que le noyau a fini : commande dit qui l'a lancée."""
     noyau = noyau or NOYAU
     jeux = (JEU,) if jeux is None else jeux
     pousse, version = pousser_noyau(reglages, dossier, attente_maxi, noyau, jeux, sources, videos)
+    journal_gpu_debut('kaggle', noyau, pousse, commande, cartes=cartes, machine=MACHINE, version=version,
+                      estimation_s=estimation_s)
     if apres_poussee:
         apres_poussee(pousse, version)
-    etat = suivre_noyau(noyau, pousse, attente_maxi, videos, estimation_s, file_maxi_s=file_maxi_s)
+    try:
+        etat = suivre_noyau(noyau, pousse, attente_maxi, videos, estimation_s, file_maxi_s=file_maxi_s)
+    except BaseException as e:
+        journal_gpu_fin('kaggle', pousse, statut_gpu(e))
+        raise
     fin = time.time()
+    journal_gpu_fin('kaggle', pousse, 'reussie' if etat == 'COMPLETE' else 'echouee', fin)
     rapatriement_s = rapatrier_noyau(noyau, retour, etat, motif, attendu, videos, etapes)
     return {'pousse_epoch': pousse, 'version_noyau': version, 'noyau_depuis_envoi_s': round(fin - pousse, 1),
             'rapatriement_s': rapatriement_s}
@@ -4180,6 +4237,62 @@ class Verrou:
         return False
 
 
+# --- Journal durable des sessions GPU --------------------------------------------------------------------------------
+# sessions-gpu.jsonl, à côté de session-en-cours.json (ETAT), en ajout seul : une ligne « debut » dès qu'une session GPU
+# part (Kaggle : noyau accepté ; Modal, Runpod : lancement), une ligne « fin » quand elle s'arrête. Les rapports, les
+# journaux de travaux et les fichiers de session disparaissent avec le ménage ; ce journal reste, et l'interface le lit
+# pour le quota hebdomadaire (voixla/quota.py). Aucun chemin ni nom de vidéo. Une écriture qui échoue est ignorée :
+# elle ne fait jamais échouer un doublage.
+JOURNAL_GPU = 'sessions-gpu.jsonl'
+
+
+def journal_gpu(**champs):
+    """Ajoute une ligne JSON au journal des sessions GPU ; jamais d'exception."""
+    try:
+        ETAT.mkdir(parents=True, exist_ok=True)
+        ligne = json.dumps({'v': 1, **{k: v for k, v in champs.items() if v is not None}}, ensure_ascii=False,
+                           separators=(',', ':'), default=str)
+        with open(ETAT / JOURNAL_GPU, 'a', encoding='utf-8') as f:
+            f.write(ligne + '\n')
+    except Exception:  # noqa: BLE001  (disque plein, droits, état illisible… : le doublage continue)
+        pass
+
+
+def id_session_gpu(fournisseur, debut):
+    """Identité d'une session GPU : le fournisseur et son heure de départ (refaite à l'identique par --reprendre)."""
+    return f'{fournisseur}:{int(debut)}'
+
+
+def journal_gpu_debut(fournisseur, nom, debut, commande, cartes=None, machine=None, version=None, estimation_s=None):
+    """Début d'une session GPU. nom : le noyau Kaggle (sans le compte) ou le moyen de calcul ; machine : la machine
+    Kaggle ou la carte demandée ; commande : doubler, comparer, affiner, outils…"""
+    try:
+        journal_gpu(evt='debut', id=id_session_gpu(fournisseur, debut), fournisseur=fournisseur,
+                    nom=str(nom).split('/')[-1] if nom else None, debut=round(float(debut), 1), commande=commande,
+                    cartes=cartes, machine=machine, version=version,
+                    estimation_s=round(estimation_s) if estimation_s else None)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def journal_gpu_fin(fournisseur, debut, statut, fin=None, nom=None):
+    """Fin d'une session GPU : reussie, echouee, annulee ou abandonnee."""
+    try:
+        fin = time.time() if fin is None else fin
+        journal_gpu(evt='fin', id=id_session_gpu(fournisseur, debut), fournisseur=fournisseur, nom=nom,
+                    fin=round(float(fin), 1), duree_s=round(max(0.0, fin - debut), 1), statut=statut)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def statut_gpu(erreur):
+    """Statut d'une session que l'exception erreur a arrêtée : annulee (Ctrl-C, signal), abandonnee (Kaggle
+    indisponible : le noyau peut finir seul), sinon echouee."""
+    if isinstance(erreur, (KeyboardInterrupt, SystemExit)):
+        return 'annulee'
+    return 'abandonnee' if isinstance(erreur, KaggleIndisponible) else 'echouee'
+
+
 CHAMPS_SESSION = ('id', 'nom', 'video', 'dossier', 'travail', 'tv', 'base', 'entree', 'gain_entree', 'taille_envoi', 'bits_envoi',
                   'duree_audio_s', 'extraction_s', 'debut_epoch', 'debut_demande', 'duree_demande')
 
@@ -4513,6 +4626,8 @@ def session_ailleurs(nom, travaux, a, voix, kdir, titres, ancres, abandon, echec
             EV('kaggle', v, statut=mot, depuis_s=round(time.time() - pousse), estimation_s=estimation,
                cout_estime_usd=cout, calcul=nom)
     noter()
+    journal_gpu_debut(nom, nom, pousse, 'comparer' if voix.get('comparees') else 'doubler', cartes=c['cartes'],
+                      machine=c['nom'], estimation_s=estimation)
     etape = Etape('kaggle', titres, f'{Nom}, carte {c["nom"]}, environ {estimation / 60:.0f} min, '
                                     f'{calcul.dollars(cout)}').__enter__()
     ctx = {'script': script, 'jeu': jeu, 'retour': retour, 'gpu': gpu, 'cartes': c['cartes'], 'timeout_s': attente_maxi,
@@ -4522,12 +4637,14 @@ def session_ailleurs(nom, travaux, a, voix, kdir, titres, ancres, abandon, echec
                else module.lancer(ctx, dire, sur_etat, apres_creation=noter))
     except BaseException as e:
         etape.finir(e)
+        journal_gpu_fin(nom, pousse, statut_gpu(e))
         shutil.rmtree(jeu, ignore_errors=True)
         clore_session('interrompue' if isinstance(e, KeyboardInterrupt) else 'échec')
         if isinstance(e, Exception):
             raise _Abandon(f'de la session {Nom} : {e}') from e
         raise
     fin = time.time()
+    journal_gpu_fin(nom, pousse, 'reussie' if res['code'] == 0 else 'echouee', fin)
     shutil.rmtree(jeu, ignore_errors=True)
     erreur = erreur_sortie(retour, 'COMPLETE' if res['code'] == 0 else 'ERROR', 'session.json', Nom)
     if erreur:
@@ -4572,6 +4689,14 @@ def traiter_lot(videos, a, voix):
 
         def session_kaggle():
             """La session sur Kaggle : rend (session, temps, envoi_s, estimation), ou la liste des échecs (abandon)."""
+            cartes = cartes_prevues(getattr(a, 'gpu', 'auto'), MACHINE)
+            # historique : les rapports de ce dossier de sortie, et ceux du dossier par défaut (un dossier neuf n'en a pas)
+            estimation = estimer_noyau_s([tr['duree_audio_s'] for tr in travaux], a.pas, [a.sortie, SORTIES],
+                                         not a.sans_nettoyage, a.mode, a.moteur, a.paroles, len(voix_membres(voix)), cartes,
+                                         getattr(a, 'versions_duo', 'non') if voix.get('membres') else 'non',
+                                         len(voix.get('comparees') or ()) or 1, voix.get('mode') == 'personnes')
+            # quota lu avant tout envoi : en auto, un quota trop bas laisse la place à Modal sans envoyer le son
+            quota_kaggle_avant_poussee(estimation, auto, getattr(a, 'sans_quota', False))
             debut = time.time()
             try:
                 with Etape('envoi', titres, f'son de {len(travaux)} vidéo(s) en FLAC vers le jeu privé {JEU}'):
@@ -4586,12 +4711,6 @@ def traiter_lot(videos, a, voix):
             retour = kdir / 'retour'
             outils = fiche_outils(a.sortie)
             sources = [OUTILS] if outils else []
-            cartes = cartes_prevues(getattr(a, 'gpu', 'auto'), MACHINE)
-            # historique : les rapports de ce dossier de sortie, et ceux du dossier par défaut (un dossier neuf n'en a pas)
-            estimation = estimer_noyau_s([tr['duree_audio_s'] for tr in travaux], a.pas, [a.sortie, SORTIES],
-                                         not a.sans_nettoyage, a.mode, a.moteur, a.paroles, len(voix_membres(voix)), cartes,
-                                         getattr(a, 'versions_duo', 'non') if voix.get('membres') else 'non',
-                                         len(voix.get('comparees') or ()) or 1, voix.get('mode') == 'personnes')
             # limite du suivi : au moins le double de l'estimation (le nettoyage allonge beaucoup une longue chanson)
             attente_maxi = max((30 + 20 * len(travaux)) * 60, 2 * estimation + 30 * 60)
             dire(f"chaîne : chant → {'voix nettoyée' if not a.sans_nettoyage else 'voix complète (sans nettoyage)'}, "
@@ -4631,7 +4750,8 @@ def traiter_lot(videos, a, voix):
             etapes = {}
             try:
                 temps = lancer_noyau(reglages, kdir, retour, attente_maxi, sources=sources, videos=titres,
-                                     estimation_s=estimation, etapes=etapes, apres_poussee=noter,
+                                     estimation_s=estimation, etapes=etapes, apres_poussee=noter, cartes=cartes,
+                                     commande='comparer' if voix.get('comparees') else 'doubler',
                                      **({'file_maxi_s': entier_config(lire_config(), 'kaggle.attente_file_min',
                                                                       ATTENTE_FILE_MIN_DEFAUT) * 60} if auto else {}))
             except Exception as e:  # noqa: BLE001
@@ -4708,11 +4828,17 @@ def preparer_outils_modal(a, conf):
     shutil.rmtree(retour, ignore_errors=True)
     dire(f"Modal : préparation des outils dans le volume des modèles publics, carte {c['nom']}, environ 15 min "
          f"({calcul.dollars(calcul.estimer_calcul(900, 'modal', c)[1])})")
+    debut_gpu = time.time()
+    journal_gpu_debut('modal', 'modal', debut_gpu, 'outils', cartes=c['cartes'], machine=c['nom'], estimation_s=900)
     try:
         res = module.lancer({'script': script, 'jeu': None, 'retour': retour, 'gpu': gpu, 'timeout_s': 3600,
                              'mode': 'outils'}, dire)
+    except BaseException as e:
+        journal_gpu_fin('modal', debut_gpu, statut_gpu(e))
+        raise
     finally:
         script.unlink(missing_ok=True)
+    journal_gpu_fin('modal', debut_gpu, 'reussie' if res['code'] == 0 else 'echouee')
     if res['code'] != 0 or not (retour / 'outils.json').exists():
         raise SystemExit('Modal : préparation des outils en échec ; fin du journal :\n' + '\n'.join(res['journal'][-20:]))
     fiche = json.loads((retour / 'outils.json').read_text())
@@ -4730,12 +4856,14 @@ def reprendre_ailleurs(a, s, travaux, titres, voix, kdir):
     nom = s['calcul']
     Nom = NOMS_CALCUL.get(nom, nom)
     if nom == 'modal':
+        journal_gpu_fin(nom, s['pousse_epoch'], 'abandonnee')
         clore_session('perdue')
         raise SystemExit('session Modal interrompue : son application éphémère s\'est arrêtée avec le PC (rien ne reste '
                          'ouvert ni facturé, le son envoyé est effacé). La session est close : refaire le doublage.')
     module = charger_calcul('calcul_runpod')
     if not s.get('pod_id'):
         module.nettoyer(dire)
+        journal_gpu_fin(nom, s['pousse_epoch'], 'abandonnee')
         clore_session('perdue')
         raise SystemExit('session Runpod sans pod noté (interrompue avant sa création) : les pods voix-la-… restants '
                          'ont été supprimés, la session est close : refaire le doublage.')
@@ -4750,10 +4878,12 @@ def reprendre_ailleurs(a, s, travaux, titres, voix, kdir):
             res = module.reprendre({k: s[k] for k in ('pod_id', 'hote', 'port', 'duree_max_s', 'cree_epoch')}, retour, dire)
         except Exception as e:  # noqa: BLE001
             etape.finir(e)
+            journal_gpu_fin(nom, s['pousse_epoch'], 'echouee')
             module.nettoyer(dire)   # le pod est déjà supprimé ou l'a été ; les restes de ce nom aussi
             clore_session('échec')
             raise SystemExit(f'{Nom} : {e}') from e
         fin = time.time()
+        journal_gpu_fin(nom, s['pousse_epoch'], 'reussie' if res['code'] == 0 else 'echouee', fin)
         erreur = erreur_sortie(retour, 'COMPLETE' if res['code'] == 0 else 'ERROR', 'session.json', Nom)
         if erreur:
             etape.finir(str(erreur).splitlines()[0])
@@ -4796,9 +4926,14 @@ def reprendre(a):
             raise SystemExit('la session a été finie par un autre doubler pendant l\'attente')
         dire(f"reprise de la session du {s.get('poussee_le')} : noyau {noyau} (version {s.get('version_noyau')}), "
              f"{len(travaux)} vidéo(s) : {', '.join(titres)}")
-        etat = suivre_noyau(noyau, s['pousse_epoch'], s.get('attente_maxi_s', 3600), titres, s.get('estimation_s'),
-                            origine_limite=time.time())
+        try:
+            etat = suivre_noyau(noyau, s['pousse_epoch'], s.get('attente_maxi_s', 3600), titres, s.get('estimation_s'),
+                                origine_limite=time.time())
+        except BaseException as e:
+            journal_gpu_fin('kaggle', s['pousse_epoch'], statut_gpu(e))
+            raise
         fin = time.time()
+        journal_gpu_fin('kaggle', s['pousse_epoch'], 'reussie' if etat == 'COMPLETE' else 'echouee', fin)
         retour = kdir / 'retour'
         etapes = {}
         try:
@@ -4838,7 +4973,7 @@ def preparer_outils(a):
     kdir.mkdir(parents=True, exist_ok=True)
     retour = kdir / 'retour-outils'
     # autre noyau, aucun jeu de données : peut tourner en même temps qu'un doublage (deux sessions GPU permises)
-    temps = lancer_noyau({'outils': True}, kdir, retour, 60 * 60, noyau=OUTILS, jeux=(), motif=r'(outils\.json|\.log)$',
+    temps = lancer_noyau({'outils': True}, kdir, retour, 60 * 60, noyau=OUTILS, jeux=(), motif=r'(outils\.json|\.log)$', commande='outils',
                          attendu='outils.json')
     fiche = json.loads((retour / 'outils.json').read_text())
     (kdir / 'outils.json').write_text(json.dumps(fiche, ensure_ascii=False, indent=1))
@@ -4941,6 +5076,9 @@ def main():
                         'toujours supprimé à la fin) ou auto (Kaggle d\'abord, puis Modal si Kaggle n\'est pas disponible : '
                         'pas de jeton, refus, quota épuisé, ou « queued » au-delà de « kaggle.attente_file_min », 20 min). '
                         'Défaut lu dans la configuration (clé « calcul »). N\'a rien à voir avec --gpu, qui compte les cartes')
+    p.add_argument('--sans-quota', action='store_true',
+                   help='avec --calcul auto : ne pas passer à Modal quand le quota Kaggle est épuisé ou trop bas (le quota '
+                        'est lu et affiché dans tous les cas avant de pousser un noyau Kaggle)')
     p.add_argument('--nettoyer-runpod', action='store_true',
                    help='supprime les pods Runpod « voix-la-… » restants (jamais les autres) puis quitte')
     p.add_argument('--voix-db', type=float, default=None, help='voix par rapport à celle de la vidéo (défaut +4 en chant, 0 en parole)')

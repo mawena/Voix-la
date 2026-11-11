@@ -341,8 +341,13 @@ def finir_session(s, a, videos):
     """Suit le noyau noté dans la session, rapatrie sa sortie et la range. Rend la fiche."""
     nom, noyau = s['voix'], s['noyau']
     kdir = Path(s['dossier'])
-    etat = doubler.suivre_noyau(noyau, s['pousse_epoch'], s.get('attente_maxi_s', 3 * 3600), videos,
-                                s.get('estimation_s'), origine_limite=time.time() if s.get('reprise') else None)
+    try:
+        etat = doubler.suivre_noyau(noyau, s['pousse_epoch'], s.get('attente_maxi_s', 3 * 3600), videos,
+                                    s.get('estimation_s'), origine_limite=time.time() if s.get('reprise') else None)
+    except BaseException as e:
+        doubler.journal_gpu_fin('kaggle', s['pousse_epoch'], doubler.statut_gpu(e))
+        raise
+    doubler.journal_gpu_fin('kaggle', s['pousse_epoch'], 'reussie' if etat == 'COMPLETE' else 'echouee')
     retour = kdir / 'retour'
     try:
         doubler.rapatrier_noyau(noyau, retour, etat, attendu='rapport.json', videos=videos)
@@ -422,6 +427,7 @@ def affiner(a):
     with doubler.Verrou(kdir, videos):
         if session_en_cours().exists():
             raise SystemExit(f'un affinage est déjà en cours ({session_en_cours()}) : « affiner --reprendre » le finit')
+        doubler.quota_kaggle_avant_poussee(estimation)   # le quota restant, dit avant l'envoi ; un avertissement seulement
         with doubler.Etape('envoi', videos, f'{len(retenues)} prise(s) de chant vers {jeu}'):
             envoyer_jeu(jeu, kdir / 'jeu', len(retenues), bool(point))
         shutil.rmtree(kdir / 'jeu', ignore_errors=True)
@@ -430,6 +436,8 @@ def affiner(a):
         s = {'voix': nom, 'noyau': noyau, 'jeu': jeu, 'dossier': str(kdir), 'pousse_epoch': pousse, 'version_noyau': version,
              'poussee_le': datetime.datetime.now().astimezone().isoformat(timespec='seconds'), 'estimation_s': estimation,
              'attente_maxi_s': attente_maxi, 'reglages': reglages, 'prises': len(retenues), 'utile_s': b['utile_s']}
+        doubler.journal_gpu_debut('kaggle', noyau, pousse, 'affiner', machine=doubler.MACHINE, version=version,
+                                  estimation_s=estimation)
         noter_session(s)
         fiche = finir_session(s, a, videos)
     dire(f"Affinage {'terminé' if fiche['complet'] else 'inachevé (« affiner --reprendre » continue)'} : "

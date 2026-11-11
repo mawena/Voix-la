@@ -302,6 +302,100 @@ class EssaiSessions(EssaiIsole):
         self.assertEqual([(s.genre, round(s.duree_s, 1)) for s in sessions],
                          [("outils", 660.0), ("banc", 2808.4), ("banc", 822.2)])   # s3 : durée inconnue
 
+    def journal(self, *lignes, brut=""):
+        """sessions-gpu.jsonl de doubler : les lignes (dictionnaires), puis du texte brut éventuel."""
+        f = self.etat_doubler / quota.JOURNAL_GPU
+        f.write_text("".join(json.dumps(l) + "\n" for l in lignes) + brut, encoding="utf-8")
+        return f
+
+    @staticmethod
+    def debut(debut, version=50, commande="doubler", fournisseur="kaggle", estimation_s=None):
+        ident = f"{fournisseur}:{int(debut)}"
+        return {"v": 1, "evt": "debut", "id": ident, "fournisseur": fournisseur, "nom": "doublage-voix-gpu",
+                "debut": debut, "commande": commande, "cartes": 2, "version": version,
+                **({"estimation_s": estimation_s} if estimation_s else {})}
+
+    @staticmethod
+    def fin(debut, duree, statut="reussie", fournisseur="kaggle"):
+        return {"v": 1, "evt": "fin", "id": f"{fournisseur}:{int(debut)}", "fournisseur": fournisseur,
+                "fin": debut + duree, "duree_s": duree, "statut": statut}
+
+    def test_journal_seul_survit_au_menage(self):
+        # ni rapport, ni travail, ni fichier de session : le journal garde la session, finie ou non
+        d1, d2 = VENDREDI - 6 * H, VENDREDI - 3 * H
+        self.journal(self.debut(d1), self.fin(d1, 1300.0), self.debut(d2, version=51), self.fin(d2, 90.0, "echouee"))
+        s1, s2 = self.locales()
+        self.assertEqual((s1.origine, s1.genre, s1.version, s1.duree_s, s1.mesuree), ("journal", "doublage", 50, 1300.0, True))
+        self.assertEqual((s2.duree_s, s2.version), (90.0, 51))
+        self.assertEqual(s1.titre, "Doublage")
+
+    def test_journal_et_rapport_comptes_une_fois(self):
+        fin = VENDREDI - 3 * H
+        self.rapport("Chanson d’essai", "jules", fin, version=42)
+        self.journal(self.debut(fin - 1330, version=42), self.fin(fin - 1330, 1350.0))
+        (s,) = self.locales()
+        self.assertEqual(sorted(s.origines), ["journal", "rapport"])
+        self.assertAlmostEqual(s.duree_s, 1316.0)   # le rapport donne les heures, la file d'attente en moins
+
+    def test_journal_et_session_de_doubler_comptes_une_fois(self):
+        fin = VENDREDI - 2 * H
+        chemins.ecrire_json(self.etat_doubler / "session-precedente.json", {
+            "noyau": "essai/doublage-voix-gpu", "version_noyau": 43, "pousse_epoch": fin - 1320,
+            "estimation_s": 1300, "etat": "rapatriée", "close_le": iso(fin + 30), "travaux": [{"nom": "X"}]})
+        self.journal(self.debut(fin - 1320, version=43), self.fin(fin - 1320, 1320.0))
+        (s,) = self.locales()
+        self.assertEqual(sorted(s.origines), ["journal", "session-precedente"])
+        self.assertTrue(s.mesuree)
+        self.assertAlmostEqual(s.duree_s, 1320.0)   # le journal passe avant les fichiers de session
+
+    def test_journal_sans_version_fusionne_par_les_heures(self):
+        fin = VENDREDI - 2 * H
+        chemins.ecrire_json(self.etat_doubler / "session-precedente.json", {
+            "version_noyau": None, "pousse_epoch": fin - 1320, "close_le": iso(fin + 30), "travaux": []})
+        self.journal(self.debut(fin - 1320, version=None), self.fin(fin - 1320, 1320.0))
+        self.assertEqual(len(self.locales()), 1)
+
+    def test_journal_session_interrompue(self):
+        d = VENDREDI - 3 * H
+        self.journal(self.debut(d, estimation_s=1500), self.debut(VENDREDI - 600, version=52, estimation_s=900))
+        # verrou libre : plus personne ne la suit ; durée estimée, au plus le temps écoulé
+        sessions = self.locales()
+        self.assertEqual([(round(s.duree_s), s.mesuree, s.en_cours) for s in sessions],
+                         [(1500, False, False), (600, False, False)])
+        # doubler en pleine session : la plus récente seule est « en cours »
+        verrou = self.etat_doubler / "verrou-kaggle"
+        verrou.write_text("")
+        with open(verrou) as tenu:
+            fcntl.flock(tenu, fcntl.LOCK_EX)
+            sessions = self.locales()
+        self.assertEqual([s.en_cours for s in sessions], [False, True])
+        self.assertAlmostEqual(sessions[1].duree_s, 600.0)
+
+    def test_journal_ignore_modal_runpod_et_lignes_abimees(self):
+        d = VENDREDI - 5 * H
+        self.journal(self.debut(d, fournisseur="modal"), self.fin(d, 600.0, fournisseur="modal"),
+                     self.debut(d + 1, fournisseur="runpod"), self.fin(999.0, 5.0),    # fin sans début
+                     {"evt": "debut", "id": "kaggle:1", "fournisseur": "kaggle", "debut": "pas un nombre"},
+                     brut="{pas du json\n\n[1, 2]\n")
+        self.assertEqual(self.locales(), [])
+
+    def test_journal_outils_et_fiche_comptes_une_fois(self):
+        d = VENDREDI - 40 * H
+        for f in (self.etat_doubler / "outils.json",):
+            f.write_text(json.dumps({"date": "2026-11-04 14:35", "commit": "abc"}), encoding="utf-8")
+            toucher(f, d + 640)
+        self.journal(self.debut(d, commande="outils", version=9), self.fin(d, 630.0))
+        (s,) = self.locales()
+        self.assertEqual(s.genre, "outils")
+        self.assertEqual(sorted(s.origines), ["journal", "outils"])
+        self.assertAlmostEqual(s.duree_s, 630.0)
+
+    def test_journal_absent_ou_ancien(self):
+        self.assertEqual(self.locales(), [])   # pas de fichier : comme avant
+        d = VENDREDI - 20 * 86400
+        self.journal(self.debut(d), self.fin(d, 900.0))
+        self.assertEqual(self.locales(), [])
+
     def test_rien_d_avant_la_periode(self):
         self.rapport("Ancienne", "jules", VENDREDI - 20 * 86400)
         self.assertEqual(self.locales(), [])

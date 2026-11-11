@@ -722,6 +722,8 @@ Une étape en `erreur` est suivie d'un événement `erreur`. Les étapes commune
 | `--evenements FICHIER` | écrire l'avancement en JSON, un événement par ligne | |
 | `--comparer-pas N` | convertir aussi les ~30 s les plus chantées en N pas, pour comparer | |
 | `--ajouter-voix NOM ENREGISTREMENT` | ajouter une voix depuis un enregistrement (audio ou vidéo) | |
+| `--voix-depuis DOUBLAGE NOM` | garder comme voix la voix d'un chanteur d'un doublage fini (dossier de résultat ou vidéo doublée), sans GPU | |
+| `--chanteur N` | avec `--voix-depuis` : le chanteur à garder (`N`, 1 = le premier à chanter, ou sa clé : `homme`, `femme`, `chanteur2`…) ; obligatoire s'il y a plusieurs voix | |
 | `--voix-liste` | afficher les voix disponibles | |
 | `--json` | avec `--voix-liste` ou `--config` : sortie en JSON | |
 | `--config [CLE VALEUR]` | sans argument : afficher la configuration ; avec `CLE VALEUR` : écrire une clé | |
@@ -866,6 +868,31 @@ L'enregistrement est nettoyé sur le PC, en quelques secondes :
 Une alerte s'affiche si l'enregistrement a moins de 15 s de parole, s'il est bruité (parole à moins de 25 dB au-dessus
 du fond) ou s'il est saturé. La référence est envoyée dans le jeu de données Kaggle privé à chaque session qui
 utilise cette voix.
+
+### Garder la voix d'une vidéo
+
+Après un doublage, la voix d'origine isolée est dans `travail/voix_source.wav` : on peut en garder un chanteur comme
+voix cible, sans nouveau calcul sur GPU.
+
+```sh
+doubler --voix-depuis "~/Music/Voix-là/sorties/Clip" voix-b                # une seule voix dans la vidéo
+doubler --voix-depuis "~/Music/Voix-là/sorties/Clip" voix-c --chanteur 2   # duo ou N voix : dire laquelle
+doubler "Autre clip.mp4" --voix voix-c
+```
+
+- `DOUBLAGE` est le dossier du résultat, son dossier `travail/`, ou la vidéo (ou le mp3) doublée.
+- Avec un duo ou plusieurs voix, `--chanteur` est obligatoire (message clair sinon) : `N` dans l'ordre d'apparition, ou
+  la clé du chanteur.
+- Choix des passages, d'après `rapport.json` : seuls les passages où ce chanteur chante **seul** (ni chœurs, ni unisson
+  ou plusieurs voix, ni passage en duo, ni muet, au moins 1,5 s et 45 % de voix voisée) ; les plus présents d'abord
+  (niveau, part voisée), assemblés dans l'ordre du temps en une référence de 15 à 30 s (25 s visées), puis nettoyée
+  comme `--ajouter-voix` (mono, passe-haut 70 Hz, −26 LUFS). Moins de 15 s de chant seul : alerte ; moins de 8 s : refus.
+- Garde-fous : la fiche `voix.json` porte `origine: video`, `imitation_ia: true` et « voix d'artiste, usage privé » ;
+  la commande affiche « voix d'artiste : imitation par IA, pour un usage privé seulement » ; les doublages faits avec
+  cette voix portent « imitation par IA » dans le `comment` du mp4/mkv/mp3 produit et dans `rapport.json`
+  (`imitation_ia`). Voix d'artiste : usage privé seulement, jamais publiée ni diffusée.
+- Dans l'interface : page Résultats, groupe « Voix de la vidéo » (« Garder cette voix », une ligne par chanteur) ; la
+  page Voix montre le badge « Voix d'une vidéo · imitation IA ».
 
 ### Bien enregistrer
 

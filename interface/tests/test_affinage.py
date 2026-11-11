@@ -185,5 +185,33 @@ class DoublagesInchanges(unittest.TestCase):
         self.assertNotIn("controle", suivi.NOMS)
 
 
+class VoixAffineeDansDoubler(EssaiIsole):
+    """La case « voix affinée » de la page Doubler : quelles voix ont un affinage, et la valeur de --affinee."""
+
+    def test_ids_de_voix(self):
+        self.assertEqual(affinage.ids_de_voix("voixA"), ["voixA"])
+        self.assertEqual(affinage.ids_de_voix("homme:voixA,femme:voixB"), ["voixA", "voixB"])
+        self.assertEqual(affinage.ids_de_voix(None), [])
+        self.assertEqual(affinage.ids_de_voix(""), [])
+
+    def test_voix_affinees(self):
+        a = creer_voix(self.donnees, "voixA", "VoixA")
+        creer_voix(self.donnees, "voixB", "VoixB")
+        self.assertEqual(affinage.voix_affinees(self.donnees, "voixA"), [])
+        fiche(a)
+        self.assertEqual(affinage.voix_affinees(self.donnees, "voixA"), ["voixA"])
+        self.assertEqual(affinage.voix_affinees(self.donnees, "homme:voixA,femme:voixB"), ["voixA"])
+        self.assertEqual(affinage.voix_affinees(self.donnees, "voixB"), [])
+        fiche(a, complet=False)   # inachevé : pas proposé
+        self.assertEqual(affinage.voix_affinees(self.donnees, "voixA"), [])
+
+    def test_choix_affinee(self):
+        self.assertIsNone(affinage.choix_affinee(False, False))   # la case suit « affinage_pret » : doubler décide
+        self.assertIsNone(affinage.choix_affinee(True, True))
+        self.assertEqual(affinage.choix_affinee(True, False), "oui")    # essai avant d'avoir jugé l'affinage bon
+        self.assertEqual(affinage.choix_affinee(False, True), "non")    # refus d'une voix affinée jugée bonne
+
+
+
 if __name__ == "__main__":
     unittest.main()

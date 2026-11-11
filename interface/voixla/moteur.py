@@ -7,6 +7,7 @@ Options récentes, utilisées seulement si « doubler --help » les annonce, ave
 - --config [CLE VALEUR] : écriture de config.json. Repli : écriture directe du fichier (chemins.ecrire_cle_config) ;
 - --voix-liste --json  : liste des voix. Repli : lecture directe de voix/*/voix.json ;
 - --gpu auto|1|2       : cartes GPU du noyau, et clé « gpu » de la configuration. Sans elle : une carte, réglage grisé.
+- --affinee auto|oui|non : voix affinée sur le chant (commande affiner). Sans lui : pas de choix dans la page Doubler.
 - --calcul kaggle|modal|runpod|auto : où tourne le GPU (clé « calcul »). Sans lui : Kaggle, comme avant. --nettoyer-runpod
   supprime les pods Runpod voix-la-… restants.
 VOIXLA_DOUBLER (essais) remplace la commande doubler, par exemple par un faux doubler. Sinon, « doubler » du PATH
@@ -35,7 +36,8 @@ OPTIONS_SUIVIES = ("--evenements", "--donnees", "--config", "--json", "--voix-li
                    "--debut", "--duree", "--pas", "--voix-db", "--reverb-db", "--octave", "--mode", "--sortie",
                    "--mix-v1", "--comparer-pas", "--reprendre", "--moteur", "--sans-nettoyage", "--sans-paroles",
                    "--autotune", "--sans-autotune", "--autotune-gamme", "--gpu", "--passage", "--affectation",
-                   "--comparer", "--transposer", "--calcul", "--nettoyer-runpod", "--sans-quota")
+                   "--comparer", "--transposer", "--calcul", "--nettoyer-runpod", "--sans-quota",
+                   "--affinee")
 MOTEURS = (("yingmusic", "YingMusic-SVC"), ("seedvc", "Seed-VC 44 kHz"))
 NOM_VOIX = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")   # même règle que doubler --ajouter-voix
 EXTRAIT_NOM = re.compile(r" \(extrait (\d+)m(\d+(?:,\d+)?)(?:\+(\d+)m(\d+(?:,\d+)?))?\)$")
@@ -363,6 +365,8 @@ def args_doublage(videos, reglages, donnees, extrait=None, evenements=None, caps
         a.append("--sans-nettoyage")
     if reglages.get("calcul") in ("kaggle", "modal", "runpod", "auto") and "--calcul" in caps:
         a.append(f"--calcul={reglages['calcul']}")   # où tourne le GPU ; sans lui, la clé « calcul » de doubler
+    if reglages.get("affinee") in ("auto", "oui", "non") and "--affinee" in caps:
+        a.append(f"--affinee={reglages['affinee']}")   # voix affinée : sans lui, auto (clé « affinee » de doubler)
     if reglages.get("sans_paroles") and "--sans-paroles" in caps:
         a.append("--sans-paroles")
     a += args_autotune(reglages, caps)

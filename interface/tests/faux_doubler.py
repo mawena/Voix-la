@@ -1288,6 +1288,8 @@ def analyseur():
         p.add_argument("--autotune-gamme", default=None, metavar="GAMME",
                        help="gamme de l'auto-tune : auto, chromatique, ou une tonalité (la-mineur, do#-majeur…)")
     if not SANS_GPU:
+        p.add_argument("--affinee", choices=["auto", "oui", "non"], default=None,
+                       help="voix affinée sur le chant : auto (défaut), oui ou non (le faux : sans effet)")
         p.add_argument("--gpu", choices=list(GPU_CHOIX), default=None,
                        help="cartes GPU du noyau : auto (défaut : les deux T4 de la machine Kaggle), 1 ou 2 ; "
                             "défaut lu dans la configuration (clé « gpu »)")

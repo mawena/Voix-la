@@ -199,6 +199,15 @@ Pas de diffusion de la conversion (défaut : 30).
 Moteur du chant : YingMusic\-SVC (défaut) ou Seed\-VC 44 kHz. La parole passe
 toujours par Seed\-VC 22 kHz.
 .TP
+.BR \-\-affinee " auto|oui|non"
+Voix affinée sur le chant (commande \fBaffiner\fR) : le chant d'une voix qui a un affinage passe par Seed\-VC 44 kHz
+chargé avec son point de contrôle affiné, à la place des poids de base (même si le moteur demandé est YingMusic\-SVC, qui
+ne prend pas de point affiné). \fBauto\fR (défaut, clé \fBaffinee\fR) : seulement si la clé \fBaffinage_pret\fR est vraie,
+c'est\-à\-dire si l'affinage a été jugé bon à l'écoute ; \fBoui\fR : toute voix qui en a un, prêt ou non ; \fBnon\fR : poids
+de base. Avec plusieurs voix, chaque voix choisit seule. Kaggle seulement : \fB\-\-affinee oui\fR est refusé avec
+\fB\-\-calcul modal\fR ou \fBrunpod\fR. Le rapport dit quelle voix a utilisé quel modèle ; un point absent ou abîmé
+(somme SHA\-256) laisse les poids de base.
+.TP
 .B \-\-sans\-nettoyage
 En chant, convertit la voix isolée complète, sans nettoyage (plus rapide).
 .TP
@@ -325,7 +334,7 @@ Avec \fB\-\-voix\-liste\fR ou \fB\-\-config\fR : sortie en JSON.
 .BR \-\-config " [\fIclé valeur\fR]"
 Sans argument, affiche la configuration et les valeurs utilisées (données,
 commande kaggle, script du noyau, ancres de genre) ; avec \fIclé valeur\fR,
-écrit une clé : \fBdonnees\fR, \fBvoix\fR, \fBmoteur\fR, \fBparoles\fR, \fBautotune\fR
+écrit une clé : \fBdonnees\fR, \fBvoix\fR, \fBmoteur\fR, \fBaffinee\fR, \fBaffinage_pret\fR (oui ou non), \fBparoles\fR, \fBautotune\fR
 (intensité de 0 à 100), \fBgpu\fR (auto, 1 ou 2), \fBpistes_audio\fR (toutes ou
 doublage), \fBenvoi_flac\fR (16 ou 24 bits), \fBversions_duo\fR (toutes, utiles ou non), \fBkaggle.compte\fR, \fBkaggle.jeu\fR,
 \fBkaggle.noyau\fR, \fBkaggle.outils\fR, \fBkaggle.machine\fR (machine Kaggle demandée

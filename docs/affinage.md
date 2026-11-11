@@ -102,21 +102,23 @@ résultat avant d'activer le bouton (`affinage_pret`). Commande : `affiner <nom>
 de la branche pour la durée et le quota estimés : de l'ordre de 30 à 60 min de GPU, soit au plus 3 % des 30 h
 hebdomadaires).
 
-## Intégration au doublage (à faire)
+## Intégration au doublage (faite, à vérifier au premier vrai affinage)
 
-Le but est qu'une voix affinée soit utilisée pour doubler une chanson. Plan :
+Une voix affinée sert à doubler une chanson. Ce qui est fait :
 
-1. **Choix du moteur.** Si `voix/<nom>/affinage/affinage.json` existe avec son point de contrôle, `doubler` choisit
-   **Seed-VC 44 kHz** pour cette voix (le point de contrôle ne se charge pas dans YingMusic) ; sinon le moteur habituel.
-2. **Envoi.** Le point de contrôle compact (`affinage.pth` et `affinage.yml`, quelques centaines de Mo au plus) part dans le
-   jeu de données de la session, avec la référence de parole, comme les autres données de la voix.
-3. **Noyau de doublage.** Il charge les poids affinés dans Seed-VC 44k au lieu des poids d'origine ; la référence de parole
-   reste le prompt de timbre.
-4. **Repli zéro-shot.** Si le point est absent, corrompu (somme SHA-256 qui ne correspond pas), incompatible avec la version
-   de Seed-VC du noyau, ou si le chargement échoue, le doublage se fait comme avant (Seed-VC ou YingMusic zéro-shot) et le
-   dit dans `rapport.json` et dans le journal, sans échouer.
-5. **Mesure avant de généraliser.** Comparer, avec le comparateur de voix de l'interface et les proches de la voix,
-   zéro-shot contre affiné sur les mêmes chansons ; n'activer le choix automatique qu'après un gain net.
-
-Ces changements touchent `doubler.py` et `kaggle/doubler_kaggle.py` : ils viendront après l'essai réel, dans une autre
-branche.
+1. **Choix par voix** (`doubler --affinee auto|oui|non`, clé `affinee`). `auto` (défaut) : une voix qui a un
+   `affinage.json` avec son point de contrôle (somme SHA-256 conforme) prend son affinage, **seulement si `affinage_pret`
+   est vrai** (à écrire par `doubler --config affinage_pret oui` quand l'affinage a été jugé bon à l'écoute) ; `oui` : toute
+   voix qui en a un, prêt ou non (pour l'essayer) ; `non` : jamais. Chaque voix d'un duo choisit seule. Cette voix passe sur
+   **Seed-VC 44 kHz affiné**, même en chant (YingMusic ne charge pas le point) ; dans un duo mixte, le chant de toute la
+   chanson passe alors par Seed-VC 44 kHz (la voix sans affinage garde les poids de base).
+2. **Envoi.** `affinage.pth` et `affinage.yml` partent dans le jeu de données privé de la session (comme la référence),
+   Kaggle seulement : avec `--calcul modal` ou `runpod`, `--affinee oui` est refusé (« voix affinée : Kaggle seulement pour
+   l'instant ») et `auto` garde les poids de base ; la voix n'est jamais gardée sur Modal ni sur Runpod.
+3. **Noyau de doublage.** Le modèle 44 kHz de cette voix est chargé avec `Namespace(checkpoint=…, config=…)` de Seed-VC (la
+   config est celle de l'affinage, sinon le préréglage 44 kHz) ; le modèle de base reste chargé pour l'analyse. La
+   référence de parole reste le prompt de timbre.
+4. **Repli.** Point absent, somme SHA-256 différente ou chargement refusé : poids de base, sans échec ; `rapport.json`
+   (clé `affinage`, par voix : `utilise`, `raison`, `pas`) et le journal le disent.
+5. **À mesurer avant de généraliser.** Comparer zéro-shot et affiné sur les mêmes chansons (comparateur de voix de
+   l'interface, proches de la voix) et ne passer `affinage_pret` à vrai qu'après un gain net.

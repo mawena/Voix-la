@@ -7,6 +7,7 @@ Options récentes, utilisées seulement si « doubler --help » les annonce, ave
 - --config [CLE VALEUR] : écriture de config.json. Repli : écriture directe du fichier (chemins.ecrire_cle_config) ;
 - --voix-liste --json  : liste des voix. Repli : lecture directe de voix/*/voix.json ;
 - --gpu auto|1|2       : cartes GPU du noyau, et clé « gpu » de la configuration. Sans elle : une carte, réglage grisé.
+- --affinee auto|oui|non : voix affinée sur le chant (commande affiner). Sans lui : pas de choix dans la page Doubler.
 - --calcul kaggle|modal|runpod|auto : où tourne le GPU (clé « calcul »). Sans lui : Kaggle, comme avant. --nettoyer-runpod
   supprime les pods Runpod voix-la-… restants.
 VOIXLA_DOUBLER (essais) remplace la commande doubler, par exemple par un faux doubler. Sinon, « doubler » du PATH
@@ -35,7 +36,8 @@ OPTIONS_SUIVIES = ("--evenements", "--donnees", "--config", "--json", "--voix-li
                    "--debut", "--duree", "--pas", "--voix-db", "--reverb-db", "--octave", "--mode", "--sortie",
                    "--mix-v1", "--comparer-pas", "--reprendre", "--moteur", "--sans-nettoyage", "--sans-paroles",
                    "--autotune", "--sans-autotune", "--autotune-gamme", "--gpu", "--passage", "--affectation",
-                   "--comparer", "--transposer", "--calcul", "--nettoyer-runpod", "--sans-quota")
+                   "--comparer", "--transposer", "--calcul", "--nettoyer-runpod", "--sans-quota",
+                   "--affinee", "--voix-depuis")
 MOTEURS = (("yingmusic", "YingMusic-SVC"), ("seedvc", "Seed-VC 44 kHz"))
 NOM_VOIX = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")   # même règle que doubler --ajouter-voix
 EXTRAIT_NOM = re.compile(r" \(extrait (\d+)m(\d+(?:,\d+)?)(?:\+(\d+)m(\d+(?:,\d+)?))?\)$")
@@ -363,6 +365,8 @@ def args_doublage(videos, reglages, donnees, extrait=None, evenements=None, caps
         a.append("--sans-nettoyage")
     if reglages.get("calcul") in ("kaggle", "modal", "runpod", "auto") and "--calcul" in caps:
         a.append(f"--calcul={reglages['calcul']}")   # où tourne le GPU ; sans lui, la clé « calcul » de doubler
+    if reglages.get("affinee") in ("auto", "oui", "non") and "--affinee" in caps:
+        a.append(f"--affinee={reglages['affinee']}")   # voix affinée : sans lui, auto (clé « affinee » de doubler)
     if reglages.get("sans_paroles") and "--sans-paroles" in caps:
         a.append("--sans-paroles")
     a += args_autotune(reglages, caps)
@@ -493,6 +497,31 @@ def args_ajouter_voix(nom, fichier, donnees, caps=None):
     return [*commande(), "--ajouter-voix", nom, str(fichier), *_donnees(donnees, caps)]
 
 
+def args_voix_depuis(source, nom, chanteur, donnees, caps=None):
+    """argv de doubler --voix-depuis : garder la voix d'un chanteur d'un doublage fini (chanteur : N ou clé, None si le
+    doublage n'a qu'une voix)."""
+    caps = capacites() if caps is None else caps
+    a = [*commande(), "--voix-depuis", str(source), nom]
+    if chanteur not in (None, ""):
+        a += ["--chanteur", str(chanteur)]
+    return [*a, *_donnees(donnees, caps)]
+
+
+def chanteurs_gardables(rapport):
+    """Les voix d'un doublage qu'on peut garder comme voix cible : [{"n": 1, "cle": "homme", "secondes": 83.0}], dans
+    l'ordre d'apparition (comme --chanteur N de doubler) ; vide sans passage chanté. rapport : rapport.json lu."""
+    ordre = {}
+    for m in (rapport or {}).get("morceaux") or []:
+        try:
+            if m.get("muet") or not (m.get("voise_s") or 0) > 0:
+                continue
+            cle = m.get("chanteur") or "voix"
+            ordre[cle] = ordre.get(cle, 0.0) + float(m["fin_s"]) - float(m["debut_s"])
+        except (TypeError, ValueError, KeyError, AttributeError):
+            continue
+    return [{"n": n, "cle": c, "secondes": round(s, 1)} for n, (c, s) in enumerate(ordre.items(), 1)]
+
+
 def lancer(argv, env_plus=None, timeout=60, cwd=None):
     """Lance une commande courte et rend (code, sortie complète). À appeler hors du fil de l'interface."""
     try:
@@ -513,6 +542,17 @@ def ajouter_voix(nom, fichier, donnees):
     if code:
         return False, (lignes[-1] if lignes else f"échec (code {code})"), alertes
     message = next((l for l in lignes if l.startswith(f"voix {nom} ajoutée")), lignes[0] if lignes else "voix ajoutée")
+    return True, message, alertes
+
+
+def voix_depuis(source, nom, chanteur, donnees):
+    """doubler --voix-depuis : rend (ok, message, alertes). Sans GPU : quelques secondes."""
+    code, sortie = lancer(args_voix_depuis(source, nom, chanteur, donnees), environnement(donnees), timeout=300)
+    alertes = [l.split("ATTENTION :", 1)[1].strip() for l in sortie.splitlines() if "ATTENTION :" in l]
+    lignes = [l.strip() for l in sortie.strip().splitlines() if l.strip()]
+    if code:
+        return False, (lignes[-1] if lignes else f"échec (code {code})"), alertes
+    message = next((l for l in lignes if l.startswith(f"voix {nom} gardée")), lignes[0] if lignes else "voix gardée")
     return True, message, alertes
 
 
@@ -557,7 +597,8 @@ def _fiche_voix(dossier):
         "hauteur_10_90": f.get("hauteur_parole_10_90_hz"),
         "note": f.get("note_mediane"),
         "date": f.get("date"),
-        "origine": f.get("origine"),
+        "origine": (f.get("origine_detail") if f.get("imitation_ia") else None) or f.get("origine"),
+        "imitation_ia": bool(f.get("imitation_ia")),
         "consentement": f.get("consentement"),
         "parole_s": f.get("parole_s"),
         "snr_db": f.get("rapport_signal_bruit_db"),

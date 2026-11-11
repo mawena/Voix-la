@@ -106,6 +106,32 @@ def pret(conf):
     return moteur.booleen(contenu.get(CLE_PRET), False)
 
 
+# --- La voix affinée dans la page Doubler --------------------------------------------------------------------------------
+
+def ids_de_voix(spec):
+    """Les voix d'une spécification --voix : « a », ou « homme:a,femme:b » -> ["a", "b"] ; [] si vide."""
+    return [p.split(":")[-1].strip() for p in str(spec or "").split(",") if p.split(":")[-1].strip()]
+
+
+def voix_affinees(donnees, spec):
+    """Parmi les voix de la spécification, celles qui ont un affinage utilisable (point de contrôle présent et complet)."""
+    sortie = []
+    for nom in ids_de_voix(spec):
+        f = fiche(chemins.dossier_voix(donnees) / nom)
+        if f is not None and f.get("complet", True):
+            sortie.append(nom)
+    return sortie
+
+
+def choix_affinee(actif, pret):
+    """Valeur de --affinee d'après la case « voix affinée » de la page Doubler : la case suit « affinage_pret » (allumée s'il
+    est vrai), donc rien (None : doubler décide, auto) tant qu'on n'y touche pas ; allumée contre l'avis de
+    « affinage_pret » : oui (essai) ; éteinte alors qu'il est vrai : non."""
+    if bool(actif) == bool(pret):
+        return None
+    return "oui" if actif else "non"
+
+
 # --- Le chant exploitable ----------------------------------------------------------------------------------------------
 
 def evaluer_prise(fichier, cache=None):

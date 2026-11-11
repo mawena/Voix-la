@@ -87,6 +87,7 @@ durée de l'étape paroles seule).
 """
 import base64
 import glob
+import hashlib
 import importlib.util
 import json
 import math
@@ -102,6 +103,7 @@ REGLAGES = json.loads(base64.b64decode('__REGLAGES__'))
 DEPOT = 'https://github.com/Plachtaa/seed-vc.git'
 COMMIT = '51383efd921027683c89e5348211d93ff12ac2a8'   # main au 20/04/2025, dernier commit du dépôt
 SEEDVC = '/tmp/seed-vc'
+PRESET_CHANT_44K = 'configs/presets/config_dit_mel_seed_uvit_whisper_base_f0_44k.yml'   # config de Seed-VC 44 kHz (chant), relative à SEEDVC
 SOUCHES = '/tmp/souches'
 PAQUETS = ['audio-separator[cpu]==0.48.0', 'munch']
 # Chemins d'entrée et de sortie : ceux de Kaggle par défaut ; Modal et Runpod les déplacent par ces variables
@@ -2997,6 +2999,14 @@ PAROLES_DEFAUT = {
     'coupe_memoire_min_s': 4.0,  # morceau à court de mémoire GPU : coupé en deux, tant que chaque moitié fait 4 s ou plus
     'memoire_min_mo': 8000,   # mémoire libre voulue sur la carte avant de charger Whisper (allégé : 7,3 Gio au pire)
     'attente_memoire_max_s': 60.0,  # attente au plus de cette mémoire (une étape qui vient de finir rend encore la sienne)
+    'bilingue': True,         # phrase ambiguë (refrain mêlant deux langues) : essayée dans ses deux langues, la plus sûre gagne
+    'bilingue_proba_sure': 0.8,  # langue détectée moins sûre que cela : phrase ambiguë (comme une langue isolée ou lissée)
+    'bilingue_alt_proba_min': 0.1,  # seconde langue essayée si Whisper lui donne au moins cela (sauf langue des voisines)
+    'bilingue_duree_min_s': 0.8,  # phrase plus courte : pas essayée (trop peu de son pour départager)
+    'bilingue_max_phrases': 12,   # plafond : au plus ce nombre de phrases essayées par vidéo…
+    'bilingue_max_part': 0.2,     # … et au plus cette part de la durée chantée (surcoût GPU : 2 passes courtes par phrase)
+    'bilingue_marge': 0.15,       # l'autre langue doit gagner d'au moins 0,15 (log-probabilité par jeton) pour l'emporter
+    'bilingue_penalite': 0.25,    # points retirés par point de taux de compression au-delà de compression_max (boucles)
 }
 # Mémoire du GPU de Whisper en horodatage par mot (calculée d'après le code de transformers 5.20). Le pipeline cherche en
 # faisceau (num_beams=5 par défaut : la configuration de large-v3 n'en fixe pas) et le mot à mot lui fait garder tous les
@@ -3115,6 +3125,78 @@ def grouper_morceaux(phrases, langues, reglages=None):
                 continue
         out.append((a, b, lg, [i]))
     return out
+
+
+def phrases_ambigues(phrases, langues, choisies, tops=None, reglages=None):
+    """Phrases dont la langue retenue est douteuse (refrain mêlant deux langues), à essayer dans une seconde langue :
+    langue détectée peu sûre (moins de bilingue_proba_sure), langue changée par le lissage (lisser_langues), ou langue
+    retenue seule contre ses deux voisines qui partagent une autre. langues : [(code, proba, durée)] ; choisies : langues
+    retenues ; tops : trois langues les plus probables de chaque phrase ([[code, proba]…] ou None). Rend
+    [(indice, langue retenue, autre langue, doute)] du plus douteux au moins douteux, dans le plafond
+    (bilingue_max_phrases, bilingue_max_part de la durée chantée) ; [] si bilingue est à False."""
+    R = {**PAROLES_DEFAUT, **(reglages or {})}
+    if not R['bilingue']:
+        return []
+    tops = tops or [None] * len(phrases)
+    trouvees = []
+    for i, ((a, b), (c, p, d), lg) in enumerate(zip(phrases, langues, choisies)):
+        if not lg or b - a < R['bilingue_duree_min_s']:
+            continue
+        proba = {code: q for code, q in (tops[i] or [])}
+        sure_lg = p if c == lg else proba.get(lg, 0.0)
+        voisines = {choisies[j] for j in (i - 1, i + 1) if 0 <= j < len(choisies)}
+        seule = len(voisines) == 1 and i > 0 and i + 1 < len(choisies) and next(iter(voisines)) not in (lg, None)
+        if sure_lg >= R['bilingue_proba_sure'] and not seule:
+            continue
+        alt = next(iter(voisines)) if seule else None
+        if alt is None:
+            for code, q in sorted(proba.items(), key=lambda t: -t[1]):
+                if code != lg and q >= R['bilingue_alt_proba_min']:
+                    alt = code
+                    break
+        if alt is None and c and c != lg:
+            alt = c
+        if alt:
+            trouvees.append((i, lg, alt, round(1.0 - sure_lg + (0.5 if seule else 0.0), 3)))
+    trouvees.sort(key=lambda t: (-t[3], t[0]))
+    plafond_s = R['bilingue_max_part'] * sum(b - a for a, b in phrases)
+    out, total = [], 0.0
+    for t in trouvees:
+        d = phrases[t[0]][1] - phrases[t[0]][0]
+        # la plus douteuse passe toujours : sur un court extrait, 20 % de la durée chantée tient moins d'une phrase
+        if len(out) >= R['bilingue_max_phrases'] or (out and total + d > plafond_s):
+            continue
+        out.append(t)
+        total += d
+    return out
+
+
+def note_transcription(texte, logprob, reglages=None):
+    """Sûreté d'une transcription : log-probabilité moyenne par jeton (comme avg_logprob de Whisper), moins une pénalité
+    pour le taux de compression au-delà de compression_max (texte répétitif, boucle). Texte vide ou sans mesure :
+    -inf (jamais retenue)."""
+    R = {**PAROLES_DEFAUT, **(reglages or {})}
+    if not (texte or '').strip() or logprob is None:
+        return float('-inf')
+    return logprob - R['bilingue_penalite'] * max(0.0, taux_compression(texte) - R['compression_max'])
+
+
+def departager_langue(audio, lg, alt, transcrire_phrase, noter, reglages=None):
+    """Une phrase ambiguë transcrite dans sa langue retenue (lg) puis dans l'autre (alt) : transcrire_phrase(audio,
+    langue) -> texte ; noter(audio, langue, texte) -> log-probabilité moyenne par jeton. L'autre langue l'emporte si sa
+    note dépasse celle de lg de bilingue_marge. Rend (langue gagnante, note lg, note alt, texte gagnant) ; un essai qui
+    échoue (exception, texte vide) ne gagne jamais."""
+    R = {**PAROLES_DEFAUT, **(reglages or {})}
+    notes, textes = {}, {}
+    for code in (lg, alt):
+        try:
+            textes[code] = transcrire_phrase(audio, code) or ''
+            notes[code] = note_transcription(textes[code], noter(audio, code, textes[code]), R)
+        except Exception:  # noqa: BLE001
+            textes[code], notes[code] = '', float('-inf')
+    if notes[alt] > notes[lg] + R['bilingue_marge']:
+        return alt, notes[lg], notes[alt], textes[alt]
+    return lg, notes[lg], notes[alt], textes[lg]
 
 
 def manque_de_memoire(e):
@@ -4279,6 +4361,26 @@ def etape_paroles(travail):
         return (codes[ordre[0]].strip('<|>'), float(p[ordre[0]]),
                 [[codes[j].strip('<|>'), round(float(p[j]), 3)] for j in ordre])
 
+    @torch.no_grad()
+    def noter(audio, lg, texte):
+        """Log-probabilité moyenne par jeton du texte sous Whisper, langue imposée (décodage forcé : un seul passage du
+        décodeur, sans génération) ; None si le texte n'a pas de jeton."""
+        tok = proc.tokenizer
+        # jetons de tête construits ici : set_prefix_tokens changerait le tokeniseur partagé avec le pipeline
+        prefixe = tok.convert_tokens_to_ids(['<|startoftranscript|>', f'<|{lg}|>', '<|transcribe|>', '<|notimestamps|>'])
+        if tok.unk_token_id is not None and tok.unk_token_id in prefixe:
+            return None   # langue inconnue du tokeniseur : pas de note, la langue retenue reste
+        ids = tok.encode(texte.strip(), add_special_tokens=False)[:200]
+        if not ids:
+            return None
+        feats = proc.feature_extractor(audio, sampling_rate=16000, return_tensors='pt').input_features
+        feats = feats.to(modele.device, modele.dtype)
+        dec = torch.tensor([prefixe + ids], device=modele.device)
+        logits = modele(input_features=feats, decoder_input_ids=dec).logits[0].float()
+        lp = torch.log_softmax(logits[len(prefixe) - 1:-1], -1)
+        cible = torch.tensor(ids, device=lp.device)
+        return float(lp.gather(1, cible[:, None]).mean())
+
     pics, pic_reserve = [], [0]   # mémoire du GPU au plus fort de chaque passe réussie (Mo) ; réservée, sur l'étape
 
     def pic_a_zero():
@@ -4329,7 +4431,9 @@ def etape_paroles(travail):
         r = res['videos'][v['id']] = {}
         pics.clear()
         try:
-            textes[v['id']] = transcrire_video(v, seize_khz(v['audio']), langue, transcrire, r)
+            textes[v['id']] = transcrire_video(v, seize_khz(v['audio']), langue, transcrire, r,
+                                               noter if travail.get('bilingue', True) else None,
+                                               {'bilingue': bool(travail.get('bilingue', True))})
             if pics:
                 r['memoire_max_mo'], r['memoire_passes_mo'] = max(pics), list(pics)
             log(f"PAROLES {v['id']} : {r['lignes']} lignes, langue {r['langue']} {r['langues_s']}, modes {r['modes']}, "
@@ -4384,14 +4488,18 @@ def etape_paroles(travail):
     ecrire_json(chemin, res)
 
 
-def transcrire_video(v, x16, detecter, transcrire_morceau, r):
+def transcrire_video(v, x16, detecter, transcrire_morceau, r, noter=None, reglages=None):
     """Paroles d'une vidéo (sans torch : les modèles sont passés en fonctions). v : {phrases, chant, piste} ; x16 : sa
     piste à 16 kHz ; detecter(audio) -> (langue, probabilité) ; transcrire_morceau(audio, langue) -> (sortie du pipeline
     {text, chunks: [{text, timestamp}]}, mode, erreurs), mode 'mémoire' si le mot à mot a manqué de mémoire GPU : le
     morceau est alors coupé en deux (couper_morceau), ou, trop court, redemandé sans horodatage par mot
     (transcrire_morceau(audio, langue, False)). Langue de chaque phrase, morceaux de même langue (hors des phrases :
-    muet), mots horodatés, garde-fous, lignes. Remplit r (mesures) et rend les lignes."""
+    muet), mots horodatés, garde-fous, lignes. Remplit r (mesures) et rend les lignes. noter(audio, langue, texte) ->
+    log-probabilité moyenne par jeton : avec lui (et bilingue), les phrases à la langue douteuse (phrases_ambigues) sont
+    transcrites dans leurs deux langues et gardent la plus sûre (departager_langue) avant les morceaux ; sans lui, rien
+    ne change."""
     import numpy as np
+    R = {**PAROLES_DEFAUT, **(reglages or {})}
     t1 = time.time()
     r.update({'piste': v.get('piste'), 'phrases': len(v['phrases']),
               'secondes_transcrites': round(sum(b - a for a, b in v['phrases']), 1), 'modes': {},
@@ -4403,6 +4511,24 @@ def transcrire_video(v, x16, detecter, transcrire_morceau, r):
         langues.append((d[0], d[1], b - a))
         tops.append(d[2] if len(d) > 2 else None)   # les trois langues les plus probables, pour mémoire
     choisies = lisser_langues(langues)
+    if noter is not None and R['bilingue']:
+        t2 = time.time()
+        essais = phrases_ambigues(v['phrases'], langues, choisies, tops, R)
+
+        def transcrire_phrase(audio, lg):
+            sortie, _, _ = transcrire_morceau(audio, lg, False)
+            return (sortie or {}).get('text') or ''
+        details = []
+        for i, lg, alt, doute in essais:
+            a, b = v['phrases'][i]
+            seg = x16[int(a * 16000):int(b * 16000)]
+            gagnante, n1, n2, _ = departager_langue(seg, lg, alt, transcrire_phrase, noter, R)
+            choisies[i] = gagnante
+            details.append([a, b, lg, alt, gagnante, round(n1, 3) if n1 > float('-inf') else None,
+                            round(n2, 3) if n2 > float('-inf') else None])
+        r['bilingue'] = {'essayees': len(essais), 'changees': sum(1 for d in details if d[4] != d[2]),
+                         'secondes': round(sum(d[1] - d[0] for d in details), 1), 'duree_s': round(time.time() - t2, 1),
+                         'details': details}
     r['langues_phrases'] = [[a, b, c, round(p, 2), lg] + ([top] if top else [])
                             for (a, b), (c, p, _), lg, top in zip(v['phrases'], langues, choisies, tops)]
     r['temps_langue_s'] = round(time.time() - t1, 1)
@@ -4572,16 +4698,84 @@ def main():
     from argparse import Namespace
     t = time.time()
 
-    def charger_modele(f0):
+    def charger_modele(f0, point=None, config=None, etiquette=None):
+        """Seed-VC 44 kHz (f0) ou 22 kHz. point, config : le point de contrôle affiné d'une voix (affiner) et sa config, à la
+        place des poids de base ; etiquette : nom de ce chargement dans session['temps']."""
         t0 = time.time()
         model, semantic_fn, f0_fn, vocoder_fn, campplus, mel_fn, mel_args = sv.load_models(
-            Namespace(f0_condition=f0, checkpoint=None, config=None, fp16=R['fp16']))
-        session['temps'][f"chargement_{'chant44k' if f0 else 'parole22k'}_s"] = round(time.time() - t0, 1)
+            Namespace(f0_condition=f0, checkpoint=point, config=config, fp16=R['fp16']))
+        session['temps'][f"chargement_{etiquette or ('chant44k' if f0 else 'parole22k')}_s"] = round(time.time() - t0, 1)
         return {'nom': 'chant44k' if f0 else 'parole22k', 'f0': f0, 'model': model, 'semantic_fn': semantic_fn,
                 'f0_fn': f0_fn, 'vocoder_fn': vocoder_fn, 'campplus': campplus, 'mel_fn': mel_fn,
                 'sr': mel_args['sampling_rate'], 'hop': mel_args['hop_size']}
     modeles = {'chant44k': charger_modele(True)}   # toujours : RMVPE (hauteur) et CAMPPlus (empreinte) servent à l'analyse
     chant = modeles['chant44k']
+
+    # Voix affinées (affiner, puis doubler --affinee) : doubler.py met dans le jeu de données le point de contrôle compact
+    # de chaque voix qui en prend un et son réglage « affinage » (fichier, config, sha256). Le modèle 44 kHz de cette voix
+    # seule est chargé avec ce point à la place des poids de base (les autres voix gardent le modèle de base) ; point
+    # absent, somme différente ou chargement refusé : poids de base, la raison est dans le rapport, jamais d'échec.
+    affinages = {}
+    if R['voix'].get('affinage'):
+        affinages[R['voix']['nom']] = R['voix']['affinage']
+    for v in (cibles or {}).get('voix') or []:
+        if v.get('affinage'):
+            affinages[v['nom']] = v['affinage']
+    modeles_affines = {}   # nom de voix -> modèle chargé, ou None (poids de base)
+    session['affinage'] = {n: {'utilise': False, 'raison': 'aucun chant converti avec cette voix', 'pas': r.get('pas'),
+                               'sha256': r.get('sha256')} for n, r in affinages.items()}
+
+    def chercher(nom):
+        trouves = glob.glob(f'{ENTREES}/**/{nom}', recursive=True) if nom else []
+        return trouves[0] if trouves else None
+
+    def somme_sha256(chemin):
+        h = hashlib.sha256()
+        with open(chemin, 'rb') as fh:
+            for bloc in iter(lambda: fh.read(1 << 20), b''):
+                h.update(bloc)
+        return h.hexdigest()
+
+    def modele_affine(nom_voix):
+        """Le modèle Seed-VC 44 kHz affiné de la voix, chargé une fois ; None : poids de base (raison dans session)."""
+        if nom_voix in modeles_affines:
+            return modeles_affines[nom_voix]
+        reg, info, md = affinages[nom_voix], session['affinage'][nom_voix], None
+        try:
+            point = chercher(reg.get('fichier'))
+            if not point:
+                raise FileNotFoundError(f"point de contrôle absent du jeu de données ({reg.get('fichier')})")
+            if reg.get('sha256') and somme_sha256(point) != reg['sha256']:
+                raise ValueError('somme SHA-256 différente de celle de la fiche (fichier abîmé pendant le transfert)')
+            config = chercher(reg.get('config')) or PRESET_CHANT_44K
+            md = charger_modele(True, point, config, f'chant44k_affine_{nom_voix}')
+            md['nom'] = 'chant44k_affine'
+            log(f"voix {nom_voix} : Seed-VC 44 kHz affiné ({reg.get('pas') or '?'} pas) chargé depuis {os.path.basename(point)}")
+        except Exception as ex:  # noqa: BLE001 — repli sur les poids de base
+            md = None
+            info['raison'] = f'{type(ex).__name__} : {ex}'[:300]
+            log(f"voix {nom_voix} : voix affinée inutilisable ({info['raison']}) : poids de base de Seed-VC 44 kHz")
+            torch.cuda.empty_cache()
+        modeles_affines[nom_voix] = md
+        return md
+
+    def modeles_par_voix(nom, e, nb):
+        """Le modèle de chaque voix cible (indice = 7e élément des morceaux) pour la variante nom : le modèle affiné des
+        voix qui en ont un (chant 44 kHz seulement), le modèle de base des autres."""
+        base = modeles[nom]
+        if nom != 'chant44k' or not affinages:
+            return [base] * nb
+        if e.get('plusieurs') and cibles:
+            noms = [v['nom'] for v in cibles['voix']]
+        else:
+            noms = [R['voix']['nom']]
+        liste = []
+        for i in range(nb):
+            md = modele_affine(noms[i]) if i < len(noms) and noms[i] in affinages else None
+            if md is not None:
+                e.setdefault('affinage_utilise', set()).add(noms[i])
+            liste.append(md or base)
+        return liste
     device = sv.device
     f0_fn, campplus = chant['f0_fn'], chant['campplus']
 
@@ -5298,10 +5492,11 @@ def main():
                     md = modeles[nom]
                     # une référence par voix cible (préparée une fois), choisie par le 7e élément de chaque morceau
                     refs_v = refs_de(e, nom)
+                    mds = modeles_par_voix(nom, e, len(refs_v))
                     couches = np.zeros((2 * vers['nv'], len(p['x'])), np.float32) if vers else None
                     t = time.time()
                     y = assembler(p['x'], morceaux, pad,
-                                  lambda xs, d, v=0: convertir(xs, md, refs_v[v], d if md['f0'] else 0, pas),
+                                  lambda xs, d, v=0: convertir(xs, mds[min(v, len(mds) - 1)], refs_v[v], d if md['f0'] else 0, pas),
                                   R['graine'], torch, couches)
                     conv = time.time() - t
                     if vers:
@@ -5343,6 +5538,8 @@ def main():
                 mes['garde_crete_db'] = round(20 * math.log10(garde), 2)
             if repli:
                 mes['repli'] = repli
+            if nom == 'chant44k' and affinages:
+                mes['voix_affinees'] = sorted(e.get('affinage_utilise') or ())
             if liste is segs:
                 # Mesures : ressemblance de timbre (CAMPPlus, cosinus avec la référence), hauteur obtenue. Plusieurs voix
                 # cibles : la voix et le décalage de la piste dominante du morceau (la première qui le convertit : voix
@@ -5417,6 +5614,12 @@ def main():
             log(f"[{tr['id']}] conversion {nom}, {pas} pas → {fichier} : {json.dumps(mes, ensure_ascii=False)}")
             torch.cuda.empty_cache()
         principale = rapport['variantes'].get('voix_convertie.flac', {})
+        if affinages:   # quelle voix a utilisé quel modèle (doubler.py l'écrit après le doublage)
+            rapport['affinage'] = {n: {**i, 'utilise': n in (e.get('affinage_utilise') or ()),
+                                       'raison': None if n in (e.get('affinage_utilise') or ()) else (
+                                           i['raison'] if i['raison'] != 'aucun chant converti avec cette voix' or e['mode'] == 'chant'
+                                           else 'parole : Seed-VC 22 kHz, l\'affinage ne sert qu\'au chant')}
+                                   for n, i in session['affinage'].items()}
         rapport['moteur'] = principale.get('moteur')
         rapport['moteur_info'] = {'chant_demande': moteur_chant, 'utilise': principale.get('moteur'), 'modele': rapport['modele'],
                                   'repli': principale.get('repli')}
@@ -5453,7 +5656,8 @@ def main():
         if copie_paroles.get('erreur'):
             log(f"PAROLES copie locale des modèles impossible ({copie_paroles['erreur']}) : lus sur le montage")
         travail = {'whisper': chemins.get('whisper'), 'traducteur': chemins.get('traducteur'), 'cache': '/tmp/hf_paroles',
-                   'resultat': '/tmp/paroles/resultat.json', 'videos': []}
+                   'resultat': '/tmp/paroles/resultat.json', 'videos': [],
+                   'bilingue': bool(REGLAGES.get('paroles_bilingue', True))}
         for e in etats_v:
             p = next((q for q in e['pistes'] if q['nom'] == 'lead_sec'), None) or piste_voix(e)
             phrases, chant = zones_a_transcrire(p['lisse'], p['seuil'], e['f0_tout'])

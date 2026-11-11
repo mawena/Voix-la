@@ -7,6 +7,40 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+## [0.20.0] - 2026-11-11
+
+### Ajouté
+
+- **Paroles d'un refrain bilingue** : une phrase dont la langue est douteuse est retranscrite dans ses deux langues les
+  plus probables, puis on garde la version la plus sûre. Une phrase est jugée douteuse dans trois cas :
+  - Whisper n'est pas sûr de sa langue ;
+  - le lissage a changé sa langue ;
+  - elle est isolée entre deux voisines d'une autre langue.
+
+  La version la plus sûre est celle qui a la meilleure log-probabilité moyenne par jeton, avec une pénalité si le texte
+  tourne en boucle. Plafond : 12 phrases et 20 % de la durée chantée, mais la phrase la plus douteuse passe toujours. La
+  traduction française, les `.srt` et les `.lrc` suivent. Réglage `paroles_bilingue`, désactivable.
+- **Voix affinée dans le doublage** : `doubler --affinee auto|oui|non` (clé `affinee`). Le chant d'une voix affinée par
+  `affiner` passe par Seed-VC 44 kHz chargé avec son propre point de contrôle, au lieu des poids de base. Le point de
+  contrôle est vérifié par sa somme SHA-256, puis envoyé dans le jeu de données privé de la session, sur Kaggle seulement.
+  - `auto` (défaut) ne s'en sert que si `affinage_pret` est vrai (`doubler --config affinage_pret oui`), une fois
+    l'affinage jugé bon à l'écoute. `oui` force l'essai, `non` s'en passe.
+  - Avec plusieurs voix, chaque voix décide seule. Si le point de contrôle est absent ou abîmé, ou si son chargement est
+    refusé, les poids de base servent, sans échec.
+  - Le rapport (clé `affinage` par voix) et la sortie disent quelle voix a pris quel modèle.
+  - Avec `--calcul modal` ou `runpod`, `oui` est refusé (« Kaggle seulement pour l'instant ») et `auto` garde les poids
+    de base.
+  - Interface : la page Doubler propose « Utiliser ma voix affinée » quand la voix choisie en a une.
+- **Voix des vidéos** : `doubler --voix-depuis <doublage> <nom> [--chanteur N]` garde comme voix cible la voix d'un
+  chanteur d'un doublage fini (une par chanteur en duo ou à N voix), sans nouvelle session GPU.
+  - La voix est prise dans `travail/voix_source.wav`, sur les meilleurs passages où ce chanteur chante seul (ni
+    unisson, ni chœurs, ni duo, ni muet), assemblés en 15 à 30 s et nettoyés comme avec `--ajouter-voix`.
+  - Garde-fous « voix d'artiste, usage privé » : la fiche de la voix porte `origine: video`, `imitation_ia` et la
+    mention, et un avertissement s'affiche à la création. Les doublages faits avec cette voix portent « imitation par
+    IA » dans le commentaire du mp4, du mkv ou du mp3, et dans `rapport.json`.
+  - Interface : « Garder cette voix » (une ligne par chanteur) dans les résultats, avec une case d'usage privé à cocher ;
+    badge « Voix d'une vidéo · imitation IA » dans la page Voix.
+
 ## [0.19.0] - 2026-11-11
 
 ### Ajouté
@@ -812,7 +846,8 @@ Première version publique.
     `VOIXLA_DECODAGE_MATERIEL=1` remet le décodage matériel ;
   - les essais automatiques laissaient le son de l'application coupé.
 
-[Non publié]: https://github.com/mawena/Voix-la/compare/v0.19.0...HEAD
+[Non publié]: https://github.com/mawena/Voix-la/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/mawena/Voix-la/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/mawena/Voix-la/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/mawena/Voix-la/compare/v0.17.2...v0.18.0
 [0.17.2]: https://github.com/mawena/Voix-la/compare/v0.17.1...v0.17.2

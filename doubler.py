@@ -190,6 +190,7 @@ NOYAU_REGLAGES = {
     'seuil_tonalite': 0.35, 'seuil_reste_db': -12, 'seuil_tenue': 0.12, 'voix_dense': 0.6,
     'voise_min_s': 0.8, 'centre_homme_hz': 250, 'centre_femme_hz': 420,
     'sil_parole': 0.2,
+    'paroles_bilingue': True,   # paroles : phrases ambiguës (refrain mêlant deux langues) essayées dans leurs deux langues
     'nettoyage_recouvrement': 4,   # recouvrement des Roformer du nettoyage (banc : 8, deux fois plus lent)
 }
 # Facultatif, jamais publié : empreintes CAMPPlus moyennes (192 nombres) d'une voix d'homme et d'une voix de femme

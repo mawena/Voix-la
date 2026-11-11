@@ -4363,8 +4363,10 @@ def etape_paroles(travail):
         """Log-probabilité moyenne par jeton du texte sous Whisper, langue imposée (décodage forcé : un seul passage du
         décodeur, sans génération) ; None si le texte n'a pas de jeton."""
         tok = proc.tokenizer
-        tok.set_prefix_tokens(language=lg, task='transcribe', predict_timestamps=False)
-        prefixe = [i for i in tok.prefix_tokens]
+        # jetons de tête construits ici : set_prefix_tokens changerait le tokeniseur partagé avec le pipeline
+        prefixe = tok.convert_tokens_to_ids(['<|startoftranscript|>', f'<|{lg}|>', '<|transcribe|>', '<|notimestamps|>'])
+        if tok.unk_token_id is not None and tok.unk_token_id in prefixe:
+            return None   # langue inconnue du tokeniseur : pas de note, la langue retenue reste
         ids = tok.encode(texte.strip(), add_special_tokens=False)[:200]
         if not ids:
             return None

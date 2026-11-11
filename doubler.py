@@ -1346,6 +1346,54 @@ class KaggleIndisponible(RuntimeError):
     --calcul auto, doubler passe alors à Modal."""
 
 
+def charger_quota():
+    """Le module voixla.quota de l'interface (sans GTK) : lecture de « kaggle quota » et son cache, déjà utilisés par
+    l'interface ; à côté de ce fichier une fois le paquet installé (/usr/lib/voix-la/voixla), dans interface/ du dépôt.
+    None s'il est introuvable. Rien n'est lancé à l'import ; voixla n'importe jamais doubler.py au chargement."""
+    for base in (DEPOT, DEPOT / 'interface'):
+        if (base / 'voixla' / 'quota.py').is_file():
+            if str(base) not in sys.path:
+                sys.path.insert(0, str(base))
+            return importlib.import_module('voixla.quota')
+    return None
+
+
+def quota_kaggle_avant_poussee(estimation_s, auto=False, sans_quota=False):
+    """Lit le quota de GPU Kaggle (la même lecture, et le même cache, que l'interface) avant de pousser un noyau et le
+    dit en une ligne. Quota épuisé ou trop bas pour l'estimation (avec la marge de l'interface) : un avertissement ;
+    avec --calcul auto, KaggleIndisponible, donc la bascule sur Modal (sans_quota : --sans-quota, pas de bascule).
+    Lecture impossible (pas de réseau, commande absente, module introuvable) : un avertissement, le doublage continue.
+    Rend la lecture {utilise_s, total_s, remise, lu_le}, ou None."""
+    try:
+        q = charger_quota()
+        if q is None:
+            raise RuntimeError('module du quota introuvable')
+        lecture, raison = q.lecture_kaggle(commande=KAGGLE)
+    except Exception as e:  # noqa: BLE001
+        lecture, raison = None, str(e) or type(e).__name__
+    if not lecture:
+        dire(f'Kaggle : quota non lu ({raison}) : la session continue sans lecture du quota')
+        return None
+    # une lecture gardée avant la remise à zéro n'est plus vraie : la semaine repart de zéro
+    if lecture['remise'] <= time.time():
+        dire('Kaggle : la remise à zéro du quota est passée depuis la dernière lecture : quota entier supposé')
+        return lecture
+    reste = max(0.0, lecture['total_s'] - lecture['utilise_s'])
+    dire(f"Kaggle : {q.heures(reste)} de GPU restantes cette semaine, remise {q.jour_heure(lecture['remise'])}"
+         + (f' (dernière lecture, Kaggle ne répond pas : {raison})' if raison else ''))
+    besoin = estimation_s * (1 + q.MARGE)
+    if reste > 0 and besoin <= reste:
+        return lecture
+    motif = ('quota épuisé' if reste <= 0 else
+             f'la session estimée à {q.heures(estimation_s)} ({q.heures(besoin)} avec la marge) ne tient pas dans '
+             f'les {q.heures(reste)} restantes')
+    if auto and not sans_quota:
+        raise KaggleIndisponible(f'Kaggle : {motif}')
+    dire(f'attention : {motif} ; Kaggle laisse parfois finir une session commencée, sinon elle sera arrêtée. '
+         'Attendre la remise, ou --calcul auto (Modal en secours)')
+    return lecture
+
+
 def preparer_jeu(travaux, voix, dossier, bits=16):
     """Le dossier « jeu » d'une session : la référence de la voix choisie (de chaque voix, avec une voix par chanteur) et le
     son des vidéos seulement, en FLAC 16 bits (bits=24 : clé envoi_flac ; gain de chaque vidéo noté dans tr['gain_entree'],
@@ -4641,6 +4689,14 @@ def traiter_lot(videos, a, voix):
 
         def session_kaggle():
             """La session sur Kaggle : rend (session, temps, envoi_s, estimation), ou la liste des échecs (abandon)."""
+            cartes = cartes_prevues(getattr(a, 'gpu', 'auto'), MACHINE)
+            # historique : les rapports de ce dossier de sortie, et ceux du dossier par défaut (un dossier neuf n'en a pas)
+            estimation = estimer_noyau_s([tr['duree_audio_s'] for tr in travaux], a.pas, [a.sortie, SORTIES],
+                                         not a.sans_nettoyage, a.mode, a.moteur, a.paroles, len(voix_membres(voix)), cartes,
+                                         getattr(a, 'versions_duo', 'non') if voix.get('membres') else 'non',
+                                         len(voix.get('comparees') or ()) or 1, voix.get('mode') == 'personnes')
+            # quota lu avant tout envoi : en auto, un quota trop bas laisse la place à Modal sans envoyer le son
+            quota_kaggle_avant_poussee(estimation, auto, getattr(a, 'sans_quota', False))
             debut = time.time()
             try:
                 with Etape('envoi', titres, f'son de {len(travaux)} vidéo(s) en FLAC vers le jeu privé {JEU}'):
@@ -4655,12 +4711,6 @@ def traiter_lot(videos, a, voix):
             retour = kdir / 'retour'
             outils = fiche_outils(a.sortie)
             sources = [OUTILS] if outils else []
-            cartes = cartes_prevues(getattr(a, 'gpu', 'auto'), MACHINE)
-            # historique : les rapports de ce dossier de sortie, et ceux du dossier par défaut (un dossier neuf n'en a pas)
-            estimation = estimer_noyau_s([tr['duree_audio_s'] for tr in travaux], a.pas, [a.sortie, SORTIES],
-                                         not a.sans_nettoyage, a.mode, a.moteur, a.paroles, len(voix_membres(voix)), cartes,
-                                         getattr(a, 'versions_duo', 'non') if voix.get('membres') else 'non',
-                                         len(voix.get('comparees') or ()) or 1, voix.get('mode') == 'personnes')
             # limite du suivi : au moins le double de l'estimation (le nettoyage allonge beaucoup une longue chanson)
             attente_maxi = max((30 + 20 * len(travaux)) * 60, 2 * estimation + 30 * 60)
             dire(f"chaîne : chant → {'voix nettoyée' if not a.sans_nettoyage else 'voix complète (sans nettoyage)'}, "
@@ -5026,6 +5076,9 @@ def main():
                         'toujours supprimé à la fin) ou auto (Kaggle d\'abord, puis Modal si Kaggle n\'est pas disponible : '
                         'pas de jeton, refus, quota épuisé, ou « queued » au-delà de « kaggle.attente_file_min », 20 min). '
                         'Défaut lu dans la configuration (clé « calcul »). N\'a rien à voir avec --gpu, qui compte les cartes')
+    p.add_argument('--sans-quota', action='store_true',
+                   help='avec --calcul auto : ne pas passer à Modal quand le quota Kaggle est épuisé ou trop bas (le quota '
+                        'est lu et affiché dans tous les cas avant de pousser un noyau Kaggle)')
     p.add_argument('--nettoyer-runpod', action='store_true',
                    help='supprime les pods Runpod « voix-la-… » restants (jamais les autres) puis quitte')
     p.add_argument('--voix-db', type=float, default=None, help='voix par rapport à celle de la vidéo (défaut +4 en chant, 0 en parole)')

@@ -427,6 +427,7 @@ def affiner(a):
     with doubler.Verrou(kdir, videos):
         if session_en_cours().exists():
             raise SystemExit(f'un affinage est déjà en cours ({session_en_cours()}) : « affiner --reprendre » le finit')
+        doubler.quota_kaggle_avant_poussee(estimation)   # le quota restant, dit avant l'envoi ; un avertissement seulement
         with doubler.Etape('envoi', videos, f'{len(retenues)} prise(s) de chant vers {jeu}'):
             envoyer_jeu(jeu, kdir / 'jeu', len(retenues), bool(point))
         shutil.rmtree(kdir / 'jeu', ignore_errors=True)

@@ -10,6 +10,7 @@
           [--autotune [N]] [--autotune-gamme auto|chromatique|la-mineur…] [--sans-autotune]
           [--debut S --duree S] [--remix] [--sortie DIR] [--comparer-pas 50] [--donnees DIR] [--evenements FICHIER]
   doubler --ajouter-voix <nom> <enregistrement>      ajoute une voix (n'importe quel audio ou vidéo)
+  doubler --voix-depuis <doublage> <nom> [--chanteur N]   garde comme voix la voix d'un chanteur d'un doublage fini
   doubler --voix-liste [--json]                      voix disponibles
   doubler --config [CLE VALEUR]                      affiche la configuration, ou écrit une clé
   doubler --reprendre                                finit une session Kaggle ou Runpod interrompue (sans GPU)
@@ -1355,7 +1356,20 @@ def ajouter_voix(nom, enregistrement):
             centre = int(np.argmax(np.convolve(act, np.ones(sr), 'same')))
             cands = [(max(0, centre - int(11.25 * sr)), min(len(y), centre + int(11.25 * sr)))]
         a, b = max(cands, key=lambda c: (act[c[0]:c[1]].mean(), c[1] - c[0]))
-    extrait = y[a:b]
+    fiche, med = ecrire_voix(nom, d, y[a:b], sr, parole_s, parole - bruit, alertes,
+                             f'{src} (doubler --ajouter-voix : passe-haut 70 Hz, pauses raccourcies, '
+                             f'extrait {a / sr:.1f}–{b / sr:.1f} s de la version nettoyée, normalisé)')
+    print(f"voix {nom} ajoutée ({d}) : {fiche['duree_s']} s, parole {med:.0f} Hz ({note(med)}), centre de chant "
+          f"{FACTEUR_CHANT * med:.0f} Hz ; envoyée sur Kaggle (privé) à la première utilisation")
+    for al in alertes:
+        print('  ATTENTION :', al)
+
+
+def ecrire_voix(nom, d, extrait, sr, parole_s, rsb, alertes, origine, extra=None):
+    """Écrit la voix <nom> dans le dossier d : reference.wav (extrait mono normalisé à -26 LUFS, crêtes sous -1 dBFS)
+    et voix.json (hauteur de parole mesurée, origine, consentement, alertes ; extra : clés en plus). Sert à
+    --ajouter-voix et à --voix-depuis. Rend (fiche, hauteur médiane en Hz)."""
+    import numpy as np
     d.mkdir(parents=True, exist_ok=True)
     tmp = d / '.brut.wav'
     import wave
@@ -1378,14 +1392,190 @@ def ajouter_voix(nom, enregistrement):
     fiche = {'nom': nom.replace('-', ' ').replace('_', ' ').title(), 'reference': 'reference.wav',
              'duree_s': round(len(extrait) / sr, 2), 'frequence_hz': sr, 'canaux': 1, 'sonie_lufs': round(lufs + gain, 1),
              'hauteur_parole_mediane_hz': round(med, 1), 'hauteur_parole_10_90_hz': [round(p10, 1), round(p90, 1)],
-             'note_mediane': note(med), 'origine': f'{src} (doubler --ajouter-voix : passe-haut 70 Hz, pauses raccourcies, '
-             f'extrait {a / sr:.1f}–{b / sr:.1f} s de la version nettoyée, normalisé)',
+             'note_mediane': note(med), 'origine': origine,
              'consentement': 'à confirmer : uniquement la voix d\'une personne d\'accord pour être clonée',
-             'parole_s': round(parole_s, 1), 'rapport_signal_bruit_db': round(parole - bruit, 1), 'alertes': alertes,
-             'date': datetime.date.today().isoformat()}
+             'parole_s': round(parole_s, 1), 'rapport_signal_bruit_db': round(rsb, 1), 'alertes': alertes,
+             'date': datetime.date.today().isoformat(), **(extra or {})}
     (d / 'voix.json').write_text(json.dumps(fiche, ensure_ascii=False, indent=2))
-    print(f"voix {nom} ajoutée ({d}) : {fiche['duree_s']} s, parole {med:.0f} Hz ({note(med)}), centre de chant "
-          f"{FACTEUR_CHANT * med:.0f} Hz ; envoyée sur Kaggle (privé) à la première utilisation")
+    return fiche, med
+
+
+# --- Voix d'une vidéo (voix d'un chanteur d'origine gardée comme voix cible) ------------------------------------------
+
+MENTION_IA = 'imitation par IA'
+USAGE_ARTISTE = "voix d'artiste, usage privé"
+AVERTISSEMENT_ARTISTE = "voix d'artiste : imitation par IA, pour un usage privé seulement"
+MENTION_SORTIE = None   # texte du « comment » des fichiers du doublage en cours, quand une voix est une imitation par IA
+REF_VIDEO_MIN_S, REF_VIDEO_CIBLE_S, REF_VIDEO_MAX_S = 15.0, 25.0, 30.0   # durée de la référence assemblée
+PASSAGE_SEUL_MIN_S, PASSAGE_SEUL_MIN_VOISE = 1.5, 0.45                    # passage utilisable : durée, part voisée
+
+
+def comment_ia():
+    """Texte du « comment » des fichiers produits (mp4, mkv, mp3) avec une voix imitée par IA."""
+    return f'{MENTION_IA} ({USAGE_ARTISTE})'
+
+
+def meta_ia():
+    """Options ffmpeg de la mention « imitation par IA » : rien tant que le doublage n'a pas de voix d'une vidéo."""
+    return ['-metadata', f'comment={MENTION_SORTIE}'] if MENTION_SORTIE else []
+
+
+def voix_imitation_ia(voix):
+    """Les voix réelles (voix_membres) dont la fiche porte imitation_ia."""
+    return [m for m in voix_membres(voix) if (m.get('fiche') or {}).get('imitation_ia')]
+
+
+def mentionner_imitation_ia(voix, rapport):
+    """Avec une voix gardée d'une vidéo : « imitation par IA » dans rapport['imitation_ia'] et dans le comment des
+    fichiers produits (MENTION_SORTIE, lu par meta_ia) ; sinon rien, comme avant."""
+    global MENTION_SORTIE
+    imitees = voix_imitation_ia(voix)
+    MENTION_SORTIE = comment_ia() if imitees else None
+    if imitees:
+        rapport['imitation_ia'] = {'mention': MENTION_IA, 'usage': USAGE_ARTISTE, 'voix': [m['id'] for m in imitees]}
+    else:
+        rapport.pop('imitation_ia', None)
+
+
+def dossier_de_resultat(source):
+    """(dossier travail/, dossier travail/<voix>/ avec rapport.json) d'un doublage : source = son dossier de résultat
+    (<sorties>/<titre>), son dossier travail/, ou une vidéo (ou un mp3) doublée, rangée dans ce dossier."""
+    p = Path(source).expanduser().resolve()
+    if not p.exists():
+        raise SystemExit(f'introuvable : {p}')
+    d = p.parent if p.is_file() else p
+    t = d if (d / 'voix_source.wav').is_file() else d / 'travail'
+    if not (t / 'voix_source.wav').is_file():
+        raise SystemExit(f'{p} n\'est pas un doublage fait par doubler (travail/voix_source.wav manque ; '
+                         'un doublage plus ancien se refait avec --remix)')
+    rapports = sorted(t.glob('*/rapport.json'))
+    if not rapports:
+        raise SystemExit(f'{t} : aucun rapport.json (doublage inachevé ?)')
+    return t, rapports[0].parent
+
+
+def chanteurs_du_rapport(rapport):
+    """Les chanteurs d'un doublage, dans l'ordre d'apparition : [(clé, secondes chantées)]. La clé est celle de la voix
+    cible du passage (homme, femme, chanteur1…) ; « voix » quand le doublage n'en distingue pas."""
+    ordre = {}
+    for m in rapport.get('morceaux') or []:
+        if m.get('muet') or not (m.get('voise_s') or 0) > 0:
+            continue
+        cle = m.get('chanteur') or 'voix'
+        ordre[cle] = ordre.get(cle, 0.0) + float(m['fin_s']) - float(m['debut_s'])
+    return list(ordre.items())
+
+
+def choisir_chanteur(chanteurs, demande):
+    """La clé du chanteur voulu (--chanteur N, 1 pour le premier à chanter, ou sa clé) ; seul : pas besoin de le dire."""
+    cles = [c for c, _ in chanteurs]
+    if not cles:
+        raise SystemExit('aucun passage chanté ou parlé dans ce doublage')
+    liste = ', '.join(f'{k} = {c} ({s:.0f} s)' for k, (c, s) in enumerate(chanteurs, 1))
+    if demande is None:
+        if len(cles) > 1:
+            raise SystemExit(f'{len(cles)} voix dans ce doublage : dire laquelle garder avec --chanteur N ({liste})')
+        return cles[0]
+    if demande in cles:
+        return demande
+    if str(demande).isdigit() and 1 <= int(demande) <= len(cles):
+        return cles[int(demande) - 1]
+    raise SystemExit(f'--chanteur {demande} : pas dans ce doublage ({liste})')
+
+
+def passages_seuls(rapport, chanteur):
+    """Les passages où seul ce chanteur chante : [(début_s, fin_s, part voisée)] d'après rapport.json. Écartés : les
+    muets, ceux d'un autre chanteur, ceux avec chœurs, voix à l'unisson ou plusieurs voix (voix_pistes, passages en
+    duo de l'affectation), les trop courts et les trop peu voisés."""
+    ensemble = [(float(p['debut_s']), float(p['fin_s'])) for p in (rapport.get('affectation') or {}).get('passages') or []
+                if isinstance(p.get('voix'), list) and len(p['voix']) > 1]
+    sortie = []
+    for m in rapport.get('morceaux') or []:
+        a, b = float(m['debut_s']), float(m['fin_s'])
+        if m.get('muet') or (m.get('chanteur') or 'voix') != chanteur or m.get('f0_med') is None:
+            continue
+        if m.get('unisson') or m.get('plusieurs'):
+            continue
+        vp = m.get('voix_pistes') or {}
+        if any(str(k).startswith('choeurs') for k in vp) or any(isinstance(v, list) for v in vp.values()):
+            continue
+        if len(set(vp.values())) > 1:
+            continue
+        if any(min(b, fb) - max(a, fa) > 0.05 for fa, fb in ensemble):
+            continue
+        voise = float(m.get('voise_s') or 0) / max(b - a, 1e-6)
+        if b - a >= PASSAGE_SEUL_MIN_S and voise >= PASSAGE_SEUL_MIN_VOISE:
+            sortie.append((a, b, voise))
+    return sortie
+
+
+def choisir_passages(passages, niveaux):
+    """Les meilleurs passages seuls pour une référence de REF_VIDEO_CIBLE_S : on prend d'abord ceux dont la voix est la
+    plus présente (niveau, part voisée), sans dépasser REF_VIDEO_MAX_S ; rendus dans l'ordre du temps, avec leur total.
+    niveaux : niveau en dB de chaque passage (même ordre que passages)."""
+    haut = max(niveaux) if niveaux else 0.0
+    classes = sorted(zip(passages, niveaux), key=lambda pn: -(50 * pn[0][2] + 1.5 * (pn[1] - haut)))
+    pris, total = [], 0.0
+    for (a, b, v), _ in classes:
+        if total >= REF_VIDEO_CIBLE_S:
+            break
+        if total + (b - a) <= REF_VIDEO_MAX_S:
+            pris.append((a, b, v))
+            total += b - a
+    return sorted(pris), total
+
+
+def voix_depuis(source, nom, chanteur=None):
+    """Garde comme voix cible la voix d'un chanteur d'un doublage fini : d'après rapport.json, ses meilleurs passages
+    de chant seul (voir passages_seuls et choisir_passages) pris dans travail/voix_source.wav (voix d'origine isolée,
+    sans musique) sont assemblés en une référence de 15 à 30 s, comme --ajouter-voix. La fiche porte origine « video »,
+    imitation_ia et « voix d'artiste, usage privé » ; aucun calcul sur GPU."""
+    import numpy as np
+    if not re.fullmatch(NOM_VOIX, nom):
+        raise SystemExit('nom de voix : minuscules, chiffres, - ou _ (ex. voix-b, chanteur2)')
+    d = VOIX / nom
+    if (d / 'voix.json').exists():
+        raise SystemExit(f'la voix {nom} existe déjà ({d}) : choisir un autre nom ou effacer ce dossier')
+    t, tv = dossier_de_resultat(source)
+    rapport = json.loads((tv / 'rapport.json').read_text())
+    cle = choisir_chanteur(chanteurs_du_rapport(rapport), chanteur)
+    passages = passages_seuls(rapport, cle)
+    if not passages:
+        raise SystemExit(f'aucun passage où {cle} chante seul (chœurs, unisson ou voix mêlées partout) : '
+                         'cette voix ne peut pas être gardée proprement')
+    sr = 44100
+    x = lire_brut(t / 'voix_source.wav', 'highpass=f=70', sr)
+    niveaux = []
+    for a, b, _ in passages:
+        y = x[int(a * sr):int(b * sr)]
+        niveaux.append(float(10 * np.log10(np.mean(y ** 2) + 1e-12)) if len(y) else -120.0)
+    pris, total = choisir_passages(passages, niveaux)
+    if total < REF_VIDEO_MIN_S / 2:
+        raise SystemExit(f'{total:.0f} s de chant seul seulement pour {cle} (au moins {REF_VIDEO_MIN_S / 2:.0f} s) : '
+                         'trop peu pour une voix')
+    alertes = []
+    if total < REF_VIDEO_MIN_S:
+        alertes.append(f'court : {total:.0f} s de chant seul (au moins {REF_VIDEO_MIN_S:.0f} conseillées)')
+    marge, pause = int(0.05 * sr), np.zeros(int(0.2 * sr))
+    morceaux = []
+    for a, b, _ in pris:
+        y = x[int(a * sr) + marge:int(b * sr) - marge].copy()
+        f = np.linspace(0, 1, min(441, len(y) // 2))
+        y[:len(f)] *= f
+        y[-len(f):] *= f[::-1]
+        morceaux += [y, pause]
+    extrait = np.concatenate(morceaux[:-1])
+    env, _ = enveloppe(extrait)
+    rsb = float(np.percentile(env, 90) - np.percentile(env, 10))
+    detail = (f'doubler --voix-depuis : {len(pris)} passages de chant seul du chanteur « {cle} » '
+              f'({", ".join(f"{a:.1f}–{b:.1f} s" for a, b, _ in pris)}) de la voix d\'origine isolée')
+    extra = {'origine': 'video', 'imitation_ia': True, 'mention': USAGE_ARTISTE, 'origine_detail': detail,
+             'consentement': 'voix d\'artiste : imitation par IA, usage privé seulement ; jamais publiée ni diffusée',
+             'chanteur': cle, 'passages_s': [[round(a, 2), round(b, 2)] for a, b, _ in pris]}
+    fiche, med = ecrire_voix(nom, d, extrait, sr, float(total), rsb, alertes, detail, extra)
+    print(f"voix {nom} gardée ({d}) : {fiche['duree_s']} s de {len(pris)} passages de chant seul de « {cle} », parole "
+          f"{med:.0f} Hz ({note(med)}), centre de chant {FACTEUR_CHANT * med:.0f} Hz")
+    print(f'attention : {AVERTISSEMENT_ARTISTE}')
     for al in alertes:
         print('  ATTENTION :', al)
 
@@ -3025,7 +3215,7 @@ def faire_autotune(t, tv, dossier, base, mode, gains, reglage, musique=None):
         else:
             (tv / 'reverb_voix_autotune.wav').unlink(missing_ok=True)
         assembler(t, seche_at, rev, gains, tv / 'mix_autotune.wav', fichier_musique=musique)
-        ff('-i', tv / 'mix_autotune.wav', '-c:a', 'libmp3lame', '-b:a', '320k', mp3)
+        ff('-i', tv / 'mix_autotune.wav', '-c:a', 'libmp3lame', '-b:a', '320k', *meta_ia(), mp3)
     except Exception as e:  # noqa: BLE001 — l'auto-tune ne fait jamais échouer le doublage
         for f in FICHIERS_AUTOTUNE_TRAVAIL:
             (tv / f).unlink(missing_ok=True)
@@ -3228,7 +3418,7 @@ def remettre_sur_video(t, mix, dossier, base, sous_titres=(), plan=None, pistes=
         cartes += ['-map', '0:t?']   # polices jointes des sous-titres
         if sous_titres:
             options = [*options, '-default_mode', 'infer_no_subs']   # les paroles ne s'affichent pas d'office
-    meta = []
+    meta = meta_ia()   # voix d'une vidéo : « imitation par IA » dans le comment du fichier
     for k, s in enumerate(sons):
         meta += [f'-metadata:s:a:{k}', f"title={s['titre']}", f'-disposition:a:{k}', 'default' if k == 0 else '0']
         if langue:
@@ -4142,6 +4332,7 @@ def finir(tr, a, voix, temps_local=None):
             raise RuntimeError(f'travail incomplet ({f} manque) : relancer sans --remix')
     appliquer_affectation(tr, a, voix)   # une voix par chanteur : l'affectation corrigée à la main, si elle y est
     rapport = json.loads((tv / 'rapport.json').read_text())
+    mentionner_imitation_ia(voix, rapport)   # voix d'une vidéo : « imitation par IA » dans le rapport et les fichiers
     mode = rapport['mode']
     voix_db = a.voix_db if a.voix_db is not None else (4.0 if mode == 'chant' else 0.0)
     version = 1 if a.mix_v1 else 2
@@ -4169,7 +4360,7 @@ def finir(tr, a, voix, temps_local=None):
         gains, cible = mixer(t, tv, mode, voix_db, a.reverb_db, tv / 'voix_convertie.flac', tv / 'mix.wav', version=version, info=info,
                              musique=musique)
         mp3 = dossier / f'{base}.mp3'
-        ff('-i', tv / 'mix.wav', '-c:a', 'libmp3lame', '-b:a', '320k', mp3)
+        ff('-i', tv / 'mix.wav', '-c:a', 'libmp3lame', '-b:a', '320k', *meta_ia(), mp3)
         nu = info.get('nuances', {})
         if version < 2:
             detail = ' (ancien mixage : ni nuances ni dé-esseur)'
@@ -4189,7 +4380,7 @@ def finir(tr, a, voix, temps_local=None):
             for pas, mix in zip(comp['pas'], (tv / 'mix.wav', tv / 'mix_comparaison.wav')):
                 sortie = dossier / f'comparaison_{pas}pas{suffixe}.mp3'
                 ff('-ss', f"{comp['debut_s']:.3f}", '-t', f"{comp['fin_s'] - comp['debut_s']:.3f}", '-i', mix,
-                   '-af', 'afade=t=in:d=0.3', '-c:a', 'libmp3lame', '-b:a', '320k', sortie)
+                   '-af', 'afade=t=in:d=0.3', '-c:a', 'libmp3lame', '-b:a', '320k', *meta_ia(), sortie)
                 extraits.append(sortie)
         # version auto-tune, en plus (la version normale ci-dessus ne dépend jamais de l'auto-tune)
         if reglage['intensite']:
@@ -5304,6 +5495,13 @@ def main():
     p.add_argument('--comparer-pas', type=int, default=None, metavar='N',
                    help='convertit aussi ~30 s en N pas : comparaison_<pas>pas.mp3 et comparaison_<N>pas.mp3')
     p.add_argument('--ajouter-voix', nargs=2, metavar=('NOM', 'ENREGISTREMENT'), help='ajoute une voix depuis un enregistrement')
+    p.add_argument('--voix-depuis', nargs=2, metavar=('DOUBLAGE', 'NOM'),
+                   help="garde comme voix cible la voix d'un chanteur d'un doublage fini (son dossier de résultat, ou la vidéo "
+                        "doublée) : ses meilleurs passages de chant seul, 15 à 30 s, sans GPU. Voix d'artiste : imitation "
+                        "par IA, usage privé seulement ; les doublages faits avec elle le portent dans leurs fichiers")
+    p.add_argument('--chanteur', default=None, metavar='N',
+                   help='avec --voix-depuis : le chanteur à garder, N (1 = le premier à chanter) ou sa clé (homme, femme, '
+                        'chanteur2…) ; obligatoire quand le doublage a plusieurs voix')
     p.add_argument('--voix-liste', action='store_true', help='affiche les voix disponibles')
     p.add_argument('--json', action='store_true', help='avec --voix-liste ou --config : sortie en JSON')
     p.add_argument('--config', nargs='*', default=None, metavar='CLE VALEUR',
@@ -5369,6 +5567,11 @@ def executer(p, a):
     if a.ajouter_voix:
         ajouter_voix(*a.ajouter_voix)
         return 0
+    if a.voix_depuis:
+        voix_depuis(*a.voix_depuis, chanteur=a.chanteur)
+        return 0
+    if a.chanteur is not None:
+        sys.exit('--chanteur va avec --voix-depuis')
     a.pistes_audio = a.pistes_audio or pistes_audio_config(conf)
     if a.reprendre:
         ailleurs = session_ailleurs_notee()

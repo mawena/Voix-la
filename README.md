@@ -4,7 +4,7 @@ Voix-là : votre vidéo, avec une autre voix. Et voilà.
 
 **[Page de présentation : mawena.github.io/Voix-la](https://mawena.github.io/Voix-la/)** (captures, installation par APT, usage responsable).
 
-> **Version 0.18.0** : s'installe par le [dépôt APT signé](#par-le-dépôt-apt-recommandé) (`sudo apt install voix-la`,
+> **Version 0.19.0** : s'installe par le [dépôt APT signé](#par-le-dépôt-apt-recommandé) (`sudo apt install voix-la`,
 > puis `apt upgrade` pour chaque nouvelle version) ou par le paquet `.deb` joint à chaque
 > [release](https://github.com/mawena/Voix-la/releases). Voir le [journal des modifications](CHANGELOG.md).
 

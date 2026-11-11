@@ -23,6 +23,8 @@ comptée qu'une fois (même version du noyau, ou mêmes heures : doubler n'a jam
 - rapport.json des doublages (temps_local.noyau_depuis_envoi_s − attente_demarrage_noyau_s, version_noyau) ;
 - travaux de la file de l'interface (étape « kaggle » de leurs événements), réussis, en échec, annulés ou en cours ;
 - session-en-cours.json et session-precedente.json de doubler, y compris pour un doublage lancé en ligne de commande ;
+- sessions-gpu.jsonl, le journal durable de doubler et d'affiner (une ligne au départ, une à la fin de chaque session) :
+  il survit au ménage des dossiers, contrairement aux sources ci-dessus ;
 - outils préparés (doubler --preparer-outils : outils.json, durée estimée à OUTILS_S) ;
 - essais du banc (banc/resultats/<S>/suivi.json, ou le journal du noyau rapatrié).
 Ce qui échappe au compte local : voir LIMITES.
@@ -55,6 +57,8 @@ REPRISE_APRES_S = 120    # un travail en attente part deux minutes après la rem
 AGE_MAX_S = 300          # une lecture de Kaggle plus récente est reprise telle quelle
 DELAI_KAGGLE_S = 60
 FICHIER_LECTURE = "quota-kaggle.json"
+JOURNAL_GPU = "sessions-gpu.jsonl"   # écrit par doubler.py (journal_gpu), à côté de session-en-cours.json
+DUREE_INCONNUE_S = HEURE   # session du journal jamais close, sans estimation : une heure (borne prudente)
 JOURS = ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche")
 MOIS = ("janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc.")
 # Que faire d'un doublage qui ne tient plus dans le reste du quota (préférence « quota_depassement »)
@@ -258,8 +262,11 @@ class Session:
         return max(0.0, min(self.fin, fin) - max(self.debut, debut))
 
 
-PRIORITE = {"rapport": 0, "travail": 1, "session-en-cours": 2, "session-precedente": 3, "outils": 4, "banc": 4}
-LIBELLES_ORIGINE = {"rapport": "rapport", "travail": "file de l’interface", "session-en-cours": "session en cours",
+LIBELLES_COMMANDE = {"doubler": "Doublage", "comparer": "Comparaison de voix", "affiner": "Affinage de voix",
+                     "outils": "Outils préparés"}
+PRIORITE = {"rapport": 0, "travail": 1, "journal": 1.5, "session-en-cours": 2, "session-precedente": 3, "outils": 4, "banc": 4}
+LIBELLES_ORIGINE = {"rapport": "rapport", "travail": "file de l’interface", "journal": "journal des sessions GPU",
+                    "session-en-cours": "session en cours",
                     "session-precedente": "dernière session de doubler", "outils": "outils préparés",
                     "banc": "banc d’essai"}
 
@@ -485,11 +492,62 @@ def sessions_banc(resultats):
     return sessions
 
 
+def sessions_du_journal(fichier, etat_doubler=None, maintenant=None):
+    """Les sessions Kaggle du journal durable sessions-gpu.jsonl de doubler : une ligne « debut », puis une ligne « fin »
+    de même identifiant (la dernière compte). Les lignes illisibles, les fournisseurs autres que Kaggle (Modal et Runpod
+    ne comptent pas dans le quota de Kaggle) et les fins sans début sont ignorés. Sans fin : la session est en cours si
+    doubler tient le verrou commun (la plus récente seulement), sinon elle a été interrompue (poste redémarré…) et sa
+    durée est estimée (estimation de doubler, au plus le temps écoulé)."""
+    maintenant = time.time() if maintenant is None else maintenant
+    debuts, fins = {}, {}
+    for ev in _evenements(fichier):
+        ident = ev.get("id")
+        if not isinstance(ident, str) or ev.get("fournisseur") != "kaggle":
+            continue
+        if ev.get("evt") == "debut" and _nombre(ev.get("debut")):
+            debuts.setdefault(ident, ev)
+        elif ev.get("evt") == "fin":
+            fins[ident] = ev
+    verrou = etat_doubler is not None and verrou_tenu(Path(etat_doubler) / "verrou-kaggle")
+    ouvertes = sorted((i for i in debuts if i not in fins), key=lambda i: _nombre(debuts[i]["debut"]))
+    sessions = []
+    for ident, d in debuts.items():
+        debut = _nombre(d["debut"])
+        v = d.get("version")
+        version = int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+        commande = str(d.get("commande") or "doubler")
+        genre = "outils" if commande == "outils" else "doublage"
+        titre = LIBELLES_COMMANDE.get(commande, "Session GPU")
+        f = fins.get(ident)
+        en_cours = False
+        mesuree = True
+        if f is not None:
+            duree = _nombre(f.get("duree_s"))
+            if duree is None:
+                fin = _nombre(f.get("fin"))
+                duree = fin - debut if fin else None
+            if duree is None:
+                continue
+        else:
+            ecoule = max(0.0, maintenant - debut)
+            if verrou and ident == ouvertes[-1]:
+                en_cours, duree = True, min(SESSION_MAX_S, ecoule)
+            else:
+                mesuree = False
+                duree = min(_nombre(d.get("estimation_s"), DUREE_INCONNUE_S) or DUREE_INCONNUE_S, ecoule)
+        sessions.append(Session(debut, max(0.0, min(duree, SESSION_MAX_S)), genre, "journal", titre, version,
+                                mesuree=mesuree, en_cours=en_cours))
+    return sessions
+
+
 def _meme(a, b):
     if a.genre != b.genre:
         return False
-    if a.cle or b.cle:
+    if a.cle and b.cle:
         return a.cle == b.cle
+    if (a.cle or b.cle) and a.genre != "outils":
+        return False
+    # (outils : la fiche outils.json a une clé, la ligne du journal n'en a pas : seules les heures les rapprochent)
     if a.version is not None and b.version is not None:
         return a.version == b.version
     # doubler ne tient qu'une session à la fois (verrou commun) : deux sessions qui se chevauchent sont la même
@@ -527,6 +585,7 @@ def sessions_locales(sorties=(), racine_travaux=None, etat_doubler=None, depot=N
     depot = Path(depot) if depot else chemins.DEPOT
     s_travaux, r_travaux = sessions_des_travaux(racine_travaux, maintenant)
     s_doubler, r_doubler = sessions_de_doubler(etat_doubler, maintenant)
+    s_journal = sessions_du_journal(etat_doubler / JOURNAL_GPU, etat_doubler, maintenant)
     rapports = rapports_recents(list(sorties), depuis)
     vus = {str(f.resolve()) for f in rapports}
     for f in r_travaux + r_doubler:
@@ -540,7 +599,7 @@ def sessions_locales(sorties=(), racine_travaux=None, etat_doubler=None, depot=N
             rapports.append(f)
     s_rapports = [s for s in (session_du_rapport(f) for f in rapports) if s]
     outils = [etat_doubler / "outils.json"] + [Path(s) / ".kaggle" / "outils.json" for s in sorties]
-    toutes = (s_rapports + s_travaux + s_doubler + sessions_outils(outils)
+    toutes = (s_rapports + s_travaux + s_journal + s_doubler + sessions_outils(outils)
               + sessions_banc(depot / "banc" / "resultats"))
     return [s for s in fusionner(toutes) if s.fin >= depuis]
 

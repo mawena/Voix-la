@@ -1,3 +1,15 @@
+voix-la (0.20.0) unstable; urgency=medium
+
+  * Paroles : les phrases ambiguës d'un refrain bilingue sont retranscrites
+    dans leurs deux langues probables, la plus sûre est gardée.
+  * Voix affinée dans le doublage : doubler --affinee auto|oui|non (Seed-VC
+    44 kHz avec le point de contrôle de la voix, Kaggle seulement).
+  * Voix des vidéos : doubler --voix-depuis garde la voix d'un chanteur d'un
+    doublage fini comme voix cible (imitation par IA, usage privé, mention
+    dans les fichiers produits).
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Wed, 11 Nov 2026 18:00:00 +0000
+
 voix-la (0.19.0) unstable; urgency=medium
 
   * Journal durable des sessions GPU (sessions-gpu.jsonl), lu par l'interface

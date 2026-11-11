@@ -916,7 +916,12 @@ affiner marie --reprendre  # finit un affinage interrompu
 - Dans l'interface, le bouton **Affiner ma voix sur mon chant…** de la page Voix lance le travail dans la file, avec
   suivi et annulation. Il reste désactivé (« en préparation ») tant que la clé `affinage_pret` de `config.json` n'est
   pas vraie : l'essai réel n'est pas encore fait.
-- L'utilisation de la voix affinée par `doubler` (Seed-VC 44k, avec repli zéro-shot) est prévue, pas encore faite.
+- `doubler` utilise la voix affinée : son chant passe par Seed-VC 44 kHz chargé avec le point de contrôle de la voix
+  (envoyé dans le jeu de données privé de la session, Kaggle seulement), à la place des poids de base. `--affinee
+  auto|oui|non` (clé `affinee`) : **auto** (défaut) seulement si `affinage_pret` est vrai (`doubler --config affinage_pret
+  oui` une fois l'affinage jugé bon à l'écoute) ; **oui** pour l'essayer avant ; **non** pour s'en passer. Avec plusieurs
+  voix, chacune choisit seule ; un point absent ou abîmé laisse les poids de base, et le rapport dit quelle voix a pris
+  quel modèle. Dans l'interface, la page Doubler montre « Utiliser ma voix affinée » quand la voix choisie en a une.
 
 Recherche, guide d'enregistrement, fonctionnement et plan d'intégration : [docs/affinage.md](docs/affinage.md) ; options :
 `man affiner`.

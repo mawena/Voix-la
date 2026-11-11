@@ -6,7 +6,7 @@ from pathlib import Path
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
-from .. import chemins, formats, moteur, quota, rapports, secours, systeme, travaux
+from .. import affinage, chemins, formats, moteur, quota, rapports, secours, systeme, travaux
 from . import commun
 from .lecteur import Lecteur
 
@@ -20,6 +20,8 @@ TEXTE_OCTAVE = ("Automatique : en chant, un seul décalage par chanteur, choisi 
 TEXTE_TRANSPOSER = ("Allumé : une chanson trop haute ou trop basse pour ta voix est transposée en entier, musique "
                     "comprise (comme un changement de tonalité au karaoké), de 5 demi-tons au plus. Éteint : la "
                     "musique reste intacte")
+TEXTE_AFFINEE = ("Seed-VC 44 kHz chargé avec l’affinage de ta voix sur ton chant, à la place des poids de base "
+                 "(Kaggle seulement). Allumée d’office quand l’affinage a été jugé bon (clé « affinage_pret »)")
 INFOBULLE_TRANSPOSER = ("Tes proches ne reconnaissent ta voix que lorsqu’elle chante près de sa zone naturelle. "
                         "Si la chanson est hors de ta tessiture, elle est transposée d’un nombre entier de demi-tons "
                         "(5 au plus, le même pour toute la chanson), la musique avec la voix. À éteindre pour garder "
@@ -303,6 +305,13 @@ class PageDoubler(commun.Page):
                                           subtitle=TEXTE_TRANSPOSER)
         self.r_transposer.set_tooltip_text(INFOBULLE_TRANSPOSER)
         g.add(self.r_transposer)
+        # voix affinée sur le chant : visible seulement si doubler annonce --affinee et que la voix choisie a un affinage ;
+        # la case suit « affinage_pret » tant qu'on n'y touche pas (doubler décide alors lui-même : auto)
+        self._affinee_pret, self._affinee_touchee, self._affinee_auto = False, False, False
+        self.r_affinee = Adw.SwitchRow(title="Utiliser ma voix affinée", active=False, visible=False,
+                                       subtitle=TEXTE_AFFINEE)
+        self.r_affinee.connect("notify::active", self._affinee_changee)
+        g.add(self.r_affinee)
         self.r_pas = Adw.SpinRow.new_with_range(10, 100, 5)
         self.r_pas.set_title("Pas de diffusion")
         self.r_pas.set_subtitle(TEXTE_PAS)
@@ -854,6 +863,10 @@ class PageDoubler(commun.Page):
             r["mix_v1"] = True
         if self.r_transposer.get_visible():
             r["transposer"] = "auto" if self.r_transposer.get_active() else "non"
+        if self.r_affinee.get_visible():
+            choix = affinage.choix_affinee(self.r_affinee.get_active(), self._affinee_pret)
+            if choix:
+                r["affinee"] = choix
         moteur_, sans = self._options_chaine()
         if moteur_:
             r["moteur"] = moteur_
@@ -874,7 +887,28 @@ class PageDoubler(commun.Page):
                 r["sans_autotune"] = True   # éteint ici alors que la configuration de doubler l'allume
         return r
 
+    def _affinee_changee(self, *_):
+        if not self._affinee_auto:   # un changement de l'utilisateur, pas celui de _rafraichir_affinee
+            self._affinee_touchee = True
+            self._maj()
+
+    def _rafraichir_affinee(self):
+        """Montre la case « voix affinée » quand doubler l'annonce et qu'une voix choisie a un affinage ; elle suit
+        « affinage_pret » tant qu'on n'y a pas touché."""
+        spec = None if self.comparer() else self._voix_choisie()
+        visible = "--affinee" in self.fenetre.caps and bool(affinage.voix_affinees(self.fenetre.donnees, spec))
+        self._affinee_pret = affinage.pret(self._conf)
+        self.r_affinee.set_visible(visible)
+        if visible and not self._affinee_touchee and self.r_affinee.get_active() != self._affinee_pret:
+            self._affinee_auto = True
+            try:
+                self.r_affinee.set_active(self._affinee_pret)
+            finally:
+                self._affinee_auto = False
+
     def _maj(self):
+        if hasattr(self, "r_affinee"):
+            self._rafraichir_affinee()
         groupes = moteur.grouper_par_extrait(self.videos, self.fenetre.caps)
         n = len(self.videos)
         reglages = self.reglages() if hasattr(self, "r_pas") else {}

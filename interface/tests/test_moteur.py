@@ -72,7 +72,8 @@ class EssaiCapacites(EssaiIsole):
                                                                          "--sans-autotune", "--autotune-gamme",
                                                                          "--gpu", "--passage", "--affectation",
                                                                          "--comparer", "--transposer", "--calcul",
-                                                                         "--nettoyer-runpod", "--sans-quota"})
+                                                                         "--nettoyer-runpod", "--sans-quota",
+                                                                         "--affinee"})
         self.assertTrue(moteur.disponible())
 
     def test_doubler_introuvable(self):
@@ -188,6 +189,26 @@ class EssaiCalcul(EssaiIsole):
         deux = moteur.duree_cout_calcul([1680.0, 1680.0], "runpod", {})
         un = moteur.duree_cout_calcul([1680.0], "runpod", {})
         self.assertAlmostEqual(deux[1], 2 * un[1], delta=0.02)
+
+
+class EssaiAffinee(EssaiIsole):
+    """--affinee : passé seulement si doubler l'annonce et si la page a fait un choix (auto, oui ou non)."""
+
+    def args(self, reglages, caps=None):
+        return moteur.args_doublage(["/v/A.mp4"], {"voix": "jules", **reglages}, "/d",
+                                    caps=frozenset(moteur.OPTIONS_SUIVIES) if caps is None else caps)
+
+    def test_valeurs(self):
+        for v in ("auto", "oui", "non"):
+            self.assertIn(f"--affinee={v}", self.args({"affinee": v}))
+
+    def test_sans_choix_doubler_decide(self):
+        self.assertFalse(any(x.startswith("--affinee") for x in self.args({})))
+        self.assertFalse(any(x.startswith("--affinee") for x in self.args({"affinee": "peut-etre"})))
+
+    def test_absent_de_l_aide(self):
+        a = self.args({"affinee": "oui"}, caps=frozenset(moteur.OPTIONS_SUIVIES) - {"--affinee"})
+        self.assertFalse(any(x.startswith("--affinee") for x in a))
 
 
 class EssaiTransposer(EssaiIsole):

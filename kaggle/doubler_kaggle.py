@@ -87,6 +87,7 @@ durée de l'étape paroles seule).
 """
 import base64
 import glob
+import hashlib
 import importlib.util
 import json
 import math
@@ -102,6 +103,7 @@ REGLAGES = json.loads(base64.b64decode('__REGLAGES__'))
 DEPOT = 'https://github.com/Plachtaa/seed-vc.git'
 COMMIT = '51383efd921027683c89e5348211d93ff12ac2a8'   # main au 20/04/2025, dernier commit du dépôt
 SEEDVC = '/tmp/seed-vc'
+PRESET_CHANT_44K = 'configs/presets/config_dit_mel_seed_uvit_whisper_base_f0_44k.yml'   # config de Seed-VC 44 kHz (chant), relative à SEEDVC
 SOUCHES = '/tmp/souches'
 PAQUETS = ['audio-separator[cpu]==0.48.0', 'munch']
 # Chemins d'entrée et de sortie : ceux de Kaggle par défaut ; Modal et Runpod les déplacent par ces variables
@@ -4696,16 +4698,84 @@ def main():
     from argparse import Namespace
     t = time.time()
 
-    def charger_modele(f0):
+    def charger_modele(f0, point=None, config=None, etiquette=None):
+        """Seed-VC 44 kHz (f0) ou 22 kHz. point, config : le point de contrôle affiné d'une voix (affiner) et sa config, à la
+        place des poids de base ; etiquette : nom de ce chargement dans session['temps']."""
         t0 = time.time()
         model, semantic_fn, f0_fn, vocoder_fn, campplus, mel_fn, mel_args = sv.load_models(
-            Namespace(f0_condition=f0, checkpoint=None, config=None, fp16=R['fp16']))
-        session['temps'][f"chargement_{'chant44k' if f0 else 'parole22k'}_s"] = round(time.time() - t0, 1)
+            Namespace(f0_condition=f0, checkpoint=point, config=config, fp16=R['fp16']))
+        session['temps'][f"chargement_{etiquette or ('chant44k' if f0 else 'parole22k')}_s"] = round(time.time() - t0, 1)
         return {'nom': 'chant44k' if f0 else 'parole22k', 'f0': f0, 'model': model, 'semantic_fn': semantic_fn,
                 'f0_fn': f0_fn, 'vocoder_fn': vocoder_fn, 'campplus': campplus, 'mel_fn': mel_fn,
                 'sr': mel_args['sampling_rate'], 'hop': mel_args['hop_size']}
     modeles = {'chant44k': charger_modele(True)}   # toujours : RMVPE (hauteur) et CAMPPlus (empreinte) servent à l'analyse
     chant = modeles['chant44k']
+
+    # Voix affinées (affiner, puis doubler --affinee) : doubler.py met dans le jeu de données le point de contrôle compact
+    # de chaque voix qui en prend un et son réglage « affinage » (fichier, config, sha256). Le modèle 44 kHz de cette voix
+    # seule est chargé avec ce point à la place des poids de base (les autres voix gardent le modèle de base) ; point
+    # absent, somme différente ou chargement refusé : poids de base, la raison est dans le rapport, jamais d'échec.
+    affinages = {}
+    if R['voix'].get('affinage'):
+        affinages[R['voix']['nom']] = R['voix']['affinage']
+    for v in (cibles or {}).get('voix') or []:
+        if v.get('affinage'):
+            affinages[v['nom']] = v['affinage']
+    modeles_affines = {}   # nom de voix -> modèle chargé, ou None (poids de base)
+    session['affinage'] = {n: {'utilise': False, 'raison': 'aucun chant converti avec cette voix', 'pas': r.get('pas'),
+                               'sha256': r.get('sha256')} for n, r in affinages.items()}
+
+    def chercher(nom):
+        trouves = glob.glob(f'{ENTREES}/**/{nom}', recursive=True) if nom else []
+        return trouves[0] if trouves else None
+
+    def somme_sha256(chemin):
+        h = hashlib.sha256()
+        with open(chemin, 'rb') as fh:
+            for bloc in iter(lambda: fh.read(1 << 20), b''):
+                h.update(bloc)
+        return h.hexdigest()
+
+    def modele_affine(nom_voix):
+        """Le modèle Seed-VC 44 kHz affiné de la voix, chargé une fois ; None : poids de base (raison dans session)."""
+        if nom_voix in modeles_affines:
+            return modeles_affines[nom_voix]
+        reg, info, md = affinages[nom_voix], session['affinage'][nom_voix], None
+        try:
+            point = chercher(reg.get('fichier'))
+            if not point:
+                raise FileNotFoundError(f"point de contrôle absent du jeu de données ({reg.get('fichier')})")
+            if reg.get('sha256') and somme_sha256(point) != reg['sha256']:
+                raise ValueError('somme SHA-256 différente de celle de la fiche (fichier abîmé pendant le transfert)')
+            config = chercher(reg.get('config')) or PRESET_CHANT_44K
+            md = charger_modele(True, point, config, f'chant44k_affine_{nom_voix}')
+            md['nom'] = 'chant44k_affine'
+            log(f"voix {nom_voix} : Seed-VC 44 kHz affiné ({reg.get('pas') or '?'} pas) chargé depuis {os.path.basename(point)}")
+        except Exception as ex:  # noqa: BLE001 — repli sur les poids de base
+            md = None
+            info['raison'] = f'{type(ex).__name__} : {ex}'[:300]
+            log(f"voix {nom_voix} : voix affinée inutilisable ({info['raison']}) : poids de base de Seed-VC 44 kHz")
+            torch.cuda.empty_cache()
+        modeles_affines[nom_voix] = md
+        return md
+
+    def modeles_par_voix(nom, e, nb):
+        """Le modèle de chaque voix cible (indice = 7e élément des morceaux) pour la variante nom : le modèle affiné des
+        voix qui en ont un (chant 44 kHz seulement), le modèle de base des autres."""
+        base = modeles[nom]
+        if nom != 'chant44k' or not affinages:
+            return [base] * nb
+        if e.get('plusieurs') and cibles:
+            noms = [v['nom'] for v in cibles['voix']]
+        else:
+            noms = [R['voix']['nom']]
+        liste = []
+        for i in range(nb):
+            md = modele_affine(noms[i]) if i < len(noms) and noms[i] in affinages else None
+            if md is not None:
+                e.setdefault('affinage_utilise', set()).add(noms[i])
+            liste.append(md or base)
+        return liste
     device = sv.device
     f0_fn, campplus = chant['f0_fn'], chant['campplus']
 
@@ -5422,10 +5492,11 @@ def main():
                     md = modeles[nom]
                     # une référence par voix cible (préparée une fois), choisie par le 7e élément de chaque morceau
                     refs_v = refs_de(e, nom)
+                    mds = modeles_par_voix(nom, e, len(refs_v))
                     couches = np.zeros((2 * vers['nv'], len(p['x'])), np.float32) if vers else None
                     t = time.time()
                     y = assembler(p['x'], morceaux, pad,
-                                  lambda xs, d, v=0: convertir(xs, md, refs_v[v], d if md['f0'] else 0, pas),
+                                  lambda xs, d, v=0: convertir(xs, mds[min(v, len(mds) - 1)], refs_v[v], d if md['f0'] else 0, pas),
                                   R['graine'], torch, couches)
                     conv = time.time() - t
                     if vers:
@@ -5467,6 +5538,8 @@ def main():
                 mes['garde_crete_db'] = round(20 * math.log10(garde), 2)
             if repli:
                 mes['repli'] = repli
+            if nom == 'chant44k' and affinages:
+                mes['voix_affinees'] = sorted(e.get('affinage_utilise') or ())
             if liste is segs:
                 # Mesures : ressemblance de timbre (CAMPPlus, cosinus avec la référence), hauteur obtenue. Plusieurs voix
                 # cibles : la voix et le décalage de la piste dominante du morceau (la première qui le convertit : voix
@@ -5541,6 +5614,12 @@ def main():
             log(f"[{tr['id']}] conversion {nom}, {pas} pas → {fichier} : {json.dumps(mes, ensure_ascii=False)}")
             torch.cuda.empty_cache()
         principale = rapport['variantes'].get('voix_convertie.flac', {})
+        if affinages:   # quelle voix a utilisé quel modèle (doubler.py l'écrit après le doublage)
+            rapport['affinage'] = {n: {**i, 'utilise': n in (e.get('affinage_utilise') or ()),
+                                       'raison': None if n in (e.get('affinage_utilise') or ()) else (
+                                           i['raison'] if i['raison'] != 'aucun chant converti avec cette voix' or e['mode'] == 'chant'
+                                           else 'parole : Seed-VC 22 kHz, l\'affinage ne sert qu\'au chant')}
+                                   for n, i in session['affinage'].items()}
         rapport['moteur'] = principale.get('moteur')
         rapport['moteur_info'] = {'chant_demande': moteur_chant, 'utilise': principale.get('moteur'), 'modele': rapport['modele'],
                                   'repli': principale.get('repli')}

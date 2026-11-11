@@ -29,6 +29,15 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
   - Avec `--calcul modal` ou `runpod`, `oui` est refusé (« Kaggle seulement pour l'instant ») et `auto` garde les poids
     de base.
   - Interface : la page Doubler propose « Utiliser ma voix affinée » quand la voix choisie en a une.
+- **Voix des vidéos** : `doubler --voix-depuis <doublage> <nom> [--chanteur N]` garde comme voix cible la voix d'un
+  chanteur d'un doublage fini (une par chanteur en duo ou à N voix), sans nouvelle session GPU.
+  - La voix est prise dans `travail/voix_source.wav`, sur les meilleurs passages où ce chanteur chante seul (ni
+    unisson, ni chœurs, ni duo, ni muet), assemblés en 15 à 30 s et nettoyés comme avec `--ajouter-voix`.
+  - Garde-fous « voix d'artiste, usage privé » : la fiche de la voix porte `origine: video`, `imitation_ia` et la
+    mention, et un avertissement s'affiche à la création. Les doublages faits avec cette voix portent « imitation par
+    IA » dans le commentaire du mp4, du mkv ou du mp3, et dans `rapport.json`.
+  - Interface : « Garder cette voix » (une ligne par chanteur) dans les résultats, avec une case d'usage privé à cocher ;
+    badge « Voix d'une vidéo · imitation IA » dans la page Voix.
 
 ## [0.19.0] - 2026-11-11
 

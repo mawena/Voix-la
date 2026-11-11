@@ -654,6 +654,20 @@ def classe_voix(m):
     return "inconnu"
 
 
+def nombre_chanteurs(rapport):
+    """Nombre de voix cibles d'un chant à une voix par chanteur (0 sans)."""
+    r = rapport or {}
+    n = len([c for c in (r.get("decision_hauteur") or {}).get("chanteurs") or [] if isinstance(c, dict)])
+    return n or len(voix_cibles_noms(r))
+
+
+def nom_segment(seg):
+    """Texte d'un passage de la frise : « Chanteur 3 → voix cible » à trois voix ou plus, sinon « voix <voix> »."""
+    if seg.get("classe") == "chanteur":
+        return f"Chanteur {seg['rang']}" + (f" → {seg['voix_cible']}" if seg.get("voix_cible") else "")
+    return f"voix {seg['voix']}"
+
+
 def libelle_voix(m):
     v = m.get("voix")
     if m.get("muet"):
@@ -671,18 +685,27 @@ def segments_frise(rapport):
     segs = []
     # voix seule de genre connu (décision globale) : les morceaux sans voix propre en prennent le genre
     seule = (rapport.get("decision_hauteur") or {}).get("voix_seule")
+    plusieurs = nombre_chanteurs(rapport)
+    plusieurs = plusieurs if plusieurs >= 3 else 0
     for m in rapport.get("morceaux") or []:
         try:
             debut, fin = float(m["debut_s"]), float(m["fin_s"])
         except (KeyError, TypeError, ValueError):
             continue
         classe, voix = classe_voix(m), libelle_voix(m)
-        if classe == "inconnu" and m.get("voix") is None and seule in ("homme", "femme"):
+        rang = None
+        if plusieurs and not m.get("muet") and m.get("voix") is not None and isinstance(m.get("k"), int) \
+                and not isinstance(m.get("k"), bool) and 0 <= m["k"] < plusieurs:
+            classe, rang = "chanteur", m["k"] + 1   # trois voix ou plus : le chanteur n° k, sa voix et sa couleur
+            voix = f"chanteur {rang}"
+        elif classe == "inconnu" and m.get("voix") is None and seule in ("homme", "femme"):
             classe, voix = seule, seule
         elif classe == "inconnu" and m.get("voix") is None and rapport.get("mode") == "parole":
             classe, voix = "locuteur", "voix seule"   # parole sans regroupement de locuteurs : une seule voix
         seg = {"debut": debut, "fin": fin, "classe": classe, "voix": voix,
                "decalage": m.get("decalage"), "f0": m.get("f0_med"), "base": m.get("base") or ""}
+        if rang:
+            seg["rang"] = rang
         if m.get("voix_cible"):   # une voix par chanteur : la voix du passage, et celle de chaque piste
             seg["voix_cible"] = str(m["voix_cible"])
             vp = m.get("voix_pistes")

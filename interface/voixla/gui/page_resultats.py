@@ -1286,7 +1286,7 @@ class PageDetail(Adw.NavigationPage):
         texte = formats.chrono_precis(t)
         if s:
             texte += " · " + ("muet" if s["classe"] == "muet" else
-                              f"voix {s['voix']}" + (f" · {formats.demi_tons(s['decalage'])} dt"
+                              rapports.nom_segment(s) + (f" · {formats.demi_tons(s['decalage'])} dt"
                                                      if s.get("decalage") is not None else ""))
         if self.frise_voix is not None:
             p = self.frise_voix.passage_a(t)

@@ -24,6 +24,8 @@ def couleur(seg):
         except ValueError:
             k = 0
         return LOCUTEURS[k % len(LOCUTEURS)]
+    if seg["classe"] == "chanteur":   # trois voix cibles ou plus : la couleur de la voix cible du chanteur (FriseVoix)
+        return couleur_voix(int(seg.get("rang") or 1) - 1)
     return COULEURS.get(seg["classe"])
 
 
@@ -123,7 +125,7 @@ class Frise(Gtk.DrawingArea):
         if s["classe"] == "muet":
             lignes.append("muet")
         else:
-            lignes.append(f"voix {s['voix']}" if s["classe"] != "locuteur" else s["voix"])
+            lignes.append(s["voix"] if s["classe"] == "locuteur" else rapports.nom_segment(s))
             if s.get("f0"):
                 lignes.append(f"hauteur médiane {formats.nombre(s['f0'], 0)} Hz")
             if s.get("decalage") is not None:
@@ -422,18 +424,24 @@ def legende_corrections():
 def legende(segs):
     """Petite légende des couleurs présentes."""
     b = Gtk.Box(spacing=14)
-    vues = []
+    vues, chanteurs = [], {}
     for s in segs:
-        cle = s["classe"] if s["classe"] != "locuteur" else s["voix"]
+        cle = s["voix"] if s["classe"] in ("locuteur", "chanteur") else s["classe"]
+        if s["classe"] == "chanteur":
+            chanteurs[cle] = s
         if cle not in vues:
             vues.append(cle)
-    ordre = ["homme", "femme", "inconnu"] + sorted(v for v in vues if v.startswith("voix ")) + ["muet"]
+    ordre = (["homme", "femme", "inconnu"] + sorted(v for v in vues if v.startswith("voix "))
+             + sorted(chanteurs) + ["muet"])
     for cle in ordre:
         if cle not in vues:
             continue
         item = Gtk.Box(spacing=6)
         pastille = Gtk.DrawingArea(content_width=12, content_height=12, valign=Gtk.Align.CENTER)
-        seg = {"classe": "locuteur", "voix": cle} if cle.startswith("voix ") else {"classe": cle, "voix": cle}
+        if cle in chanteurs:
+            seg = chanteurs[cle]
+        else:
+            seg = {"classe": "locuteur", "voix": cle} if cle.startswith("voix ") else {"classe": cle, "voix": cle}
         c = couleur(seg)
 
         def dessiner(_z, cr, w, h, c=c, z=pastille):
@@ -446,6 +454,7 @@ def legende(segs):
             cr.fill()
         pastille.set_draw_func(dessiner)
         item.append(pastille)
-        item.append(Gtk.Label(label=LIBELLES.get(cle, cle.capitalize()), css_classes=["caption"]))
+        item.append(Gtk.Label(label=rapports.nom_segment(chanteurs[cle]) if cle in chanteurs
+                              else LIBELLES.get(cle, cle.capitalize()), css_classes=["caption"]))
         b.append(item)
     return b

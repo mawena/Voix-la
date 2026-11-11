@@ -7,6 +7,8 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+## [0.20.0] - 2026-11-11
+
 ### Ajouté
 
 - **Paroles d'un refrain bilingue** : une phrase dont la langue est douteuse est retranscrite dans ses deux langues les
@@ -844,7 +846,8 @@ Première version publique.
     `VOIXLA_DECODAGE_MATERIEL=1` remet le décodage matériel ;
   - les essais automatiques laissaient le son de l'application coupé.
 
-[Non publié]: https://github.com/mawena/Voix-la/compare/v0.19.0...HEAD
+[Non publié]: https://github.com/mawena/Voix-la/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/mawena/Voix-la/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/mawena/Voix-la/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/mawena/Voix-la/compare/v0.17.2...v0.18.0
 [0.17.2]: https://github.com/mawena/Voix-la/compare/v0.17.1...v0.17.2

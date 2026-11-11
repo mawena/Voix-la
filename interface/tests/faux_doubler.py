@@ -98,6 +98,7 @@ AIDE = """doubler (Voix-là) : remplace la voix d'une vidéo par une voix cloné
           [--comparer-pas 50] [--donnees DIR] [--evenements FICHIER]
           [--comparer NOM,NOM[,NOM…]]
   doubler --ajouter-voix <nom> <enregistrement>      ajoute une voix (copie telle quelle, sans analyse)
+  doubler --voix-depuis <doublage> <nom> [--chanteur N]   garde la voix d'un chanteur d'un doublage comme voix
   doubler --voix-liste [--json]                      voix disponibles
   doubler --config [CLE VALEUR]                      affiche la configuration, ou écrit une clé
   doubler --reprendre                                finit une session Kaggle interrompue (rien à reprendre ici)
@@ -547,6 +548,44 @@ def ajouter_voix(nom, enregistrement):
           "(privé) à la première utilisation")
     for al in fiche["alertes"]:
         print("  ATTENTION :", al)
+
+
+def voix_depuis(source, nom, chanteur):
+    """Version minimale de --voix-depuis : pas d'analyse du son, une fiche avec les garde-fous (origine video,
+    imitation_ia, « voix d'artiste, usage privé ») ; le chanteur se choisit comme dans le vrai doubler."""
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,39}", nom):
+        raise SystemExit("nom de voix : minuscules, chiffres, - ou _ (ex. voix-b, chanteur2)")
+    p = Path(source).expanduser().resolve()
+    d0 = p.parent if p.is_file() else p
+    rapports = sorted((d0 / "travail").glob("*/rapport.json"))
+    if not (d0 / "travail" / "voix_source.wav").is_file() or not rapports:
+        raise SystemExit(f"{p} n'est pas un doublage fait par doubler (travail/voix_source.wav manque)")
+    ordre = {}
+    for m in json.loads(rapports[0].read_text(encoding="utf-8")).get("morceaux") or []:
+        if not m.get("muet") and (m.get("voise_s") or 0) > 0:
+            ordre[m.get("chanteur") or "voix"] = 1
+    cles = list(ordre)
+    if chanteur is None and len(cles) > 1:
+        raise SystemExit(f"{len(cles)} voix dans ce doublage : dire laquelle garder avec --chanteur N")
+    cle = cles[0] if chanteur is None else chanteur if chanteur in cles else (
+        cles[int(chanteur) - 1] if chanteur.isdigit() and 1 <= int(chanteur) <= len(cles) else None)
+    if cle is None:
+        raise SystemExit(f"--chanteur {chanteur} : pas dans ce doublage")
+    if VOIX is None:
+        raise SystemExit("faux doubler : dossier des voix inconnu")
+    d = verifier_ecriture(VOIX / nom)
+    if (d / "voix.json").exists():
+        raise SystemExit(f"la voix {nom} existe déjà ({d}) : choisir un autre nom ou effacer ce dossier")
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "reference.wav").write_bytes(b"RIFF")
+    fiche = {"nom": nom.replace("-", " ").replace("_", " ").title(), "reference": "reference.wav", "duree_s": 24.0,
+             "hauteur_parole_mediane_hz": 100.0, "hauteur_parole_10_90_hz": [90.0, 115.0], "note_mediane": "G2",
+             "origine": "video", "origine_detail": f"faux doubler --voix-depuis : chanteur « {cle} »", "imitation_ia": True,
+             "mention": "voix d'artiste, usage privé", "chanteur": cle, "alertes": [],
+             "date": datetime.date.today().isoformat()}
+    (d / "voix.json").write_text(json.dumps(fiche, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"voix {nom} gardée ({d}) : 24.0 s de chant seul de « {cle} »")
+    print("attention : voix d'artiste : imitation par IA, pour un usage privé seulement")
 
 
 # --- Une vidéo -------------------------------------------------------------------------------------------------------
@@ -1318,6 +1357,10 @@ def analyseur():
                        help="écrit l'avancement en JSON, un événement par ligne (pour une interface)")
     p.add_argument("--comparer-pas", type=int, default=None, metavar="N", help="convertit aussi ~30 s en N pas")
     p.add_argument("--ajouter-voix", nargs=2, metavar=("NOM", "ENREGISTREMENT"), help="ajoute une voix depuis un enregistrement")
+    if not ANCIEN:
+        p.add_argument("--voix-depuis", nargs=2, metavar=("DOUBLAGE", "NOM"),
+                       help="garde la voix d'un chanteur d'un doublage fini comme voix cible (le faux : fiche seulement)")
+        p.add_argument("--chanteur", default=None, metavar="N", help="avec --voix-depuis : le chanteur (N ou clé)")
     p.add_argument("--voix-liste", action="store_true", help="affiche les voix disponibles")
     if not ANCIEN:
         p.add_argument("--json", action="store_true", help="avec --voix-liste ou --config : sortie en JSON")
@@ -1398,6 +1441,9 @@ def executer(p, a):
         return 0
     if a.ajouter_voix:
         ajouter_voix(*a.ajouter_voix)
+        return 0
+    if not ANCIEN and a.voix_depuis:
+        voix_depuis(*a.voix_depuis, a.chanteur)
         return 0
     if a.reprendre:
         raise SystemExit("rien à reprendre : pas de session en cours (faux doubler)")

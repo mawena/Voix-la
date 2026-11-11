@@ -9,6 +9,9 @@ doubler \- remplace la voix d'une vidéo par une voix clonée (GPU gratuit de Ka
 .B doubler \-\-ajouter\-voix
 \fInom\fR \fIenregistrement\fR
 .br
+.B doubler \-\-voix\-depuis
+\fIdoublage\fR \fInom\fR [\fB\-\-chanteur\fR \fIN\fR]
+.br
 .B doubler \-\-voix\-liste
 [\fB\-\-json\fR]
 .br
@@ -324,6 +327,16 @@ Convertit aussi environ 30 s en \fIn\fR pas, pour comparer.
 .TP
 .BI \-\-ajouter\-voix " nom enregistrement"
 Ajoute une voix depuis un enregistrement (n'importe quel audio ou vidéo).
+.TP
+.BI \-\-voix\-depuis " doublage nom"
+Garde comme voix la voix d'un chanteur d'un doublage fini (son dossier de résultat, ou la vidéo doublée) : ses meilleurs
+passages de chant seul, 15 à 30 s, sans GPU. Voix d'artiste : imitation par IA, usage privé seulement ; la fiche de la
+voix le dit, et les doublages faits avec elle portent « imitation par IA » dans le commentaire des fichiers et dans
+rapport.json.
+.TP
+.BI \-\-chanteur " N"
+Avec \fB\-\-voix\-depuis\fR : le chanteur à garder (N, 1 pour le premier à chanter, ou sa clé : homme, femme,
+chanteur2…). Obligatoire quand le doublage a plusieurs voix.
 .TP
 .B \-\-voix\-liste
 Affiche les voix disponibles.

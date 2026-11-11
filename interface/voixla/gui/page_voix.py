@@ -158,6 +158,8 @@ class PageVoix(commun.Page):
             icone = Gtk.Image(icon_name="dialog-warning-symbolic", css_classes=["warning"],
                               tooltip_text="\n".join(v["alertes"]))
             e.add_suffix(icone)
+        if v.get("imitation_ia"):
+            e.add_suffix(commun.badge("Voix d’une vidéo · imitation IA", "alerte"))
         badge = affinage.libelle_badge(v["dossier"])
         if badge:
             e.add_suffix(commun.badge(*badge))
@@ -176,6 +178,10 @@ class PageVoix(commun.Page):
         if affinage.est_affinee(v["dossier"]):
             e.add_row(commun.ligne_valeur("Affinée sur votre chant", affinage.resume_fiche(v["dossier"]),
                                           "Voix utilisée par Seed-VC 44 kHz pour doubler (repli : la référence de parole)"))
+        if v.get("imitation_ia"):
+            e.add_row(Adw.ActionRow(title="Voix d’artiste : imitation par IA", subtitle="Pour un usage privé seulement. Les "
+                                    "doublages faits avec elle portent « imitation par IA » dans leurs fichiers.",
+                                    subtitle_lines=3))
         for cle, titre in (("origine", "Origine"), ("consentement", "Consentement")):
             if v.get(cle):
                 r = Adw.ActionRow(title=titre, subtitle=commun.echapper(v[cle]), subtitle_lines=4)

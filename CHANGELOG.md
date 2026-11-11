@@ -7,6 +7,18 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+### Ajouté
+
+- **Paroles d'un refrain bilingue** : une phrase dont la langue est douteuse est retranscrite dans ses deux langues les
+  plus probables, puis on garde la version la plus sûre. Une phrase est jugée douteuse dans trois cas :
+  - Whisper n'est pas sûr de sa langue ;
+  - le lissage a changé sa langue ;
+  - elle est isolée entre deux voisines d'une autre langue.
+
+  La version la plus sûre est celle qui a la meilleure log-probabilité moyenne par jeton, avec une pénalité si le texte
+  tourne en boucle. Plafond : 12 phrases et 20 % de la durée chantée, mais la phrase la plus douteuse passe toujours. La
+  traduction française, les `.srt` et les `.lrc` suivent. Réglage `paroles_bilingue`, désactivable.
+
 ## [0.19.0] - 2026-11-11
 
 ### Ajouté

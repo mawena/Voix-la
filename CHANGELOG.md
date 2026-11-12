@@ -7,6 +7,8 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+## [0.20.1] - 2026-11-12
+
 ### Corrigé
 
 - **Interface : fuite de mémoire à chaque résultat ouvert** (1,4 Go après 44 min, 20 à 70 Mo par détail ouvert puis
@@ -856,7 +858,8 @@ Première version publique.
     `VOIXLA_DECODAGE_MATERIEL=1` remet le décodage matériel ;
   - les essais automatiques laissaient le son de l'application coupé.
 
-[Non publié]: https://github.com/mawena/Voix-la/compare/v0.20.0...HEAD
+[Non publié]: https://github.com/mawena/Voix-la/compare/v0.20.1...HEAD
+[0.20.1]: https://github.com/mawena/Voix-la/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/mawena/Voix-la/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/mawena/Voix-la/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/mawena/Voix-la/compare/v0.17.2...v0.18.0

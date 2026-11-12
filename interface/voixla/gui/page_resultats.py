@@ -1184,6 +1184,18 @@ class PageDetail(Adw.NavigationPage):
         self.lecteur.definir_boucle(())
         self.lecteur.liberer()
         self.page.proteger_caches()
+        GLib.timeout_add(400, self._demonter)   # la page a fini de quitter la pile de navigation
+
+    def _demonter(self):
+        """Page oubliée, plus affichée : ses signaux sont coupés, sinon elle reste en mémoire pour toujours (voir
+        commun.demonter). Rien ne s'y rappelle plus : les rappels tardifs (fils, minuteurs) regardent _oubliee."""
+        if self._oubliee and not self.dans_la_pile():
+            commun.demonter(self, self)
+            racine = self.get_child()
+            self.set_child(None)
+            if racine is not None:
+                racine.run_dispose()  # l'arbre se défait de haut en bas : ses widgets n'ont plus de parent qui les tienne
+        return False
 
     def couper(self):
         self.lecteur.pause()

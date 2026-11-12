@@ -1,3 +1,10 @@
+voix-la (0.20.1) unstable; urgency=medium
+
+  * Interface : une page de résultat quittée est libérée (fuite de mémoire :
+    1,4 Go après 44 min, 20 à 70 Mo par résultat ouvert puis quitté).
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Thu, 12 Nov 2026 02:58:32 +0000
+
 voix-la (0.20.0) unstable; urgency=medium
 
   * Paroles : les phrases ambiguës d'un refrain bilingue sont retranscrites

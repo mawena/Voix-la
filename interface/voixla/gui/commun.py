@@ -1,9 +1,10 @@
 """Éléments partagés par les pages : styles, travail hors du fil de l'interface, dialogues, petites briques."""
 
 import threading
+import types
 from pathlib import Path
 
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk
 
 CSS = b"""
 .badge { font-size: 0.75em; font-weight: bold; padding: 2px 8px; border-radius: 99px; }
@@ -71,6 +72,100 @@ def en_fil(travail, fini=None, erreur=None):
 def vider(boite):
     while (enfant := boite.get_first_child()) is not None:
         boite.remove(enfant)
+
+
+# Les signaux branchés depuis Python (connect, connect_after), par objet : ce que demonter() débranche, et rien d'autre.
+# Les signaux que GTK branche lui-même (ajustements des échelles, défilements…) ne sont jamais touchés : les couper
+# faisait échouer GTK à sa propre fermeture (avertissements, puis plantage).
+# Clé : l'adresse de l'objet GObject (hash), pas son enveloppe Python, qui peut disparaître alors que l'objet vit
+# (`widget.add_controller(Gtk.EventControllerKey())` : l'enveloppe du contrôleur est jetée aussitôt). L'entrée part
+# avec l'objet (weak_ref de GObject).
+_branches = {}
+
+
+def _oublier_branches(cle):
+    _branches.pop(cle, None)
+
+
+def _suivre_connexions():
+    objet = GObject.Object
+    if getattr(objet.connect, "_suivi", False):
+        return
+
+    def envelopper(original):
+        def connect(self, *args, **kw):
+            ident = original(self, *args, **kw)
+            cle = hash(self)
+            liste = _branches.get(cle)
+            if liste is None:
+                liste = _branches[cle] = []
+                self.weak_ref(_oublier_branches, cle)
+            liste.append(ident)
+            return ident
+        connect._suivi = True
+        return connect
+    objet.connect = envelopper(objet.connect)
+    objet.connect_after = envelopper(objet.connect_after)
+
+
+_suivre_connexions()
+
+
+def _debrancher(objet):
+    """Débranche les signaux que Python a branchés sur objet."""
+    for ident in _branches.pop(hash(objet), ()):
+        if GObject.signal_handler_is_connected(objet, ident):
+            objet.disconnect(ident)
+
+
+def _retient(v, page):
+    """v désigne la page : elle-même, une de ses méthodes, ou une fonction (fermeture sur la page)."""
+    return v is page or isinstance(v, types.FunctionType) or (isinstance(v, types.MethodType) and v.__self__ is page)
+
+
+def demonter(widget, page=None):
+    """Défait les liens qui gardent une page en mémoire quand on ne la montrera plus.
+
+    Pourquoi : un widget GTK relié à une méthode de sa page (`b.connect("clicked", lambda *_: self.f())`) et un widget
+    dont l'attribut garde la page (`lecteur.proprietaire = page`) forment une boucle page → enfants → page. Les widgets
+    d'un arbre GTK sont tenus par leur parent (côté C), donc vivants pour le ramasse-miettes de Python, qui ne peut plus
+    rien libérer : chaque page quittée restait en mémoire pour toujours, avec ses tableaux (un résultat ouvert :
+    ~20 Mo). On coupe donc, dans tout l'arbre de widget : les signaux branchés depuis Python (sur les widgets, leurs
+    contrôleurs, leurs ajustements et les actions de leurs groupes), les raccourcis, la fonction de dessin, et, si page
+    est donnée, les attributs qui la désignent (elle, ses méthodes, les fonctions)."""
+    enfant = widget.get_first_child()
+    while enfant is not None:
+        demonter(enfant, page)
+        enfant = enfant.get_next_sibling()
+    _debrancher(widget)
+    if isinstance(widget, Gtk.DrawingArea):
+        widget.set_draw_func(None)            # la fonction de dessin (méthode de la page, ou fermeture) est tenue par GTK
+    liste = widget.observe_controllers()
+    for c in [liste.get_item(i) for i in range(liste.get_n_items())]:
+        if c is None:
+            continue
+        _debrancher(c)
+        if isinstance(c, Gtk.ShortcutController):
+            widget.remove_controller(c)       # ses raccourcis sont des fermetures qui ne passent pas par les signaux
+    if isinstance(widget, Gtk.Range):
+        _debrancher(widget.get_adjustment())
+    elif isinstance(widget, Gtk.ScrolledWindow):
+        _debrancher(widget.get_hadjustment())
+        _debrancher(widget.get_vadjustment())
+    for nom, v in list(vars(widget).items()):
+        if isinstance(v, Gio.ActionGroup):
+            for action in v.list_actions():
+                a = v.lookup_action(action)
+                if a is not None:
+                    _debrancher(a)
+        elif page is not None and widget is not page:
+            if _retient(v, page):
+                setattr(widget, nom, None)
+            elif hasattr(v, "__dict__") and not isinstance(v, (type, types.ModuleType)):
+                # un objet de la page (animateur, suivi…) qui garde une méthode de la page : un niveau suffit
+                for k, x in list(vars(v).items()):
+                    if _retient(x, page):
+                        setattr(v, k, None)
 
 
 def legende(texte, erreur=False, selectionnable=False):

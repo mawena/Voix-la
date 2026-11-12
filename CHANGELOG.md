@@ -7,6 +7,16 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+### Corrigé
+
+- **Interface : fuite de mémoire à chaque résultat ouvert** (1,4 Go après 44 min, 20 à 70 Mo par détail ouvert puis
+  quitté). Une page de détail quittée n'était jamais libérée : ses widgets GTK étaient reliés à ses méthodes par des
+  fermetures (signaux, raccourcis, fonction de dessin, minuteurs) et à elle par leurs attributs, une boucle que le
+  ramasse-miettes de Python ne peut pas défaire quand l'arbre de widgets est tenu côté C. Elle est maintenant démontée
+  (`gui/commun.demonter`) dès qu'elle est oubliée : signaux branchés depuis Python débranchés, raccourcis et fonctions de
+  dessin retirés, liens vers la page coupés. Le spectrogramme ne reste plus accroché au gestionnaire de styles de
+  l'application (`gui/visualisations.py`). Mesure et essai : `tests/mesure_memoire.py`, `tests/test_memoire_interface.py`.
+
 ## [0.20.0] - 2026-11-11
 
 ### Ajouté

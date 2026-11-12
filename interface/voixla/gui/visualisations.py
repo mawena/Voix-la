@@ -7,6 +7,7 @@ s'il est affiché ; sinon il ne se redessine que quand la position change. GTK s
 
 import math
 import time
+import weakref
 
 import gi
 
@@ -376,6 +377,23 @@ def etirement(valeurs):
     return np.clip((np.arange(256) - lo) / (hi - lo) * 255, 0, 255).astype(np.uint8)
 
 
+def _suivre_theme(spectre):
+    """Recolore le spectrogramme quand le thème change, sans que le gestionnaire de styles (unique, vivant autant que
+    l'application) retienne le widget : une référence faible, et le rappel se déconnecte quand le widget a disparu.
+    Une fermeture sur self gardait à jamais chaque spectrogramme ouvert, son tableau et toute sa page de résultat."""
+    ref = weakref.ref(spectre)
+    ident = []
+
+    def change(gestionnaire, _p):
+        s = ref()
+        if s is None:
+            gestionnaire.disconnect(ident[0])
+        else:
+            s._recolorer()
+    gestionnaire = Adw.StyleManager.get_default()
+    ident.append(gestionnaire.connect("notify::dark", change))
+
+
 class Spectre(Visu):
     """Spectrogramme d'une piste, qui défile avec la lecture (fenêtre de 12 s, curseur au tiers)."""
 
@@ -384,7 +402,7 @@ class Spectre(Visu):
         self.donnees = None
         self.dire("Chargement du spectrogramme…")
         self._lut = None
-        Adw.StyleManager.get_default().connect("notify::dark", lambda *_: self._recolorer())
+        _suivre_theme(self)
 
     def definir(self, piste):
         """piste : dict de voixla.analyse (spectre, spectre_fps, spectre_f, duree_s), ou None."""

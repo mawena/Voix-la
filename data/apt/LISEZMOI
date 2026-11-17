@@ -1,7 +1,10 @@
-Dépôt APT de Voix-là : https://mawena.github.io/Voix-la/apt (branche gh-pages).
+Ancien dépôt APT de Voix-là : https://mawena.github.io/Voix-la/apt (branche gh-pages).
+Depuis la 0.20.2, Voix-là est publié dans le dépôt unique https://apt.mawena.cloud (paquet mawena-depot) et le paquet
+ne fournit plus ces fichiers. L'ancien dépôt reste en ligne jusqu'à mai 2027 (publier-apt.sh s'en sert encore, avec
+mawena-depot pour les machines qui ne connaissent que lui).
 
 voix-la.gpg      clé publique de signature (format binaire, sans armure)
-voix-la.sources  source deb822 installée dans /etc/apt/sources.list.d/ (le paquet la pose lui-même)
+voix-la.sources  source deb822 installée dans /etc/apt/sources.list.d/ (posée par le paquet jusqu'à la 0.20.1)
 
 Clé de signature : « Voix-là APT (mawena) <57989130+mawena@users.noreply.github.com> »
 Empreinte : 20F9 E2A5 B482 09DE DBD3  9601 0604 C235 3943 6022

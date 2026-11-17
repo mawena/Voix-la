@@ -28,10 +28,15 @@ rm -f "../voix-la_${deb_version}_"*.buildinfo "../voix-la_${deb_version}_"*.chan
 
 # Les fichiers de l'affinage (commande affiner, noyau Kaggle, page de manuel) doivent être dans le paquet
 contenu="$(dpkg-deb -c "dist/voix-la_${deb_version}_all.deb")"
-for f in usr/bin/affiner usr/lib/voix-la/affiner.py usr/lib/voix-la/kaggle/affiner_kaggle.py usr/share/man/man1/affiner.1.gz \
-         etc/apt/sources.list.d/voix-la.sources usr/share/keyrings/voix-la.gpg; do
+for f in usr/bin/affiner usr/lib/voix-la/affiner.py usr/lib/voix-la/kaggle/affiner_kaggle.py usr/share/man/man1/affiner.1.gz; do
   grep -q " \./${f}\$" <<<"$contenu" || { echo "Manquant dans le paquet : $f" >&2; exit 1; }
 done
+# Depuis la 0.20.2, la source et la clé APT viennent du paquet mawena-depot (dépôt unique https://apt.mawena.cloud)
+if grep -qE " \./(etc/apt/sources\.list\.d|usr/share/keyrings)/." <<<"$contenu"; then
+  echo "Le paquet ne doit plus fournir de source ni de clé APT (dépôt unique : mawena-depot)." >&2; exit 1
+fi
+dpkg-deb -f "dist/voix-la_${deb_version}_all.deb" Depends | grep -qw mawena-depot \
+  || { echo "Le paquet doit dépendre de mawena-depot." >&2; exit 1; }
 
 lintian --fail-on error "dist/voix-la_${deb_version}_all.deb"
 echo "Paquet : dist/voix-la_${deb_version}_all.deb"

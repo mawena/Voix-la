@@ -394,13 +394,13 @@ figcaption.vu{font-size:.9rem;color:var(--doux);padding:.7rem 1rem;border-top:1p
 <div class="installer" id="installer">
   <div class="cadre">
     <h2 class="titre">Installer en une commande</h2>
-    <p class="intro">Pour Ubuntu 24.04 ou plus récent. Le dépôt APT est signé&nbsp;: une fois ajouté, les nouvelles versions arrivent avec les mises à jour du système.</p>
+    <p class="intro">Pour Ubuntu 24.04 ou plus récent. Voix-là est publié dans le <a href="https://apt.mawena.cloud/">dépôt APT signé de mawena</a>, un seul dépôt pour tous ses paquets&nbsp;: une fois ajouté, les nouvelles versions arrivent avec les mises à jour du système.</p>
 
     <div class="bloc">
       <h3>En une ligne</h3>
-      <p>Ajoute la clé et le dépôt, puis installe Voix-là (le script <a href="installer.sh">installer.sh</a> fait les étapes ci-dessous).</p>
+      <p>Ajoute la clé et le dépôt, puis installe Voix-là (le script <a href="https://apt.mawena.cloud/installer.sh">installer.sh</a> fait les étapes ci-dessous).</p>
       <div class="commande">
-<pre id="cmd-courte">curl -fsSL https://mawena.github.io/Voix-la/installer.sh | sudo sh</pre>
+<pre id="cmd-courte">curl -fsSL https://apt.mawena.cloud/installer.sh | sudo sh -s -- voix-la</pre>
         <button type="button" data-copie="cmd-courte" aria-label="Copier la commande d'installation en une ligne">Copier</button>
       </div>
     </div>
@@ -411,8 +411,8 @@ figcaption.vu{font-size:.9rem;color:var(--doux);padding:.7rem 1rem;border-top:1p
       <h3>1. Ajouter le dépôt</h3>
       <p>Pose la clé de signature et la source, puis met à jour la liste des paquets.</p>
       <div class="commande">
-<pre id="cmd-depot">sudo curl -fsSL https://mawena.github.io/Voix-la/apt/voix-la.gpg -o /usr/share/keyrings/voix-la.gpg \
- &amp;&amp; sudo curl -fsSL https://mawena.github.io/Voix-la/apt/voix-la.sources -o /etc/apt/sources.list.d/voix-la.sources \
+<pre id="cmd-depot">sudo curl -fsSL https://apt.mawena.cloud/mawena-depot.gpg -o /usr/share/keyrings/mawena-depot.gpg \
+ &amp;&amp; sudo curl -fsSL https://apt.mawena.cloud/mawena-depot.sources -o /etc/apt/sources.list.d/mawena-depot.sources \
  &amp;&amp; sudo apt update</pre>
         <button type="button" data-copie="cmd-depot" aria-label="Copier la commande qui ajoute le dépôt">Copier</button>
       </div>
@@ -421,14 +421,14 @@ figcaption.vu{font-size:.9rem;color:var(--doux);padding:.7rem 1rem;border-top:1p
     <div class="bloc">
       <h3>2. Installer Voix-là</h3>
       <div class="commande">
-<pre id="cmd-installer">sudo apt install voix-la</pre>
+<pre id="cmd-installer">sudo apt install mawena-depot voix-la</pre>
         <button type="button" data-copie="cmd-installer" aria-label="Copier la commande d'installation">Copier</button>
       </div>
     </div>
 
     <div class="bloc">
       <h3>3. Se mettre à jour, plus tard</h3>
-      <p>Le paquet garde lui-même la clé et la source en place. <code>apt upgrade</code> suffit pour chaque nouvelle version.</p>
+      <p>Le paquet <code>mawena-depot</code> garde la clé et la source en place. <code>apt upgrade</code> suffit pour chaque nouvelle version.</p>
       <div class="commande">
 <pre id="cmd-maj">sudo apt update &amp;&amp; sudo apt upgrade</pre>
         <button type="button" data-copie="cmd-maj" aria-label="Copier la commande de mise à jour">Copier</button>
@@ -437,10 +437,10 @@ figcaption.vu{font-size:.9rem;color:var(--doux);padding:.7rem 1rem;border-top:1p
 
     <div class="bloc">
       <h3>Vérifier la clé de signature</h3>
-      <p>Clé «&nbsp;Voix-là APT (mawena)&nbsp;». Comparez cette empreinte avec celle du fichier <a href="https://github.com/mawena/Voix-la/blob/main/data/apt/LISEZMOI">data/apt/LISEZMOI</a> du dépôt, puis avec ce qu'affiche cette commande.</p>
+      <p>Clé «&nbsp;mawena APT&nbsp;». Comparez cette empreinte avec celle de la page <a href="https://apt.mawena.cloud/">apt.mawena.cloud</a>, puis avec ce qu'affiche cette commande.</p>
       <div class="commande">
-<pre id="cmd-cle"><span class="inv"># empreinte attendue&nbsp;: </span><span class="cle">20F9 E2A5 B482 09DE DBD3  9601 0604 C235 3943 6022</span>
-gpg --show-keys --with-fingerprint /usr/share/keyrings/voix-la.gpg</pre>
+<pre id="cmd-cle"><span class="inv"># empreinte attendue&nbsp;: </span><span class="cle">60A2 0BB2 21C9 1DAD F39D  D55B 456B 0129 30FA 901D</span>
+gpg --show-keys --with-fingerprint /usr/share/keyrings/mawena-depot.gpg</pre>
         <button type="button" data-copie-ligne="cmd-cle" aria-label="Copier la commande de vérification de la clé">Copier</button>
       </div>
     </div>

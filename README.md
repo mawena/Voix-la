@@ -4,14 +4,14 @@ Voix-là : votre vidéo, avec une autre voix. Et voilà.
 
 **[Page de présentation : mawena.github.io/Voix-la](https://mawena.github.io/Voix-la/)** (captures, installation par APT, usage responsable).
 
-> **Version 0.20.1** : s'installe par le [dépôt APT signé](#par-le-dépôt-apt-recommandé) (`sudo apt install voix-la`,
+> **Version 0.20.2** : s'installe par le [dépôt APT signé](#par-le-dépôt-apt-recommandé) de mawena ([apt.mawena.cloud](https://apt.mawena.cloud/)) (`sudo apt install voix-la`,
 > puis `apt upgrade` pour chaque nouvelle version) ou par le paquet `.deb` joint à chaque
 > [release](https://github.com/mawena/Voix-la/releases). Voir le [journal des modifications](CHANGELOG.md).
 
 **Installation en une ligne (Ubuntu 24.04 ou plus récent)**, par le [dépôt APT signé](#installation) :
 
 ```sh
-curl -fsSL https://mawena.github.io/Voix-la/installer.sh | sudo sh
+curl -fsSL https://apt.mawena.cloud/installer.sh | sudo sh -s -- voix-la
 ```
 
 `doubler` prend une vidéo (chanson d'une chanteuse ou d'un chanteur, duo, rap, ou vidéo parlée) et rend la même vidéo,
@@ -174,35 +174,38 @@ sont installés sur Kaggle. L'interface graphique a ses propres prérequis (voir
 
 ### Par le dépôt APT (recommandé)
 
-Le dépôt APT signé de Voix-là est publié sur GitHub Pages ([mawena.github.io/Voix-la](https://mawena.github.io/Voix-la/)).
-En une ligne :
+Voix-là est publié dans le dépôt APT signé unique de mawena, [apt.mawena.cloud](https://apt.mawena.cloud/) (un seul
+dépôt pour tous ses paquets Ubuntu). En une ligne :
 
 ```sh
-curl -fsSL https://mawena.github.io/Voix-la/installer.sh | sudo sh
+curl -fsSL https://apt.mawena.cloud/installer.sh | sudo sh -s -- voix-la
 ```
 
-Le script ([`site/installer.sh`](site/installer.sh)) fait exactement ces trois étapes, à faire aussi à la main :
+Le script fait exactement ces étapes, à faire aussi à la main :
 
 ```sh
-sudo curl -fsSLo /usr/share/keyrings/voix-la.gpg https://mawena.github.io/Voix-la/apt/voix-la.gpg
-sudo curl -fsSLo /etc/apt/sources.list.d/voix-la.sources https://mawena.github.io/Voix-la/apt/voix-la.sources
-sudo apt update && sudo apt install voix-la
+sudo curl -fsSL -o /usr/share/keyrings/mawena-depot.gpg https://apt.mawena.cloud/mawena-depot.gpg
+sudo curl -fsSL -o /etc/apt/sources.list.d/mawena-depot.sources https://apt.mawena.cloud/mawena-depot.sources
+sudo apt update && sudo apt install mawena-depot voix-la
 ```
 
-**Mises à jour** : `sudo apt update && sudo apt upgrade`. Le paquet remet lui-même la clé
-(`/usr/share/keyrings/voix-la.gpg`) et la source (`/etc/apt/sources.list.d/voix-la.sources`) en place.
+**Mises à jour** : `sudo apt update && sudo apt upgrade`. Le paquet `voix-la` dépend de `mawena-depot`, qui garde la
+clé (`/usr/share/keyrings/mawena-depot.gpg`) et la source (`/etc/apt/sources.list.d/mawena-depot.sources`) en place.
+Clé « mawena APT », empreinte `60A2 0BB2 21C9 1DAD F39D D55B 456B 0129 30FA 901D`.
 
-Clé de signature « Voix-là APT (mawena) », empreinte `20F9 E2A5 B482 09DE DBD3  9601 0604 C235 3943 6022`
-(`data/apt/LISEZMOI` ; à comparer avec `gpg --show-keys --with-fingerprint /usr/share/keyrings/voix-la.gpg`). Pour
-publier une version : `make deb` puis `make apt` (`scripts/publier-apt.sh` ; `VOIXLA_APT_PUSH=0` pour essayer sans
-pousser).
+**Installé avant la 0.20.2** (ancien dépôt `https://mawena.github.io/Voix-la/apt`) : rien à faire,
+`sudo apt update && sudo apt upgrade` installe `mawena-depot` et retire l'ancienne source `voix-la.sources`. L'ancien
+dépôt reste en ligne jusqu'à mai 2027 (`make apt`, `scripts/publier-apt.sh`, clé « Voix-là APT (mawena) »
+`20F9 E2A5 B482 09DE DBD3  9601 0604 C235 3943 6022`, voir `data/apt/LISEZMOI`).
 
 ### Paquet Debian (en dernier recours)
 
 Sans passer par le dépôt APT : pour Ubuntu 24.04 ou plus récent (libadwaita 1.5 au moins). Le paquet
 `voix-la_<version>_all.deb` et ses sommes `SHA256SUMS` sont joints à chaque version sur GitHub (*Releases*), ou se
-construisent depuis le dépôt (voir [Construire le paquet](#construire-le-paquet)). Installé une fois ainsi, le paquet
-pose lui-même la source et la clé du dépôt APT : les versions suivantes arrivent ensuite par `sudo apt upgrade`.
+construisent depuis le dépôt (voir [Construire le paquet](#construire-le-paquet)). Il dépend de `mawena-depot`
+(https://apt.mawena.cloud/pool/main/depot/mawena-depot_0.2.1_all.deb), à installer avec lui :
+`sudo apt install ./mawena-depot_0.2.1_all.deb ./voix-la_<version>_all.deb` ; les versions suivantes arrivent ensuite
+par `sudo apt upgrade`.
 
 ```sh
 sha256sum -c SHA256SUMS

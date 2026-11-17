@@ -7,6 +7,17 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+## [0.20.2] - 2026-11-17
+
+### Modifié
+- Passage au dépôt APT unique de mawena, <https://apt.mawena.cloud/>. Le paquet ne fournit plus sa source
+  `/etc/apt/sources.list.d/voix-la.sources` ni sa clé `/usr/share/keyrings/voix-la.gpg` : il dépend de
+  `mawena-depot`, qui installe la source et la clé du dépôt unique. Un simple `sudo apt update && sudo apt upgrade`
+  fait passer une machine existante au nouveau dépôt ; l'ancienne source est retirée proprement (`rm_conffile`).
+- Installation : `curl -fsSL https://apt.mawena.cloud/installer.sh | sudo sh -s -- voix-la` (README, page de
+  présentation, `installer.sh` du site qui lance désormais cet installateur). L'ancien dépôt
+  `https://mawena.github.io/Voix-la/apt` reste en ligne jusqu'à mai 2027.
+
 ## [0.20.1] - 2026-11-12
 
 ### Corrigé
@@ -858,7 +869,8 @@ Première version publique.
     `VOIXLA_DECODAGE_MATERIEL=1` remet le décodage matériel ;
   - les essais automatiques laissaient le son de l'application coupé.
 
-[Non publié]: https://github.com/mawena/Voix-la/compare/v0.20.1...HEAD
+[Non publié]: https://github.com/mawena/Voix-la/compare/v0.20.2...HEAD
+[0.20.2]: https://github.com/mawena/Voix-la/compare/v0.20.1...v0.20.2
 [0.20.1]: https://github.com/mawena/Voix-la/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/mawena/Voix-la/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/mawena/Voix-la/compare/v0.18.0...v0.19.0

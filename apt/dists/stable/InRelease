@@ -4,35 +4,35 @@ Hash: SHA512
 Architectures: all amd64
 Codename: stable
 Components: main
-Date: Tue, 10 Nov 2026 18:17:14 +0000
+Date: Tue, 17 Nov 2026 10:16:39 +0000
 Description: Voix-là, doublage par voix clonée
 Label: Voix-là
 Origin: Voix-là
 Suite: stable
 MD5Sum:
- dcad1592013010b540e1c9d7c40c059b             6876 main/binary-all/Packages
- 5aebfaa6d8e06f02d5cb2af517f28531             1593 main/binary-all/Packages.gz
+ be4082db33582e7fe213f781f44e2b03             9769 main/binary-all/Packages
+ c8328bc070a934498241fc4c4244445a             2011 main/binary-all/Packages.gz
  d41d8cd98f00b204e9800998ecf8427e                0 main/binary-amd64/Packages
  4a4dd3598707603b3f76a2378a4504aa               20 main/binary-amd64/Packages.gz
 SHA1:
- d94f22d64a8ce53e56e86b75325a79d9aa2d1edd             6876 main/binary-all/Packages
- 3e222236408ae9edf7b37d6fa475bfb126d4ba13             1593 main/binary-all/Packages.gz
+ 325b036d066907a0505e91371c4940cbbf98bc0c             9769 main/binary-all/Packages
+ 7ed3c673dd71d7473494d13689611ef807a0f432             2011 main/binary-all/Packages.gz
  da39a3ee5e6b4b0d3255bfef95601890afd80709                0 main/binary-amd64/Packages
  a0fddd5458378c1bf3c10dd2f5c060d1347741ed               20 main/binary-amd64/Packages.gz
 SHA256:
- fa856fb169e2634c5f8331eaf649dce832547e7ddb63ce12f5203915c6a857e8             6876 main/binary-all/Packages
- 024a6419868085e2a0d80fccdf8a33daae40857cbfd979bc06f02f180d763033             1593 main/binary-all/Packages.gz
+ 4e7f1c77c0691de75b52484a15fd1b8221ca394fe50e70841e747c8079dad703             9769 main/binary-all/Packages
+ 52c82251a21b83e84af6992456eac7c3c0518523aeae09694d1faaf1deba7dbb             2011 main/binary-all/Packages.gz
  e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855                0 main/binary-amd64/Packages
  f61f27bd17de546264aa58f40f3aafaac7021e0ef69c17f6b1b4cd7664a037ec               20 main/binary-amd64/Packages.gz
 SHA512:
- d20a9f029f3e6c00aed23d1229ab4a42e2ccc50b9b26d4ab59b731c7cf2e017cd24afd549eca8ff5588fb7c08362ac1412ad4af9cd41dc77010aef701d96eaf3             6876 main/binary-all/Packages
- d574691c12c5ae4c55bbbc9cc7d18845993c06c13a31b5fe4d6e4611405968b782d6cbeeaece39e6f5719445e771d389029b9ccf6ac6dda14f1303d6069e2e57             1593 main/binary-all/Packages.gz
+ acebb84df1cc009cd435c38ade564f6648d9dee1e3bb6fab031b996aa4151b7aa02eeac14b8af8575cd36800cc9114019296a10b082fa30fca50cb27485f90b0             9769 main/binary-all/Packages
+ e9c86ef3aa5e6e9ed57ef42fe0b0753f8b3d439216932a6cd89209399ab57db4d32a0a80590ffeb2e8e56e4c0a7cb06ee7b448e670b13b2faf122a06e095f5d2             2011 main/binary-all/Packages.gz
  cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e                0 main/binary-amd64/Packages
  1b46b9b08d5b338be9d732a1724795b2eab63daffde377218727c90857b79fe6a47bceed495117fcde60f7339812ef75ef4c69f82dd79fb69b6cbf8006b521f2               20 main/binary-amd64/Packages.gz
 -----BEGIN PGP SIGNATURE-----
 
-iHUEARYKAB0WIQQg+eKltIIJ3tvTlgEGBMI1OUNgIgUCavNfqgAKCRAGBMI1OUNg
-IpMjAQDzDHLNIBWUvbQMhE6r7AlZsdTEwAcivaVZNeTxsv2IVQEA8Xxm/ccrL3iT
-/G1zN7k1SaEK8r0p5pUNKN+AvFI8mw4=
-=dibl
+iHUEARYKAB0WIQQg+eKltIIJ3tvTlgEGBMI1OUNgIgUCavwphwAKCRAGBMI1OUNg
+Iir4AP91l5U2AHSSZJUUnDKHfNhJ/Dbh/2coUHrdlQzyp4gk7QD/SbwcXo0bL+/i
+eKBIjYG0lEtnPgnd+O9yL9Nj9EG+sAE=
+=RwZJ
 -----END PGP SIGNATURE-----

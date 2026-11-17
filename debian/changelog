@@ -1,3 +1,11 @@
+voix-la (0.20.2) unstable; urgency=medium
+
+  * Passage au dépôt APT unique https://apt.mawena.cloud : le paquet ne
+    fournit plus la source voix-la.sources ni la clé voix-la.gpg, dépend de
+    mawena-depot et retire l'ancienne source (rm_conffile).
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Tue, 17 Nov 2026 19:00:00 +0100
+
 voix-la (0.20.1) unstable; urgency=medium
 
   * Interface : une page de résultat quittée est libérée (fuite de mémoire :

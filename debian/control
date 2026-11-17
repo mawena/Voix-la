@@ -10,6 +10,7 @@ Rules-Requires-Root: no
 Package: voix-la
 Architecture: all
 Depends: ${misc:Depends},
+         mawena-depot,
          python3 (>= 3.10),
          python3-numpy,
          ffmpeg,

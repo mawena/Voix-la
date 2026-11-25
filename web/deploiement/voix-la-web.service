@@ -1,0 +1,18 @@
+# Service systemd utilisateur : ~/.config/systemd/user/voix-la-web.service
+#   systemctl --user daemon-reload && systemctl --user enable --now voix-la-web
+#   (une fois, en root : loginctl enable-linger <utilisateur>, pour qu'il démarre sans session ouverte)
+[Unit]
+Description=Voix-là : service web de doublage (voix-la.mawena.cloud)
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/Work/Mawena/Projects/Voix-là/web
+ExecStart=%h/.local/share/voix-la-web/venv/bin/python -m voixla_web
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Restart=on-failure
+RestartSec=5
+Nice=5
+MemoryMax=3G
+
+[Install]
+WantedBy=default.target

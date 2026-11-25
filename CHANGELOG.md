@@ -7,6 +7,14 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+## [0.22.0] - 2026-11-25
+
+### Ajouté
+- Service web `web/` : Voix-là en ligne sur https://voix-la.mawena.cloud. Comptes (inscription libre par e-mail et
+  mot de passe avec validation, connexion Google et Portier, mot de passe oublié), voix et doublages par compte,
+  file d'attente, calcul sur Modal, coût compté et budgets (global et par compte), page d'administration.
+- Déploiement : service systemd utilisateur `voix-la-web` et site nginx `voix-la.mawena.cloud`.
+
 ## [0.21.1] - 2026-11-25
 
 ### Corrigé

@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block titre %}Mes doublages{% endblock %}
+{% block contenu %}
+<h1>Bonjour{% if moi.nom %} {{ moi.nom }}{% endif %}</h1>
+{% if not moi.email_valide %}<p class="erreur">Confirmez votre adresse e-mail (lien reçu par courriel) pour lancer des doublages.</p>{% endif %}
+<p class="doux">Budget du mois : {{ depense|dollars }} utilisés, {{ restant|dollars }} restants.</p>
+
+<div class="grille">
+<section class="carte">
+  <h2>Nouveau doublage</h2>
+  {% set pretes = voix|selectattr('etat', 'equalto', 'prete')|list %}
+  {% if pretes %}
+  <form method="post" action="/doublages" enctype="multipart/form-data">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label for="media">Vidéo ou son</label>
+    <input id="media" name="media" type="file" required accept="video/*,audio/*">
+    <p class="doux">{{ taille_max }} Mo et {{ (duree_max // 60) }} min au plus.</p>
+    <label for="voixc">Voix</label>
+    <select id="voixc" name="voix">{% for v in pretes %}<option>{{ v.nom }}</option>{% endfor %}</select>
+    <label for="mode">Contenu</label>
+    <select id="mode" name="mode"><option value="auto">Détecter</option><option value="chant">Chant</option><option value="parole">Parole</option></select>
+    <button class="plein">Lancer le doublage</button>
+  </form>
+  {% else %}
+  <p class="doux">Ajoutez d’abord une voix.</p>
+  {% endif %}
+</section>
+
+<section class="carte">
+  <h2>Mes voix</h2>
+  {% if voix %}
+  <table><tbody>
+  {% for v in voix %}
+    <tr><td>{{ v.nom }}</td>
+      <td><span class="etat {{ v.etat }}">{{ etats.get(v.etat, v.etat) }}</span>{% if v.message %}<br><small class="doux">{{ v.message }}</small>{% endif %}</td>
+      <td><form class="ligne" method="post" action="/voix/{{ v.id }}/supprimer" onsubmit="return confirm('Supprimer la voix {{ v.nom }} ?')"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="danger petit">Supprimer</button></form></td></tr>
+  {% endfor %}
+  </tbody></table>
+  {% endif %}
+  <form method="post" action="/voix" enctype="multipart/form-data">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label for="nomv">Nom de la voix</label>
+    <input id="nomv" name="nom" type="text" required pattern="[A-Za-zÀ-ÿ0-9_\-]{2,30}" placeholder="ma-voix">
+    <label for="enr">Enregistrement</label>
+    <input id="enr" name="enregistrement" type="file" required accept="audio/*,video/*">
+    <p class="doux">30 s à quelques minutes, votre voix seule, sans musique.</p>
+    <button class="second plein">Ajouter la voix</button>
+  </form>
+</section>
+</div>
+
+<section class="carte">
+  <h2>Doublages</h2>
+  {% if doublages %}
+  <table>
+    <thead><tr><th>Fichier</th><th class="masque-mobile">Voix</th><th>État</th><th class="masque-mobile">Coût</th><th></th></tr></thead>
+    <tbody>
+    {% for d in doublages %}
+    <tr data-id="{{ d.id }}" data-etat="{{ d.etat }}">
+      <td>{{ d.titre }}<br><small class="doux">{{ d.cree_le|date }}</small></td>
+      <td class="masque-mobile">{{ d.voix }}</td>
+      <td><span class="etat {{ d.etat }}">{{ etats.get(d.etat, d.etat) }}</span>
+        <br><small class="doux info">{% if d.etat == 'en_file' and positions[d.id] %}rang {{ positions[d.id] }} dans la file{% elif d.message %}{{ d.message }}{% endif %}</small></td>
+      <td class="masque-mobile cout">{{ (d.cout_usd if d.cout_usd is not none else d.cout_estime_usd)|dollars }}</td>
+      <td class="actions-ligne">
+        {% if d.etat == 'fini' and d.sortie %}<a class="bouton petit" href="/doublages/{{ d.id }}/fichier">Télécharger</a>{% endif %}
+        {% if d.etat in ('en_file', 'en_cours') %}
+          <form class="ligne" method="post" action="/doublages/{{ d.id }}/annuler"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="second petit">Annuler</button></form>
+        {% else %}
+          <form class="ligne" method="post" action="/doublages/{{ d.id }}/supprimer" onsubmit="return confirm('Supprimer ce doublage ?')"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="danger petit">Supprimer</button></form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="doux">Aucun doublage pour l’instant.</p>
+  {% endif %}
+</section>
+
+<details class="carte">
+  <summary><strong>Mon compte</strong></summary>
+  <form method="post" action="/compte">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <p class="doux">{{ moi.email }}</p>
+    <label for="nomc">Nom</label><input id="nomc" name="nom" type="text" value="{{ moi.nom }}">
+    <label for="mdpc">Nouveau mot de passe (laisser vide pour le garder)</label>
+    <input id="mdpc" name="mot_de_passe" type="password" minlength="10" autocomplete="new-password">
+    <button class="plein">Enregistrer</button>
+  </form>
+</details>
+
+<script>
+// Suivi des doublages en cours : recharge la page quand un état change.
+(function () {
+  const lignes = [...document.querySelectorAll('tr[data-id]')].filter(l => ['en_file', 'en_cours', 'reception'].includes(l.dataset.etat));
+  if (!lignes.length) return;
+  async function suivre() {
+    for (const l of lignes) {
+      try {
+        const r = await fetch('/doublages/' + l.dataset.id + '/etat', {credentials: 'same-origin'});
+        if (!r.ok) continue;
+        const e = await r.json();
+        if (e.etat !== l.dataset.etat) { location.reload(); return; }
+        const info = l.querySelector('.info');
+        info.textContent = e.etat === 'en_file' && e.position ? 'rang ' + e.position + ' dans la file' : (e.message || '');
+      } catch (_) {}
+    }
+    setTimeout(suivre, 5000);
+  }
+  setTimeout(suivre, 5000);
+})();
+</script>
+{% endblock %}

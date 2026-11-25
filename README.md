@@ -41,6 +41,7 @@ l'extraction du son, le mixage et la remise sur la vidéo.
 - [Ajouter une voix](#ajouter-une-voix)
 - [Affiner sa voix](#affiner-sa-voix)
 - [Interface graphique (en cours)](#interface-graphique-en-cours)
+- [Service web (voix-la.mawena.cloud)](#service-web-voix-lamawenacloud)
 - [Modes : chant, parole, duo, rap](#modes--chant-parole-duo-rap)
 - [Temps de traitement](#temps-de-traitement)
 - [Limites connues](#limites-connues)
@@ -1017,6 +1018,66 @@ Pour l'instant :
 
 À venir : la fin des essais de chaque page, puis la première version, avec `doubler`.
 
+## Service web (voix-la.mawena.cloud)
+
+Voix-là est aussi en ligne : **https://voix-la.mawena.cloud**. Chacun peut y créer un compte, enregistrer ses voix et
+envoyer des vidéos ou des sons à doubler ; le calcul tourne sur Modal, le site sur le VPS. Le code est dans `web/`
+(FastAPI, gabarits Jinja2, SQLite).
+
+- **Comptes** : inscription libre par e-mail et mot de passe (adresse à valider par un lien), connexion par Google
+  ou par Portier (`portier.mawena.cloud`), mot de passe oublié. Mots de passe hachés par scrypt, formulaires protégés
+  contre le CSRF, OpenID Connect avec PKCE.
+- **Doublages** : envoi d'un fichier (300 Mo et 10 min au plus), file d'attente (un seul calcul à la fois), suivi de
+  l'étape, résultat à télécharger, annulation. Chaque compte a ses propres voix.
+- **Coûts** : chaque doublage est compté (durée du calcul Modal x 6,25 $/h, prix de la carte la plus chère) ; budget
+  global de 25 $ par mois et de 2 $ par compte par défaut. Un doublage qui dépasserait le budget est refusé.
+- **Administration** (adresses de `admins`) : liste des comptes, blocage, budget propre à un compte.
+
+### Installation sur le serveur
+
+```bash
+python3 -m venv ~/.local/share/voix-la-web/venv
+~/.local/share/voix-la-web/venv/bin/pip install -r web/requirements.txt
+cp web/deploiement/voix-la-web.service ~/.config/systemd/user/
+systemctl --user enable --now voix-la-web        # écoute sur 127.0.0.1:8742
+loginctl enable-linger "$USER"                    # le service tourne sans session ouverte
+```
+
+Le site nginx est dans `web/deploiement/voix-la.mawena.cloud` (installation et certificat expliqués en tête du
+fichier). Le client Portier se déclare dans `/etc/portier/portier.toml` (bloc `[[clients]]`, redirection
+`https://voix-la.mawena.cloud/auth/portier/retour`).
+
+### Configuration
+
+`~/.config/voix-la-web/config.toml` (droits 600 ; autre dossier avec `VOIXLA_WEB_CONFIG`) :
+
+| Clé | Rôle | Défaut |
+|---|---|---|
+| `url` | adresse publique du site | `https://voix-la.mawena.cloud` |
+| `ecoute`, `port` | adresse d'écoute locale | `127.0.0.1`, `8742` |
+| `admins` | adresses e-mail des administrateurs | `[]` |
+| `inscription` | `libre`, ou toute autre valeur pour la fermer (seuls les `admins` peuvent alors créer un compte) | `libre` |
+| `budget_mensuel_usd`, `budget_compte_usd` | budgets Modal du mois (global, par compte) | `25`, `2` |
+| `taille_max_mo`, `duree_max_s` | limites des fichiers envoyés | `300`, `600` |
+| `donnees`, `depot`, `python` | dossier des données, dépôt Voix-là, Python qui lance `doubler.py` | |
+| `[smtp]` | `hote`, `port` (587 ou 465), `utilisateur`, `mot_de_passe`, `expediteur` | |
+| `[portier]` | `client_id`, `secret`, `url` | |
+| `[google]` | `client_id`, `secret` (ou le fichier `~/.config/voix-la-web/google` : identifiant puis secret, une ligne chacun) | |
+
+Sans `[smtp]`, les courriels (validation, mot de passe oublié) sont seulement écrits dans le journal
+(`journalctl --user -u voix-la-web`). Sans identifiants Google ou Portier, le bouton correspondant n'apparaît pas.
+
+**Client Google** : console Google Cloud, « API et services » > « Identifiants » > « Créer des identifiants » >
+« ID client OAuth » > « Application Web », URI de redirection autorisée
+`https://voix-la.mawena.cloud/auth/google/retour`. Mettre l'identifiant et le secret dans le fichier `google`
+ci-dessus (`chmod 600`), puis `systemctl --user restart voix-la-web`.
+
+### Tests
+
+```bash
+cd web && ~/.local/share/voix-la-web/venv/bin/python -m pytest -q tests
+```
+
 ## Modes : chant, parole, duo, rap
 
 Le mode est choisi pour chaque vidéo à partir de deux mesures :
@@ -1586,6 +1647,7 @@ docs: README complet
 │   │   └── gui/             fenêtre et pages
 │   ├── donnees/             entrée du menu et icône
 │   └── tests/               tests (unittest) et faux doubler, sans réseau
+├── web/                     service web voix-la.mawena.cloud (FastAPI, comptes, file de doublages)
 ├── bin/                     lanceurs doubler, affiner et voix-la : le code du dépôt, sinon celui de /usr/lib/voix-la
 ├── debian/                  paquet Debian (debhelper 13, 3.0 native)
 ├── docs/                    affinage.md (affinage de la voix) ; man/ : pages de manuel doubler.1, affiner.1 et voix-la.1

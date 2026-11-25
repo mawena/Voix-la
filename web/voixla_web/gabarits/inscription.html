@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block titre %}Créer un compte{% endblock %}
+{% block largeur %}etroit{% endblock %}
+{% block contenu %}
+<h1>Créer un compte</h1>
+<form method="post" action="/inscription" class="carte">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <label for="nom">Nom</label><input id="nom" name="nom" type="text" value="{{ nom or '' }}" autocomplete="name">
+  <label for="email">Adresse e-mail</label><input id="email" name="email" type="email" required value="{{ email or '' }}" autocomplete="email">
+  <label for="mdp">Mot de passe</label><input id="mdp" name="mot_de_passe" type="password" required minlength="10" autocomplete="new-password">
+  <p class="doux">10 caractères au moins.</p>
+  <button class="plein">Créer mon compte</button>
+  {% include "_externes.html" %}
+</form>
+<p>Déjà inscrit ? <a href="/connexion">Se connecter</a></p>
+{% endblock %}

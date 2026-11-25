@@ -1,3 +1,10 @@
+voix-la (0.22.0) unstable; urgency=medium
+
+  * Service web voix-la.mawena.cloud : comptes (e-mail, Google, Portier), doublages par compte,
+    file d'attente, calcul sur Modal, budgets et administration (dossier web/, hors paquet).
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Wed, 25 Nov 2026 16:40:00 +0100
+
 voix-la (0.21.1) unstable; urgency=medium
 
   * Test du coût Modal corrigé (la carte par défaut n'est plus une L4) ;

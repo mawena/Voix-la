@@ -6,6 +6,7 @@ Les secrets (session, SMTP, Google, Portier) ne sont lus qu'ici. Google peut aus
 import os
 import secrets
 import tomllib
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -32,7 +33,7 @@ class Config:
     secret_session: str = ''
     donnees: Path = Path('~/.local/share/voix-la-web').expanduser()
     depot: Path = Path(__file__).resolve().parents[2]   # racine de Voix-là (doubler.py)
-    python: str = 'python3'
+    python: str = sys.executable   # python du service (son venv a numpy pour doubler.py)
     admins: list = field(default_factory=list)
     inscription: str = 'libre'   # libre | fermee
     budget_mensuel_usd: float = 25.0   # tous comptes confondus (crédit Modal : 30 $ par mois)

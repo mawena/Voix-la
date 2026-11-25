@@ -7,6 +7,11 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+## [0.21.1] - 2026-11-25
+
+### Corrigé
+- Test du coût Modal de l'interface : il supposait encore une L4 par défaut ; le paquet 0.21.0 ne se construisait pas.
+
 ## [0.21.0] - 2026-11-25
 
 ### Ajouté
@@ -882,7 +887,8 @@ Première version publique.
     `VOIXLA_DECODAGE_MATERIEL=1` remet le décodage matériel ;
   - les essais automatiques laissaient le son de l'application coupé.
 
-[Non publié]: https://github.com/mawena/Voix-la/compare/v0.21.0...HEAD
+[Non publié]: https://github.com/mawena/Voix-la/compare/v0.21.1...HEAD
+[0.21.1]: https://github.com/mawena/Voix-la/compare/v0.21.0...v0.21.1
 [0.21.0]: https://github.com/mawena/Voix-la/compare/v0.20.2...v0.21.0
 [0.20.2]: https://github.com/mawena/Voix-la/compare/v0.20.1...v0.20.2
 [0.20.1]: https://github.com/mawena/Voix-la/compare/v0.20.0...v0.20.1

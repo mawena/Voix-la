@@ -112,6 +112,8 @@ button.lien{background:none;border:none;color:var(--clone);padding:0;font-weight
 button.danger{background:transparent;border-color:var(--danger);color:var(--danger)}
 button.petit,.bouton.petit{padding:.3rem .7rem;font-size:.9rem}
 form.ligne{display:inline}
+button.icone,.bouton.icone{padding:.4rem;line-height:0}
+.actions-ligne form.ligne,.actions-ligne>.bouton{margin-left:.3rem}
 .plein{width:100%;margin-top:1.1rem}
 .ou{display:flex;align-items:center;gap:.8rem;color:var(--doux);margin:1.3rem 0}
 .ou::before,.ou::after{content:"";flex:1;border-top:1px solid var(--ligne)}

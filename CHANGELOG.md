@@ -7,6 +7,13 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+## [0.22.2] - 2026-11-25
+
+### Corrigé
+- Modal et Runpod : `torchvision` fixé à 0.26.0 (assorti à torch 2.11 cu128). Avant, audio-separator en tirait un
+  de PyPI, incompatible (« operator torchvision::nms does not exist »), et le doublage échouait au chargement de
+  Seed-VC (« Could not import module 'WhisperModel' »).
+
 ## [0.22.1] - 2026-11-25
 
 ### Corrigé

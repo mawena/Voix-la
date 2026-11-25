@@ -50,7 +50,8 @@ CREATE TABLE IF NOT EXISTS doublages (
     sortie TEXT,                    -- chemin relatif du résultat (mp4 ou mp3)
     cree_le REAL NOT NULL,
     debut REAL,
-    fin REAL
+    fin REAL,
+    supprime_le REAL                -- supprimé par l'utilisateur : caché, mais compté dans le mois
 );
 CREATE INDEX IF NOT EXISTS doublages_compte ON doublages(compte);
 """
@@ -61,6 +62,9 @@ class Base:
         self.chemin = Path(chemin)
         with self.cx() as cx:
             cx.executescript(SCHEMA)
+            colonnes = {r[1] for r in cx.execute('PRAGMA table_info(doublages)')}
+            if 'supprime_le' not in colonnes:
+                cx.execute('ALTER TABLE doublages ADD COLUMN supprime_le REAL')
 
     def cx(self):
         cx = sqlite3.connect(self.chemin, timeout=10)

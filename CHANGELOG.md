@@ -7,6 +7,15 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+## [0.22.1] - 2026-11-25
+
+### Corrigé
+- Service web : `doubler.py` est lancé avec le python du service (son venv), qui a numpy ; avant, le python du
+  système échouait (« No module named 'numpy' ») à la création d'une voix. numpy ajouté à `web/requirements.txt`.
+- Service web : le nom d'une voix est mis en minuscules, sans accents (« Charles Gamligo » → « charles-gamligo »),
+  comme `doubler.py` l'exige.
+- Service web : le journal d'une voix n'est plus pris pour son enregistrement.
+
 ## [0.22.0] - 2026-11-25
 
 ### Ajouté

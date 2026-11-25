@@ -1,6 +1,7 @@
 """Application FastAPI de voix-la.mawena.cloud : comptes, voix, doublages, administration."""
 import json
 import re
+import unicodedata
 import shutil
 import subprocess
 import time
@@ -18,7 +19,14 @@ from .base import Base
 from .travaux import COUT_PAR_DEFAUT, Travaux
 
 ICI = Path(__file__).parent
-NOM_VOIX = re.compile(r'^[A-Za-zÀ-ÿ0-9_-]{2,30}$')
+NOM_VOIX = re.compile(r'^[a-z0-9][a-z0-9_-]{1,29}$')   # comme doubler.py (nom de dossier)
+
+
+def nom_voix(texte):
+    """« Charles Gamligo » → « charles-gamligo » : minuscules, sans accents, espaces en tirets."""
+    t = unicodedata.normalize('NFKD', texte.strip().lower())
+    t = ''.join(ch for ch in t if not unicodedata.combining(ch))
+    return re.sub(r'\s+', '-', t)
 EXT_MEDIA = {'.mp4', '.mkv', '.webm', '.mov', '.avi', '.mp3', '.wav', '.flac', '.m4a', '.ogg', '.opus'}
 EXT_SON = {'.mp3', '.wav', '.flac', '.m4a', '.ogg', '.opus', '.webm', '.mp4'}
 ETATS = {'en_file': 'en file', 'en_cours': 'en cours', 'fini': 'fini', 'erreur': 'erreur', 'annule': 'annulé',
@@ -259,9 +267,9 @@ def creer(conf=None):
     @app.post('/voix')
     async def voix_post(req: Request, nom: str = Form(''), enregistrement: UploadFile = File(...), csrf: str = Form('')):
         c = exiger(req, csrf=csrf)
-        nom = nom.strip()
+        nom = nom_voix(nom)
         if not NOM_VOIX.match(nom):
-            return aller('/tableau', 'Nom de voix : 2 à 30 lettres, chiffres, - ou _.', req)
+            return aller('/tableau', 'Nom de voix : 2 à 30 lettres, chiffres, - ou _ (sans accents ni majuscules).', req)
         ext = Path(enregistrement.filename or '').suffix.lower()
         if ext not in EXT_SON:
             return aller('/tableau', 'Enregistrement : mp3, wav, flac, m4a, ogg, opus ou webm.', req)

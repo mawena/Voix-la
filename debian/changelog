@@ -1,3 +1,10 @@
+voix-la (0.21.1) unstable; urgency=medium
+
+  * Test du coût Modal corrigé (la carte par défaut n'est plus une L4) ;
+    le paquet 0.21.0 ne se construisait pas.
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Wed, 25 Nov 2026 14:00:00 +0100
+
 voix-la (0.21.0) unstable; urgency=medium
 
   * Modal : la carte la plus rapide libre (B200, H200, H100), plafond de

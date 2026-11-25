@@ -1,6 +1,5 @@
-{% extends "base.html" %}
+{% extends "_auth.html" %}
 {% block titre %}Nouveau mot de passe{% endblock %}
-{% block largeur %}etroit{% endblock %}
 {% block contenu %}
 <h1>Nouveau mot de passe</h1>
 <form method="post" action="/reinitialiser/{{ jeton }}" class="carte">

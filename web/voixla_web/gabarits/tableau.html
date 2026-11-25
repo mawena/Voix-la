@@ -1,12 +1,23 @@
 {% extends "base.html" %}
 {% block titre %}Mes doublages{% endblock %}
 {% block contenu %}
-<h1>Bonjour{% if moi.nom %} {{ moi.nom }}{% endif %}</h1>
+<div class="entete">
+  <div>
+    <h1>Bonjour{% if moi.nom %} {{ moi.nom }}{% endif %}</h1>
+    <p class="doux">Vos voix, vos vidéos, et ce qui est en cours.</p>
+  </div>
+  {% set total_budget = depense + restant %}
+  <div class="budget">
+    <p><strong>{{ restant|dollars }}</strong> <span class="doux">restants ce mois</span></p>
+    <div class="jauge"><span style="width:{{ ((depense / total_budget * 100) if total_budget else 100)|round|int }}%"></span></div>
+    <small class="doux">{{ depense|dollars }} utilisés sur {{ total_budget|dollars }}</small>
+  </div>
+</div>
 {% if not moi.email_valide %}<p class="erreur">Confirmez votre adresse e-mail (lien reçu par courriel) pour lancer des doublages.</p>{% endif %}
-<p class="doux">Budget du mois : {{ depense|dollars }} utilisés, {{ restant|dollars }} restants.</p>
 
-<div class="grille">
-<section class="carte">
+<div class="disposition">
+<div class="principal">
+<section class="carte accent">
   <h2>Nouveau doublage</h2>
   {% set pretes = voix|selectattr('etat', 'equalto', 'prete')|list %}
   {% if pretes %}
@@ -31,35 +42,6 @@
   <p class="doux">Ajoutez d’abord une voix.</p>
   {% endif %}
 </section>
-
-<section class="carte">
-  <h2>Mes voix</h2>
-  {% if voix %}
-  <table><tbody>
-  {% for v in voix %}
-    <tr><td>{{ v.nom }}</td>
-      <td><span class="etat {{ v.etat }}">{{ etats.get(v.etat, v.etat) }}</span>{% if v.message %}<br><small class="doux">{{ v.message }}</small>{% endif %}</td>
-      <td><form class="ligne" method="post" action="/voix/{{ v.id }}/supprimer" onsubmit="return confirm('Supprimer la voix {{ v.nom }} ?')"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="danger petit">Supprimer</button></form></td></tr>
-  {% endfor %}
-  </tbody></table>
-  {% endif %}
-  <form method="post" action="/voix" enctype="multipart/form-data" data-envoi="voix">
-    <input type="hidden" name="csrf" value="{{ csrf }}">
-    <label for="nomv">Nom de la voix</label>
-    <input id="nomv" name="nom" type="text" required minlength="2" maxlength="30" placeholder="ma-voix">
-    <label for="enr">Enregistrement</label>
-    <input id="enr" name="enregistrement" type="file" required accept="audio/*,video/*">
-    <p class="doux">30 s à quelques minutes, votre voix seule, sans musique.</p>
-    <button class="second plein">Ajouter la voix</button>
-    <div class="envoi" hidden>
-      <progress max="100" value="0"></progress>
-      <p class="doux" aria-live="polite"><span class="pourcent">0 %</span> · <span class="detail"></span></p>
-      <button type="button" class="danger petit annuler-envoi">Annuler l’envoi</button>
-    </div>
-    <p class="erreur-envoi" role="alert" hidden></p>
-  </form>
-</section>
-</div>
 
 <section class="carte">
   <h2>Doublages</h2>
@@ -91,6 +73,36 @@
   {% endif %}
 </section>
 
+</div>
+<aside class="lateral">
+<section class="carte">
+  <h2>Mes voix</h2>
+  {% if voix %}
+  <table class="liste-voix"><tbody>
+  {% for v in voix %}
+    <tr><td>{{ v.nom }}</td>
+      <td><span class="etat {{ v.etat }}">{{ etats.get(v.etat, v.etat) }}</span>{% if v.message %}<br><small class="doux">{{ v.message }}</small>{% endif %}</td>
+      <td><form class="ligne" method="post" action="/voix/{{ v.id }}/supprimer" onsubmit="return confirm('Supprimer la voix {{ v.nom }} ?')"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="danger petit">Supprimer</button></form></td></tr>
+  {% endfor %}
+  </tbody></table>
+  {% endif %}
+  <form method="post" action="/voix" enctype="multipart/form-data" data-envoi="voix">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label for="nomv">Nom de la voix</label>
+    <input id="nomv" name="nom" type="text" required minlength="2" maxlength="30" placeholder="ma-voix">
+    <label for="enr">Enregistrement</label>
+    <input id="enr" name="enregistrement" type="file" required accept="audio/*,video/*">
+    <p class="doux">30 s à quelques minutes, votre voix seule, sans musique.</p>
+    <button class="second plein">Ajouter la voix</button>
+    <div class="envoi" hidden>
+      <progress max="100" value="0"></progress>
+      <p class="doux" aria-live="polite"><span class="pourcent">0 %</span> · <span class="detail"></span></p>
+      <button type="button" class="danger petit annuler-envoi">Annuler l’envoi</button>
+    </div>
+    <p class="erreur-envoi" role="alert" hidden></p>
+  </form>
+</section>
+
 <details class="carte">
   <summary><strong>Mon compte</strong></summary>
   <form method="post" action="/compte">
@@ -102,6 +114,8 @@
     <button class="plein">Enregistrer</button>
   </form>
 </details>
+</aside>
+</div>
 
 <script src="/statique/envoi.js?v=1" defer></script>
 <script>

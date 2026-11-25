@@ -5,26 +5,45 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{% block titre %}Voix-là{% endblock %} · Voix-là</title>
 <link rel="icon" href="/statique/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/statique/style.css">
+<link rel="stylesheet" href="/statique/style.css?v=3">
 </head>
 <body>
-<header class="haut"><div class="cadre">
+{% set chemin = request.url.path %}
+{% block corps %}
+{% if moi %}
+<div class="appli">
+  <aside class="cote">
+    <a class="marque" href="/tableau"><img src="/statique/favicon.svg" alt="">Voix-là</a>
+    <nav class="menu">
+      <a href="/tableau"{% if chemin == '/tableau' %} aria-current="page"{% endif %}>Mes doublages</a>
+      {% if moi.admin %}<a href="/admin"{% if chemin == '/admin' %} aria-current="page"{% endif %}>Administration</a>{% endif %}
+    </nav>
+    <div class="qui">
+      <span class="avatar" aria-hidden="true">{{ (moi.nom or moi.email)[:1]|upper }}</span>
+      <span class="qui-texte"><strong>{{ moi.nom or 'Mon compte' }}</strong><small>{{ moi.email }}</small></span>
+      <form class="ligne" method="post" action="/deconnexion"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="lien">Se déconnecter</button></form>
+    </div>
+  </aside>
+  <main class="zone">
+    {% if message %}<p class="message" role="status">{{ message }}</p>{% endif %}
+    {% if erreur %}<p class="erreur" role="alert">{{ erreur }}</p>{% endif %}
+    {% block contenu %}{% endblock %}
+  </main>
+</div>
+{% else %}
+<header class="haut">
   <a class="marque" href="/"><img src="/statique/favicon.svg" alt="">Voix-là</a>
   <nav>
-    {% if moi %}
-      <a href="/tableau">Mes doublages</a>
-      {% if moi.admin %}<a href="/admin">Administration</a>{% endif %}
-      <form class="ligne" method="post" action="/deconnexion"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="lien">Se déconnecter</button></form>
-    {% else %}
-      <a href="/connexion">Se connecter</a>
-      {% if inscription == 'libre' %}<a href="/inscription">Créer un compte</a>{% endif %}
-    {% endif %}
+    <a href="/connexion">Se connecter</a>
+    {% if inscription == 'libre' %}<a class="bouton petit" href="/inscription">Créer un compte</a>{% endif %}
   </nav>
-</div></header>
-<main><div class="cadre {% block largeur %}{% endblock %}">
-{% if message %}<p class="message" role="status">{{ message }}</p>{% endif %}
-{% if erreur %}<p class="erreur" role="alert">{{ erreur }}</p>{% endif %}
-{% block contenu %}{% endblock %}
-</div></main>
+</header>
+<main class="public">
+  {% if message %}<p class="message" role="status">{{ message }}</p>{% endif %}
+  {% if erreur %}<p class="erreur" role="alert">{{ erreur }}</p>{% endif %}
+  {{ self.contenu() }}
+</main>
+{% endif %}
+{% endblock %}
 </body>
 </html>

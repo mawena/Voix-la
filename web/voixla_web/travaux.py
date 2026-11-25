@@ -100,7 +100,7 @@ class Travaux:
         if not v or v['etat'] != 'en_file':
             return
         dc = self.dossier_compte(v['compte'])
-        enr = next((f for f in (dc / 'enregistrements').glob(f'{vid}.*')), None)
+        enr = next((f for f in sorted((dc / 'enregistrements').glob(f'{vid}.*')) if f.suffix != '.journal'), None)
         if not enr:
             raise RuntimeError('enregistrement introuvable')
         self.base.faire("UPDATE voix SET etat = 'en_cours' WHERE id = ?", vid)

@@ -40,7 +40,7 @@
   <form method="post" action="/voix" enctype="multipart/form-data">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <label for="nomv">Nom de la voix</label>
-    <input id="nomv" name="nom" type="text" required pattern="[A-Za-zÀ-ÿ0-9_\-]{2,30}" placeholder="ma-voix">
+    <input id="nomv" name="nom" type="text" required minlength="2" maxlength="30" placeholder="ma-voix">
     <label for="enr">Enregistrement</label>
     <input id="enr" name="enregistrement" type="file" required accept="audio/*,video/*">
     <p class="doux">30 s à quelques minutes, votre voix seule, sans musique.</p>

@@ -99,7 +99,9 @@ class Doublage(Base):
         journal = json.loads((self.retour / 'doublage-modal.log').read_text())
         self.assertTrue(any('noyau imité' in l['data'] for l in journal), 'journal au format Kaggle')
         t = self.trace()
-        self.assertEqual(t['options'], {'gpu': 'L4', 'timeout': 3600, 'volumes': ['/echange', '/entrees/outils']})
+        self.assertEqual(t['options'], {'gpu': 'L4', 'timeout': 3600, 'volumes': ['/echange', '/entrees/outils'],
+                                        'cpu': 6.0, 'memory': 24 * 1024})
+        self.assertEqual(r['carte'], '?', 'pas de nvidia-smi dans les essais : carte inconnue, sans échec')
         self.assertEqual(t['python'], '3.13')
         self.assertIn('torch==2.11.0', t['pip'])
         self.assertEqual(t['env']['HF_HOME'], '/entrees/outils/hf')
@@ -119,6 +121,10 @@ class Doublage(Base):
         self.lancer(gpu='A10', timeout_s=1800)
         self.assertEqual(self.trace()['options']['gpu'], 'A10')
         self.assertEqual(self.trace()['options']['timeout'], 1800)
+
+    def test_liste_de_repli_transmise_en_liste(self):
+        self.lancer(gpu='B200,H200,H100')
+        self.assertEqual(self.trace()['options']['gpu'], ['B200', 'H200', 'H100'])
 
     def test_noyau_en_echec(self):
         (self.jeu / 'echec').write_bytes(b'')

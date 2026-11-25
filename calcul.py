@@ -1,7 +1,8 @@
 """Moyens de calcul de doubler : où tourne le noyau GPU (kaggle/doubler_kaggle.py), sans PyTorch ni réseau ici.
 
 - kaggle : le GPU gratuit de Kaggle (défaut) ;
-- modal  : Modal (crédit gratuit mensuel), application éphémère, modèles dans un volume public (calcul_modal.py) ;
+- modal  : Modal (crédit mensuel), carte la plus rapide avec repli (B200, H200, H100), application éphémère arrêtée dès
+  la fin, durée bornée par un plafond en dollars, modèles dans un volume public (calcul_modal.py) ;
 - runpod : un pod Runpod RTX 4090 payant, toujours supprimé à la fin (calcul_runpod.py) ;
 - auto   : Kaggle d'abord, puis Modal si Kaggle n'est pas disponible. Runpod n'est jamais automatique (payant).
 
@@ -33,8 +34,16 @@ def paquets_noyau():
 # (dollars par heure et par carte, vitesse relative à une T4 de Kaggle) : estimations d'après les tarifs affichés et les
 # débits des cartes, PAS des mesures ; à corriger après les premiers essais réels (voir README, Temps de traitement)
 CARTES_MODAL = {'T4': (0.59, 1.0), 'L4': (0.80, 1.2), 'A10': (1.10, 2.0), 'A10G': (1.10, 2.0),
-                'A100-40GB': (2.10, 4.0), 'A100': (2.10, 4.0)}
-GPU_MODAL_DEFAUT = 'L4'
+                'L40S': (1.95, 3.0), 'A100-40GB': (2.10, 4.0), 'A100': (2.10, 4.0), 'A100-80GB': (2.50, 4.2),
+                'H100': (3.95, 6.0), 'H200': (4.54, 6.5), 'B200': (6.25, 8.0)}
+# Carte de Modal par défaut : la plus rapide (B200), avec repli dans l'ordre si Modal n'en a pas de libre (liste « A,B,C »
+# transmise telle quelle à Modal, gpu=[...]) ; facturée au prix de la carte obtenue. Les outils (téléchargements, pas de
+# calcul) se préparent sur une petite carte.
+GPU_MODAL_DEFAUT = 'B200,H200,H100'
+GPU_MODAL_OUTILS = 'L4'
+# Plafond d'une session Modal (dollars, clé « modal.plafond_usd ») : la durée maximale du conteneur est bornée pour ne
+# jamais le dépasser, et une session dont l'estimation le dépasserait n'est pas lancée (crédit de 30 $ par mois)
+PLAFOND_MODAL_USD = 8.0
 CARTES_RUNPOD = {'NVIDIA GeForce RTX 4090': (0.69, 3.0)}
 GPU_RUNPOD_DEFAUT = 'NVIDIA GeForce RTX 4090'
 # Secondes avant que le noyau démarre et facturées en plus de son calcul : Modal (conteneur, montage du volume), Runpod
@@ -44,21 +53,56 @@ FIXE_NOYAU_S = 240.0   # part de l'estimation Kaggle qui ne dépend pas de la ca
 DUREE_MAX_RUNPOD_MIN = 90   # minuterie du pod, par défaut ; relevée si l'estimation est plus longue
 
 
-def lire_gpu(spec, calcul):
-    """(nom, cartes) d'une demande de carte : « L4 », « L4:2 » (Modal) ou un identifiant Runpod ; ValueError si illisible."""
+def lire_gpus(spec, calcul):
+    """[(nom, cartes)] d'une demande de carte : « L4 », « L4:2 », ou une liste de repli « B200,H200,H100 » (Modal, dans
+    l'ordre de préférence), ou un identifiant Runpod ; ValueError si illisible."""
     texte = str(spec or '').strip()
-    if not texte or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9 ._-]{0,60}(:[1-8])?', texte):
+    morceaux = [m.strip() for m in texte.split(',')] if calcul == 'modal' else [texte]
+    if not texte or len(morceaux) > 8:
         raise ValueError(f'carte GPU illisible : {spec!r}')
-    nom, _, n = texte.partition(':')
-    return nom, int(n or 1)
+    sortie = []
+    for m in morceaux:
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9 ._-]{0,60}(:[1-8])?', m):
+            raise ValueError(f'carte GPU illisible : {spec!r}')
+        nom, _, n = m.partition(':')
+        sortie.append((nom, int(n or 1)))
+    return sortie
+
+
+def lire_gpu(spec, calcul):
+    """(nom, cartes) de la carte préférée d'une demande (la première d'une liste de repli) ; ValueError si illisible."""
+    return lire_gpus(spec, calcul)[0]
 
 
 def carte(spec, calcul):
-    """Description d'une carte : {'nom', 'cartes', 'prix_h' (par carte, None si inconnu), 'vitesse', 'connue'}."""
-    nom, n = lire_gpu(spec, calcul)
+    """Description d'une carte : {'nom', 'cartes', 'prix_h' (par carte, None si inconnu), 'vitesse', 'connue', 'repli'}.
+    Liste de repli : nom « B200/H200/H100 », prix de la plus chère et vitesse de la plus lente (estimation prudente :
+    jamais moins chère que la session réelle)."""
+    liste = lire_gpus(spec, calcul)
     table = CARTES_MODAL if calcul == 'modal' else CARTES_RUNPOD
-    prix, vitesse = table.get(nom, (None, 1.0))
-    return {'nom': nom, 'cartes': n, 'prix_h': prix, 'vitesse': vitesse, 'connue': nom in table}
+    prix = [table.get(nom, (None, 1.0))[0] for nom, _ in liste]
+    vitesses = [table.get(nom, (None, 1.0))[1] for nom, _ in liste]
+    cartes = [n for _, n in liste]
+    return {'nom': '/'.join(nom for nom, _ in liste), 'cartes': max(cartes),
+            'prix_h': None if None in prix else max(p * n for p, n in zip(prix, cartes)) / max(cartes),
+            'vitesse': min(vitesses), 'connue': all(nom in table for nom, _ in liste),
+            'repli': [nom for nom, _ in liste[1:]]}
+
+
+def gpu_pour_modal(spec):
+    """Ce que reçoit Modal (gpu=) : la chaîne d'une seule carte, ou la liste de repli."""
+    liste = [m.strip() for m in str(spec).split(',') if m.strip()]
+    return liste[0] if len(liste) == 1 else liste
+
+
+def timeout_modal(attente_maxi_s, estimation_s, c, plafond_usd):
+    """(durée maximale du conteneur en s, plafond respecté) : attente_maxi_s bornée pour que la session ne coûte jamais
+    plus que plafond_usd au prix de la carte la plus chère ; False si l'estimation (avec 30 % de marge) ne tient pas sous
+    le plafond. Carte au prix inconnu : attente_maxi_s, sans garantie."""
+    if not c['prix_h']:
+        return int(attente_maxi_s), True
+    budget_s = int(plafond_usd / (c['prix_h'] * c['cartes']) * 3600)
+    return min(int(attente_maxi_s), budget_s), 1.3 * estimation_s <= budget_s
 
 
 def estimer_calcul(estimation_kaggle_s, calcul, c):

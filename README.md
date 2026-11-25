@@ -305,7 +305,8 @@ doubler --config voix marie                     # choisir la voix par défaut
 | `gpu` | cartes GPU du noyau : `auto` (les deux T4 de la machine, une seule si elle n'en a qu'une), `1` (une carte, comme avant) ou `2` (`--gpu` l'emporte) | `auto` |
 | `calcul` | où tourne le GPU : `kaggle`, `modal`, `runpod` (payant, jamais automatique) ou `auto` (Kaggle, puis Modal si Kaggle n'est pas disponible) (`--calcul` l'emporte) | `kaggle` |
 | `kaggle.attente_file_min` | calcul `auto` : minutes de file `queued` sur Kaggle avant de passer à Modal | `20` |
-| `modal.gpu` | carte de Modal : `L4`, `A10`, `A100-40GB`, `L4:2`… | `L4` |
+| `modal.gpu` | carte de Modal : liste de repli (la première libre) ou une seule carte : `H100`, `A100-80GB`, `L40S`, `L4`, `L4:2`… | `B200,H200,H100` |
+| `modal.plafond_usd` | plafond d'une session Modal en dollars (0,5 à 30) : durée du conteneur bornée, session refusée si l'estimation le dépasse | `8` |
 | `runpod.gpu` | identifiant de la carte du pod Runpod (`runpodctl gpu list`) | `NVIDIA GeForce RTX 4090` |
 | `runpod.duree_max_min` | minuterie du pod Runpod : minutes avant qu'il se supprime seul | `90`, relevée si la session estimée est plus longue |
 
@@ -584,7 +585,7 @@ toutes `doubler --config calcul auto` (défaut : `kaggle`, rien ne change sans d
 | Moyen | Coût | Carte (réglable) | Quand |
 |---|---|---|---|
 | `kaggle` | gratuit (quota hebdomadaire) | deux T4 | défaut |
-| `modal` | crédit gratuit mensuel de Modal | `modal.gpu` : `L4` (défaut, environ 0,80 $/h), `A10`, `A100-40GB`, `L4:2`… | sur demande, ou en `auto` |
+| `modal` | crédit gratuit mensuel de Modal | `modal.gpu` : `B200,H200,H100` (défaut : la plus rapide libre, 3,95 à 6,25 $/h), `H100`, `L4`… | sur demande, ou en `auto` |
 | `runpod` | payant (environ 0,69 $/h), tant que le pod existe | `runpod.gpu` : `NVIDIA GeForce RTX 4090` | seulement sur demande explicite, jamais en `auto` |
 | `auto` | | | Kaggle d'abord, puis Modal |
 
@@ -603,7 +604,15 @@ ni facturé. L'image reprend les versions de bibliothèques du noyau Kaggle (Pyt
 0.11.0, transformers 5.20.2, huggingface_hub 1.33.0, soundfile 0.14.0 ; liste dans `calcul.py`). Le volume persistant
 `voix-la-modeles` ne contient que des modèles publics : `doubler --calcul modal --preparer-outils` (une fois, environ 15 min
 de carte) y prépare ce que prépare le noyau d'outils de Kaggle (paquets, Seed-VC, YingMusic-SVC, poids) ; sans lui, chaque
-session les télécharge (environ 4 min de plus). `doubler --config modal.gpu A10` change de carte.
+session les télécharge (environ 4 min de plus).
+
+**Carte et coût sur Modal.** Par défaut, la liste de repli `B200,H200,H100` : Modal donne la première carte libre et
+facture celle qu'il donne ; `doubler` dit laquelle (« carte obtenue NVIDIA B200 »). `B200+` est exclu (il peut servir
+une B300, qui exige CUDA 13.1 ; torch est en cu128). Le conteneur a 6 cœurs et 24 Gio (environ 0,35 $/h de plus), TF32
+activé. Le coût reste sous contrôle : la durée maximale du conteneur est bornée par `modal.plafond_usd` (8 $ par défaut,
+au prix de la carte la plus chère de la liste), et une session dont l'estimation (avec 30 % de marge) dépasserait ce
+plafond n'est pas lancée. La préparation des outils (téléchargements seulement) tourne sur une L4.
+`doubler --config modal.gpu H100` impose une carte, `doubler --config modal.plafond_usd 5` baisse le plafond.
 
 **Runpod.** `runpodctl` 3 dans `~/.local/bin` (ou `$VOIXLA_RUNPODCTL`), clé enregistrée par `runpodctl doctor`
 (`~/.runpod/config.toml`, jamais lue par `doubler`), clé SSH `~/.ssh/id_rsa` et `id_rsa.pub`. `doubler` crée un pod
@@ -630,7 +639,8 @@ facturé) : la session est close proprement, il faut refaire le doublage.
 
 **Estimation.** `doubler` annonce la durée et le coût (en dollars pour Modal et Runpod) selon la carte. Pour une chanson de
 4 min, environ 28 min de session sur une T4 à Kaggle, et sur l'estimation actuelle (rapport de vitesse à une T4 supposé,
-PAS mesuré, à corriger après les premiers essais réels) : L4 environ 25 min et 0,33 $, A10 environ 17 min et 0,31 $,
+PAS mesuré, à corriger après les premiers essais réels) : B200 environ 8 min et 0,83 $ (liste de repli : estimée au
+pire, 9 min et 0,94 $), H100 environ 9 min et 0,59 $, L4 environ 25 min et 0,33 $, A10 environ 17 min et 0,31 $,
 A100-40GB environ 11 min et 0,39 $, RTX 4090 sur Runpod environ 19 min et 0,22 $ (le démarrage du pod, 7 min, est
 facturé). Les rapports des sessions Modal et Runpod ne servent pas à estimer Kaggle.
 

@@ -7,6 +7,19 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+## [0.21.0] - 2026-11-25
+
+### Ajouté
+- Modal : liste de repli de cartes, `B200,H200,H100` par défaut (la plus rapide libre ; la carte obtenue est affichée).
+- Modal : plafond de coût par session, `modal.plafond_usd` (8 $ par défaut, de 0,5 à 30) : durée du conteneur bornée,
+  session refusée si l'estimation le dépasse.
+- Modal : conteneur à 6 cœurs et 24 Gio, TF32 et allocateur `expandable_segments`.
+
+### Modifié
+- Modal : la préparation des outils tourne sur une L4 (téléchargements seulement).
+- Le client Modal est aussi cherché dans `~/.local/opt/modal` et d'après la commande `modal` du PATH.
+- Cartes A100-80GB, L40S, H100, H200, B200 dans la table des prix.
+
 ## [0.20.2] - 2026-11-17
 
 ### Modifié
@@ -869,7 +882,8 @@ Première version publique.
     `VOIXLA_DECODAGE_MATERIEL=1` remet le décodage matériel ;
   - les essais automatiques laissaient le son de l'application coupé.
 
-[Non publié]: https://github.com/mawena/Voix-la/compare/v0.20.2...HEAD
+[Non publié]: https://github.com/mawena/Voix-la/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/mawena/Voix-la/compare/v0.20.2...v0.21.0
 [0.20.2]: https://github.com/mawena/Voix-la/compare/v0.20.1...v0.20.2
 [0.20.1]: https://github.com/mawena/Voix-la/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/mawena/Voix-la/compare/v0.19.0...v0.20.0

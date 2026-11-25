@@ -11,6 +11,9 @@ DOUBLER_ENTREES et DOUBLER_SORTIE. Deux volumes :
 - un volume ÉPHÉMÈRE (modal.Volume.ephemeral), supprimé par Modal à la fin : le son, la référence et le noyau y sont
   envoyés pour le calcul, puis effacés (aussi du conteneur, avant la fin).
 Les sorties reviennent par le flux de la fonction (morceaux de 1 Mio), jamais par un volume.
+Carte : la liste de repli (« B200,H200,H100 ») passe telle quelle à Modal, qui prend la première libre et facture celle
+qu'il donne ; le conteneur dit laquelle (« MODAL carte obtenue »). Conteneur arrêté dès la fin du générateur (sortie du
+« with app.run() »), et au plus tard à timeout_s (borné côté doubler par le plafond en dollars).
 Protocole sur la sortie standard : « @@ETAT <mot> » (application, demarrage, en_cours, fini), puis les lignes du noyau.
 """
 import json
@@ -28,16 +31,44 @@ INDEX_TORCH = 'https://download.pytorch.org/whl/cu128'
 NOM_APP = 'voix-la'
 NOM_VOLUME_MODELES = os.environ.get('VOIXLA_MODAL_VOLUME') or 'voix-la-modeles'
 MORCEAU = 1024 * 1024
+# Carte par défaut : la plus rapide, avec repli si Modal n'en a pas de libre (calcul.GPU_MODAL_DEFAUT ; « B200+ » exclu :
+# il peut servir une B300, qui exige CUDA 13.1, et torch est en cu128). Processeur et mémoire du conteneur : de quoi
+# nourrir la carte (décodage, librosa, ffmpeg) ; facturés en plus, environ 0,35 $/h pour 6 cœurs et 24 Gio.
+GPU_DEFAUT = ['B200', 'H200', 'H100']
+CPU = 6.0
+MEMOIRE_MO = 24 * 1024
 
 app = modal.App(NOM_APP)
 image = (modal.Image.debian_slim(python_version=PYTHON_NOYAU)
          .apt_install('ffmpeg', 'git', 'libsndfile1')
          .pip_install(*PAQUETS, extra_index_url=INDEX_TORCH)
-         .env({'HF_HOME': '/entrees/outils/hf', 'PYTHONUNBUFFERED': '1'}))
+         .env({'HF_HOME': '/entrees/outils/hf', 'PYTHONUNBUFFERED': '1',
+               # TF32 pour les produits de matrices restés en float32 (cartes Ampere et après : A100, H100, B200), sans
+               # toucher au noyau ; les parties en float16 (autocast) n'en dépendent pas
+               'TORCH_ALLOW_TF32_CUBLAS_OVERRIDE': '1',
+               'PYTORCH_CUDA_ALLOC_CONF': 'expandable_segments:True'}))
 MODELES = modal.Volume.from_name(NOM_VOLUME_MODELES, create_if_missing=True)
 
 
-@app.cls(image=image, gpu='L4', timeout=3600, volumes={'/entrees/outils': MODELES})
+def gpu_modal(texte):
+    """« B200,H200,H100 » -> liste de repli pour Modal ; une seule carte -> sa chaîne."""
+    liste = [m.strip() for m in str(texte or '').split(',') if m.strip()] or list(GPU_DEFAUT)
+    return liste[0] if len(liste) == 1 else liste
+
+
+def gpu_demande():
+    """Carte demandée par le client (spec.json en argument), lue AVANT la définition de la classe : Modal n'accepte une
+    liste de repli que dans le décorateur, pas dans with_options. Dans le conteneur (pas d'argument) : celle par défaut."""
+    if __name__ == '__main__' and len(sys.argv) > 1:
+        try:
+            with open(sys.argv[1]) as f:
+                return gpu_modal(json.load(f).get('gpu'))
+        except (OSError, ValueError):
+            pass
+    return list(GPU_DEFAUT)
+
+
+@app.cls(image=image, gpu=gpu_demande(), cpu=CPU, memory=MEMOIRE_MO, timeout=3600, volumes={'/entrees/outils': MODELES})
 class Doublage:
     @modal.method()
     def lancer(self, spec):
@@ -50,6 +81,8 @@ class Doublage:
         ech, ent, sor = (Path(racine + spec[k]) for k in ('echange', 'entrees', 'sortie'))
         outils = spec['mode'] == 'outils'
         print('@@ETAT en_cours', flush=True)
+        carte = carte_obtenue()
+        print(f'MODAL carte obtenue : {carte}', flush=True)
         ent.mkdir(parents=True, exist_ok=True)
         jeu = ech / 'jeu'
         if jeu.is_dir():
@@ -85,7 +118,18 @@ class Doublage:
                     yield ('fichier', rel, bloc)
             if not outils:
                 f.unlink()
-        yield ('fin', {'code': code, 'duree_noyau_s': round(time.time() - t0, 1)})
+        yield ('fin', {'code': code, 'duree_noyau_s': round(time.time() - t0, 1), 'carte': carte})
+
+
+def carte_obtenue():
+    """Nom et mémoire de la carte que Modal a donnée (la liste de repli ne dit pas laquelle) ; '?' si nvidia-smi manque."""
+    import subprocess
+    try:
+        r = subprocess.run(['nvidia-smi', '--query-gpu=name,memory.total', '--format=csv,noheader'],
+                           capture_output=True, text=True, timeout=30)
+        return ' + '.join(l.strip() for l in r.stdout.splitlines() if l.strip()) or '?'
+    except Exception:  # noqa: BLE001
+        return '?'
 
 
 def client(spec):
@@ -93,7 +137,6 @@ def client(spec):
     from pathlib import Path
     retour = Path(spec['retour'])
     retour.mkdir(parents=True, exist_ok=True)
-    gpu = spec['gpu']
     print('@@ETAT application', flush=True)
     with modal.enable_output():
         with app.run():
@@ -103,7 +146,7 @@ def client(spec):
                     for f in sorted(Path(spec['jeu']).glob('*')) if spec.get('jeu') else []:
                         lot.put_file(str(f), f'/jeu/{f.name}')
                 print('@@ETAT demarrage', flush=True)
-                machine = Doublage.with_options(gpu=gpu, timeout=int(spec['timeout_s']),
+                machine = Doublage.with_options(timeout=int(spec['timeout_s']),
                                                 volumes={'/echange': echange, '/entrees/outils': MODELES})()
                 fin, ouvert = None, {}
                 try:

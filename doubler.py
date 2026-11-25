@@ -114,7 +114,7 @@ import tempfile
 import time
 from pathlib import Path
 
-VERSION = '0.20.2'   # même version que le paquet Debian (debian/changelog) et l'interface (voixla.__version__)
+VERSION = '0.21.0'   # même version que le paquet Debian (debian/changelog) et l'interface (voixla.__version__)
 # Dossier du code : le dépôt, ou /usr/lib/voix-la une fois le paquet installé (/usr/bin/doubler lance ce fichier)
 DEPOT = Path(__file__).resolve().parent
 SCRIPT_NOYAU = DEPOT / 'kaggle' / 'doubler_kaggle.py'   # le noyau envoyé à Kaggle
@@ -159,7 +159,10 @@ CLES_CONFIG = {'autotune':'intensité de l\'auto-tune à chaque doublage, de 0 (
                'kaggle.machine': f'machine Kaggle demandée à l\'envoi du noyau (défaut : {MACHINE_DEFAUT}, GPU T4 x2)',
                'kaggle.noyau': 'noyau GPU privé du doublage',
                'kaggle.outils': 'noyau privé des outils préparés',
-               'modal.gpu': 'carte GPU de Modal : L4 (défaut, environ 0,80 $/h), A10, A100-40GB, ou « L4:2 » pour deux cartes',
+               'modal.gpu': 'carte GPU de Modal : liste de repli « B200,H200,H100 » (défaut : la plus rapide libre, 3,95 à '
+                            '6,25 $/h), ou une seule carte : H100, A100-80GB, L40S, A10, L4… ; « L4:2 » pour deux cartes',
+               'modal.plafond_usd': 'plafond d\'une session Modal en dollars (défaut : 8) : la durée du conteneur est '
+                                    'bornée en conséquence, et une session estimée au-delà n\'est pas lancée',
                'moteur': 'moteur de conversion du chant : yingmusic (défaut) ou seedvc',
                'paroles': 'paroles à chaque doublage (transcription, traduction française, sous-titres) : oui (défaut) '
                           'ou non',
@@ -273,6 +276,13 @@ def ecrire_config(cle, valeur):
         except ValueError as e:
             raise SystemExit(f'{cle} : {e}') from None
         valeur = str(valeur).strip()
+    if cle == 'modal.plafond_usd':
+        try:
+            valeur = float(str(valeur).strip().replace(',', '.'))
+            if not 0.5 <= valeur <= 30:
+                raise ValueError
+        except ValueError:
+            raise SystemExit(f'{cle} : un montant en dollars entre 0,5 et 30 attendu (reçu : {valeur})') from None
     if cle in ('kaggle.attente_file_min', 'runpod.duree_max_min'):
         try:
             valeur = int(str(valeur).strip())
@@ -417,6 +427,21 @@ def entier_config(conf, cle, defaut, mini=1, maxi=24 * 60):
         pass
     dire(f'attention : « {cle} » de {CONFIG} illisible ({v!r}) : {defaut}')
     return defaut
+
+
+def plafond_modal(conf, calcul):
+    """Plafond en dollars d'une session Modal (« modal.plafond_usd », entre 0,5 et 30 $), avec son défaut."""
+    v = valeur_config(conf, 'modal.plafond_usd')
+    if v is None or str(v).strip() == '':
+        return calcul.PLAFOND_MODAL_USD
+    try:
+        x = float(str(v).replace(',', '.'))
+        if 0.5 <= x <= 30:
+            return x
+    except ValueError:
+        pass
+    dire(f'attention : « modal.plafond_usd » de {CONFIG} illisible ({v!r}) : {calcul.PLAFOND_MODAL_USD}')
+    return calcul.PLAFOND_MODAL_USD
 
 
 def gpu_calcul_config(conf, calcul_nom):
@@ -4954,6 +4979,16 @@ def session_ailleurs(nom, travaux, a, voix, kdir, titres, ancres, abandon, echec
                                         len(voix.get('comparees') or ()) or 1, voix.get('mode') == 'personnes')
     estimation, cout = calcul.estimer_calcul(estimation_kaggle, nom, c)
     attente_maxi = max((30 + 20 * len(travaux)) * 60, 2 * estimation + 30 * 60)
+    if nom == 'modal':   # durée du conteneur bornée par le plafond en dollars de la session (crédit mensuel)
+        plafond = plafond_modal(conf, calcul)
+        attente_maxi, tient = calcul.timeout_modal(attente_maxi, estimation, c, plafond)
+        if not tient:
+            raise _Abandon(f"Modal : session estimée à {calcul.dollars(cout)}, au-delà du plafond de "
+                           f"{calcul.dollars(plafond)} (« modal.plafond_usd » de {CONFIG}) : relever le plafond, "
+                           f"choisir une carte moins chère (« modal.gpu », par exemple A100-80GB) ou doubler moins de "
+                           f"vidéos à la fois")
+        dire(f"Modal : carte la plus rapide libre parmi {c['nom']} (facturée au prix de celle obtenue), conteneur "
+             f"arrêté dès la fin et au plus tard après {attente_maxi // 60} min (plafond {calcul.dollars(plafond)})")
     duree_max_min = entier_config(conf, 'runpod.duree_max_min', None) or max(calcul.DUREE_MAX_RUNPOD_MIN,
                                                                              int(2.5 * estimation / 60) + 1)
     dire(f"chaîne : chant → {'voix nettoyée' if not a.sans_nettoyage else 'voix complète (sans nettoyage)'}, "
@@ -5181,7 +5216,7 @@ def preparer_outils_modal(a, conf):
     ok, raison = module.pret()
     if not ok:
         sys.exit('Modal : ' + raison)
-    gpu = gpu_calcul_config(conf, 'modal')
+    gpu = calcul.GPU_MODAL_OUTILS   # téléchargements seulement : une petite carte suffit
     c = calcul.carte(gpu, 'modal')
     script = kdir / 'noyau-modal-outils.py'
     script.write_text(construire_script({'outils': True}))

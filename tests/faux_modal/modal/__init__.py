@@ -106,7 +106,8 @@ class _Machine:
             @staticmethod
             def remote_gen(*a, **k):
                 _trace(options={'gpu': self.options.get('gpu'), 'timeout': self.options.get('timeout'),
-                                'volumes': sorted(self.options.get('volumes', {}))})
+                                'volumes': sorted(self.options.get('volumes', {})),
+                                **{k: self.options[k] for k in ('cpu', 'memory') if k in self.options}})
                 os.environ['VOIXLA_MODAL_RACINE'] = str(_racine())
                 return f(*a, **k)
         return Appel
@@ -117,6 +118,8 @@ class _Cls:
         self.classe, self.options = classe, options
 
     def with_options(self, **options):
+        if isinstance(options.get('gpu'), list):   # comme le vrai : liste de repli refusée hors du décorateur
+            raise TypeError('Invalid GPU config: value must be a string or None')
         return _Cls(self.classe, {**self.options, **options})
 
     def __call__(self):

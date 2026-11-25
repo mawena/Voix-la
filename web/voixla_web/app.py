@@ -252,7 +252,7 @@ def creer(conf=None):
     def tableau(req: Request):
         c = exiger(req)
         voix = base.tous('SELECT * FROM voix WHERE compte = ? ORDER BY nom', c['id'])
-        doublages = base.tous('SELECT * FROM doublages WHERE compte = ? ORDER BY id DESC LIMIT 50', c['id'])
+        doublages = base.tous('SELECT * FROM doublages WHERE compte = ? AND supprime_le IS NULL ORDER BY id DESC LIMIT 50', c['id'])
         return page(req, 'tableau.html', voix=voix, doublages=doublages, restant=travaux.budget_restant(c['id']),
                     depense=base.depense_du_mois(c['id']), taille_max=conf.taille_max_mo, duree_max=conf.duree_max_s,
                     positions={d['id']: travaux.position(d['id']) for d in doublages})
@@ -507,7 +507,7 @@ def creer(conf=None):
         shutil.rmtree(travaux.dossier_doublage(d), ignore_errors=True)
         # la ligne reste (coût du mois) mais sans fichier
         base.faire("UPDATE doublages SET etat = CASE WHEN etat IN ('en_file', 'en_cours') THEN 'annule' ELSE etat END, "
-                   "sortie = NULL, message = 'supprimé' WHERE id = ?", did)
+                   "sortie = NULL, message = 'supprimé', supprime_le = ? WHERE id = ?", time.time(), did)
         return aller('/tableau')
 
     # --- Administration ---

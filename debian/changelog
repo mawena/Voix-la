@@ -1,3 +1,9 @@
+voix-la (0.24.1) unstable; urgency=medium
+
+  * Service web : la suppression d'un doublage le retire bien du tableau.
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Wed, 25 Nov 2026 22:00:00 +0100
+
 voix-la (0.24.0) unstable; urgency=medium
 
   * Service web : nouveau design (barre latérale, écran partagé, accueil asymétrique).

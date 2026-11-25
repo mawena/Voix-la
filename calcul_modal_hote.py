@@ -25,7 +25,7 @@ import modal
 
 # Bibliothèques : les mêmes que le noyau Kaggle (calcul.py ; un test vérifie que les deux listes sont identiques)
 PYTHON_NOYAU = '3.13'
-PAQUETS = ['torch==2.11.0', 'torchaudio==2.11.0', 'numpy==2.1.3', 'librosa==0.11.0', 'transformers==5.20.2',
+PAQUETS = ['torch==2.11.0', 'torchaudio==2.11.0', 'torchvision==0.26.0', 'numpy==2.1.3', 'librosa==0.11.0', 'transformers==5.20.2',
            'huggingface_hub==1.33.0', 'soundfile==0.14.0', 'scipy', 'einops', 'pyyaml', 'tqdm', 'matplotlib', 'munch']
 INDEX_TORCH = 'https://download.pytorch.org/whl/cu128'
 NOM_APP = 'voix-la'

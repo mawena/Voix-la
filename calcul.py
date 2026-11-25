@@ -17,9 +17,10 @@ CALCUL_DEFAUT = 'kaggle'
 ATTENTE_FILE_MIN_DEFAUT = 20   # « auto » : Kaggle toujours en file (QUEUED) au-delà de cette durée -> Modal
 
 # Bibliothèques du noyau Kaggle (relevé du 09/11/2026 : Python 3.13, torch 2.11.0+cu130) : Modal et Runpod installent les
-# mêmes versions (torch en cu128, compatible avec plus de pilotes)
+# mêmes versions (torch en cu128, compatible avec plus de pilotes). torchvision fixé à la version assortie : sinon
+# audio-separator en tire un de PyPI, incompatible, et transformers ne peut plus importer WhisperModel (25/11/2026)
 PYTHON_NOYAU = '3.13'
-VERSIONS_NOYAU = {'torch': '2.11.0', 'torchaudio': '2.11.0', 'numpy': '2.1.3', 'librosa': '0.11.0',
+VERSIONS_NOYAU = {'torch': '2.11.0', 'torchaudio': '2.11.0', 'torchvision': '0.26.0', 'numpy': '2.1.3', 'librosa': '0.11.0',
                   'transformers': '5.20.2', 'huggingface_hub': '1.33.0', 'soundfile': '0.14.0'}
 AUTRES_PAQUETS = ('scipy', 'einops', 'pyyaml', 'tqdm', 'matplotlib', 'munch')
 INDEX_TORCH = 'https://download.pytorch.org/whl/cu128'

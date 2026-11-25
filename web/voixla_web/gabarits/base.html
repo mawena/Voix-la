@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block titre %}Voix-là{% endblock %} · Voix-là</title>
+<link rel="icon" href="/statique/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/statique/style.css">
+</head>
+<body>
+<header class="haut"><div class="cadre">
+  <a class="marque" href="/"><img src="/statique/favicon.svg" alt="">Voix-là</a>
+  <nav>
+    {% if moi %}
+      <a href="/tableau">Mes doublages</a>
+      {% if moi.admin %}<a href="/admin">Administration</a>{% endif %}
+      <form class="ligne" method="post" action="/deconnexion"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="lien">Se déconnecter</button></form>
+    {% else %}
+      <a href="/connexion">Se connecter</a>
+      {% if inscription == 'libre' %}<a href="/inscription">Créer un compte</a>{% endif %}
+    {% endif %}
+  </nav>
+</div></header>
+<main><div class="cadre {% block largeur %}{% endblock %}">
+{% if message %}<p class="message" role="status">{{ message }}</p>{% endif %}
+{% if erreur %}<p class="erreur" role="alert">{{ erreur }}</p>{% endif %}
+{% block contenu %}{% endblock %}
+</div></main>
+</body>
+</html>

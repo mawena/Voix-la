@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block contenu %}
+<section class="heros">
+  <h1>Doublez vos vidéos avec votre propre voix.</h1>
+  <p>Enregistrez une minute de votre voix, envoyez une vidéo ou une chanson : Voix-là la refait avec votre timbre, en gardant la musique.</p>
+  <div class="actions">
+    {% if inscription == 'libre' %}<a class="bouton" href="/inscription">Créer un compte</a>{% endif %}
+    <a class="bouton second" href="/connexion">Se connecter</a>
+  </div>
+</section>
+<div class="grille">
+  <div class="carte"><h2>1. Votre voix</h2><p class="doux">Un enregistrement propre de 30 s à quelques minutes, sans musique.</p></div>
+  <div class="carte"><h2>2. Votre vidéo</h2><p class="doux">Une vidéo ou un son de 10 minutes au plus. Chant ou parole, Voix-là choisit.</p></div>
+  <div class="carte"><h2>3. Le résultat</h2><p class="doux">Le calcul se fait sur une carte graphique distante ; vous téléchargez la vidéo doublée.</p></div>
+</div>
+{% endblock %}

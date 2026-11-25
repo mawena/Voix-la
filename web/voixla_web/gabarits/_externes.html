@@ -1,0 +1,7 @@
+{% if fournisseurs %}
+<div class="ou">ou</div>
+<div class="externes">
+  {% if fournisseurs.google %}<a class="bouton second" href="/auth/google">Continuer avec Google</a>{% endif %}
+  {% if fournisseurs.portier %}<a class="bouton second" href="/auth/portier">Continuer avec Portier</a>{% endif %}
+</div>
+{% endif %}

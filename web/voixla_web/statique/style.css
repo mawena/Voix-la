@@ -1,0 +1,61 @@
+@font-face{font-family:"Bricolage Grotesque";src:url("bricolage-grotesque.woff2") format("woff2");font-weight:200 800;font-display:swap}
+:root{
+  --fond:#F4F3F9;--surface:#FFFFFF;--texte:#17172B;--doux:#54546C;--ligne:#D9D7E6;
+  --origine:#8F5200;--clone:#6A3AD0;--clone-trait:#7C4DFF;--voile-clone:#ECE6FB;--focus:#6A3AD0;
+  --danger:#B3261E;--ok:#1E7A46;
+  --police:"Bricolage Grotesque",system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
+}
+@media (prefers-color-scheme:dark){:root{
+  --fond:#0D0E1B;--surface:#16172E;--texte:#ECEBF6;--doux:#A9A8C2;--ligne:#2C2D4A;
+  --origine:#F2B04C;--clone:#B39CFF;--clone-trait:#A98BFF;--voile-clone:#1E1B3D;--focus:#B39CFF;
+  --danger:#FF8A80;--ok:#7DDB9F}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--fond);color:var(--texte);font:400 1.0625rem/1.6 var(--police);overflow-wrap:break-word}
+a{color:var(--clone);text-underline-offset:.18em}
+:focus-visible{outline:3px solid var(--focus);outline-offset:3px;border-radius:4px}
+h1,h2,h3{font-weight:760;line-height:1.1;letter-spacing:-.02em;margin:0 0 .6rem}
+h1{font-size:clamp(1.8rem,5vw,2.6rem)}h2{font-size:1.35rem}
+p{margin:0 0 .8rem}
+.cadre{max-width:60rem;margin-inline:auto;padding:0 1.1rem}
+.etroit{max-width:26rem}
+header.haut{border-bottom:1px solid var(--ligne);background:var(--surface)}
+header.haut .cadre{display:flex;align-items:center;gap:1rem;min-height:3.6rem}
+.marque{display:flex;align-items:center;gap:.5rem;font-weight:780;font-size:1.2rem;color:var(--texte);text-decoration:none}
+.marque img{width:1.8rem;height:1.8rem}
+header nav{margin-left:auto;display:flex;gap:.9rem;align-items:center;flex-wrap:wrap}
+main{padding:2rem 0 4rem}
+.carte{background:var(--surface);border:1px solid var(--ligne);border-radius:14px;padding:1.3rem;margin-bottom:1.2rem}
+label{display:block;font-weight:600;margin:.8rem 0 .25rem}
+input[type=email],input[type=password],input[type=text],input[type=number],select,input[type=file]{
+  width:100%;font:inherit;padding:.6rem .7rem;border:1px solid var(--ligne);border-radius:10px;background:var(--fond);color:var(--texte)}
+button,.bouton{display:inline-flex;align-items:center;justify-content:center;gap:.5rem;font:inherit;font-weight:650;cursor:pointer;
+  padding:.6rem 1rem;border-radius:10px;border:1px solid var(--clone-trait);background:var(--clone);color:#fff;text-decoration:none}
+button.second,.bouton.second{background:transparent;color:var(--clone)}
+button.lien{background:none;border:none;color:var(--clone);padding:0;font-weight:500;text-decoration:underline}
+button.danger{background:transparent;border-color:var(--danger);color:var(--danger)}
+button.petit{padding:.25rem .6rem;font-size:.9rem}
+form.ligne{display:inline}
+.plein{width:100%;margin-top:1rem}
+.ou{display:flex;align-items:center;gap:.8rem;color:var(--doux);margin:1.2rem 0}
+.ou::before,.ou::after{content:"";flex:1;border-top:1px solid var(--ligne)}
+.externes{display:grid;gap:.6rem}
+.erreur{border-left:4px solid var(--danger);padding:.6rem .8rem;background:var(--surface);margin-bottom:1rem}
+.message{border-left:4px solid var(--clone);padding:.6rem .8rem;background:var(--voile-clone);margin-bottom:1rem}
+.doux{color:var(--doux)}
+.grille{display:grid;gap:1.2rem;grid-template-columns:repeat(auto-fit,minmax(17rem,1fr))}
+table{width:100%;border-collapse:collapse;font-size:.95rem}
+th,td{text-align:left;padding:.5rem .4rem;border-bottom:1px solid var(--ligne);vertical-align:top}
+th{color:var(--doux);font-weight:600}
+.etat{display:inline-block;padding:.05rem .5rem;border-radius:99px;font-size:.85rem;background:var(--voile-clone);color:var(--clone)}
+.etat.fini,.etat.prete{background:transparent;border:1px solid var(--ok);color:var(--ok)}
+.etat.erreur{background:transparent;border:1px solid var(--danger);color:var(--danger)}
+.etat.annule{background:transparent;border:1px solid var(--ligne);color:var(--doux)}
+.jauge{height:.5rem;border-radius:99px;background:var(--ligne);overflow:hidden;margin:.4rem 0}
+.jauge span{display:block;height:100%;background:var(--clone-trait)}
+.heros{padding:2rem 0}
+.heros p{font-size:1.15rem;color:var(--doux);max-width:36rem}
+.actions{display:flex;gap:.7rem;flex-wrap:wrap;margin-top:1.2rem}
+@media (max-width:40rem){.masque-mobile{display:none}td,th{padding:.45rem .25rem}}
+details.carte summary{cursor:pointer}
+.actions-ligne{white-space:nowrap}
+@media (max-width:40rem){.actions-ligne{white-space:normal}}

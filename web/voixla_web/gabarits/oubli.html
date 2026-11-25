@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block titre %}Mot de passe oublié{% endblock %}
+{% block largeur %}etroit{% endblock %}
+{% block contenu %}
+<h1>Mot de passe oublié</h1>
+<form method="post" action="/oubli" class="carte">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <label for="email">Adresse e-mail du compte</label><input id="email" name="email" type="email" required autocomplete="email">
+  <button class="plein">Recevoir un lien</button>
+</form>
+{% endblock %}

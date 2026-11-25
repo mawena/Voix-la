@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block titre %}Administration{% endblock %}
+{% block contenu %}
+<h1>Administration</h1>
+<p>Dépense du mois : <strong>{{ total|dollars }}</strong> sur {{ budget|dollars }}.</p>
+<div class="jauge"><span style="width:{{ [100, (total / budget * 100) if budget else 100]|min|round|int }}%"></span></div>
+
+<section class="carte">
+  <h2>Comptes ({{ comptes|length }})</h2>
+  <table>
+    <thead><tr><th>Compte</th><th class="masque-mobile">Connexion</th><th>Mois</th><th>Actions</th></tr></thead>
+    <tbody>
+    {% for c in comptes %}
+    <tr>
+      <td>{{ c.email }}{% if c.admin %} <span class="etat">admin</span>{% endif %}{% if c.bloque %} <span class="etat erreur">bloqué</span>{% endif %}{% if not c.email_valide %} <span class="etat annule">non confirmé</span>{% endif %}
+        <br><small class="doux">{{ c.nom }} · inscrit le {{ c.cree_le|date }}{% if c.vu_le %} · vu le {{ c.vu_le|date }}{% endif %} · {{ c.n }} doublage(s)</small></td>
+      <td class="masque-mobile">{% if c.mot_de_passe %}mot de passe {% endif %}{% if c.google %}Google {% endif %}{% if c.portier %}Portier{% endif %}</td>
+      <td>{{ depenses[c.id]|dollars }} / {{ (c.budget_usd if c.budget_usd is not none else budget_compte)|dollars }}</td>
+      <td>
+        <form class="ligne" method="post" action="/admin/comptes/{{ c.id }}">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          {% if c.bloque %}<button class="second petit" name="action" value="debloquer">Débloquer</button>
+          {% else %}<button class="second petit" name="action" value="bloquer">Bloquer</button>{% endif %}
+          {% if c.admin %}<button class="second petit" name="action" value="retirer_admin">Retirer admin</button>
+          {% else %}<button class="second petit" name="action" value="admin">Admin</button>{% endif %}
+          {% if not c.email_valide %}<button class="second petit" name="action" value="valider">Confirmer</button>{% endif %}
+          <button class="danger petit" name="action" value="supprimer" onclick="return confirm('Supprimer {{ c.email }} et tous ses fichiers ?')">Supprimer</button>
+        </form>
+        <form class="ligne" method="post" action="/admin/comptes/{{ c.id }}">
+          <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="budget">
+          <input name="budget" type="text" inputmode="decimal" size="5" style="width:5rem" placeholder="{{ budget_compte }}" value="{{ c.budget_usd if c.budget_usd is not none else '' }}" aria-label="Budget mensuel en dollars">
+          <button class="second petit">Budget</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="carte">
+  <h2>Derniers doublages</h2>
+  <table>
+    <thead><tr><th>#</th><th>Compte</th><th>Fichier</th><th>État</th><th>Coût</th></tr></thead>
+    <tbody>
+    {% for d in doublages %}
+    <tr><td>{{ d.id }}</td><td>{{ d.email }}</td><td>{{ d.titre }}<br><small class="doux">{{ d.cree_le|date }} · {{ d.voix }}</small></td>
+      <td><span class="etat {{ d.etat }}">{{ etats.get(d.etat, d.etat) }}</span>{% if d.message %}<br><small class="doux">{{ d.message }}</small>{% endif %}</td>
+      <td>{{ (d.cout_usd if d.cout_usd is not none else d.cout_estime_usd)|dollars }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

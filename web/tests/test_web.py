@@ -134,13 +134,13 @@ def test_voix_et_doublage_en_file(env, tmp_path):
     assert d['etat'] == 'en_file'
     e = cl.get(f'/doublages/{d["id"]}/etat').json()
     assert e['etat'] == 'en_file' and e['position'] == 1
-    assert '<td>a<br>' in cl.get('/tableau').text
+    assert '<td class="titre">a<br>' in cl.get('/tableau').text
     cl.post(f'/doublages/{d["id"]}/annuler', data={'csrf': t})
     assert base.un('SELECT etat FROM doublages')['etat'] == 'annule'
     # supprimé : disparaît du tableau, la ligne reste pour le coût du mois
     cl.post(f'/doublages/{d["id"]}/supprimer', data={'csrf': t})
     assert base.un('SELECT supprime_le FROM doublages')['supprime_le']
-    assert '<td>a<br>' not in cl.get('/tableau').text
+    assert '<td class="titre">a<br>' not in cl.get('/tableau').text
     # un autre compte ne voit pas ce doublage
     autre = TestClient(app, follow_redirects=False)
     autre.get(f'/valider/{inscrire(autre, courriels, "b@ex.fr")}')

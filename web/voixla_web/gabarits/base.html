@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{% block titre %}Voix-là{% endblock %} · Voix-là</title>
 <link rel="icon" href="/statique/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/statique/style.css?v=3">
+<link rel="stylesheet" href="/statique/style.css?v=4">
 </head>
 <body>
 {% set chemin = request.url.path %}
@@ -15,8 +15,9 @@
   <aside class="cote">
     <a class="marque" href="/tableau"><img src="/statique/favicon.svg" alt="">Voix-là</a>
     <nav class="menu">
-      <a href="/tableau"{% if chemin == '/tableau' %} aria-current="page"{% endif %}>Mes doublages</a>
-      {% if moi.admin %}<a href="/admin"{% if chemin == '/admin' %} aria-current="page"{% endif %}>Administration</a>{% endif %}
+      <p class="menu-titre">Espace</p>
+      <a href="/tableau"{% if chemin == '/tableau' %} aria-current="page"{% endif %}><svg class="icone-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 10v4M6 6v12M10 3v18M14 8v8M18 5v14M22 10v4"/></svg>Mes doublages</a>
+      {% if moi.admin %}<a href="/admin"{% if chemin == '/admin' %} aria-current="page"{% endif %}><svg class="icone-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2l8 3v6c0 5-3.5 9-8 11-4.5-2-8-6-8-11V5z"/><path d="M9 12l2 2 4-4"/></svg>Administration</a>{% endif %}
     </nav>
     <div class="qui">
       <span class="avatar" aria-hidden="true">{{ (moi.nom or moi.email)[:1]|upper }}</span>
@@ -43,6 +44,10 @@
   {% if erreur %}<p class="erreur" role="alert">{{ erreur }}</p>{% endif %}
   {{ self.contenu() }}
 </main>
+<footer class="pied">
+  <span>© Voix-là · doublage avec votre propre voix</span>
+  <span><a href="/">Accueil</a> · <a href="/connexion">Se connecter</a></span>
+</footer>
 {% endif %}
 {% endblock %}
 </body>

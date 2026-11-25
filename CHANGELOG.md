@@ -7,6 +7,17 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+## [0.25.0] - 2026-11-25
+
+### Modifié
+- Service web : nouveau design de tout le site, mêmes couleurs (ambre et violet) et mêmes thèmes clair et sombre.
+  - En-tête public collant et flouté, pied de page, titre de l'accueil en dégradé, lecteur avec halo, étapes en
+    cartes, ondes animées (coupées si le système demande moins d'animations).
+  - Menu latéral avec icônes et avatar en dégradé ; barre collante sur téléphone.
+  - Tableau de bord : compteurs, états vides illustrés, tableaux qui défilent sur petit écran, pastilles d'état
+    colorées (le point clignote pendant le traitement), choix de voix et de contenu côte à côte.
+  - Formulaires : halo au focus, listes et choix de fichier stylés, barre d'envoi en dégradé, messages avec icône.
+  - Administration : cartes de chiffres (dépense du mois, comptes, doublages), actions alignées, badges.
 ## [0.24.2] - 2026-11-25
 
 ### Modifié
@@ -942,7 +953,8 @@ Première version publique.
     `VOIXLA_DECODAGE_MATERIEL=1` remet le décodage matériel ;
   - les essais automatiques laissaient le son de l'application coupé.
 
-[Non publié]: https://github.com/mawena/Voix-la/compare/v0.24.2...HEAD
+[Non publié]: https://github.com/mawena/Voix-la/compare/v0.25.0...HEAD
+[0.25.0]: https://github.com/mawena/Voix-la/compare/v0.24.2...v0.25.0
 [0.21.1]: https://github.com/mawena/Voix-la/compare/v0.21.0...v0.21.1
 [0.21.0]: https://github.com/mawena/Voix-la/compare/v0.20.2...v0.21.0
 [0.20.2]: https://github.com/mawena/Voix-la/compare/v0.20.1...v0.20.2

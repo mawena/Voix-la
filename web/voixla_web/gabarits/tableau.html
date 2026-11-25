@@ -26,10 +26,12 @@
     <label for="media">Vidéo ou son</label>
     <input id="media" name="media" type="file" required accept="video/*,audio/*">
     <p class="doux">{{ taille_max }} Mo et {{ (duree_max // 60) }} min au plus.</p>
-    <label for="voixc">Voix</label>
-    <select id="voixc" name="voix">{% for v in pretes %}<option>{{ v.nom }}</option>{% endfor %}</select>
-    <label for="mode">Contenu</label>
-    <select id="mode" name="mode"><option value="auto">Détecter</option><option value="chant">Chant</option><option value="parole">Parole</option></select>
+    <div class="grille-2">
+      <div><label for="voixc">Voix</label>
+      <select id="voixc" name="voix">{% for v in pretes %}<option>{{ v.nom }}</option>{% endfor %}</select></div>
+      <div><label for="mode">Contenu</label>
+      <select id="mode" name="mode"><option value="auto">Détecter</option><option value="chant">Chant</option><option value="parole">Parole</option></select></div>
+    </div>
     <button class="plein">Lancer le doublage</button>
     <div class="envoi" hidden>
       <progress max="100" value="0"></progress>
@@ -39,19 +41,24 @@
     <p class="erreur-envoi" role="alert" hidden></p>
   </form>
   {% else %}
-  <p class="doux">Ajoutez d’abord une voix.</p>
+  <div class="vide">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8"/></svg>
+    <p><strong>Ajoutez d’abord une voix.</strong></p>
+    <p>Envoyez un court enregistrement dans « Mes voix » : il servira à doubler vos vidéos.</p>
+  </div>
   {% endif %}
 </section>
 
 <section class="carte">
-  <h2>Doublages</h2>
+  <div class="carte-tete"><h2>Doublages</h2>{% if doublages %}<span class="compte">{{ doublages|length }}</span>{% endif %}</div>
   {% if doublages %}
+  <div class="defile">
   <table>
     <thead><tr><th>Fichier</th><th class="masque-mobile">Voix</th><th>État</th><th class="masque-mobile">Coût</th><th></th></tr></thead>
     <tbody>
     {% for d in doublages %}
     <tr data-id="{{ d.id }}" data-etat="{{ d.etat }}">
-      <td>{{ d.titre }}<br><small class="doux">{{ d.cree_le|date }}</small></td>
+      <td class="titre">{{ d.titre }}<br><small class="doux">{{ d.cree_le|date }}</small></td>
       <td class="masque-mobile">{{ d.voix }}</td>
       <td><span class="etat {{ d.etat }}">{{ etats.get(d.etat, d.etat) }}</span>
         <br><small class="doux info">{% if d.etat == 'en_file' and positions[d.id] %}rang {{ positions[d.id] }} dans la file{% elif d.message %}{{ d.message }}{% endif %}</small></td>
@@ -68,15 +75,20 @@
     {% endfor %}
     </tbody>
   </table>
+  </div>
   {% else %}
-  <p class="doux">Aucun doublage pour l’instant.</p>
+  <div class="vide">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="5" width="15" height="14" rx="2"/><path d="M17 10l5-3v10l-5-3"/></svg>
+    <p><strong>Aucun doublage pour l’instant.</strong></p>
+    <p>Envoyez une vidéo ou un son ci-dessus : le résultat apparaîtra ici.</p>
+  </div>
   {% endif %}
 </section>
 
 </div>
 <aside class="lateral">
 <section class="carte">
-  <h2>Mes voix</h2>
+  <div class="carte-tete"><h2>Mes voix</h2>{% if voix %}<span class="compte">{{ voix|length }}</span>{% endif %}</div>
   {% if voix %}
   <table class="liste-voix"><tbody>
   {% for v in voix %}

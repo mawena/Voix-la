@@ -1,3 +1,9 @@
+voix-la (0.25.0) unstable; urgency=medium
+
+  * Service web : nouveau design de tout le site.
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Wed, 25 Nov 2026 20:09:40 +0100
+
 voix-la (0.24.2) unstable; urgency=medium
 
   * Service web : icônes pour les boutons des lignes du tableau.

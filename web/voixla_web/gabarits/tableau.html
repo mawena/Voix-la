@@ -10,7 +10,7 @@
   <h2>Nouveau doublage</h2>
   {% set pretes = voix|selectattr('etat', 'equalto', 'prete')|list %}
   {% if pretes %}
-  <form method="post" action="/doublages" enctype="multipart/form-data">
+  <form method="post" action="/doublages" enctype="multipart/form-data" data-envoi="doublage">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <label for="media">Vidéo ou son</label>
     <input id="media" name="media" type="file" required accept="video/*,audio/*">
@@ -20,6 +20,12 @@
     <label for="mode">Contenu</label>
     <select id="mode" name="mode"><option value="auto">Détecter</option><option value="chant">Chant</option><option value="parole">Parole</option></select>
     <button class="plein">Lancer le doublage</button>
+    <div class="envoi" hidden>
+      <progress max="100" value="0"></progress>
+      <p class="doux" aria-live="polite"><span class="pourcent">0 %</span> · <span class="detail"></span></p>
+      <button type="button" class="danger petit annuler-envoi">Annuler l’envoi</button>
+    </div>
+    <p class="erreur-envoi" role="alert" hidden></p>
   </form>
   {% else %}
   <p class="doux">Ajoutez d’abord une voix.</p>
@@ -37,7 +43,7 @@
   {% endfor %}
   </tbody></table>
   {% endif %}
-  <form method="post" action="/voix" enctype="multipart/form-data">
+  <form method="post" action="/voix" enctype="multipart/form-data" data-envoi="voix">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <label for="nomv">Nom de la voix</label>
     <input id="nomv" name="nom" type="text" required minlength="2" maxlength="30" placeholder="ma-voix">
@@ -45,6 +51,12 @@
     <input id="enr" name="enregistrement" type="file" required accept="audio/*,video/*">
     <p class="doux">30 s à quelques minutes, votre voix seule, sans musique.</p>
     <button class="second plein">Ajouter la voix</button>
+    <div class="envoi" hidden>
+      <progress max="100" value="0"></progress>
+      <p class="doux" aria-live="polite"><span class="pourcent">0 %</span> · <span class="detail"></span></p>
+      <button type="button" class="danger petit annuler-envoi">Annuler l’envoi</button>
+    </div>
+    <p class="erreur-envoi" role="alert" hidden></p>
   </form>
 </section>
 </div>
@@ -91,6 +103,7 @@
   </form>
 </details>
 
+<script src="/statique/envoi.js?v=1" defer></script>
 <script>
 // Suivi des doublages en cours : recharge la page quand un état change.
 (function () {
@@ -102,7 +115,7 @@
         const r = await fetch('/doublages/' + l.dataset.id + '/etat', {credentials: 'same-origin'});
         if (!r.ok) continue;
         const e = await r.json();
-        if (e.etat !== l.dataset.etat) { location.reload(); return; }
+        if (e.etat !== l.dataset.etat && !window.envoiEnCours) { location.reload(); return; }
         const info = l.querySelector('.info');
         info.textContent = e.etat === 'en_file' && e.position ? 'rang ' + e.position + ' dans la file' : (e.message || '');
       } catch (_) {}

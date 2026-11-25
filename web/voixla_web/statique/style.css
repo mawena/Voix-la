@@ -59,3 +59,7 @@ th{color:var(--doux);font-weight:600}
 details.carte summary{cursor:pointer}
 .actions-ligne{white-space:nowrap}
 @media (max-width:40rem){.actions-ligne{white-space:normal}}
+.envoi{margin-top:.9rem}
+.envoi progress{width:100%;height:.8rem;accent-color:var(--clone)}
+.envoi p{margin:.3rem 0 .5rem}
+.erreur-envoi{color:var(--danger);margin:.6rem 0 0}

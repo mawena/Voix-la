@@ -1029,6 +1029,10 @@ envoyer des vidéos ou des sons à doubler ; le calcul tourne sur Modal, le site
   contre le CSRF, OpenID Connect avec PKCE.
 - **Doublages** : envoi d'un fichier (300 Mo et 10 min au plus), file d'attente (un seul calcul à la fois), suivi de
   l'étape, résultat à télécharger, annulation. Chaque compte a ses propres voix.
+- **Envoi par morceaux** : vidéos et enregistrements partent par morceaux de 8 Mo (`POST /envois`, `PUT /envois/<jeton>`
+  avec `X-Debut`, `POST /envois/<jeton>/fin`), avec une barre d'avancement en temps réel (pourcentage, Mo envoyés,
+  débit, temps restant). Un morceau coupé est renvoyé (8 essais, la position est relue sur le serveur) et l'envoi
+  peut être annulé ; un envoi abandonné est effacé au bout de 24 h. Sans JavaScript, le formulaire classique marche.
 - **Coûts** : chaque doublage est compté (durée du calcul Modal x 6,25 $/h, prix de la carte la plus chère) ; budget
   global de 25 $ par mois et de 2 $ par compte par défaut. Un doublage qui dépasserait le budget est refusé.
 - **Administration** (adresses de `admins`) : liste des comptes, blocage, budget propre à un compte.

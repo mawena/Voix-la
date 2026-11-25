@@ -1,16 +1,26 @@
 {% extends "base.html" %}
 {% block contenu %}
 <section class="heros">
-  <h1>Doublez vos vidéos avec votre propre voix.</h1>
-  <p>Enregistrez une minute de votre voix, envoyez une vidéo ou une chanson : Voix-là la refait avec votre timbre, en gardant la musique.</p>
-  <div class="actions">
-    {% if inscription == 'libre' %}<a class="bouton" href="/inscription">Créer un compte</a>{% endif %}
-    <a class="bouton second" href="/connexion">Se connecter</a>
+  <div class="heros-texte">
+    <p class="sur-titre">Doublage vocal par clonage de voix</p>
+    <h1>Votre vidéo,<br>avec <em>votre</em> voix.</h1>
+    <p class="chapeau">Enregistrez une minute de votre voix, envoyez une vidéo ou une chanson : Voix-là la refait avec votre timbre, en gardant la musique, la mélodie et le phrasé.</p>
+    <div class="actions">
+      {% if inscription == 'libre' %}<a class="bouton" href="/inscription">Créer un compte</a>{% endif %}
+      <a class="bouton second" href="/connexion">Se connecter</a>
+    </div>
+  </div>
+  <div class="heros-visuel" aria-hidden="true">
+    <div class="lecteur">
+      <div class="lecteur-tete"><span class="point"></span><span class="point"></span><span class="point"></span><span class="titre-faux">clip.mp4</span></div>
+      {% include "_ondes.html" %}
+      <div class="lecteur-pied"><span class="etat fini">Doublage fini</span><span class="doux">3 min 12 s · chant</span></div>
+    </div>
   </div>
 </section>
-<div class="grille">
-  <div class="carte"><h2>1. Votre voix</h2><p class="doux">Un enregistrement propre de 30 s à quelques minutes, sans musique.</p></div>
-  <div class="carte"><h2>2. Votre vidéo</h2><p class="doux">Une vidéo ou un son de 10 minutes au plus. Chant ou parole, Voix-là choisit.</p></div>
-  <div class="carte"><h2>3. Le résultat</h2><p class="doux">Le calcul se fait sur une carte graphique distante ; vous téléchargez la vidéo doublée.</p></div>
-</div>
+<ol class="etapes">
+  <li><h2>Votre voix</h2><p class="doux">Un enregistrement propre de 30 s à quelques minutes, sans musique.</p></li>
+  <li><h2>Votre vidéo</h2><p class="doux">Une vidéo ou un son de 10 minutes au plus. Chant ou parole, Voix-là choisit.</p></li>
+  <li><h2>Le résultat</h2><p class="doux">Le calcul se fait sur une carte graphique distante ; vous téléchargez la vidéo doublée.</p></li>
+</ol>
 {% endblock %}

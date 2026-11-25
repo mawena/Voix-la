@@ -7,6 +7,15 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+## [0.24.0] - 2026-11-25
+
+### Modifié
+- Service web : nouveau design, sans la colonne centrée. Une fois connecté, une barre latérale (menu, compte,
+  déconnexion) et un tableau en deux colonnes (doublages à gauche, voix et compte à droite, budget en haut).
+  Connexion, inscription et mot de passe oublié sur un écran partagé avec une vitrine animée par des ondes.
+  Accueil asymétrique : grand titre à gauche, faux lecteur « voix d'origine / votre voix » à droite, trois étapes.
+  Mobile : la barre latérale devient une barre du haut. Thèmes clair et sombre.
+
 ## [0.23.0] - 2026-11-25
 
 ### Ajouté

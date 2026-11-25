@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block corps %}
+<div class="partage">
+  <section class="vitrine" aria-hidden="true">
+    <a class="marque" href="/"><img src="/statique/favicon.svg" alt="">Voix-là</a>
+    <div class="vitrine-texte">
+      <p class="sur-titre">Même chanson, autre timbre</p>
+      <p class="accroche">La musique reste.<br>La voix devient <em>la vôtre</em>.</p>
+    </div>
+    {% include "_ondes.html" %}
+  </section>
+  <main class="formulaire">
+    {% if message %}<p class="message" role="status">{{ message }}</p>{% endif %}
+    {% if erreur %}<p class="erreur" role="alert">{{ erreur }}</p>{% endif %}
+    {% block contenu %}{% endblock %}
+  </main>
+</div>
+{% endblock %}

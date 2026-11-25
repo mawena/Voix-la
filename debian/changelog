@@ -1,3 +1,9 @@
+voix-la (0.24.0) unstable; urgency=medium
+
+  * Service web : nouveau design (barre latérale, écran partagé, accueil asymétrique).
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Wed, 25 Nov 2026 21:00:00 +0100
+
 voix-la (0.23.0) unstable; urgency=medium
 
   * Service web : envoi des vidéos et des voix par morceaux, avec avancement en temps réel.

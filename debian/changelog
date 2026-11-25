@@ -1,3 +1,10 @@
+voix-la (0.21.0) unstable; urgency=medium
+
+  * Modal : la carte la plus rapide libre (B200, H200, H100), plafond de
+    coût par session (modal.plafond_usd), conteneur à 6 cœurs et 24 Gio.
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Wed, 25 Nov 2026 12:00:00 +0100
+
 voix-la (0.20.2) unstable; urgency=medium
 
   * Passage au dépôt APT unique https://apt.mawena.cloud : le paquet ne

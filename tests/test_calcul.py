@@ -60,10 +60,15 @@ class Configuration(Base):
         self.assertEqual((conf['modal']['gpu'], conf['kaggle']['attente_file_min'], conf['runpod']['duree_max_min']),
                          ('A10', 35, 120))
         self.assertEqual(self.D.gpu_calcul_config(conf, 'modal'), 'A10')
-        self.assertEqual(self.D.gpu_calcul_config({}, 'modal'), 'L4', 'défaut raisonnable, réglable')
+        self.assertEqual(self.D.gpu_calcul_config({}, 'modal'), 'B200,H200,H100', 'la plus rapide, avec repli')
+        self.assertEqual(self.D.plafond_modal({}, calcul), 8.0)
+        self.assertEqual(self.D.plafond_modal({'modal': {'plafond_usd': '12,5'}}, calcul), 12.5)
+        self.assertEqual(self.silencieux(self.D.plafond_modal, {'modal': {'plafond_usd': 900}}, calcul), 8.0)
         self.assertEqual(self.D.gpu_calcul_config({}, 'runpod'), 'NVIDIA GeForce RTX 4090')
         self.assertEqual(self.D.entier_config({}, 'kaggle.attente_file_min', self.D.ATTENTE_FILE_MIN_DEFAUT), 20)
-        for cle, v in (('kaggle.attente_file_min', '0'), ('kaggle.attente_file_min', 'vingt'), ('modal.gpu', 'L4;rm'),
+        self.silencieux(self.D.ecrire_config, 'modal.plafond_usd', '5')
+        self.assertEqual(json.loads(self.D.CONFIG.read_text())['modal']['plafond_usd'], 5.0)
+        for cle, v in (('modal.plafond_usd', '100'), ('modal.plafond_usd', 'cher'), ('kaggle.attente_file_min', '0'), ('kaggle.attente_file_min', 'vingt'), ('modal.gpu', 'L4;rm'),
                        ('runpod.gpu', '')):
             with self.assertRaises(SystemExit, msg=(cle, v)):
                 self.D.ecrire_config(cle, v)
@@ -81,7 +86,7 @@ class Configuration(Base):
         effectif = json.loads(r.stdout)
         self.assertEqual(effectif['calcul'], 'kaggle')
         self.assertEqual(effectif['attente_file_min'], 20)
-        self.assertEqual(effectif['modal']['gpu'], 'L4')
+        self.assertEqual(effectif['modal']['gpu'], 'B200,H200,H100')
         self.assertFalse(effectif['modal']['pret'] and effectif['runpod']['pret'], 'ni jeton ni clé dans ce HOME')
 
 
@@ -194,7 +199,7 @@ class Estimation(unittest.TestCase):
             self.assertTrue(0.1 < cout < 0.8, (gpu, cout))
         self.assertGreater(resultats['L4'][0], resultats['A10'][0])
         self.assertGreater(resultats['A10'][0], resultats['A100-40GB'][0])
-        self.assertIsNone(calcul.estimer_calcul(kaggle_s, 'modal', calcul.carte('H100', 'modal'))[1], 'carte inconnue : pas de prix')
+        self.assertIsNone(calcul.estimer_calcul(kaggle_s, 'modal', calcul.carte('XYZ', 'modal'))[1], 'carte inconnue : pas de prix')
         self.assertEqual(calcul.dollars(0.3), '0,30 $')
         self.assertEqual(calcul.dollars(None), 'coût inconnu')
 
@@ -206,6 +211,29 @@ class Estimation(unittest.TestCase):
         deux = calcul.estimer_calcul(1000, 'modal', c)
         self.assertGreater(deux[1], 0)
         self.assertLessEqual(deux[1] / un[1], 2.2, 'deux cartes facturées deux fois')
+
+    def test_liste_de_repli(self):
+        c = calcul.carte('B200,H200,H100', 'modal')
+        self.assertEqual((c['nom'], c['cartes'], c['repli']), ('B200/H200/H100', 1, ['H200', 'H100']))
+        self.assertEqual(c['prix_h'], 6.25, 'prix de la plus chère')
+        self.assertEqual(c['vitesse'], 6.0, 'vitesse de la plus lente')
+        self.assertTrue(c['connue'])
+        self.assertIsNone(calcul.carte('B200,XYZ', 'modal')['prix_h'])
+        self.assertEqual(calcul.gpu_pour_modal('B200, H200'), ['B200', 'H200'])
+        self.assertEqual(calcul.gpu_pour_modal('L4'), 'L4')
+        self.assertEqual(calcul.lire_gpu('B200,H200', 'modal'), ('B200', 1))
+        with self.assertRaises(ValueError):
+            calcul.lire_gpus(','.join(['L4'] * 9), 'modal')
+        with self.assertRaises(ValueError):
+            calcul.lire_gpus('B200,', 'modal')
+
+    def test_plafond_modal(self):
+        c = calcul.carte('B200,H200,H100', 'modal')
+        # 8 $ à 6,25 $/h : 4608 s au plus
+        self.assertEqual(calcul.timeout_modal(7200, 1800, c, 8.0), (4608, True))
+        self.assertEqual(calcul.timeout_modal(3600, 1800, c, 8.0), (3600, True))
+        self.assertEqual(calcul.timeout_modal(9000, 4000, c, 8.0)[1], False, '1,3 x 4000 s dépasse le plafond')
+        self.assertEqual(calcul.timeout_modal(9000, 4000, calcul.carte('XYZ', 'modal'), 8.0), (9000, True))
 
     def test_cartes_illisibles(self):
         for v in ('', 'L4;rm -rf', 'L4:9', '../x;'):
@@ -340,13 +368,13 @@ class SessionAilleurs(Base):
                 mock.patch.object(calcul_modal, 'lancer', self.fabriquer(calcul_modal)):
             session, temps, envoi_s, estimation = self.session('modal')
         ctx = self.recu['ctx']
-        self.assertEqual((ctx['gpu'], ctx['mode']), ('L4', 'doublage'))
+        self.assertEqual((ctx['gpu'], ctx['mode']), ('B200,H200,H100', 'doublage'))
         self.assertIn('SOURCE = \'', self.recu['script'], 'le même noyau que Kaggle, réglages et source remplacés')
         self.assertNotIn('__REGLAGES__', self.recu['script'])
         self.assertEqual(self.recu['session_notee']['calcul'], 'modal')
-        self.assertEqual((temps['calcul'], temps['gpu_calcul']), ('modal', 'L4'))
-        self.assertEqual(estimation, calcul.estimer_calcul(1680, 'modal', calcul.carte('L4', 'modal'))[0])
-        self.assertRegex(self.sortie, r'Modal : carte L4, session estimée à \d+ min, coût estimé \d,\d\d \$')
+        self.assertEqual((temps['calcul'], temps['gpu_calcul']), ('modal', 'B200,H200,H100'))
+        self.assertEqual(estimation, calcul.estimer_calcul(1680, 'modal', calcul.carte('B200,H200,H100', 'modal'))[0])
+        self.assertRegex(self.sortie, r'Modal : carte B200/H200/H100, session estimée à \d+ min, coût estimé \d,\d\d \$')
         self.assertEqual((self.tr['tv'] / 'voix_convertie.flac').read_bytes(), b'FLAC', 'sorties rangées comme pour Kaggle')
         self.assertFalse(self.D.SESSION.exists(), 'session close')
         # la voix ne reste pas : ni le jeu local, ni le noyau écrit pour l'occasion

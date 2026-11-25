@@ -7,6 +7,7 @@ session Modal interrompue ne se reprend pas (« doubler --reprendre » le dit et
 """
 import json
 import os
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -18,8 +19,20 @@ JETON = Path.home() / '.modal.toml'
 
 
 def python_modal():
-    return Path(os.environ['VOIXLA_MODAL_PYTHON']).expanduser() if os.environ.get('VOIXLA_MODAL_PYTHON') \
-        else Path.home() / 'modal-venv' / 'bin' / 'python'
+    """Python du client modal : $VOIXLA_MODAL_PYTHON, sinon ~/modal-venv, ~/.local/opt/modal, puis celui de la commande
+    « modal » du PATH (sa ligne #!) ; ~/modal-venv/bin/python si aucun n'existe (pret() le dit)."""
+    if os.environ.get('VOIXLA_MODAL_PYTHON'):
+        return Path(os.environ['VOIXLA_MODAL_PYTHON']).expanduser()
+    candidats = [Path.home() / 'modal-venv' / 'bin' / 'python', Path.home() / '.local' / 'opt' / 'modal' / 'bin' / 'python3']
+    commande = shutil.which('modal')
+    if commande:
+        try:
+            premiere = Path(commande).read_text(errors='replace').splitlines()[0]
+            if premiere.startswith('#!') and 'python' in premiere and ' ' not in premiere[2:].strip():
+                candidats.append(Path(premiere[2:].strip()))
+        except (OSError, IndexError):
+            pass
+    return next((c for c in candidats if c.exists()), candidats[0])
 
 
 def jeton_present():
@@ -48,7 +61,7 @@ def ecrire_journal(retour, lignes):
 
 def lancer(ctx, dire=print, sur_etat=None):
     """Envoie, calcule et rapatrie sur Modal. ctx : script (fichier du noyau), jeu (dossier du son et des références, ou
-    None), retour (dossier des sorties), gpu (« L4 »…), timeout_s, mode (« doublage » ou « outils »).
+    None), retour (dossier des sorties), gpu (« L4 », ou liste de repli « B200,H200,H100 »), timeout_s, mode (« doublage » ou « outils »).
     Rend {'code': code du noyau (0 : réussi), 'journal': lignes, 'etats': {mot: heure}} ; lève RuntimeError si le client
     modal échoue avant d'avoir rendu quoi que ce soit."""
     ok, raison = pret()
@@ -98,7 +111,9 @@ def lancer(ctx, dire=print, sur_etat=None):
         (retour / 'modal.json').unlink()
     if code != 0 and 'code' not in resultat:
         raise RuntimeError(f'Modal : le client a échoué (code {code}) ; fin du journal :\n' + '\n'.join(journal[-15:]))
-    return {'code': resultat.get('code', 1), 'journal': journal, 'etats': etats}
+    if resultat.get('carte'):
+        dire(f"Modal : carte obtenue {resultat['carte']}, noyau {resultat.get('duree_noyau_s', '?')} s")
+    return {'code': resultat.get('code', 1), 'journal': journal, 'etats': etats, 'carte': resultat.get('carte')}
 
 
 def _principal():

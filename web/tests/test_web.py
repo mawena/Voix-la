@@ -147,3 +147,55 @@ def test_voix_et_doublage_en_file(env, tmp_path):
 def test_mots_de_passe():
     h = securite.hacher('abc-def-ghi')
     assert securite.verifier('abc-def-ghi', h) and not securite.verifier('autre', h) and not securite.verifier('x', None)
+
+
+def _connecte(env):
+    cl, app, courriels = env
+    cl.get(f'/valider/{inscrire(cl, courriels)}')
+    cl.cookies.clear()
+    cl.post('/connexion', data={'email': 'a@ex.fr', 'mot_de_passe': 'motdepasse-long', 'csrf': csrf(cl)})
+    return cl, app, {'X-CSRF': csrf(cl, '/tableau')}
+
+
+def test_envoi_par_morceaux(env, monkeypatch):
+    cl, app, h = _connecte(env)
+    import voixla_web.app as module
+    monkeypatch.setattr(module, '_duree', lambda chemin: 30.0)
+    base = app.state.base
+    # sans jeton CSRF : refusé
+    assert cl.post('/envois', json={'sorte': 'voix', 'nom_fichier': 'v.wav', 'taille': 8, 'nom': 'x1'}).status_code == 400
+    # voix en deux morceaux
+    r = cl.post('/envois', headers=h, json={'sorte': 'voix', 'nom_fichier': 'v.wav', 'taille': 8, 'nom': 'Ma Voix'})
+    j = r.json()['jeton']
+    assert cl.put(f'/envois/{j}', headers={**h, 'X-Debut': '0'}, content=b'RIFF').json()['recu'] == 4
+    # morceau renvoyé (réponse perdue) : 409 avec la vraie position
+    r = cl.put(f'/envois/{j}', headers={**h, 'X-Debut': '0'}, content=b'RIFF')
+    assert r.status_code == 409 and r.json()['recu'] == 4
+    assert cl.post(f'/envois/{j}/fin', headers=h).status_code == 409   # incomplet
+    assert cl.get(f'/envois/{j}', headers=h).json() == {'recu': 4, 'taille': 8}
+    cl.put(f'/envois/{j}', headers={**h, 'X-Debut': '4'}, content=b'0000')
+    assert cl.post(f'/envois/{j}/fin', headers=h).json() == {'aller': '/tableau'}
+    v = base.un('SELECT * FROM voix')
+    assert v['nom'] == 'ma-voix' and v['etat'] == 'en_file'
+    assert 'ma-voix en préparation' in cl.get('/tableau').text
+    # doublage : refusé tant que la voix n'est pas prête, message en JSON
+    demande = {'sorte': 'doublage', 'nom_fichier': 'clip.mp4', 'taille': 10, 'voix': 'ma-voix', 'mode': 'chant'}
+    r = cl.post('/envois', headers=h, json=demande)
+    assert r.status_code == 400 and 'voix prêtes' in r.json()['erreur']
+    base.faire("UPDATE voix SET etat = 'prete'")
+    assert 'trop lourd' in cl.post('/envois', headers=h, json={**demande, 'taille': 10 ** 12}).json()['erreur']
+    j = cl.post('/envois', headers=h, json=demande).json()['jeton']
+    assert cl.put(f'/envois/{j}', headers={**h, 'X-Debut': '0'}, content=b'x' * 11).status_code == 413
+    cl.put(f'/envois/{j}', headers={**h, 'X-Debut': '0'}, content=b'x' * 10)
+    cl.post(f'/envois/{j}/fin', headers=h)
+    d = base.un('SELECT * FROM doublages')
+    assert d['etat'] == 'en_file' and d['mode'] == 'chant' and d['titre'] == 'clip'
+    assert cl.get(f'/envois/{j}', headers=h).status_code == 404   # dossier temporaire effacé
+
+
+def test_envoi_annule_et_jeton_invalide(env):
+    cl, app, h = _connecte(env)
+    j = cl.post('/envois', headers=h, json={'sorte': 'voix', 'nom_fichier': 'v.wav', 'taille': 8, 'nom': 'aa'}).json()['jeton']
+    assert cl.delete(f'/envois/{j}', headers=h).json() == {'ok': True}
+    assert cl.get(f'/envois/{j}', headers=h).status_code == 404
+    assert cl.get('/envois/..%2F..', headers=h).status_code == 404

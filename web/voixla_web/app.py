@@ -1,6 +1,7 @@
 """Application FastAPI de voix-la.mawena.cloud : comptes, voix, doublages, administration."""
 import json
 import re
+import secrets
 import unicodedata
 import shutil
 import subprocess
@@ -8,10 +9,11 @@ import time
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.requests import ClientDisconnect
 
 from . import config as configuration
 from . import securite as s
@@ -29,6 +31,8 @@ def nom_voix(texte):
     return re.sub(r'\s+', '-', t)
 EXT_MEDIA = {'.mp4', '.mkv', '.webm', '.mov', '.avi', '.mp3', '.wav', '.flac', '.m4a', '.ogg', '.opus'}
 EXT_SON = {'.mp3', '.wav', '.flac', '.m4a', '.ogg', '.opus', '.webm', '.mp4'}
+MAX_VOIX_MO = 50
+TAILLE_MORCEAU = 8 * 1024 * 1024   # sous le client_max_body_size de nginx
 ETATS = {'en_file': 'en file', 'en_cours': 'en cours', 'fini': 'fini', 'erreur': 'erreur', 'annule': 'annulé',
          'prete': 'prête'}
 
@@ -264,27 +268,83 @@ def creer(conf=None):
         base.modifier_compte(c['id'], **champs)
         return aller('/tableau', 'Compte mis à jour.', req)
 
+    # --- Envois : contrôles et finalisation partagés par l'envoi classique et l'envoi par morceaux ---
+    def _refus_voix(c, nom, nom_fichier):
+        """Message d'erreur, ou None si la voix peut être créée."""
+        if not NOM_VOIX.match(nom):
+            return 'Nom de voix : 2 à 30 lettres, chiffres, - ou _ (sans accents ni majuscules).'
+        if Path(nom_fichier or '').suffix.lower() not in EXT_SON:
+            return 'Enregistrement : mp3, wav, flac, m4a, ogg, opus ou webm.'
+        if base.un('SELECT 1 FROM voix WHERE compte = ? AND nom = ?', c['id'], nom):
+            return f'La voix {nom} existe déjà.'
+        if base.un('SELECT COUNT(*) FROM voix WHERE compte = ?', c['id'])[0] >= 10:
+            return '10 voix au plus par compte.'
+        return None
+
+    def _refus_doublage(c, voix, nom_fichier):
+        if not c['email_valide']:
+            return 'Confirmez d’abord votre adresse e-mail.'
+        if not base.un("SELECT 1 FROM voix WHERE compte = ? AND nom = ? AND etat = 'prete'", c['id'], voix):
+            return 'Choisissez une de vos voix prêtes.'
+        if Path(nom_fichier or '').suffix.lower() not in EXT_MEDIA:
+            return 'Fichier : vidéo (mp4, mkv, webm, mov) ou son (mp3, wav, flac, m4a…).'
+        if base.un("SELECT COUNT(*) FROM doublages WHERE compte = ? AND etat IN ('en_file', 'en_cours')",
+                   c['id'])[0] >= 3:
+            return '3 doublages au plus en attente par compte.'
+        if travaux.budget_restant(c['id']) < COUT_PAR_DEFAUT:
+            return 'Budget du mois atteint : réessayez le mois prochain.'
+        return None
+
+    def _finir_voix(c, nom, nom_fichier, source):
+        """Range l'enregistrement reçu (source) et met la voix en file. Renvoie le message pour l'utilisateur."""
+        vid = base.faire("INSERT INTO voix (compte, nom, etat, cree_le) VALUES (?, ?, 'en_file', ?)", c['id'], nom,
+                         time.time())
+        dest = travaux.dossier_compte(c['id']) / 'enregistrements' / f'{vid}{Path(nom_fichier).suffix.lower()}'
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(source, dest)
+        travaux.ajouter_voix(vid)
+        return f'Voix {nom} en préparation.'
+
+    def _finir_doublage(c, voix, mode, nom_fichier, source):
+        """Range la vidéo reçue (source), vérifie sa durée et met le doublage en file. Renvoie le message."""
+        if mode not in ('auto', 'chant', 'parole'):
+            mode = 'auto'
+        ext = Path(nom_fichier).suffix.lower()
+        titre = re.sub(r'[^\w .()-]', '_', Path(nom_fichier).stem)[:80] or 'video'
+        did = base.faire('INSERT INTO doublages (compte, titre, fichier, voix, mode, etat, cout_estime_usd, cree_le) '
+                         "VALUES (?, ?, ?, ?, ?, 'reception', ?, ?)", c['id'], titre, titre + ext, voix, mode,
+                         COUT_PAR_DEFAUT, time.time())
+        d = base.un('SELECT * FROM doublages WHERE id = ?', did)
+        dd = travaux.dossier_doublage(d)
+        dd.mkdir(parents=True, exist_ok=True)
+        shutil.move(source, dd / d['fichier'])
+        duree = _duree(dd / d['fichier'])
+        if not duree or duree > conf.duree_max_s:
+            shutil.rmtree(dd, ignore_errors=True)
+            base.faire('DELETE FROM doublages WHERE id = ?', did)
+            return 'Fichier illisible.' if not duree else f'Trop long : {conf.duree_max_s // 60} min au plus.'
+        base.faire("UPDATE doublages SET etat = 'en_file' WHERE id = ?", did)
+        travaux.ajouter_doublage(did)
+        return f'« {titre} » est dans la file.'
+
+    def _dossier_envois(c):
+        d = travaux.dossier_compte(c['id']) / 'envois'
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _temporaire(c):
+        return _dossier_envois(c) / f'direct-{secrets.token_hex(8)}'
+
     @app.post('/voix')
     async def voix_post(req: Request, nom: str = Form(''), enregistrement: UploadFile = File(...), csrf: str = Form('')):
         c = exiger(req, csrf=csrf)
         nom = nom_voix(nom)
-        if not NOM_VOIX.match(nom):
-            return aller('/tableau', 'Nom de voix : 2 à 30 lettres, chiffres, - ou _ (sans accents ni majuscules).', req)
-        ext = Path(enregistrement.filename or '').suffix.lower()
-        if ext not in EXT_SON:
-            return aller('/tableau', 'Enregistrement : mp3, wav, flac, m4a, ogg, opus ou webm.', req)
-        if base.un('SELECT 1 FROM voix WHERE compte = ? AND nom = ?', c['id'], nom):
-            return aller('/tableau', f'La voix {nom} existe déjà.', req)
-        if base.un('SELECT COUNT(*) FROM voix WHERE compte = ?', c['id'])[0] >= 10:
-            return aller('/tableau', '10 voix au plus par compte.', req)
-        vid = base.faire("INSERT INTO voix (compte, nom, etat, cree_le) VALUES (?, ?, 'en_file', ?)", c['id'], nom,
-                         time.time())
-        dest = travaux.dossier_compte(c['id']) / 'enregistrements' / f'{vid}{ext}'
-        if not await _recevoir(enregistrement, dest, 50):
-            base.faire('DELETE FROM voix WHERE id = ?', vid)
-            return aller('/tableau', 'Enregistrement trop lourd (50 Mo au plus).', req)
-        travaux.ajouter_voix(vid)
-        return aller('/tableau', f'Voix {nom} en préparation.', req)
+        if refus := _refus_voix(c, nom, enregistrement.filename):
+            return aller('/tableau', refus, req)
+        tmp = _temporaire(c)
+        if not await _recevoir(enregistrement, tmp, MAX_VOIX_MO):
+            return aller('/tableau', f'Enregistrement trop lourd ({MAX_VOIX_MO} Mo au plus).', req)
+        return aller('/tableau', _finir_voix(c, nom, enregistrement.filename, tmp), req)
 
     @app.post('/voix/{vid}/supprimer')
     def voix_supprimer(req: Request, vid: int, csrf: str = Form('')):
@@ -299,38 +359,114 @@ def creer(conf=None):
     async def doublage_post(req: Request, voix: str = Form(''), mode: str = Form('auto'), media: UploadFile = File(...),
                             csrf: str = Form('')):
         c = exiger(req, csrf=csrf)
-        if not c['email_valide']:
-            return aller('/tableau', 'Confirmez d’abord votre adresse e-mail.', req)
-        if not base.un("SELECT 1 FROM voix WHERE compte = ? AND nom = ? AND etat = 'prete'", c['id'], voix):
-            return aller('/tableau', 'Choisissez une de vos voix prêtes.', req)
-        if mode not in ('auto', 'chant', 'parole'):
-            mode = 'auto'
-        ext = Path(media.filename or '').suffix.lower()
-        if ext not in EXT_MEDIA:
-            return aller('/tableau', 'Fichier : vidéo (mp4, mkv, webm, mov) ou son (mp3, wav, flac, m4a…).', req)
-        if base.un("SELECT COUNT(*) FROM doublages WHERE compte = ? AND etat IN ('en_file', 'en_cours')", c['id'])[0] >= 3:
-            return aller('/tableau', '3 doublages au plus en attente par compte.', req)
-        if travaux.budget_restant(c['id']) < COUT_PAR_DEFAUT:
-            return aller('/tableau', 'Budget du mois atteint : réessayez le mois prochain.', req)
-        titre = re.sub(r'[^\w .()-]', '_', Path(media.filename).stem)[:80] or 'video'
-        did = base.faire('INSERT INTO doublages (compte, titre, fichier, voix, mode, etat, cout_estime_usd, cree_le) '
-                         "VALUES (?, ?, ?, ?, ?, 'reception', ?, ?)", c['id'], titre, titre + ext, voix, mode,
-                         COUT_PAR_DEFAUT, time.time())
-        d = base.un('SELECT * FROM doublages WHERE id = ?', did)
-        dd = travaux.dossier_doublage(d)
-        if not await _recevoir(media, dd / d['fichier'], conf.taille_max_mo):
-            shutil.rmtree(dd, ignore_errors=True)
-            base.faire('DELETE FROM doublages WHERE id = ?', did)
+        if refus := _refus_doublage(c, voix, media.filename):
+            return aller('/tableau', refus, req)
+        tmp = _temporaire(c)
+        if not await _recevoir(media, tmp, conf.taille_max_mo):
             return aller('/tableau', f'Fichier trop lourd ({conf.taille_max_mo} Mo au plus).', req)
-        duree = _duree(dd / d['fichier'])
-        if not duree or duree > conf.duree_max_s:
-            shutil.rmtree(dd, ignore_errors=True)
-            base.faire('DELETE FROM doublages WHERE id = ?', did)
-            return aller('/tableau', 'Fichier illisible.' if not duree else
-                         f'Trop long : {conf.duree_max_s // 60} min au plus.', req)
-        base.faire("UPDATE doublages SET etat = 'en_file' WHERE id = ?", did)
-        travaux.ajouter_doublage(did)
-        return aller('/tableau', f'« {titre} » est dans la file.', req)
+        return aller('/tableau', _finir_doublage(c, voix, mode, media.filename, tmp), req)
+
+    # --- Envoi par morceaux (avancement en temps réel, reprise après coupure) ---
+    def _envoi(req, jeton):
+        c = exiger(req)
+        verifier_csrf(req, req.headers.get('x-csrf', ''))
+        if not re.fullmatch(r'[0-9a-f]{32}', jeton):
+            raise Refus(JSONResponse({'erreur': 'Envoi introuvable.'}, 404))
+        dossier = _dossier_envois(c) / jeton
+        try:
+            meta = json.loads((dossier / 'meta.json').read_text())
+        except (OSError, ValueError):
+            raise Refus(JSONResponse({'erreur': 'Envoi introuvable ou expiré : recommencez.'}, 404))
+        return c, dossier, meta
+
+    def _recu(dossier):
+        f = dossier / 'donnees'
+        return f.stat().st_size if f.exists() else 0
+
+    @app.post('/envois')
+    async def envoi_debut(req: Request):
+        c = exiger(req)
+        verifier_csrf(req, req.headers.get('x-csrf', ''))
+        try:
+            m = await req.json()
+            sorte, nom_fichier, taille = m['sorte'], str(m['nom_fichier'])[:255], int(m['taille'])
+        except (ValueError, KeyError, TypeError):
+            return JSONResponse({'erreur': 'Demande invalide.'}, 400)
+        if sorte == 'voix':
+            meta = {'nom': nom_voix(str(m.get('nom', '')))}
+            refus, max_mo = _refus_voix(c, meta['nom'], nom_fichier), MAX_VOIX_MO
+            trop = f'Enregistrement trop lourd ({MAX_VOIX_MO} Mo au plus).'
+        elif sorte == 'doublage':
+            meta = {'voix': str(m.get('voix', '')), 'mode': str(m.get('mode', 'auto'))}
+            refus, max_mo = _refus_doublage(c, meta['voix'], nom_fichier), conf.taille_max_mo
+            trop = f'Fichier trop lourd ({conf.taille_max_mo} Mo au plus).'
+        else:
+            return JSONResponse({'erreur': 'Demande invalide.'}, 400)
+        if not refus and not 0 < taille <= max_mo * 1024 * 1024:
+            refus = trop if taille > 0 else 'Fichier vide.'
+        if refus:
+            return JSONResponse({'erreur': refus}, 400)
+        racine = _dossier_envois(c)
+        for vieux in racine.iterdir():   # envois abandonnés depuis plus d'un jour
+            if vieux.stat().st_mtime < time.time() - 86400:
+                shutil.rmtree(vieux, ignore_errors=True) if vieux.is_dir() else vieux.unlink(missing_ok=True)
+        jeton = secrets.token_hex(16)
+        (racine / jeton).mkdir()
+        meta.update(sorte=sorte, nom_fichier=nom_fichier, taille=taille)
+        (racine / jeton / 'meta.json').write_text(json.dumps(meta))
+        return JSONResponse({'jeton': jeton, 'morceau': TAILLE_MORCEAU})
+
+    @app.get('/envois/{jeton}')
+    def envoi_etat(req: Request, jeton: str):
+        _, dossier, meta = _envoi(req, jeton)
+        return JSONResponse({'recu': _recu(dossier), 'taille': meta['taille']})
+
+    @app.put('/envois/{jeton}')
+    async def envoi_morceau(req: Request, jeton: str):
+        """Ajoute un morceau à partir de l'octet X-Debut ; 409 avec la position réelle si elle diffère."""
+        _, dossier, meta = _envoi(req, jeton)
+        try:
+            debut = int(req.headers.get('x-debut', ''))
+        except ValueError:
+            return JSONResponse({'erreur': 'X-Debut manquant.'}, 400)
+        recu = _recu(dossier)
+        if debut != recu:
+            return JSONResponse({'recu': recu}, 409)
+        morceau = bytearray()
+        try:
+            async for bout in req.stream():   # morceau entier en mémoire, écrit seulement s'il est arrivé complet
+                morceau += bout
+                if len(morceau) > TAILLE_MORCEAU or recu + len(morceau) > meta['taille']:
+                    return JSONResponse({'erreur': 'Morceau trop gros.'}, 413)
+        except ClientDisconnect:   # connexion coupée : rien n'est écrit, le navigateur reprendra
+            return Response(status_code=499)
+        with open(dossier / 'donnees', 'ab') as f:
+            f.write(morceau)
+        return JSONResponse({'recu': recu + len(morceau)})
+
+    @app.post('/envois/{jeton}/fin')
+    def envoi_fin(req: Request, jeton: str):
+        c, dossier, meta = _envoi(req, jeton)
+        if _recu(dossier) != meta['taille']:
+            return JSONResponse({'erreur': 'Envoi incomplet.', 'recu': _recu(dossier)}, 409)
+        try:
+            if meta['sorte'] == 'voix':
+                refus = _refus_voix(c, meta['nom'], meta['nom_fichier'])
+                message = refus or _finir_voix(c, meta['nom'], meta['nom_fichier'], dossier / 'donnees')
+            else:
+                refus = _refus_doublage(c, meta['voix'], meta['nom_fichier'])
+                message = refus or _finir_doublage(c, meta['voix'], meta['mode'], meta['nom_fichier'],
+                                                   dossier / 'donnees')
+        finally:
+            shutil.rmtree(dossier, ignore_errors=True)
+        req.session['message'] = message
+        return JSONResponse({'aller': '/tableau'})
+
+    @app.delete('/envois/{jeton}')
+    def envoi_annuler(req: Request, jeton: str):
+        _, dossier, _ = _envoi(req, jeton)
+        shutil.rmtree(dossier, ignore_errors=True)
+        return JSONResponse({'ok': True})
 
     def _mien(req, did):
         c = exiger(req)

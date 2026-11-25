@@ -7,6 +7,15 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+## [0.23.0] - 2026-11-25
+
+### Ajouté
+- Service web : les vidéos à doubler et les enregistrements de voix partent par morceaux de 8 Mo, avec une barre
+  d'avancement en temps réel (pourcentage, Mo envoyés, débit, temps restant). Un morceau perdu est renvoyé
+  automatiquement (8 essais), l'envoi peut être annulé, et la page prévient avant de quitter un envoi en cours.
+  Les envois abandonnés sont effacés au bout de 24 h. Le formulaire classique reste pour les navigateurs sans
+  JavaScript.
+
 ## [0.22.2] - 2026-11-25
 
 ### Corrigé

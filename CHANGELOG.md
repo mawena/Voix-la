@@ -7,6 +7,13 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le p
 
 ## [Non publié]
 
+## [0.24.1] - 2026-11-25
+
+### Corrigé
+- Service web : « Supprimer » un doublage le retire enfin du tableau. Les fichiers étaient bien effacés mais la
+  ligne restait affichée ; elle est maintenant marquée supprimée (colonne `supprime_le`, ajoutée d'elle-même aux
+  bases existantes) et cachée, tout en restant comptée dans la dépense du mois.
+
 ## [0.24.0] - 2026-11-25
 
 ### Modifié
@@ -929,7 +936,7 @@ Première version publique.
     `VOIXLA_DECODAGE_MATERIEL=1` remet le décodage matériel ;
   - les essais automatiques laissaient le son de l'application coupé.
 
-[Non publié]: https://github.com/mawena/Voix-la/compare/v0.21.1...HEAD
+[Non publié]: https://github.com/mawena/Voix-la/compare/v0.24.1...HEAD
 [0.21.1]: https://github.com/mawena/Voix-la/compare/v0.21.0...v0.21.1
 [0.21.0]: https://github.com/mawena/Voix-la/compare/v0.20.2...v0.21.0
 [0.20.2]: https://github.com/mawena/Voix-la/compare/v0.20.1...v0.20.2

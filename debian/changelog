@@ -1,3 +1,9 @@
+voix-la (0.24.2) unstable; urgency=medium
+
+  * Service web : icônes pour les boutons des lignes du tableau.
+
+ -- mawena <57989130+mawena@users.noreply.github.com>  Wed, 25 Nov 2026 22:30:00 +0100
+
 voix-la (0.24.1) unstable; urgency=medium
 
   * Service web : la suppression d'un doublage le retire bien du tableau.
